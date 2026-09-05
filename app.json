@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "Solitaire Suite",
+    "slug": "solitaire-app",
+    "scheme": "solitairesuite",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "experiments": {
+      "typedRoutes": true
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.infinitetoken.solitaire",
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.com.infinitetoken.tastic"
+        ]
+      }
+    },
+    "android": {
+      "package": "com.infinitetoken.solitaire",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-splash-screen",
+      "expo-font",
+      "expo-audio",
+      "expo-asset"
+    ]
+  }
+}

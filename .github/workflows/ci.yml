@@ -1,0 +1,12 @@
+name: CI
+run-name: CI — ${{ github.head_ref || github.ref_name }}
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    uses: infinitetoken/Workflows/.github/workflows/npm-ci.yml@v1

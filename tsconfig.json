@@ -1,0 +1,37 @@
+{
+  "extends": "@infinitetoken/tsconfig/expo",
+  "compilerOptions": {
+    "paths": {
+      "@/*": [
+        "./*"
+      ],
+      "@/app/*": [
+        "./src/app/*"
+      ],
+      "@/components/*": [
+        "./src/components/*"
+      ],
+      "@/constants/*": [
+        "./src/constants/*"
+      ],
+      "@/engine/*": [
+        "./src/engine/*"
+      ],
+      "@/games/*": [
+        "./src/games/*"
+      ],
+      "@/stores/*": [
+        "./src/stores/*"
+      ],
+      "@/utils/*": [
+        "./src/utils/*"
+      ]
+    }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
+  ]
+}
