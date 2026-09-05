@@ -1,3 +1,3 @@
-import PyramidScreen from '@/games/pyramid/PyramidScreen';
+import PyramidScreen from '@/games/pyramid/PyramidScreen'
 
-export default PyramidScreen;
+export default PyramidScreen

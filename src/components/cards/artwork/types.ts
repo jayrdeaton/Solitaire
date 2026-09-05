@@ -5,29 +5,29 @@
 
 /** A single-colour outline shape (suit pips, court figures), coloured by the caller at render time. */
 export interface OutlineArt {
-  viewBox: [number, number, number, number];
-  paths: string[];
+  viewBox: [number, number, number, number]
+  paths: string[]
 }
 
 /** Shared fields every decorated-art shape carries (its own colour, unlike OutlineArt's paths). */
 interface DecoratedShapeCommon {
-  fill?: string;
-  stroke?: string;
-  strokeWidth?: number;
-  transform?: string;
+  fill?: string
+  stroke?: string
+  strokeWidth?: number
+  transform?: string
 }
 
 export type DecoratedShape =
   | (DecoratedShapeCommon & {
-      tag: 'g';
-      children: DecoratedShape[];
+      tag: 'g'
+      children: DecoratedShape[]
       /** Rectangular clip [x, y, width, height], in this group's own coordinate space. Used to
        * restrict a "second copy, for the overlap it contributes" group (see
        * scripts/generate-court-figures.mjs) to just the region that's relevant, without dropping
        * whole shapes that happen to extend slightly past that region - a real geometric clip
        * (unlike an all-or-nothing per-shape bounding-box filter) correctly keeps the part of a
        * shape that's inside even when the rest of it isn't. */
-      clipRect?: [number, number, number, number];
+      clipRect?: [number, number, number, number]
     })
   | (DecoratedShapeCommon & { tag: 'path'; d: string })
   | (DecoratedShapeCommon & { tag: 'circle'; cx: number; cy: number; r: number })
@@ -35,14 +35,14 @@ export type DecoratedShape =
   | (DecoratedShapeCommon & { tag: 'line'; x1: number; y1: number; x2: number; y2: number })
   | (DecoratedShapeCommon & { tag: 'polygon' | 'polyline'; points: string })
   | (DecoratedShapeCommon & {
-      tag: 'text';
-      content: string;
-      x?: number;
-      y?: number;
-      fontFamily?: string;
-      fontWeight?: string;
-      fontSize?: number;
-    });
+      tag: 'text'
+      content: string
+      x?: number
+      y?: number
+      fontFamily?: string
+      fontWeight?: string
+      fontSize?: number
+    })
 
 /**
  * Full-colour illustrated card art (the "decorated" card style), pre-flattened so it renders as
@@ -50,8 +50,8 @@ export type DecoratedShape =
  * OutlineArt, colour is baked into each shape rather than supplied by the caller.
  */
 export interface DecoratedArt {
-  viewBox: [number, number, number, number];
-  shapes: DecoratedShape[];
+  viewBox: [number, number, number, number]
+  shapes: DecoratedShape[]
 }
 
 /**
@@ -62,7 +62,7 @@ export interface DecoratedArt {
  * inside, since #base already carries its own inset from the sheet's true edge.
  */
 export interface BackArt {
-  viewBox: [number, number, number, number];
-  base: DecoratedShape;
-  body: DecoratedShape;
+  viewBox: [number, number, number, number]
+  base: DecoratedShape
+  body: DecoratedShape
 }

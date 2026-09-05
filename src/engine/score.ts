@@ -2,5 +2,5 @@
 // scores low. Every caller goes through this one function, so the formula can be retuned later
 // without touching stats/achievements plumbing.
 export function computeScore(moves: number, elapsedSeconds: number): number {
-  return moves + elapsedSeconds;
+  return moves + elapsedSeconds
 }

@@ -1,80 +1,82 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { measure, runOnJS, useAnimatedRef, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
-import { Card } from '@/engine/types';
-import { PileRef } from '@/engine/gameTypes';
-import { faceUpFanOffset } from './cards/CardFace';
-import { useCardSize } from './CardSizeContext';
-import { useDragGhost } from './dragdrop/DragGhostLayer';
-import { DropZoneRegistry } from './dragdrop/DropZoneRegistry';
-import { EmptySlot, PlayingCard } from './PlayingCard';
-import { playShake } from './shakeAnimation';
-import { useCardSoundEffects } from './useCardSounds';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
+import { Gesture, GestureDetector } from 'react-native-gesture-handler'
+import Animated, { measure, runOnJS, useAnimatedRef, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
+
+import { PileRef } from '@/engine/gameTypes'
+import { Card } from '@/engine/types'
+
+import { faceUpFanOffset } from './cards/CardFace'
+import { useCardSize } from './CardSizeContext'
+import { useDragGhost } from './dragdrop/DragGhostLayer'
+import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
+import { EmptySlot, PlayingCard } from './PlayingCard'
+import { playShake } from './shakeAnimation'
+import { useCardSoundEffects } from './useCardSounds'
 
 export interface PileDragConfig {
-  registry: DropZoneRegistry;
+  registry: DropZoneRegistry
   /** Given the index-from-top of a face-up card, how many cards (including it) move together if
    * dragged from here. Return 0 if this card can't start a drag (e.g. would break a valid run). */
-  getRunCount: (indexFromTop: number) => number;
+  getRunCount: (indexFromTop: number) => number
   /** Attempt the move; return true if applied (drops the cards there instead of snapping back).
    * `anchorCardId` is the id of the dragged run's topmost card - the same card a screen's own
    * tap-to-move flight measures to find its exact landing spot, so a caller that applies the move
    * can mark that destination "incoming" and fly the ghost the rest of the way there instead of
    * just snapping it into place (see PileView's own handleDragEnd, which no longer hides the ghost
    * on a successful drop - that's now this callback's job, mirroring handleCardTap). */
-  onDrop: (to: PileRef, count: number, anchorCardId: string) => Promise<boolean> | boolean;
+  onDrop: (to: PileRef, count: number, anchorCardId: string) => Promise<boolean> | boolean
 }
 
 interface PileViewProps {
-  cards: Card[];
+  cards: Card[]
   /** How many cards counting from the top are currently selected (for a multi-card drag/move). */
-  selectedCount?: number;
+  selectedCount?: number
   /** `measure` is lazy - call it only if a move actually applies. See DraggableTableauCardProps'
    * onPress below for why. */
-  onPressCard?: (card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) => void;
-  onPressEmpty?: () => void;
-  faceDownOffset?: number;
-  faceUpOffset?: number;
+  onPressCard?: (card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) => void
+  onPressEmpty?: () => void
+  faceDownOffset?: number
+  faceUpOffset?: number
   /** Cap the visible fan height so long columns don't run off screen. */
-  maxHeight?: number;
-  style?: StyleProp<ViewStyle>;
-  drag?: PileDragConfig;
+  maxHeight?: number
+  style?: StyleProp<ViewStyle>
+  drag?: PileDragConfig
   /** Hide the top N cards - they're mid-flight in the screen-level ghost layer after a tap-to-move
    * landed here (see DragGhostLayer's flyTo). Distinct from the internal drag-hiding below, since
    * this pile isn't the one driving the gesture. */
-  hiddenCount?: number;
+  hiddenCount?: number
   /** Additionally hide any card whose id is in this set, regardless of its position in the column -
    * unlike hiddenCount ("top N of this column", sized for a run that just landed here), the initial
    * deal (see components/dealing/DealLayer.tsx) can have any card in any column independently
    * mid-flight. */
-  hiddenCardIds?: Set<string>;
+  hiddenCardIds?: Set<string>
   /** Dim any face-up card that currently can't be picked up (`drag.getRunCount` returns 0 for it) -
    * e.g. a FreeCell tableau card buried under a card that breaks its run. Off by default so it
    * doesn't change the look of games that haven't opted in. */
-  dimUnplayable?: boolean;
+  dimUnplayable?: boolean
   /** Which card (if any, in this pile) should play its shake, and how many cards counting down
    * from it (inclusive) join in - a tapped card mid-run drags everything fanned below it too, so
    * a "nowhere to go" shake should read as the whole stack being stuck, not just the one card
    * under the finger. Defaults to 1 (just the named card) if omitted. See DraggableTableauCardProps'
    * shakeToken for why this is a counter, not a boolean. */
-  shakeCardId?: string;
-  shakeCount?: number;
-  shakeToken?: number;
+  shakeCardId?: string
+  shakeCount?: number
+  shakeToken?: number
 }
 
 interface DraggableTableauCardProps {
-  card: Card;
-  selected: boolean;
-  dimmed: boolean;
-  cardStyle: StyleProp<ViewStyle>;
-  runCount: number;
-  indexFromTop: number;
-  isHidden: boolean;
+  card: Card
+  selected: boolean
+  dimmed: boolean
+  cardStyle: StyleProp<ViewStyle>
+  runCount: number
+  indexFromTop: number
+  isHidden: boolean
   /** Bumped (to any new value) to play a shake - see shakeAnimation.ts. A counter rather than a
    * boolean so tapping the same stuck card twice in a row re-triggers the shake both times,
    * instead of the second tap being a no-op state transition. */
-  shakeToken?: number;
+  shakeToken?: number
   /** `measure` is lazy (call view.measureInWindow only when actually needed) instead of an
    * already-resolved origin - measureInWindow is a real async cost on web (implemented as a
    * setTimeout(0), same as the one useAudioPool's triggerPlayback pays for the opposite reason -
@@ -82,9 +84,9 @@ interface DraggableTableauCardProps {
    * actually running, on every tap regardless of whether the caller ends up using the position at
    * all. A "nowhere to go" shake never touches it, so deferring the call lets that path skip the
    * cost entirely instead of paying for a measurement it throws away. */
-  onPress?: (card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) => void;
-  onDragStart: (indexFromTop: number, runCount: number) => void;
-  onDragEnd: (absoluteX: number, absoluteY: number, runCount: number, anchorCardId: string) => void;
+  onPress?: (card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) => void
+  onDragStart: (indexFromTop: number, runCount: number) => void
+  onDragEnd: (absoluteX: number, absoluteY: number, runCount: number, anchorCardId: string) => void
 }
 
 /**
@@ -106,44 +108,32 @@ interface DraggableTableauCardProps {
  * screen-level auto-move handlers that call `ghost.cardRegistry.measure(cardId)` after applying a
  * move.
  */
-function DraggableTableauCard({
-  card,
-  selected,
-  dimmed,
-  cardStyle,
-  runCount,
-  indexFromTop,
-  isHidden,
-  shakeToken,
-  onPress,
-  onDragStart,
-  onDragEnd,
-}: DraggableTableauCardProps) {
-  const viewRef = useAnimatedRef<Animated.View>();
-  const ghost = useDragGhost();
-  const shakeX = useSharedValue(0);
-  const shakeStyle = useAnimatedStyle(() => ({ transform: [{ translateX: shakeX.value }] }));
+function DraggableTableauCard({ card, selected, dimmed, cardStyle, runCount, indexFromTop, isHidden, shakeToken, onPress, onDragStart, onDragEnd }: DraggableTableauCardProps) {
+  const viewRef = useAnimatedRef<Animated.View>()
+  const ghost = useDragGhost()
+  const shakeX = useSharedValue(0)
+  const shakeStyle = useAnimatedStyle(() => ({ transform: [{ translateX: shakeX.value }] }))
   useEffect(() => {
-    if (!shakeToken) return;
-    playShake(shakeX);
+    if (!shakeToken) return
+    playShake(shakeX)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shakeToken]);
-  const latest = useRef({ runCount, indexFromTop, onDragStart, onDragEnd, cardId: card.id });
-  latest.current = { runCount, indexFromTop, onDragStart, onDragEnd, cardId: card.id };
+  }, [shakeToken])
+  const latest = useRef({ runCount, indexFromTop, onDragStart, onDragEnd, cardId: card.id })
+  latest.current = { runCount, indexFromTop, onDragStart, onDragEnd, cardId: card.id }
   // Position is tracked via e.absoluteX/Y (screen-space pointer position) minus its value at
   // gesture start, rather than Gesture.Pan()'s own translationX/Y - instrumented testing showed
   // translationX/Y can report a stale 0 for an entire gesture on web while absoluteX/Y keeps
   // updating correctly, so deriving our own delta from the value that's actually reliable avoids
   // depending on that.
-  const startAbsX = useSharedValue(0);
-  const startAbsY = useSharedValue(0);
-  const cardRegistry = ghost.cardRegistry;
+  const startAbsX = useSharedValue(0)
+  const startAbsY = useSharedValue(0)
+  const cardRegistry = ghost.cardRegistry
   // Destructured to plain local SharedValue bindings rather than read as `ghost.originX` etc.
   // inside the worklet below - referencing `ghost` itself inside a worklet closure makes Reanimated
   // capture the *whole* controller object (see DragGhostController), including `cardRegistry` (a
   // plain class instance, not a serializable value), which throws "[Worklets] Cannot copy value of
   // type `CardRegistry`" the moment the gesture is built.
-  const { originX, originY, dx, dy } = ghost;
+  const { originX, originY, dx, dy } = ghost
   // React Native Web's Pressable can still fire its own native click on the same release a Pan
   // gesture above it already claimed as a drag (confirmed live: a completed drag - moved past
   // minDistance, released over an invalid drop point - still triggered handlePress's tap-to-move
@@ -152,67 +142,67 @@ function DraggableTableauCard({
   // activates so it's already true by the time that phantom press can fire; cleared on a deferred
   // timeout (not synchronously in handleEnd, which runs and returns before the phantom press does)
   // so a genuine drag never leaves this card unable to register its next real tap.
-  const wasDraggingRef = useRef(false);
+  const wasDraggingRef = useRef(false)
 
   useEffect(() => {
-    cardRegistry.register(card.id, viewRef);
-    return () => cardRegistry.unregister(card.id, viewRef);
+    cardRegistry.register(card.id, viewRef)
+    return () => cardRegistry.unregister(card.id, viewRef)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [card.id, cardRegistry]);
+  }, [card.id, cardRegistry])
 
   const handleStart = useCallback(() => {
-    wasDraggingRef.current = true;
-    latest.current.onDragStart(latest.current.indexFromTop, latest.current.runCount);
-  }, []);
+    wasDraggingRef.current = true
+    latest.current.onDragStart(latest.current.indexFromTop, latest.current.runCount)
+  }, [])
 
   const handleEnd = useCallback((absoluteX: number, absoluteY: number) => {
-    latest.current.onDragEnd(absoluteX, absoluteY, latest.current.runCount, latest.current.cardId);
+    latest.current.onDragEnd(absoluteX, absoluteY, latest.current.runCount, latest.current.cardId)
     setTimeout(() => {
-      wasDraggingRef.current = false;
-    }, 0);
-  }, []);
+      wasDraggingRef.current = false
+    }, 0)
+  }, [])
 
   const pan = useMemo(
     () =>
       Gesture.Pan()
         .minDistance(8)
         .onStart((e) => {
-          const frame = measure(viewRef);
+          const frame = measure(viewRef)
           if (frame) {
-            originX.value = frame.pageX;
-            originY.value = frame.pageY;
+            originX.value = frame.pageX
+            originY.value = frame.pageY
           }
-          dx.value = 0;
-          dy.value = 0;
-          startAbsX.value = e.absoluteX;
-          startAbsY.value = e.absoluteY;
-          runOnJS(handleStart)();
+          dx.value = 0
+          dy.value = 0
+          startAbsX.value = e.absoluteX
+          startAbsY.value = e.absoluteY
+          runOnJS(handleStart)()
         })
         .onUpdate((e) => {
-          dx.value = e.absoluteX - startAbsX.value;
-          dy.value = e.absoluteY - startAbsY.value;
+          dx.value = e.absoluteX - startAbsX.value
+          dy.value = e.absoluteY - startAbsY.value
         })
         .onEnd((e) => {
-          runOnJS(handleEnd)(e.absoluteX, e.absoluteY);
+          runOnJS(handleEnd)(e.absoluteX, e.absoluteY)
         }),
     [handleStart, handleEnd, originX, originY, dx, dy, startAbsX, startAbsY, viewRef]
-  );
+  )
 
-  pan.enabled(runCount > 0);
+  pan.enabled(runCount > 0)
 
   function handlePress() {
     if (wasDraggingRef.current) {
-      wasDraggingRef.current = false;
-      return;
+      wasDraggingRef.current = false
+      return
     }
-    if (!onPress) return;
-    const view = viewRef.current;
-    if (!view) return;
+    if (!onPress) return
+    const view = viewRef.current
+    if (!view) return
     // A plain measureInWindow (rather than the worklet-synchronous measure() used for drag-start
     // above) is fine here - there's no continuously-firing pointer stream racing it the way a real
     // drag's onUpdate does, so the small async gap doesn't create the "jump" bug that fix targeted.
     // Deferred until the caller actually calls measure() - see onPress's doc comment above.
-    onPress(card, indexFromTop, () => new Promise((resolve) => view.measureInWindow((x, y) => resolve({ x, y }))));
+    onPress(card, indexFromTop, () => new Promise((resolve) => view.measureInWindow((x, y) => resolve({ x, y }))))
   }
 
   return (
@@ -221,28 +211,12 @@ function DraggableTableauCard({
         <PlayingCard card={card} selected={selected} dimmed={dimmed} onPress={onPress ? handlePress : undefined} />
       </Animated.View>
     </GestureDetector>
-  );
+  )
 }
 
 /** A vertical fanned stack, used for tableau/reserve columns across every game. */
-export function PileView({
-  cards,
-  selectedCount = 0,
-  onPressCard,
-  onPressEmpty,
-  faceDownOffset,
-  faceUpOffset,
-  maxHeight,
-  style,
-  drag,
-  hiddenCount = 0,
-  hiddenCardIds,
-  dimUnplayable = false,
-  shakeCardId,
-  shakeCount = 1,
-  shakeToken,
-}: PileViewProps) {
-  const { width: cardWidth, height: cardHeight } = useCardSize();
+export function PileView({ cards, selectedCount = 0, onPressCard, onPressEmpty, faceDownOffset, faceUpOffset, maxHeight, style, drag, hiddenCount = 0, hiddenCardIds, dimUnplayable = false, shakeCardId, shakeCount = 1, shakeToken }: PileViewProps) {
+  const { width: cardWidth, height: cardHeight } = useCardSize()
   // Fan offsets default to a fraction of the current card size, rather than a fixed pixel value,
   // so the fan still looks proportional when the card size scales up/down with the viewport.
   // Face-up offset clears CardFace's own corner row (rank + small pip) with the same margin
@@ -251,33 +225,33 @@ export function PileView({
   // corner content, rather than one side clipping it a couple pixels short (which, since pip
   // glyphs aren't vertically symmetric, read as inconsistently misaligned pips rather than an
   // evenly-clipped edge).
-  const resolvedFaceDownOffset = faceDownOffset ?? cardHeight * 0.13;
-  const resolvedFaceUpOffset = faceUpOffset ?? faceUpFanOffset(cardWidth);
-  const ghost = useDragGhost();
-  const { playCardSound } = useCardSoundEffects();
-  const [activeDrag, setActiveDrag] = useState<{ indexFromTop: number; count: number } | null>(null);
+  const resolvedFaceDownOffset = faceDownOffset ?? cardHeight * 0.13
+  const resolvedFaceUpOffset = faceUpOffset ?? faceUpFanOffset(cardWidth)
+  const ghost = useDragGhost()
+  const { playCardSound } = useCardSoundEffects()
+  const [activeDrag, setActiveDrag] = useState<{ indexFromTop: number; count: number } | null>(null)
 
   function handleDragStart(indexFromTop: number, runCount: number) {
-    const runCards = cards.slice(cards.length - runCount);
-    ghost.show({ cards: runCards, offsetStep: resolvedFaceUpOffset, cardWidth });
-    playCardSound();
-    setActiveDrag({ indexFromTop, count: runCount });
+    const runCards = cards.slice(cards.length - runCount)
+    ghost.show({ cards: runCards, offsetStep: resolvedFaceUpOffset, cardWidth })
+    playCardSound()
+    setActiveDrag({ indexFromTop, count: runCount })
   }
 
   function handleDragEnd(absoluteX: number, absoluteY: number, count: number, anchorCardId: string) {
-    (async () => {
-      const target = drag ? await drag.registry.hitTest(absoluteX, absoluteY) : null;
-      const applied = target && drag ? await drag.onDrop(target, count, anchorCardId) : false;
+    ;(async () => {
+      const target = drag ? await drag.registry.hitTest(absoluteX, absoluteY) : null
+      const applied = target && drag ? await drag.onDrop(target, count, anchorCardId) : false
       if (applied) {
         // Don't hide the ghost here - it's still sitting wherever the pointer released it, not
         // yet at the destination's exact fanned position. The caller's onDrop (mirroring
         // handleCardTap) has already marked that destination "incoming" and will measure its real
         // landed position and fly the ghost the rest of the way there, same as a tap-to-move.
-        setActiveDrag(null);
+        setActiveDrag(null)
       } else {
-        ghost.snapBack(() => setActiveDrag(null));
+        ghost.snapBack(() => setActiveDrag(null))
       }
-    })();
+    })()
   }
 
   if (cards.length === 0) {
@@ -285,27 +259,26 @@ export function PileView({
       <View style={[styles.container, { width: cardWidth }, style]}>
         <EmptySlot onPress={onPressEmpty} />
       </View>
-    );
+    )
   }
 
   // Compute offsets, compressing if the column would exceed maxHeight.
-  const offsets: number[] = [];
-  let y = 0;
+  const offsets: number[] = []
+  let y = 0
   for (let i = 0; i < cards.length; i++) {
-    offsets.push(y);
-    y += cards[i].faceUp ? resolvedFaceUpOffset : resolvedFaceDownOffset;
+    offsets.push(y)
+    y += cards[i].faceUp ? resolvedFaceUpOffset : resolvedFaceDownOffset
   }
-  let scale = 1;
-  const totalHeight = y + cardHeight;
+  let scale = 1
+  const totalHeight = y + cardHeight
   if (maxHeight && totalHeight > maxHeight) {
-    scale = (maxHeight - cardHeight) / (y || 1);
+    scale = (maxHeight - cardHeight) / (y || 1)
   }
 
   function isCardHidden(card: Card, indexFromTop: number): boolean {
-    const isPartOfActiveDrag =
-      !!activeDrag && indexFromTop <= activeDrag.indexFromTop && indexFromTop > activeDrag.indexFromTop - activeDrag.count;
-    const isFlying = indexFromTop < hiddenCount || !!hiddenCardIds?.has(card.id);
-    return isPartOfActiveDrag || isFlying;
+    const isPartOfActiveDrag = !!activeDrag && indexFromTop <= activeDrag.indexFromTop && indexFromTop > activeDrag.indexFromTop - activeDrag.count
+    const isFlying = indexFromTop < hiddenCount || !!hiddenCardIds?.has(card.id)
+    return isPartOfActiveDrag || isFlying
   }
 
   // Every card this column currently holds is mid-flight - it was empty before whatever's
@@ -314,7 +287,7 @@ export function PileView({
   // "keep showing what was there before" treatment as foundation/freecell/waste - see
   // useFrozenWhileHidden). The real (hidden) cards still render underneath so the flight has
   // something to measure/land on; this is purely a decorative overlay.
-  const allCardsHidden = cards.every((card, i) => isCardHidden(card, cards.length - 1 - i));
+  const allCardsHidden = cards.every((card, i) => isCardHidden(card, cards.length - 1 - i))
 
   // shakeCardId names the card that was actually tapped, at the TOP of the shaking run (closest
   // to the top of the column) - shakeCount cards from it downward (toward the bottom/exposed end)
@@ -322,16 +295,16 @@ export function PileView({
   // isPartOfActiveDrag above. shakeCardId may not be in this column at all (the tap that set it
   // could belong to any column on the board), in which case shakeStartIndexFromTop stays null and
   // nothing here matches.
-  const shakeCardArrayIndex = shakeCardId ? cards.findIndex((c) => c.id === shakeCardId) : -1;
-  const shakeStartIndexFromTop = shakeCardArrayIndex === -1 ? null : cards.length - 1 - shakeCardArrayIndex;
+  const shakeCardArrayIndex = shakeCardId ? cards.findIndex((c) => c.id === shakeCardId) : -1
+  const shakeStartIndexFromTop = shakeCardArrayIndex === -1 ? null : cards.length - 1 - shakeCardArrayIndex
 
   return (
     <View style={[styles.container, { width: cardWidth, height: maxHeight ?? totalHeight }, style]}>
       {cards.map((card, i) => {
-        const indexFromTop = cards.length - 1 - i;
-        const isSelected = indexFromTop < selectedCount;
-        const runCount = drag && card.faceUp ? drag.getRunCount(indexFromTop) : 0;
-        const isDimmed = dimUnplayable && !!drag && card.faceUp && runCount === 0;
+        const indexFromTop = cards.length - 1 - i
+        const isSelected = indexFromTop < selectedCount
+        const runCount = drag && card.faceUp ? drag.getRunCount(indexFromTop) : 0
+        const isDimmed = dimUnplayable && !!drag && card.faceUp && runCount === 0
         // A card only responds to taps if it's actually a legal move source - the same signal
         // drag already uses to decide whether a gesture may pick it up (runCount > 0 for a
         // face-up card that's either the true top or the head of a fully-valid run beneath it).
@@ -339,37 +312,18 @@ export function PileView({
         // run-breaking card - forwarded taps straight to the screen's own onPressCard, which
         // can't tell "not a legal move source" apart from "legal but stuck" and shook both the
         // same way; only the latter should ever shake (or react to a tap) at all.
-        const isPressable = runCount > 0;
-        const cardStyle = { position: 'absolute' as const, top: offsets[i] * scale, left: 0, zIndex: i };
+        const isPressable = runCount > 0
+        const cardStyle = { position: 'absolute' as const, top: offsets[i] * scale, left: 0, zIndex: i }
 
-        return (
-          <DraggableTableauCard
-            key={card.id}
-            card={card}
-            selected={isSelected}
-            dimmed={isDimmed}
-            cardStyle={cardStyle}
-            runCount={runCount}
-            indexFromTop={indexFromTop}
-            isHidden={isCardHidden(card, indexFromTop)}
-            shakeToken={
-              shakeStartIndexFromTop !== null && indexFromTop <= shakeStartIndexFromTop && indexFromTop > shakeStartIndexFromTop - shakeCount
-                ? shakeToken
-                : undefined
-            }
-            onPress={isPressable ? onPressCard : undefined}
-            onDragStart={handleDragStart}
-            onDragEnd={handleDragEnd}
-          />
-        );
+        return <DraggableTableauCard key={card.id} card={card} selected={isSelected} dimmed={isDimmed} cardStyle={cardStyle} runCount={runCount} indexFromTop={indexFromTop} isHidden={isCardHidden(card, indexFromTop)} shakeToken={shakeStartIndexFromTop !== null && indexFromTop <= shakeStartIndexFromTop && indexFromTop > shakeStartIndexFromTop - shakeCount ? shakeToken : undefined} onPress={isPressable ? onPressCard : undefined} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
       })}
       {allCardsHidden && (
-        <View style={StyleSheet.absoluteFill} pointerEvents="none">
+        <View style={StyleSheet.absoluteFill} pointerEvents='none'>
           <EmptySlot />
         </View>
       )}
     </View>
-  );
+  )
 }
 
 const styles = StyleSheet.create({
@@ -381,6 +335,6 @@ const styles = StyleSheet.create({
   // fight to any card here past the very bottom of the pile, rendering "under" it mid-flight.
   container: { zIndex: 0 },
   hidden: {
-    opacity: 0,
-  },
-});
+    opacity: 0
+  }
+})

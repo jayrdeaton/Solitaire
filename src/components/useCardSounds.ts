@@ -1,11 +1,11 @@
-import { useCallback, useContext, useRef } from 'react';
-import { SoundContext, useSoundSettings, useVibration } from '@rific/feedback-press';
+import { SoundContext, useSoundSettings, useVibration } from '@rific/feedback-press'
+import { useCallback, useContext, useRef } from 'react'
 
 // Platform-split (useCardSoundPlayers.ts / .web.ts) - web needs a genuinely different
 // implementation, not just a different backend flag, to avoid the <audio>-element playback
 // latency measured in useCardSoundPlayers.web.ts's doc comment. Metro picks the right file per
 // platform automatically; every caller (just _layout.tsx) imports this same re-export.
-export { useCardSoundPlayers } from './useCardSoundPlayers';
+export { useCardSoundPlayers } from './useCardSoundPlayers'
 
 /** Reads the already-wired sound functions back out via the same SoundContext
  * FeedbackPressProvider populates, for any call site that isn't a Pressable press - a card's
@@ -22,13 +22,13 @@ export { useCardSoundPlayers } from './useCardSoundPlayers';
  * creation time inside any caller wrapped in its own useCallback([]), silently ignoring later
  * Sound FX toggle changes. */
 export function useCardSoundEffects() {
-  const { selection, notification } = useContext(SoundContext);
+  const { selection, notification } = useContext(SoundContext)
   const {
-    settings: { enabled },
-  } = useSoundSettings();
-  const vibration = useVibration();
-  const latest = useRef({ selection, notification, enabled, vibration });
-  latest.current = { selection, notification, enabled, vibration };
+    settings: { enabled }
+  } = useSoundSettings()
+  const vibration = useVibration()
+  const latest = useRef({ selection, notification, enabled, vibration })
+  latest.current = { selection, notification, enabled, vibration }
 
   // playCardSound/hapticCard are always fired together, the instant a move is confirmed - a
   // drag's pickup, a tap that resolves to a valid auto-move, an Undo, a stock draw, or (in
@@ -38,11 +38,11 @@ export function useCardSoundEffects() {
   // each other: the click/buzz trailed the animation by however long the flight took, instead of
   // responding together to the input that caused it.
   const playCardSound = useCallback(() => {
-    if (latest.current.enabled) latest.current.selection?.();
-  }, []);
+    if (latest.current.enabled) latest.current.selection?.()
+  }, [])
   const playInvalidSound = useCallback(() => {
-    if (latest.current.enabled) latest.current.notification?.();
-  }, []);
+    if (latest.current.enabled) latest.current.notification?.()
+  }, [])
   // hapticCard is deliberately NOT called from a drag's own pick-up handler (DraggableCard.tsx/
   // PileView.tsx) even though playCardSound is - every card is already a Pressable (see
   // PlayingCard.tsx), so picking one up already fires a touch haptic for free via onPressIn,
@@ -53,11 +53,11 @@ export function useCardSoundEffects() {
   // OTHER move site (tap-to-move, undo, stock draw, auto-play, deal), none of which already have
   // a free haptic of their own to double up against.
   const hapticCard = useCallback(() => {
-    latest.current.vibration.selection();
-  }, []);
+    latest.current.vibration.selection()
+  }, [])
   const hapticInvalid = useCallback(() => {
-    latest.current.vibration.short();
-  }, []);
+    latest.current.vibration.short()
+  }, [])
 
-  return { playCardSound, playInvalidSound, hapticCard, hapticInvalid };
+  return { playCardSound, playInvalidSound, hapticCard, hapticInvalid }
 }

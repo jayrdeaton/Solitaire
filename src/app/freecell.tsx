@@ -1,3 +1,3 @@
-import FreeCellScreen from '@/games/freecell/FreeCellScreen';
+import FreeCellScreen from '@/games/freecell/FreeCellScreen'
 
-export default FreeCellScreen;
+export default FreeCellScreen

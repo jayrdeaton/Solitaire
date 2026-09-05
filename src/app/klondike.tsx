@@ -1,3 +1,3 @@
-import KlondikeScreen from '@/games/klondike/KlondikeScreen';
+import KlondikeScreen from '@/games/klondike/KlondikeScreen'
 
-export default KlondikeScreen;
+export default KlondikeScreen

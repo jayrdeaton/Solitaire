@@ -1,20 +1,21 @@
-import React from 'react';
-import { Circle, ClipPath, Defs, G, Line, Path, Polygon, Polyline, Rect, Text as SvgText, TextProps } from 'react-native-svg';
-import { DecoratedShape } from './artwork/types';
+import React from 'react'
+import { Circle, ClipPath, Defs, G, Line, Path, Polygon, Polyline, Rect, Text as SvgText, TextProps } from 'react-native-svg'
+
+import { DecoratedShape } from './artwork/types'
 
 // Shapes filled/stroked this close to white are the art's own card-frame background, not "ink" -
 // `ink` below drops these to fully transparent rather than tinting them, so a monochrome render
 // shows only the linework (border + illustration), not a solid card-shaped block sitting on top
 // of whatever's behind it (e.g. an empty foundation slot's own felt-colored backdrop).
-const WHITE_FILLS = new Set(['#ffffff', 'white']);
+const WHITE_FILLS = new Set(['#ffffff', 'white'])
 
 /** Resolves a shape's own fill/stroke to `ink` for a monochrome render: the white card-frame
  * background becomes transparent (`'none'`), and everything else (already-black ink, or a suit's
  * baked-in color) becomes `ink`. A shape with no color at all (`undefined`/`'none'`) stays that
  * way either way - there's nothing to recolor. */
 function resolveColor(value: string | undefined, ink: string | undefined): string | undefined {
-  if (!ink || !value || value === 'none') return value;
-  return WHITE_FILLS.has(value.toLowerCase()) ? 'none' : ink;
+  if (!ink || !value || value === 'none') return value
+  return WHITE_FILLS.has(value.toLowerCase()) ? 'none' : ink
 }
 
 /**
@@ -45,18 +46,18 @@ function resolveColor(value: string | undefined, ink: string | undefined): strin
 export function renderDecoratedShape(shape: DecoratedShape, key: number, idPrefix: string, ink?: string, textFill?: string): React.ReactElement {
   switch (shape.tag) {
     case 'g': {
-      const children = shape.children.map((child, i) => renderDecoratedShape(child, i, idPrefix, ink, textFill));
-      const fill = resolveColor(shape.fill, ink);
-      const stroke = resolveColor(shape.stroke, ink);
+      const children = shape.children.map((child, i) => renderDecoratedShape(child, i, idPrefix, ink, textFill))
+      const fill = resolveColor(shape.fill, ink)
+      const stroke = resolveColor(shape.stroke, ink)
       if (!shape.clipRect) {
         return (
           <G key={key} transform={shape.transform} fill={fill} stroke={stroke} strokeWidth={shape.strokeWidth}>
             {children}
           </G>
-        );
+        )
       }
-      const clipId = `${idPrefix}-clip-${key}`;
-      const [x, y, width, height] = shape.clipRect;
+      const clipId = `${idPrefix}-clip-${key}`
+      const [x, y, width, height] = shape.clipRect
       return (
         <G key={key} transform={shape.transform} fill={fill} stroke={stroke} strokeWidth={shape.strokeWidth}>
           <Defs>
@@ -66,95 +67,25 @@ export function renderDecoratedShape(shape: DecoratedShape, key: number, idPrefi
           </Defs>
           <G clipPath={`url(#${clipId})`}>{children}</G>
         </G>
-      );
+      )
     }
     case 'path':
-      return (
-        <Path
-          key={key}
-          d={shape.d}
-          fill={resolveColor(shape.fill, ink)}
-          stroke={resolveColor(shape.stroke, ink)}
-          strokeWidth={shape.strokeWidth}
-          transform={shape.transform}
-        />
-      );
+      return <Path key={key} d={shape.d} fill={resolveColor(shape.fill, ink)} stroke={resolveColor(shape.stroke, ink)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
     case 'circle':
-      return (
-        <Circle
-          key={key}
-          cx={shape.cx}
-          cy={shape.cy}
-          r={shape.r}
-          fill={resolveColor(shape.fill, ink)}
-          stroke={resolveColor(shape.stroke, ink)}
-          strokeWidth={shape.strokeWidth}
-          transform={shape.transform}
-        />
-      );
+      return <Circle key={key} cx={shape.cx} cy={shape.cy} r={shape.r} fill={resolveColor(shape.fill, ink)} stroke={resolveColor(shape.stroke, ink)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
     case 'rect':
-      return (
-        <Rect
-          key={key}
-          x={shape.x}
-          y={shape.y}
-          width={shape.width}
-          height={shape.height}
-          fill={resolveColor(shape.fill, ink)}
-          stroke={resolveColor(shape.stroke, ink)}
-          strokeWidth={shape.strokeWidth}
-          transform={shape.transform}
-        />
-      );
+      return <Rect key={key} x={shape.x} y={shape.y} width={shape.width} height={shape.height} fill={resolveColor(shape.fill, ink)} stroke={resolveColor(shape.stroke, ink)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
     case 'line':
-      return (
-        <Line
-          key={key}
-          x1={shape.x1}
-          y1={shape.y1}
-          x2={shape.x2}
-          y2={shape.y2}
-          stroke={resolveColor(shape.stroke, ink)}
-          strokeWidth={shape.strokeWidth}
-          transform={shape.transform}
-        />
-      );
+      return <Line key={key} x1={shape.x1} y1={shape.y1} x2={shape.x2} y2={shape.y2} stroke={resolveColor(shape.stroke, ink)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
     case 'polygon':
-      return (
-        <Polygon
-          key={key}
-          points={shape.points}
-          fill={resolveColor(shape.fill, ink)}
-          stroke={resolveColor(shape.stroke, ink)}
-          strokeWidth={shape.strokeWidth}
-          transform={shape.transform}
-        />
-      );
+      return <Polygon key={key} points={shape.points} fill={resolveColor(shape.fill, ink)} stroke={resolveColor(shape.stroke, ink)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
     case 'polyline':
-      return (
-        <Polyline
-          key={key}
-          points={shape.points}
-          fill={resolveColor(shape.fill, ink)}
-          stroke={resolveColor(shape.stroke, ink)}
-          strokeWidth={shape.strokeWidth}
-          transform={shape.transform}
-        />
-      );
+      return <Polyline key={key} points={shape.points} fill={resolveColor(shape.fill, ink)} stroke={resolveColor(shape.stroke, ink)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
     case 'text':
       return (
-        <SvgText
-          key={key}
-          x={shape.x}
-          y={shape.y}
-          fontFamily={shape.fontFamily}
-          fontWeight={shape.fontWeight as TextProps['fontWeight']}
-          fontSize={shape.fontSize}
-          fill={ink ? resolveColor(shape.fill, ink) : (textFill ?? shape.fill)}
-          transform={shape.transform}
-        >
+        <SvgText key={key} x={shape.x} y={shape.y} fontFamily={shape.fontFamily} fontWeight={shape.fontWeight as TextProps['fontWeight']} fontSize={shape.fontSize} fill={ink ? resolveColor(shape.fill, ink) : (textFill ?? shape.fill)} transform={shape.transform}>
           {shape.content}
         </SvgText>
-      );
+      )
   }
 }

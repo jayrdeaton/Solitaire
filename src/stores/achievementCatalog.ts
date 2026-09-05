@@ -1,24 +1,16 @@
-import { tieredFamily } from '@tastic/achievements';
+import { tieredFamily } from '@tastic/achievements'
 
-import {
-  getBestMoves,
-  getBestScore,
-  getBestStreak,
-  getBestTimeSeconds,
-  getTotalPlayed,
-  getTotalWins,
-  getVariantsWon,
-} from './statsEngine';
-import { AchievementDefinition, SOLITAIRE_GAME_IDS, SolitaireGameId, StatsState } from './statsTypes';
+import { getBestMoves, getBestScore, getBestStreak, getBestTimeSeconds, getTotalPlayed, getTotalWins, getVariantsWon } from './statsEngine'
+import { AchievementDefinition, SOLITAIRE_GAME_IDS, SolitaireGameId, StatsState } from './statsTypes'
 
-export { ACHIEVEMENT_TIER_COLORS } from '@tastic/achievements';
+export { ACHIEVEMENT_TIER_COLORS } from '@tastic/achievements'
 
 const GAME_TITLES: Record<SolitaireGameId, string> = {
   klondike: 'Klondike',
   spider: 'Spider',
   freecell: 'FreeCell',
-  pyramid: 'Pyramid',
-};
+  pyramid: 'Pyramid'
+}
 
 // One per game — four different predicates, not one value against three thresholds, so these are
 // hand-written and carry no progress. All silver: no single game is meaningfully harder to win
@@ -30,8 +22,8 @@ function winEachGameFamily(): AchievementDefinition[] {
     description: `Win a game of ${GAME_TITLES[id]}.`,
     tier: 'silver' as const,
     icon: 'cards-playing-outline',
-    isUnlocked: (stats: StatsState) => stats.variants[id].record.wins >= 1,
-  }));
+    isUnlocked: (stats: StatsState) => stats.variants[id].record.wins >= 1
+  }))
 }
 
 export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
@@ -41,7 +33,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
     description: 'Finish your first game.',
     tier: 'bronze',
     icon: 'flag-checkered',
-    isUnlocked: (stats) => getTotalPlayed(stats) >= 1,
+    isUnlocked: (stats) => getTotalPlayed(stats) >= 1
   },
   {
     id: 'first_ever_win',
@@ -49,7 +41,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
     description: 'Win a game — any game, any time.',
     tier: 'bronze',
     icon: 'star',
-    isUnlocked: (stats) => getTotalWins(stats) >= 1,
+    isUnlocked: (stats) => getTotalWins(stats) >= 1
   },
   {
     id: 'flawless_debut',
@@ -60,7 +52,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
     // firstGameResult is a one-time device-wide flag with no per-profile analog, so it always
     // evaluates against the real device stats regardless of which profile tab is selected.
     scope: 'device',
-    isUnlocked: (stats) => stats.firstGameResult === 'win',
+    isUnlocked: (stats) => stats.firstGameResult === 'win'
   },
   ...tieredFamily<StatsState>({
     id: 'games_played',
@@ -68,7 +60,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
     description: (n) => `Play ${n} total games.`,
     icon: 'cards',
     thresholds: { bronze: 10, silver: 100, gold: 500 },
-    value: getTotalPlayed,
+    value: getTotalPlayed
   }),
   ...tieredFamily<StatsState>({
     id: 'total_wins',
@@ -76,7 +68,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
     description: (n) => `Win ${n} total games.`,
     icon: 'trophy',
     thresholds: { bronze: 5, silver: 50, gold: 250 },
-    value: getTotalWins,
+    value: getTotalWins
   }),
   ...tieredFamily<StatsState>({
     id: 'win_streak',
@@ -84,7 +76,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
     description: (n) => `Win ${n} games of one variant in a row.`,
     icon: 'fire',
     thresholds: { bronze: 3, silver: 5, gold: 10 },
-    value: getBestStreak,
+    value: getBestStreak
   }),
   ...winEachGameFamily(),
   ...tieredFamily<StatsState>({
@@ -93,7 +85,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
     description: (n) => (n === SOLITAIRE_GAME_IDS.length ? 'Win every game in the app.' : `Win ${n} different games.`),
     icon: 'view-grid',
     thresholds: { bronze: 2, silver: 3, gold: SOLITAIRE_GAME_IDS.length },
-    value: getVariantsWon,
+    value: getVariantsWon
   }),
   ...tieredFamily<StatsState>({
     id: 'speed',
@@ -105,12 +97,12 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
     // has actually been won, so an unplayed profile never clears a speed tier by default.
     thresholds: { bronze: -600, silver: -300, gold: -180 },
     value: (stats) => {
-      const best = getBestTimeSeconds(stats);
-      return best === null ? -Infinity : -best;
+      const best = getBestTimeSeconds(stats)
+      return best === null ? -Infinity : -best
     },
     // Required for a negated family: the automatic value/threshold fraction is inverted here and
     // would show a full bar for a player who is far too slow.
-    progress: false,
+    progress: false
   }),
   ...tieredFamily<StatsState>({
     id: 'fewest_moves',
@@ -120,10 +112,10 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
     // Lower-is-better: see the 'speed' family above for why value/thresholds are negated.
     thresholds: { bronze: -120, silver: -80, gold: -50 },
     value: (stats) => {
-      const best = getBestMoves(stats);
-      return best === null ? -Infinity : -best;
+      const best = getBestMoves(stats)
+      return best === null ? -Infinity : -best
     },
-    progress: false,
+    progress: false
   }),
   ...tieredFamily<StatsState>({
     id: 'low_score',
@@ -133,10 +125,10 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
     // Lower-is-better: see the 'speed' family above for why value/thresholds are negated.
     thresholds: { bronze: -250, silver: -150, gold: -90 },
     value: (stats) => {
-      const best = getBestScore(stats);
-      return best === null ? -Infinity : -best;
+      const best = getBestScore(stats)
+      return best === null ? -Infinity : -best
     },
-    progress: false,
+    progress: false
   }),
   ...tieredFamily<StatsState>({
     id: 'days_played',
@@ -144,6 +136,6 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
     description: (n) => `Play ${n} days in a row.`,
     icon: 'calendar-check',
     thresholds: { bronze: 3, silver: 14, gold: 30 },
-    value: (stats) => stats.bestDayStreak,
-  }),
-];
+    value: (stats) => stats.bestDayStreak
+  })
+]

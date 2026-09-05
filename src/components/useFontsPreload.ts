@@ -1,12 +1,12 @@
-import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useFonts } from 'expo-font';
+import { MaterialCommunityIcons } from '@expo/vector-icons'
+import { useFonts } from 'expo-font'
 
-import { useSplashReady } from '@/utils/splashGate';
+import { useSplashReady } from '@/utils/splashGate'
 
 // The card artwork's own font (see artwork/NOTICE.md) - also used theme-wide (see _layout.tsx's
 // ThemeProvider fontFamily prop) so the rest of the app's UI reads as the same "card" typeface
 // instead of clashing with a plain system sans everywhere else.
-export const CARD_FONT_FAMILY = 'DejaVu Serif';
+export const CARD_FONT_FAMILY = 'DejaVu Serif'
 
 // Holds the splash screen up (see utils/splashGate.ts's 'fonts' gate) until every preloaded font
 // has actually loaded - otherwise every react-native-paper IconButton on the very first screens
@@ -29,7 +29,7 @@ export const CARD_FONT_FAMILY = 'DejaVu Serif';
 // the native splash screen useSplashReady hides - can fold this gate in the same way it folds in the
 // other five.
 export function useFontsPreload(): boolean {
-  const [loaded] = useFonts({ ...MaterialCommunityIcons.font, [CARD_FONT_FAMILY]: require('dejavu-fonts-ttf/ttf/DejaVuSerif-Bold.ttf') });
-  useSplashReady('fonts', loaded);
-  return loaded;
+  const [loaded] = useFonts({ ...MaterialCommunityIcons.font, [CARD_FONT_FAMILY]: require('dejavu-fonts-ttf/ttf/DejaVuSerif-Bold.ttf') })
+  useSplashReady('fonts', loaded)
+  return loaded
 }

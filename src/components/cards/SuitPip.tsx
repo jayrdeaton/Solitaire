@@ -1,21 +1,23 @@
-import React from 'react';
-import { StyleProp, ViewStyle } from 'react-native';
-import Svg, { G, Path } from 'react-native-svg';
-import { Suit } from '@/engine/types';
-import { suitPipArt } from './artwork/pips';
+import React from 'react'
+import { StyleProp, ViewStyle } from 'react-native'
+import Svg, { G, Path } from 'react-native-svg'
+
+import { Suit } from '@/engine/types'
+
+import { suitPipArt } from './artwork/pips'
 
 interface SuitPipProps {
-  suit: Suit;
-  color: string;
-  size: number;
-  style?: StyleProp<ViewStyle>;
+  suit: Suit
+  color: string
+  size: number
+  style?: StyleProp<ViewStyle>
   /** Boost diamond to the same width-fill as the other suits (see SIZE_COMPENSATION below),
    * so its glyph's edge lines up with the other suits' in a row that's anchored by its box
    * rather than its ink - e.g. CardFace's corner row, right-aligned via justifyContent. Opt-in
    * rather than diamond's default, since it also grows the glyph to fill that width - fine for
    * a small corner pip, but it would undo the big center pip's deliberate elongated shape (see
    * pips.ts), which CardFace doesn't pass this for. */
-  edgeFill?: boolean;
+  edgeFill?: boolean
 }
 
 // A square box scaled uniformly (SVG's default "meet" fit) is height-constrained for any
@@ -25,26 +27,26 @@ interface SuitPipProps {
 // boosted to match clubs' width-fill. Diamond is narrower still, but deliberately so (see
 // pips.ts) - it only gets the same boost where a caller opts in via `edgeFill`.
 const widthFillOf = (suit: Suit) => {
-  const [, , w, h] = suitPipArt[suit].viewBox;
-  return w / h;
-};
-const REFERENCE_WIDTH_FILL = widthFillOf('clubs');
+  const [, , w, h] = suitPipArt[suit].viewBox
+  return w / h
+}
+const REFERENCE_WIDTH_FILL = widthFillOf('clubs')
 const SIZE_COMPENSATION: Partial<Record<Suit, number>> = {
-  spades: REFERENCE_WIDTH_FILL / widthFillOf('spades'),
-};
+  spades: REFERENCE_WIDTH_FILL / widthFillOf('spades')
+}
 // Matching diamond's width-fill exactly to clubs over-corrects: a solid rhombus with no
 // internal negative space reads heavier/more dominant than the curvier glyphs at the same
 // box size, and since the corner row anchors the pip's box to the row's right edge, the
 // extra width it grows into also drags its ink visibly further left than the other suits'.
 // Splitting the difference keeps the edge closer to lined-up without either side effect.
-const DIAMOND_EDGE_FILL_COMPENSATION = 1 + (REFERENCE_WIDTH_FILL / widthFillOf('diamonds') - 1) * 0.5;
+const DIAMOND_EDGE_FILL_COMPENSATION = 1 + (REFERENCE_WIDTH_FILL / widthFillOf('diamonds') - 1) * 0.5
 
 // The heart glyph's cropped bounding box doesn't match its visual weight - the two lobes'
 // curvature leaves the ink sitting a hair right of center - so it reads as nudged right at
 // any size. Corrected with a fixed one-pixel shift rather than a proportional one: this is a
 // perceptual straightening of the art itself, not a size-dependent alignment like the
 // compensations above.
-const HEART_NUDGE: StyleProp<ViewStyle> = { transform: [{ translateX: -1 }] };
+const HEART_NUDGE: StyleProp<ViewStyle> = { transform: [{ translateX: -1 }] }
 
 /**
  * A single suit glyph (heart/diamond/club/spade), tinted by the caller.
@@ -54,20 +56,20 @@ const HEART_NUDGE: StyleProp<ViewStyle> = { transform: [{ translateX: -1 }] };
  * in-progress drag on web, where reconciliation runs on the same thread as the gesture.
  */
 export const SuitPip = React.memo(function SuitPip({ suit, color, size, style, edgeFill }: SuitPipProps) {
-  const art = suitPipArt[suit];
-  const [x, y, w, h] = art.viewBox;
-  const compensation = SIZE_COMPENSATION[suit] ?? (edgeFill && suit === 'diamonds' ? DIAMOND_EDGE_FILL_COMPENSATION : 1);
-  const renderSize = size * compensation;
+  const art = suitPipArt[suit]
+  const [x, y, w, h] = art.viewBox
+  const compensation = SIZE_COMPENSATION[suit] ?? (edgeFill && suit === 'diamonds' ? DIAMOND_EDGE_FILL_COMPENSATION : 1)
+  const renderSize = size * compensation
   return (
     <Svg width={renderSize} height={renderSize} viewBox={`${x} ${y} ${w} ${h}`} style={[style, suit === 'hearts' && HEART_NUDGE]}>
       {/* The source paths are authored upside-down (their stem/cusp points the wrong
           way at 0deg) - rotate 180 about the viewBox's own center (which is the
           origin for every suit here) to get the conventional upright glyph. */}
-      <G transform="rotate(180)">
+      <G transform='rotate(180)'>
         {art.paths.map((d, i) => (
           <Path key={i} d={d} fill={color} />
         ))}
       </G>
     </Svg>
-  );
-});
+  )
+})

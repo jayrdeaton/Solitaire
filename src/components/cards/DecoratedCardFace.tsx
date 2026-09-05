@@ -1,11 +1,13 @@
-import React from 'react';
-import { StyleSheet } from 'react-native';
-import Svg, { G } from 'react-native-svg';
-import { Card, cardColor } from '@/engine/types';
-import { MARGIN_FRACTION } from './CardBack';
-import { decoratedDeck } from './artwork/decorated';
-import { DecoratedArt, DecoratedShape } from './artwork/types';
-import { renderDecoratedShape } from './DecoratedShapeRenderer';
+import React from 'react'
+import { StyleSheet } from 'react-native'
+import Svg, { G } from 'react-native-svg'
+
+import { Card, cardColor } from '@/engine/types'
+
+import { decoratedDeck } from './artwork/decorated'
+import { DecoratedArt, DecoratedShape } from './artwork/types'
+import { MARGIN_FRACTION } from './CardBack'
+import { renderDecoratedShape } from './DecoratedShapeRenderer'
 
 // The generated data's rank-corner text glyphs are hardcoded black regardless of suit (see
 // renderDecoratedShape's `textFill` doc) - only hearts/diamonds need correcting, since black is
@@ -13,7 +15,7 @@ import { renderDecoratedShape } from './DecoratedShapeRenderer';
 // (e.g. artwork/decorated/hearts.ts's big center pip), rather than the app's own `colors.textRed`,
 // so the corrected corner digit reads as the same ink already on the card, not a second, different
 // red sitting next to it.
-const RANK_TEXT_RED = '#e6180a';
+const RANK_TEXT_RED = '#e6180a'
 
 /**
  * Insets everything except the card's own #base border rect by MARGIN_FRACTION (the same
@@ -30,13 +32,13 @@ const RANK_TEXT_RED = '#e6180a';
  * than whatever arbitrary intermediate space the sheet's own per-card offset starts from.
  */
 function insetContent(art: DecoratedArt): DecoratedShape {
-  const outer = art.shapes[0];
-  if (outer.tag !== 'g') return outer; // can't happen - see doc comment above; satisfies narrowing
-  const [border, ...content] = outer.children;
-  const [, , vw, vh] = art.viewBox;
-  const margin = vw * MARGIN_FRACTION;
-  const scaleX = (vw - margin * 2) / vw;
-  const scaleY = (vh - margin * 2) / vh;
+  const outer = art.shapes[0]
+  if (outer.tag !== 'g') return outer // can't happen - see doc comment above; satisfies narrowing
+  const [border, ...content] = outer.children
+  const [, , vw, vh] = art.viewBox
+  const margin = vw * MARGIN_FRACTION
+  const scaleX = (vw - margin * 2) / vw
+  const scaleY = (vh - margin * 2) / vh
   return {
     tag: 'g',
     children: [
@@ -44,26 +46,26 @@ function insetContent(art: DecoratedArt): DecoratedShape {
       {
         tag: 'g',
         transform: `translate(${margin},${margin}) scale(${scaleX},${scaleY})`,
-        children: [{ tag: 'g', transform: outer.transform, children: content }],
-      },
-    ],
-  };
+        children: [{ tag: 'g', transform: outer.transform, children: content }]
+      }
+    ]
+  }
 }
 
 interface DecoratedCardFaceProps {
-  card: Card;
-  width: number;
-  height: number;
+  card: Card
+  width: number
+  height: number
   /** Recolors every non-white shape in the art to this one flat, fully-opaque color - for a
    * muted "watermark" render of the actual per-suit/per-rank art, rather than CardFace's generic
    * tintable pip/CourtFigure silhouette. Pair with `opacity` (below) rather than passing a
    * translucent color here. Omit to render the art's own baked-in colors. */
-  ink?: string;
+  ink?: string
   /** Fades the whole recolored card as one flattened layer (a single <G opacity>, applied after
    * every `ink`-recolored shape is composited together) rather than per-shape alpha - the art's
    * ink shapes often overlap (e.g. a club's three lobes), and per-shape alpha would double-blend
    * those overlaps, reading darker/more opaque there than the rest of the glyph. */
-  opacity?: number;
+  opacity?: number
 }
 
 /**
@@ -73,20 +75,20 @@ interface DecoratedCardFaceProps {
  * this can't be tinted to an arbitrary suit color, only forced to a single flat `ink` for muting.
  */
 export const DecoratedCardFace = React.memo(function DecoratedCardFace({ card, width, height, ink, opacity }: DecoratedCardFaceProps) {
-  const art = decoratedDeck[card.suit][card.rank];
-  const [vx, vy, vw, vh] = art.viewBox;
-  const idPrefix = React.useId();
-  const textFill = cardColor(card.suit) === 'red' ? RANK_TEXT_RED : undefined;
+  const art = decoratedDeck[card.suit][card.rank]
+  const [vx, vy, vw, vh] = art.viewBox
+  const idPrefix = React.useId()
+  const textFill = cardColor(card.suit) === 'red' ? RANK_TEXT_RED : undefined
 
   return (
     <Svg width={width} height={height} viewBox={`${vx} ${vy} ${vw} ${vh}`} style={styles.svg}>
       <G opacity={opacity}>{renderDecoratedShape(insetContent(art), 0, idPrefix, ink, textFill)}</G>
     </Svg>
-  );
-});
+  )
+})
 
 const styles = StyleSheet.create({
   svg: {
-    userSelect: 'none',
-  },
-});
+    userSelect: 'none'
+  }
+})

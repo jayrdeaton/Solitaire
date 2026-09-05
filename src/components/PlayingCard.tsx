@@ -1,27 +1,29 @@
-import React from 'react';
-import { Pressable } from '@rific/feedback-press';
-import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
-import { Card, Suit } from '@/engine/types';
-import { useProfiles } from '@/stores/profiles';
-import { useSettings } from '@/stores/settings';
-import { useCardSize } from './CardSizeContext';
-import { CardBack } from './cards/CardBack';
-import { CardFace } from './cards/CardFace';
-import { DecoratedCardBack } from './cards/DecoratedCardBack';
-import { CARD_RADIUS, TableColors, useTableColors } from './theme';
+import { Pressable } from '@rific/feedback-press'
+import React from 'react'
+import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
+
+import { Card, Suit } from '@/engine/types'
+import { useProfiles } from '@/stores/profiles'
+import { useSettings } from '@/stores/settings'
+
+import { CardBack } from './cards/CardBack'
+import { CardFace } from './cards/CardFace'
+import { DecoratedCardBack } from './cards/DecoratedCardBack'
+import { useCardSize } from './CardSizeContext'
+import { CARD_RADIUS, TableColors, useTableColors } from './theme'
 
 interface PlayingCardProps {
-  card: Card;
+  card: Card
   /** Highlight this card as part of the current selection. */
-  selected?: boolean;
+  selected?: boolean
   /** Disable pressing (e.g. cards buried under others). */
-  disabled?: boolean;
+  disabled?: boolean
   /** Not yet playable (e.g. a buried Pyramid card) - draws a translucent scrim on top of the
    * still-full-opacity face instead of fading the card itself, so its rank/suit stay legible. */
-  dimmed?: boolean;
-  onPress?: () => void;
-  style?: StyleProp<ViewStyle>;
-  testID?: string;
+  dimmed?: boolean
+  onPress?: () => void
+  style?: StyleProp<ViewStyle>
+  testID?: string
 }
 
 // The border is drawn as an absolutely-positioned overlay rather than a Pressable borderWidth so
@@ -29,14 +31,14 @@ interface PlayingCardProps {
 // area - RN sizes borders inward from a fixed width/height, so swapping 1px for 3px would nudge
 // the card's own SVG content by a couple pixels every time it's (de)selected.
 export function PlayingCard({ card, selected, disabled, dimmed, onPress, style, testID }: PlayingCardProps) {
-  const colors = useTableColors();
-  const { activeProfile } = useProfiles();
-  const { settings } = useSettings();
-  const { width, height } = useCardSize();
-  const styles = React.useMemo(() => makeStyles(colors), [colors]);
-  const cardSize = { width, height };
-  const borderOverlay = <View pointerEvents="none" style={selected ? styles.selectedRing : styles.border} />;
-  const dimOverlay = dimmed ? <View pointerEvents="none" style={styles.dim} /> : null;
+  const colors = useTableColors()
+  const { activeProfile } = useProfiles()
+  const { settings } = useSettings()
+  const { width, height } = useCardSize()
+  const styles = React.useMemo(() => makeStyles(colors), [colors])
+  const cardSize = { width, height }
+  const borderOverlay = <View pointerEvents='none' style={selected ? styles.selectedRing : styles.border} />
+  const dimOverlay = dimmed ? <View pointerEvents='none' style={styles.dim} /> : null
 
   if (!card.faceUp) {
     return (
@@ -53,17 +55,11 @@ export function PlayingCard({ card, selected, disabled, dimmed, onPress, style, 
         soundDisabled
         style={[styles.card, styles.shadow, cardSize, style]}
       >
-        <View style={[styles.clip, styles.back]}>
-          {settings.cardBackStyle === 'geometric' ? (
-            <CardBack colors={colors} width={width} height={height} tag={activeProfile?.tag} />
-          ) : (
-            <DecoratedCardBack style={settings.cardBackStyle} colors={colors} width={width} height={height} />
-          )}
-        </View>
+        <View style={[styles.clip, styles.back]}>{settings.cardBackStyle === 'geometric' ? <CardBack colors={colors} width={width} height={height} tag={activeProfile?.tag} /> : <DecoratedCardBack style={settings.cardBackStyle} colors={colors} width={width} height={height} />}</View>
         {dimOverlay}
         {borderOverlay}
       </Pressable>
-    );
+    )
   }
 
   return (
@@ -74,28 +70,18 @@ export function PlayingCard({ card, selected, disabled, dimmed, onPress, style, 
       {dimOverlay}
       {borderOverlay}
     </Pressable>
-  );
+  )
 }
 
-export function EmptySlot({
-  onPress,
-  style,
-  children,
-  testID,
-}: {
-  onPress?: () => void;
-  style?: StyleProp<ViewStyle>;
-  children?: React.ReactNode;
-  testID?: string;
-}) {
-  const colors = useTableColors();
-  const { width, height } = useCardSize();
-  const styles = React.useMemo(() => makeStyles(colors), [colors]);
+export function EmptySlot({ onPress, style, children, testID }: { onPress?: () => void; style?: StyleProp<ViewStyle>; children?: React.ReactNode; testID?: string }) {
+  const colors = useTableColors()
+  const { width, height } = useCardSize()
+  const styles = React.useMemo(() => makeStyles(colors), [colors])
   return (
     <Pressable testID={testID} onPress={onPress} soundDisabled style={[styles.card, { width, height }, styles.empty, style]}>
       {children}
     </Pressable>
-  );
+  )
 }
 
 /** An empty foundation slot, ghosted with the ace it's waiting for. Foundation piles are
@@ -105,89 +91,82 @@ export function EmptySlot({
  * already just faint linework (see its own MUTED_OPACITY), so a tinted backdrop here would put a
  * card-shaped block back behind it, which is exactly what muted is meant to avoid. */
 export function FoundationSlot({ suit, onPress, style }: { suit: Suit; onPress?: () => void; style?: StyleProp<ViewStyle> }) {
-  const colors = useTableColors();
-  const { settings } = useSettings();
-  const { width, height } = useCardSize();
+  const colors = useTableColors()
+  const { settings } = useSettings()
+  const { width, height } = useCardSize()
   return (
     <EmptySlot onPress={onPress} style={style}>
-      <CardFace
-        card={{ id: 'foundation-hint', suit, rank: 1, faceUp: true }}
-        colors={colors}
-        width={width}
-        height={height}
-        muted
-        cardStyle={settings.cardStyle}
-      />
+      <CardFace card={{ id: 'foundation-hint', suit, rank: 1, faceUp: true }} colors={colors} width={width} height={height} muted cardStyle={settings.cardStyle} />
     </EmptySlot>
-  );
+  )
 }
 
 function makeStyles(colors: TableColors) {
   return StyleSheet.create({
     card: {
-      borderRadius: CARD_RADIUS,
+      borderRadius: CARD_RADIUS
     },
     // Shadow lives on the outer Pressable, never on the same node as `clip`'s overflow: 'hidden' -
     // iOS draws a view's shadow and its overflow clip on the same layer, so a masked layer clips
     // away its own shadow rather than just its content.
     shadow: {
+      elevation: 4,
       shadowColor: '#000',
       shadowOffset: { width: 0, height: 2 },
       shadowOpacity: 0.3,
-      shadowRadius: 3,
-      elevation: 4,
+      shadowRadius: 3
     },
     clip: {
-      position: 'absolute',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
       borderRadius: CARD_RADIUS,
+      bottom: 0,
+      left: 0,
       overflow: 'hidden',
+      position: 'absolute',
+      right: 0,
+      top: 0
     },
     face: {
-      backgroundColor: colors.cardFace,
+      backgroundColor: colors.cardFace
     },
     back: {
-      backgroundColor: colors.cardBack,
+      backgroundColor: colors.cardBack
     },
     empty: {
+      alignItems: 'center',
       backgroundColor: 'transparent',
-      borderWidth: 2,
       borderColor: colors.emptySlot,
       borderStyle: 'dashed',
-      justifyContent: 'center',
-      alignItems: 'center',
+      borderWidth: 2,
+      justifyContent: 'center'
     },
     border: {
-      position: 'absolute',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      borderWidth: 1,
       borderColor: colors.cardBorder,
       borderRadius: CARD_RADIUS,
+      borderWidth: 1,
+      bottom: 0,
+      left: 0,
+      position: 'absolute',
+      right: 0,
+      top: 0
     },
     selectedRing: {
-      position: 'absolute',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      borderWidth: 3,
       borderColor: colors.selectedGlow,
       borderRadius: CARD_RADIUS,
+      borderWidth: 3,
+      bottom: 0,
+      left: 0,
+      position: 'absolute',
+      right: 0,
+      top: 0
     },
     dim: {
-      position: 'absolute',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
       backgroundColor: colors.dimOverlay,
       borderRadius: CARD_RADIUS,
-    },
-  });
+      bottom: 0,
+      left: 0,
+      position: 'absolute',
+      right: 0,
+      top: 0
+    }
+  })
 }

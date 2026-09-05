@@ -1,19 +1,19 @@
-import { RefObject, useRef } from 'react';
-import { View } from 'react-native';
+import { RefObject, useRef } from 'react'
+import { View } from 'react-native'
 
 interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
+  x: number
+  y: number
+  width: number
+  height: number
 }
 
 function measure(view: View): Promise<Rect | null> {
   return new Promise((resolve) => {
     view.measureInWindow((x, y, width, height) => {
-      resolve(width === 0 && height === 0 ? null : { x, y, width, height });
-    });
-  });
+      resolve(width === 0 && height === 0 ? null : { x, y, width, height })
+    })
+  })
 }
 
 /**
@@ -25,10 +25,10 @@ function measure(view: View): Promise<Rect | null> {
  * immediately after a move has just committed.
  */
 export class CardRegistry {
-  private cards = new Map<string, RefObject<View | null>>();
+  private cards = new Map<string, RefObject<View | null>>()
 
   register(cardId: string, view: RefObject<View | null>) {
-    this.cards.set(cardId, view);
+    this.cards.set(cardId, view)
   }
 
   unregister(cardId: string, view: RefObject<View | null>) {
@@ -36,19 +36,19 @@ export class CardRegistry {
     // batches this within the same commit), so only remove the entry if it's still pointing at
     // *this* instance - otherwise the fresh registration would get clobbered by the stale unmount.
     if (this.cards.get(cardId) === view) {
-      this.cards.delete(cardId);
+      this.cards.delete(cardId)
     }
   }
 
   async measure(cardId: string): Promise<Rect | null> {
-    const view = this.cards.get(cardId)?.current;
-    if (!view) return null;
-    return measure(view);
+    const view = this.cards.get(cardId)?.current
+    if (!view) return null
+    return measure(view)
   }
 }
 
 export function useCardRegistry(): CardRegistry {
-  const ref = useRef<CardRegistry | null>(null);
-  if (!ref.current) ref.current = new CardRegistry();
-  return ref.current;
+  const ref = useRef<CardRegistry | null>(null)
+  if (!ref.current) ref.current = new CardRegistry()
+  return ref.current
 }

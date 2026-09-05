@@ -1,14 +1,14 @@
-import { Card } from '@/engine/types';
+import { Card } from '@/engine/types'
 
 export interface PyramidDealStep {
-  cardId: string;
-  card: Card;
+  cardId: string
+  card: Card
   /** Flat pyramid index (see rules.ts's flatIndex/rowColOf) - PyramidScreen.tsx's runDeal maps
    * this back to a (row, col) and then a real on-screen position via cardPosition(). */
-  index: number;
+  index: number
   /** 0-based order this card is visited in the deal replay - use directly as
    * delayMs = visitOrder * DEAL_STAGGER_MS. */
-  visitOrder: number;
+  visitOrder: number
 }
 
 /**
@@ -24,12 +24,12 @@ export interface PyramidDealStep {
  * rules.ts's internal deal-slicing order and how the result should be presented.
  */
 export function buildPyramidDealSequence(pyramid: (Card | null)[]): PyramidDealStep[] {
-  const steps: PyramidDealStep[] = [];
-  let visitOrder = 0;
+  const steps: PyramidDealStep[] = []
+  let visitOrder = 0
   pyramid.forEach((card, index) => {
-    if (!card) return;
-    steps.push({ cardId: card.id, card, index, visitOrder });
-    visitOrder += 1;
-  });
-  return steps;
+    if (!card) return
+    steps.push({ cardId: card.id, card, index, visitOrder })
+    visitOrder += 1
+  })
+  return steps
 }

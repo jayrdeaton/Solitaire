@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef } from 'react'
 
 /**
  * Returns `value`, except while `hidden` is true - then it keeps returning whatever `value` was
@@ -14,16 +14,16 @@ import { useRef } from 'react';
  * single value" to lose track of.
  */
 export function useFrozenWhileHidden<T>(value: T, hidden: boolean): T {
-  const wasHiddenRef = useRef(false);
-  const lastVisibleRef = useRef(value);
-  const frozenRef = useRef(value);
+  const wasHiddenRef = useRef(false)
+  const lastVisibleRef = useRef(value)
+  const frozenRef = useRef(value)
 
   if (!hidden) {
-    lastVisibleRef.current = value;
+    lastVisibleRef.current = value
   } else if (!wasHiddenRef.current) {
-    frozenRef.current = lastVisibleRef.current;
+    frozenRef.current = lastVisibleRef.current
   }
-  wasHiddenRef.current = hidden;
+  wasHiddenRef.current = hidden
 
-  return hidden ? frozenRef.current : value;
+  return hidden ? frozenRef.current : value
 }

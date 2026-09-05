@@ -1,15 +1,16 @@
-import React from 'react';
-import Svg, { G, Path } from 'react-native-svg';
-import { CourtRank, courtArt } from './artwork/court';
+import React from 'react'
+import Svg, { G, Path } from 'react-native-svg'
+
+import { courtArt, CourtRank } from './artwork/court'
 
 interface CourtFigureProps {
-  rank: CourtRank;
-  color: string;
-  width: number;
-  height: number;
+  rank: CourtRank
+  color: string
+  width: number
+  height: number
 }
 
-const FIGURE_WIDTH_FRACTION = 0.62;
+const FIGURE_WIDTH_FRACTION = 0.62
 
 /**
  * The Jack/Queen/King illustration: a single silhouette (shared across all four
@@ -23,12 +24,12 @@ const FIGURE_WIDTH_FRACTION = 0.62;
  * stutter an in-progress drag on web.
  */
 export const CourtFigure = React.memo(function CourtFigure({ rank, color, width, height }: CourtFigureProps) {
-  const art = courtArt[rank];
-  const [vx, vy, vw, vh] = art.viewBox;
-  const cx = vx + vw / 2;
-  const cy = vy + vh / 2;
-  const scale = (width * FIGURE_WIDTH_FRACTION) / vw;
-  const transform = `translate(${width / 2}, ${height / 2}) scale(${scale}) translate(${-cx}, ${-cy})`;
+  const art = courtArt[rank]
+  const [vx, vy, vw, vh] = art.viewBox
+  const cx = vx + vw / 2
+  const cy = vy + vh / 2
+  const scale = (width * FIGURE_WIDTH_FRACTION) / vw
+  const transform = `translate(${width / 2}, ${height / 2}) scale(${scale}) translate(${-cx}, ${-cy})`
 
   return (
     <Svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
@@ -38,5 +39,5 @@ export const CourtFigure = React.memo(function CourtFigure({ rank, color, width,
         ))}
       </G>
     </Svg>
-  );
-});
+  )
+})

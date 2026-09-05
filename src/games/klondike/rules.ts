@@ -1,18 +1,18 @@
 // Klondike solitaire game rules & controller.
 
-import { Card, SUITS, cardColor } from '@/engine/types';
-import { shuffledDeck } from '@/engine/deck';
-import { isDescendingAltColor, top } from '@/engine/pile';
-import { pickBestTableauTarget } from '@/engine/autoMove';
-import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes';
+import { pickBestTableauTarget } from '@/engine/autoMove'
+import { shuffledDeck } from '@/engine/deck'
+import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
+import { isDescendingAltColor, top } from '@/engine/pile'
+import { Card, cardColor, SUITS } from '@/engine/types'
 
 export interface KlondikeState {
   /** 7 tableau columns. */
-  tableau: Card[][];
+  tableau: Card[][]
   /** 4 foundation piles, indexed to match engine/types SUITS order (clubs, diamonds, hearts, spades). */
-  foundation: Card[][];
-  stock: Card[];
-  waste: Card[];
+  foundation: Card[][]
+  stock: Card[]
+  waste: Card[]
 }
 
 function cloneState(state: KlondikeState): KlondikeState {
@@ -25,236 +25,239 @@ function cloneState(state: KlondikeState): KlondikeState {
     tableau: state.tableau.map((col) => col.map((c) => ({ ...c }))),
     foundation: state.foundation.map((f) => f.map((c) => ({ ...c }))),
     stock: state.stock.map((c) => ({ ...c })),
-    waste: state.waste.map((c) => ({ ...c })),
-  };
+    waste: state.waste.map((c) => ({ ...c }))
+  }
 }
 
 function getPile(state: KlondikeState, ref: PileRef): Card[] | null {
   switch (ref.zone) {
     case 'tableau':
-      return state.tableau[ref.index] ?? null;
+      return state.tableau[ref.index] ?? null
     case 'foundation':
-      return state.foundation[ref.index] ?? null;
+      return state.foundation[ref.index] ?? null
     case 'stock':
-      return state.stock;
+      return state.stock
     case 'waste':
-      return state.waste;
+      return state.waste
     default:
-      return null;
+      return null
   }
 }
 
 function canPlaceOnTableau(dest: Card[], moving: Card[]): boolean {
-  if (moving.length === 0) return false;
-  const movingTop = moving[0]; // first card of the run being moved (the one that lands on dest)
-  const destTop = top(dest);
+  if (moving.length === 0) return false
+  const movingTop = moving[0] // first card of the run being moved (the one that lands on dest)
+  const destTop = top(dest)
   if (destTop === undefined) {
-    return movingTop.rank === 13;
+    return movingTop.rank === 13
   }
-  if (!destTop.faceUp) return false;
-  const destColor = cardColor(destTop.suit);
-  const movingColor = cardColor(movingTop.suit);
-  return movingTop.rank === destTop.rank - 1 && destColor !== movingColor;
+  if (!destTop.faceUp) return false
+  const destColor = cardColor(destTop.suit)
+  const movingColor = cardColor(movingTop.suit)
+  return movingTop.rank === destTop.rank - 1 && destColor !== movingColor
 }
 
 function canPlaceOnFoundation(dest: Card[], moving: Card): boolean {
-  const destTop = top(dest);
+  const destTop = top(dest)
   if (destTop === undefined) {
-    return moving.rank === 1;
+    return moving.rank === 1
   }
-  return destTop.suit === moving.suit && moving.rank === destTop.rank + 1;
+  return destTop.suit === moving.suit && moving.rank === destTop.rank + 1
 }
 
 function suitIndex(suit: Card['suit']): number {
-  return SUITS.indexOf(suit);
+  return SUITS.indexOf(suit)
 }
 
 export function createKlondikeController(drawCount: 1 | 3): GameController<KlondikeState> {
   function newGame(seed: number): KlondikeState {
-    const deck = shuffledDeck(seed, 1);
-    let cursor = 0;
-    const tableau: Card[][] = [];
+    const deck = shuffledDeck(seed, 1)
+    let cursor = 0
+    const tableau: Card[][] = []
     for (let col = 0; col < 7; col++) {
-      const count = col + 1;
-      const cards: Card[] = [];
+      const count = col + 1
+      const cards: Card[] = []
       for (let i = 0; i < count; i++) {
-        const card = deck[cursor++];
-        const faceUp = i === count - 1;
-        cards.push({ ...card, faceUp });
+        const card = deck[cursor++]
+        const faceUp = i === count - 1
+        cards.push({ ...card, faceUp })
       }
-      tableau.push(cards);
+      tableau.push(cards)
     }
-    const stock: Card[] = deck.slice(cursor).map((c) => ({ ...c, faceUp: false }));
-    const foundation: Card[][] = [[], [], [], []];
-    return { tableau, foundation, stock, waste: [] };
+    const stock: Card[] = deck.slice(cursor).map((c) => ({ ...c, faceUp: false }))
+    const foundation: Card[][] = [[], [], [], []]
+    return { tableau, foundation, stock, waste: [] }
   }
 
   function tryMove(state: KlondikeState, move: Move): KlondikeState | null {
-    const { from, to, count } = move;
-    if (count < 1) return null;
-    if (from.zone === to.zone && from.index === to.index) return null;
-    if (from.zone === 'foundation') return null; // cards never move back out of foundation
+    const { from, to, count } = move
+    if (count < 1) return null
+    if (from.zone === to.zone && from.index === to.index) return null
+    if (from.zone === 'foundation') return null // cards never move back out of foundation
 
-    const sourcePile = getPile(state, from);
-    if (!sourcePile || sourcePile.length < count) return null;
+    const sourcePile = getPile(state, from)
+    if (!sourcePile || sourcePile.length < count) return null
 
-    if (from.zone === 'stock') return null; // stock cards only move via drawStock
+    if (from.zone === 'stock') return null // stock cards only move via drawStock
 
     // Only tableau moves may carry more than one card.
-    if (count > 1 && from.zone !== 'tableau') return null;
+    if (count > 1 && from.zone !== 'tableau') return null
 
-    const movingCards = sourcePile.slice(sourcePile.length - count);
-    if (movingCards.some((c) => !c.faceUp)) return null;
+    const movingCards = sourcePile.slice(sourcePile.length - count)
+    if (movingCards.some((c) => !c.faceUp)) return null
 
     if (from.zone === 'tableau' && count > 1) {
-      if (!isDescendingAltColor(movingCards)) return null;
+      if (!isDescendingAltColor(movingCards)) return null
     }
 
-    const destPile = getPile(state, to);
-    if (!destPile) return null;
+    const destPile = getPile(state, to)
+    if (!destPile) return null
 
     if (to.zone === 'tableau') {
-      if (!canPlaceOnTableau(destPile, movingCards)) return null;
+      if (!canPlaceOnTableau(destPile, movingCards)) return null
     } else if (to.zone === 'foundation') {
-      if (count !== 1) return null;
-      const movingCard = movingCards[0];
-      if (suitIndex(movingCard.suit) !== to.index) return null;
-      if (!canPlaceOnFoundation(destPile, movingCard)) return null;
+      if (count !== 1) return null
+      const movingCard = movingCards[0]
+      if (suitIndex(movingCard.suit) !== to.index) return null
+      if (!canPlaceOnFoundation(destPile, movingCard)) return null
     } else if (to.zone === 'waste') {
-      return null; // cards never move onto waste via tryMove
+      return null // cards never move onto waste via tryMove
     } else {
-      return null;
+      return null
     }
 
-    const next = cloneState(state);
-    const nextSourcePile = getPile(next, from)!;
-    const nextDestPile = getPile(next, to)!;
-    const moved = nextSourcePile.splice(nextSourcePile.length - count, count);
-    nextDestPile.push(...moved);
+    const next = cloneState(state)
+    const nextSourcePile = getPile(next, from)!
+    const nextDestPile = getPile(next, to)!
+    const moved = nextSourcePile.splice(nextSourcePile.length - count, count)
+    nextDestPile.push(...moved)
 
     if (from.zone === 'tableau') {
-      const remaining = top(nextSourcePile);
+      const remaining = top(nextSourcePile)
       if (remaining && !remaining.faceUp) {
-        remaining.faceUp = true;
+        remaining.faceUp = true
       }
     } else if (from.zone === 'waste') {
       // nothing extra needed; top of waste is simply whatever remains
     }
 
-    return next;
+    return next
   }
 
   function drawStock(state: KlondikeState): KlondikeState | null {
     if (state.stock.length > 0) {
-      const next = cloneState(state);
-      const n = Math.min(drawCount, next.stock.length);
-      const drawn = next.stock.splice(next.stock.length - n, n);
+      const next = cloneState(state)
+      const n = Math.min(drawCount, next.stock.length)
+      const drawn = next.stock.splice(next.stock.length - n, n)
       for (const c of drawn) {
-        c.faceUp = true;
-        next.waste.push(c);
+        c.faceUp = true
+        next.waste.push(c)
       }
-      return next;
+      return next
     }
     if (state.waste.length > 0) {
-      const next = cloneState(state);
-      const recycled = next.waste.slice().reverse().map((c) => ({ ...c, faceUp: false }));
-      next.stock = recycled;
-      next.waste = [];
-      return next;
+      const next = cloneState(state)
+      const recycled = next.waste
+        .slice()
+        .reverse()
+        .map((c) => ({ ...c, faceUp: false }))
+      next.stock = recycled
+      next.waste = []
+      return next
     }
-    return null;
+    return null
   }
 
   function isWon(state: KlondikeState): boolean {
     return state.foundation.every((pile) => {
-      const t = top(pile);
-      return t !== undefined && t.rank === 13;
-    });
+      const t = top(pile)
+      return t !== undefined && t.rank === 13
+    })
   }
 
   function legalMoves(state: KlondikeState): Move[] {
-    const moves: Move[] = [];
+    const moves: Move[] = []
 
     const tryAdd = (from: PileRef, to: PileRef, count: number) => {
-      const result = tryMove(state, { from, to, count });
-      if (result) moves.push({ from, to, count });
-    };
+      const result = tryMove(state, { from, to, count })
+      if (result) moves.push({ from, to, count })
+    }
 
     // Waste top card -> foundation / tableau
     if (state.waste.length > 0) {
-      const from: PileRef = { zone: 'waste', index: 0 };
-      for (let f = 0; f < 4; f++) tryAdd(from, { zone: 'foundation', index: f }, 1);
-      for (let t = 0; t < 7; t++) tryAdd(from, { zone: 'tableau', index: t }, 1);
+      const from: PileRef = { zone: 'waste', index: 0 }
+      for (let f = 0; f < 4; f++) tryAdd(from, { zone: 'foundation', index: f }, 1)
+      for (let t = 0; t < 7; t++) tryAdd(from, { zone: 'tableau', index: t }, 1)
     }
 
     // Tableau -> foundation (top card), tableau -> tableau (top card and full valid runs)
     for (let col = 0; col < 7; col++) {
-      const pile = state.tableau[col];
-      if (pile.length === 0) continue;
+      const pile = state.tableau[col]
+      if (pile.length === 0) continue
       // find longest face-up run at the top
-      let runStart = pile.length - 1;
+      let runStart = pile.length - 1
       while (runStart > 0 && pile[runStart - 1].faceUp) {
         // check if it forms a valid descending-alt-color run so far
-        const candidate = pile.slice(runStart - 1);
+        const candidate = pile.slice(runStart - 1)
         if (isDescendingAltColor(candidate)) {
-          runStart -= 1;
+          runStart -= 1
         } else {
-          break;
+          break
         }
       }
-      const from: PileRef = { zone: 'tableau', index: col };
+      const from: PileRef = { zone: 'tableau', index: col }
       // single top card -> foundation
-      for (let f = 0; f < 4; f++) tryAdd(from, { zone: 'foundation', index: f }, 1);
+      for (let f = 0; f < 4; f++) tryAdd(from, { zone: 'foundation', index: f }, 1)
       // various run lengths -> other tableau columns
       for (let count = 1; count <= pile.length - runStart; count++) {
         for (let t = 0; t < 7; t++) {
-          if (t === col) continue;
-          tryAdd(from, { zone: 'tableau', index: t }, count);
+          if (t === col) continue
+          tryAdd(from, { zone: 'tableau', index: t }, count)
         }
       }
     }
 
-    return moves;
+    return moves
   }
 
   function autoMoveHint(state: KlondikeState, from: PileRef, cardId: string): Move | null {
-    const pile = getPile(state, from);
-    if (!pile) return null;
-    const cardIndex = pile.findIndex((c) => c.id === cardId);
-    if (cardIndex === -1) return null;
-    const movingCards = pile.slice(cardIndex);
-    if (movingCards.some((c) => !c.faceUp)) return null;
-    const count = movingCards.length;
-    if (count > 1 && (from.zone !== 'tableau' || !isDescendingAltColor(movingCards))) return null;
+    const pile = getPile(state, from)
+    if (!pile) return null
+    const cardIndex = pile.findIndex((c) => c.id === cardId)
+    if (cardIndex === -1) return null
+    const movingCards = pile.slice(cardIndex)
+    if (movingCards.some((c) => !c.faceUp)) return null
+    const count = movingCards.length
+    if (count > 1 && (from.zone !== 'tableau' || !isDescendingAltColor(movingCards))) return null
 
     if (count === 1) {
-      const movingCard = movingCards[0];
-      const f = suitIndex(movingCard.suit);
+      const movingCard = movingCards[0]
+      const f = suitIndex(movingCard.suit)
       if (canPlaceOnFoundation(state.foundation[f], movingCard)) {
-        return { from, to: { zone: 'foundation', index: f }, count: 1 };
+        return { from, to: { zone: 'foundation', index: f }, count: 1 }
       }
     }
 
     const candidates = state.tableau
       .map((destPile, index) => ({ index, pile: destPile }))
       .filter((c) => !(from.zone === 'tableau' && from.index === c.index))
-      .filter((c) => canPlaceOnTableau(c.pile, movingCards));
-    const best = pickBestTableauTarget(candidates, isDescendingAltColor);
-    if (!best) return null;
-    return { from, to: { zone: 'tableau', index: best.index }, count };
+      .filter((c) => canPlaceOnTableau(c.pile, movingCards))
+    const best = pickBestTableauTarget(candidates, isDescendingAltColor)
+    if (!best) return null
+    return { from, to: { zone: 'tableau', index: best.index }, count }
   }
 
   /** Every card currently reachable without drawing from stock - the waste top plus each tableau
    * column's top card - for the auto-play-to-foundation feature (see engine/autoFoundation.ts). */
   function accessibleCards(state: KlondikeState): AccessibleCard[] {
-    const result: AccessibleCard[] = [];
-    const wasteTop = top(state.waste);
-    if (wasteTop) result.push({ ref: { zone: 'waste', index: 0 }, card: wasteTop });
+    const result: AccessibleCard[] = []
+    const wasteTop = top(state.waste)
+    if (wasteTop) result.push({ ref: { zone: 'waste', index: 0 }, card: wasteTop })
     state.tableau.forEach((pile, index) => {
-      const t = top(pile);
-      if (t && t.faceUp) result.push({ ref: { zone: 'tableau', index }, card: t });
-    });
-    return result;
+      const t = top(pile)
+      if (t && t.faceUp) result.push({ ref: { zone: 'tableau', index }, card: t })
+    })
+    return result
   }
 
   return {
@@ -266,6 +269,6 @@ export function createKlondikeController(drawCount: 1 | 3): GameController<Klond
     drawStock,
     isWon,
     autoMoveHint,
-    accessibleCards,
-  };
+    accessibleCards
+  }
 }

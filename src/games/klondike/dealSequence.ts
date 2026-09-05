@@ -1,13 +1,13 @@
-import { Card } from '@/engine/types';
+import { Card } from '@/engine/types'
 
 export interface KlondikeDealStep {
-  cardId: string;
-  card: Card;
-  colIndex: number;
-  rowIndex: number;
+  cardId: string
+  card: Card
+  colIndex: number
+  rowIndex: number
   /** 0-based order this card is visited in a round-robin replay - use directly as
    * delayMs = visitOrder * DEAL_STAGGER_MS. */
-  visitOrder: number;
+  visitOrder: number
 }
 
 /**
@@ -20,16 +20,16 @@ export interface KlondikeDealStep {
  * reordering of any column's own cards, only of which column gets visited when.
  */
 export function buildKlondikeDealSequence(tableau: Card[][]): KlondikeDealStep[] {
-  const steps: KlondikeDealStep[] = [];
-  const maxRows = tableau.reduce((max, col) => Math.max(max, col.length), 0);
-  let visitOrder = 0;
+  const steps: KlondikeDealStep[] = []
+  const maxRows = tableau.reduce((max, col) => Math.max(max, col.length), 0)
+  let visitOrder = 0
   for (let row = 0; row < maxRows; row++) {
     for (let col = 0; col < tableau.length; col++) {
-      const card = tableau[col][row];
-      if (!card) continue;
-      steps.push({ cardId: card.id, card, colIndex: col, rowIndex: row, visitOrder });
-      visitOrder += 1;
+      const card = tableau[col][row]
+      if (!card) continue
+      steps.push({ cardId: card.id, card, colIndex: col, rowIndex: row, visitOrder })
+      visitOrder += 1
     }
   }
-  return steps;
+  return steps
 }

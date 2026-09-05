@@ -1,27 +1,28 @@
-import React, { useId } from 'react';
-import Svg from 'react-native-svg';
-import { renderDecoratedShape } from './DecoratedShapeRenderer';
-import { cardBacks, type BackStyleName } from './artwork/backs';
-import { DecoratedShape } from './artwork/types';
-import { TableColors } from '../theme';
+import React, { useId } from 'react'
+import Svg from 'react-native-svg'
+
+import { TableColors } from '../theme'
+import { type BackStyleName, cardBacks } from './artwork/backs'
+import { DecoratedShape } from './artwork/types'
+import { renderDecoratedShape } from './DecoratedShapeRenderer'
 
 interface DecoratedCardBackProps {
-  style: BackStyleName;
-  colors: TableColors;
-  width: number;
-  height: number;
+  style: BackStyleName
+  colors: TableColors
+  width: number
+  height: number
 }
 
 /** Substitutes backs.ts' two colour sentinels with the active profile's actual table colours -
  * the shapes themselves are static (see generate-card-back.mjs), only the paint changes per
  * render, the same live-recolour contract CardBack.tsx's own geometric design already has. */
 function resolveBackColors(shape: DecoratedShape, cardBack: string, cardBackPattern: string): DecoratedShape {
-  const resolve = (v?: string) => (v === 'BACK_BASE' ? cardBack : v === 'BACK_ACCENT' ? cardBackPattern : v);
-  const resolved: DecoratedShape = { ...shape, fill: resolve(shape.fill), stroke: resolve(shape.stroke) };
+  const resolve = (v?: string) => (v === 'BACK_BASE' ? cardBack : v === 'BACK_ACCENT' ? cardBackPattern : v)
+  const resolved: DecoratedShape = { ...shape, fill: resolve(shape.fill), stroke: resolve(shape.stroke) }
   if (resolved.tag === 'g' && shape.tag === 'g') {
-    resolved.children = shape.children.map((c) => resolveBackColors(c, cardBack, cardBackPattern));
+    resolved.children = shape.children.map((c) => resolveBackColors(c, cardBack, cardBackPattern))
   }
-  return resolved;
+  return resolved
 }
 
 /**
@@ -40,14 +41,14 @@ function resolveBackColors(shape: DecoratedShape, cardBack: string, cardBackPatt
  * medallion has no room carved out for one.
  */
 export const DecoratedCardBack = React.memo(function DecoratedCardBack({ style, colors, width, height }: DecoratedCardBackProps) {
-  const idPrefix = useId();
-  const art = cardBacks[style];
-  const [minX, minY, vbWidth, vbHeight] = art.viewBox;
+  const idPrefix = useId()
+  const art = cardBacks[style]
+  const [minX, minY, vbWidth, vbHeight] = art.viewBox
 
   return (
     <Svg width={width} height={height} viewBox={`${minX} ${minY} ${vbWidth} ${vbHeight}`}>
       {renderDecoratedShape(art.base, 0, `${idPrefix}-base`)}
       {renderDecoratedShape(resolveBackColors(art.body, colors.cardBack, colors.cardBackPattern), 1, idPrefix)}
     </Svg>
-  );
-});
+  )
+})

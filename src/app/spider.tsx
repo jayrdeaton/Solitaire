@@ -1,3 +1,3 @@
-import SpiderScreen from '@/games/spider/SpiderScreen';
+import SpiderScreen from '@/games/spider/SpiderScreen'
 
-export default SpiderScreen;
+export default SpiderScreen
