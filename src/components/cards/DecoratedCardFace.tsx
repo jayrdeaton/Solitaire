@@ -4,7 +4,8 @@ import Svg, { G } from 'react-native-svg'
 
 import { Card, cardColor } from '@/engine/types'
 
-import { decoratedDeck } from './artwork/decorated'
+import { decoratedDeck } from './artwork/decoratedCustom'
+import { buildColorOverrideMap, DecoratedPackColors } from './artwork/decoratedCustom/colors'
 import { DecoratedArt, DecoratedShape } from './artwork/types'
 import { MARGIN_FRACTION } from './CardBack'
 import { renderDecoratedShape } from './DecoratedShapeRenderer'
@@ -66,23 +67,30 @@ interface DecoratedCardFaceProps {
    * ink shapes often overlap (e.g. a club's three lobes), and per-shape alpha would double-blend
    * those overlaps, reading darker/more opaque there than the rest of the glyph. */
   opacity?: number
+  /** Substitutes named colors from the baked art (see artwork/decoratedCustom/colors.ts) for the
+   * "invert dark mode colors" setting - e.g. `{ inkBlack: '#F2F2F2', cardWhite: '#1A1A1A' }`.
+   * Omit to render the pack's own default colors unchanged. Ignored whenever `ink` is set (a muted
+   * watermark render already recolors everything to one flat tone). */
+  colorOverrides?: Partial<DecoratedPackColors>
 }
 
 /**
- * The "decorated" card style: full-colour illustrated card art (see artwork/decorated/ and
- * scripts/generate-card-artwork.mjs). Colour is baked into the art itself, unlike CardFace's
- * compact style which tints a shared silhouette by suit - so unlike CardFace's own `color` prop,
- * this can't be tinted to an arbitrary suit color, only forced to a single flat `ink` for muting.
+ * The "decorated" card style: full-colour illustrated card art (see artwork/decoratedCustom/ - a
+ * relabeled duplicate of artwork/decorated/, see generate-decorated-custom-pack.mjs). Colour is
+ * baked into the art itself, unlike CardFace's compact style which tints a shared silhouette by
+ * suit - so unlike CardFace's own `color` prop, this can't be tinted to an arbitrary suit color,
+ * only forced to a single flat `ink` for muting, or selectively recolored via `colorOverrides`.
  */
-export const DecoratedCardFace = React.memo(function DecoratedCardFace({ card, width, height, ink, opacity }: DecoratedCardFaceProps) {
+export const DecoratedCardFace = React.memo(function DecoratedCardFace({ card, width, height, ink, opacity, colorOverrides }: DecoratedCardFaceProps) {
   const art = decoratedDeck[card.suit][card.rank]
   const [vx, vy, vw, vh] = art.viewBox
   const idPrefix = React.useId()
   const textFill = cardColor(card.suit) === 'red' ? RANK_TEXT_RED : undefined
+  const valueOverrides = buildColorOverrideMap(colorOverrides)
 
   return (
     <Svg width={width} height={height} viewBox={`${vx} ${vy} ${vw} ${vh}`} style={styles.svg}>
-      <G opacity={opacity}>{renderDecoratedShape(insetContent(art), 0, idPrefix, ink, textFill)}</G>
+      <G opacity={opacity}>{renderDecoratedShape(insetContent(art), 0, idPrefix, ink, textFill, valueOverrides)}</G>
     </Svg>
   )
 })

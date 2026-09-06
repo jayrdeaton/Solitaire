@@ -104,7 +104,7 @@ function startBumpLoop(bump: SharedValue<number>, spec: HeroCardSpec, leadInMs: 
   )
 }
 
-function HeroCard({ spec, colors, tag, cardBackStyle }: { spec: HeroCardSpec; colors: TableColors; tag?: string; cardBackStyle: 'geometric' | 'ornate' | 'plain' }) {
+function HeroCard({ spec, colors, tag, cardBackStyle, invertDarkModeColors }: { spec: HeroCardSpec; colors: TableColors; tag?: string; cardBackStyle: 'geometric' | 'ornate' | 'plain'; invertDarkModeColors?: boolean }) {
   const lift = useSharedValue(0)
   const bump = useSharedValue(0)
 
@@ -143,16 +143,16 @@ function HeroCard({ spec, colors, tag, cardBackStyle }: { spec: HeroCardSpec; co
 
   return (
     <Animated.View style={[styles.cardShadow, { width: CARD_WIDTH, height: CARD_HEIGHT, marginHorizontal: HERO_FAN_OVERLAP, zIndex: spec.zIndex }, animatedStyle]}>
-      <View style={styles.cardClip}>{cardBackStyle === 'geometric' ? <CardBack colors={colors} width={CARD_WIDTH} height={CARD_HEIGHT} tag={tag} /> : <DecoratedCardBack style={cardBackStyle} colors={colors} width={CARD_WIDTH} height={CARD_HEIGHT} />}</View>
+      <View style={styles.cardClip}>{cardBackStyle === 'geometric' ? <CardBack colors={colors} width={CARD_WIDTH} height={CARD_HEIGHT} tag={tag} invertDarkModeColors={invertDarkModeColors} /> : <DecoratedCardBack style={cardBackStyle} colors={colors} width={CARD_WIDTH} height={CARD_HEIGHT} invertDarkModeColors={invertDarkModeColors} />}</View>
     </Animated.View>
   )
 }
 
 /** Purely decorative hero for the home screen - a fan of face-down cards that spring into place on
  * mount, then pop up one at a time left to right, then rest, forever. Not reactive to color/profile
- * changes: CardBack already re-renders live from useTableColors()/the active profile's tag, same as
- * every in-game card, so the fan just shows whatever's current without any "detect a change" logic
- * of its own. */
+ * changes: CardBack already re-renders live from useTableColors()/the active profile's tag/
+ * invertDarkModeColors, same as every in-game card, so the fan just shows whatever's current
+ * without any "detect a change" logic of its own. */
 export function HeroCards() {
   const colors = useTableColors()
   const { activeProfile } = useProfiles()
@@ -161,7 +161,7 @@ export function HeroCards() {
   return (
     <View style={styles.row} pointerEvents='none'>
       {HERO_CARD_SPECS.map((spec) => (
-        <HeroCard key={spec.key} spec={spec} colors={colors} tag={activeProfile?.tag} cardBackStyle={settings.cardBackStyle} />
+        <HeroCard key={spec.key} spec={spec} colors={colors} tag={activeProfile?.tag} cardBackStyle={settings.cardBackStyle} invertDarkModeColors={settings.invertDarkModeColors} />
       ))}
     </View>
   )

@@ -5,7 +5,8 @@ import Svg from 'react-native-svg'
 import { Suit } from '@/engine/types'
 
 import { CourtRank } from './artwork/court'
-import { courtFigures } from './artwork/decorated/courtFigures'
+import { buildColorOverrideMap, DecoratedPackColors } from './artwork/decoratedCustom/colors'
+import { courtFigures } from './artwork/decoratedCustom/courtFigures'
 import { MARGIN_FRACTION } from './CardBack'
 import { renderDecoratedShape } from './DecoratedShapeRenderer'
 
@@ -14,6 +15,9 @@ interface DecoratedCourtFigureProps {
   rank: CourtRank
   width: number
   height: number
+  /** Substitutes named colors from the baked art (see artwork/decoratedCustom/colors.ts) for the
+   * "invert dark mode colors" setting. Omit to render the pack's own default colors unchanged. */
+  colorOverrides?: Partial<DecoratedPackColors>
 }
 
 // The generated crop (see artwork/decorated/courtFigures.ts) is deliberately edge-to-edge with no
@@ -26,14 +30,16 @@ interface DecoratedCourtFigureProps {
 // whole-face, and just-the-figure - reads with the same margin.
 
 /**
- * The compact card style's court figure, full-colour (see artwork/decorated/courtFigures.ts and
- * scripts/generate-court-figures.mjs) rather than CourtFigure's single-tone silhouette - cropped
+ * The compact card style's court figure, full-colour (see artwork/decoratedCustom/courtFigures.ts
+ * - a relabeled duplicate of artwork/decorated/courtFigures.ts, see
+ * generate-decorated-custom-pack.mjs) rather than CourtFigure's single-tone silhouette - cropped
  * to just the figure, no card border/corner index, so it drops into CardFace's existing corner-
  * index-row + content-area layout the same way CourtFigure does. Colour is baked into the art
  * (it's a specific suit's own illustration, not a shared shape), so unlike CourtFigure this has no
- * `color` prop and can't render a muted/neutral form - CardFace falls back to CourtFigure for that.
+ * `color` prop and can't render a muted/neutral form - CardFace falls back to CourtFigure for that
+ * - it can only be selectively recolored via `colorOverrides` (see DecoratedCourtFigureProps).
  */
-export const DecoratedCourtFigure = React.memo(function DecoratedCourtFigure({ suit, rank, width, height }: DecoratedCourtFigureProps) {
+export const DecoratedCourtFigure = React.memo(function DecoratedCourtFigure({ suit, rank, width, height, colorOverrides }: DecoratedCourtFigureProps) {
   const art = courtFigures[suit][rank]
   const [ax, ay, aw, ah] = art.viewBox
   const marginX = aw * MARGIN_FRACTION
@@ -43,6 +49,7 @@ export const DecoratedCourtFigure = React.memo(function DecoratedCourtFigure({ s
   const vw = aw + marginX * 2
   const vh = ah + marginY * 2
   const idPrefix = React.useId()
+  const valueOverrides = buildColorOverrideMap(colorOverrides)
 
   return (
     // preserveAspectRatio="none" stretches to exactly fill width/height rather than the SVG
@@ -51,7 +58,7 @@ export const DecoratedCourtFigure = React.memo(function DecoratedCourtFigure({ s
     // was invisible, sitting under CardFace's own corner-index row). The mismatch is small enough
     // that the stretch itself isn't noticeable, unlike the gap it replaces.
     <Svg width={width} height={height} viewBox={`${vx} ${vy} ${vw} ${vh}`} preserveAspectRatio='none' style={styles.svg}>
-      {art.shapes.map((shape, i) => renderDecoratedShape(shape, i, idPrefix))}
+      {art.shapes.map((shape, i) => renderDecoratedShape(shape, i, idPrefix, undefined, undefined, valueOverrides))}
     </Svg>
   )
 })

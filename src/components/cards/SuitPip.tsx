@@ -5,6 +5,7 @@ import Svg, { G, Path } from 'react-native-svg'
 import { Suit } from '@/engine/types'
 
 import { suitPipArt } from './artwork/pips'
+import { tarotPipArt } from './artwork/tarotPips'
 
 interface SuitPipProps {
   suit: Suit
@@ -18,6 +19,11 @@ interface SuitPipProps {
    * a small corner pip, but it would undo the big center pip's deliberate elongated shape (see
    * pips.ts), which CardFace doesn't pass this for. */
   edgeFill?: boolean
+  /** 'tarot' swaps in tarotPipArt (cups/coins/wands/swords) instead of the standard four suits.
+   * Its glyphs were drawn to a consistent width-fill from the start, so neither SIZE_COMPENSATION
+   * nor DIAMOND_EDGE_FILL_COMPENSATION nor HEART_NUDGE apply - those are corrections for the
+   * standard art's specific geometry, not a property of "suit" in general. Defaults to 'standard'. */
+  theme?: 'standard' | 'tarot'
 }
 
 // A square box scaled uniformly (SVG's default "meet" fit) is height-constrained for any
@@ -55,13 +61,13 @@ const HEART_NUDGE: StyleProp<ViewStyle> = { transform: [{ translateX: -1 }] }
  * except when a move actually happens, so that work is pure waste that can visibly stutter an
  * in-progress drag on web, where reconciliation runs on the same thread as the gesture.
  */
-export const SuitPip = React.memo(function SuitPip({ suit, color, size, style, edgeFill }: SuitPipProps) {
-  const art = suitPipArt[suit]
+export const SuitPip = React.memo(function SuitPip({ suit, color, size, style, edgeFill, theme = 'standard' }: SuitPipProps) {
+  const art = theme === 'tarot' ? tarotPipArt[suit] : suitPipArt[suit]
   const [x, y, w, h] = art.viewBox
-  const compensation = SIZE_COMPENSATION[suit] ?? (edgeFill && suit === 'diamonds' ? DIAMOND_EDGE_FILL_COMPENSATION : 1)
+  const compensation = theme === 'tarot' ? 1 : (SIZE_COMPENSATION[suit] ?? (edgeFill && suit === 'diamonds' ? DIAMOND_EDGE_FILL_COMPENSATION : 1))
   const renderSize = size * compensation
   return (
-    <Svg width={renderSize} height={renderSize} viewBox={`${x} ${y} ${w} ${h}`} style={[style, suit === 'hearts' && HEART_NUDGE]}>
+    <Svg width={renderSize} height={renderSize} viewBox={`${x} ${y} ${w} ${h}`} style={[style, theme === 'standard' && suit === 'hearts' && HEART_NUDGE]}>
       {/* The source paths are authored upside-down (their stem/cusp points the wrong
           way at 0deg) - rotate 180 about the viewBox's own center (which is the
           origin for every suit here) to get the conventional upright glyph. */}

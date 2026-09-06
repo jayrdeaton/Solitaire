@@ -33,18 +33,40 @@ export interface TableColors {
   tableFelt: string
   tableFeltDark: string
   cardFace: string
+  /** cardFace's counterpart for "invert dark mode colors" - a near-black face, real only on
+   * darkColors; lightColors' copy just mirrors cardFace. */
+  cardFaceInverted: string
   cardBack: string
   cardBackPattern: string
+  /** cardBackPattern's counterpart for "invert dark mode colors" - the same profile-tinted accent,
+   * pulled toward black instead of white, so a card back's pattern reads as darkened rather than
+   * unchanged next to its now-near-black frame (see CardBack.tsx/DecoratedCardBack.tsx). Unlike
+   * this file's other *Inverted tokens, this one is never rendered directly (same as cardBackPattern
+   * itself) - it's always computed fresh in derivePlayerTableColors, gated on `dark` there (not via
+   * a light/dark anchor difference), since it depends on the live profile-blended accent rather than
+   * a fixed palette constant. The anchor value here is a placeholder only. */
+  cardBackPatternInverted: string
   cardBorder: string
   selectedGlow: string
   textRed: string
   textBlack: string
+  /** textBlack's counterpart for the "invert dark mode colors" setting (see stores/settings.tsx) -
+   * a near-white ink, real only on darkColors; lightColors' copy just mirrors textBlack, so this is
+   * always safe to read regardless of the setting or current appearance. Also doubles as the
+   * inverted card-frame border color (compact/tarot, Decorated's #base stroke). Red suits never
+   * get an inverted counterpart - the setting only ever touches black ink. */
+  textBlackInverted: string
   emptySlot: string
   hintGreen: string
   /** Scrim drawn over a not-yet-playable card (e.g. a buried Pyramid card) - a translucent
    * overlay on top of the full-opacity face, rather than fading the card itself, so its rank/suit
    * stay crisp and legible instead of washing out toward the felt color. */
   dimOverlay: string
+  /** dimOverlay's counterpart for "invert dark mode colors" - a translucent *black* dimOverlay
+   * barely darkens an already near-black inverted face, silently erasing the dimmed/full-strength
+   * distinction in exactly the mode where it matters most, so this is a translucent white wash
+   * instead. Real only on darkColors; lightColors' copy mirrors dimOverlay. */
+  dimOverlayInverted: string
 }
 
 // Blend anchors only - never rendered directly (see useTableColors below, which always derives
@@ -55,30 +77,41 @@ export const lightColors: TableColors = {
   tableFelt: '#0B6E4F',
   tableFeltDark: '#08573F',
   cardFace: '#EEEEEE',
+  // Not '#EEEEEE' (cardFace's own value) - CardFace.tsx's real card background is a hardcoded
+  // '#FFFFFF' literal (cardFace itself is currently unused by real gameplay cards), and that's also
+  // decoratedCustom's CARD_WHITE default - matching '#FFFFFF' here is what makes this a true no-op.
+  cardFaceInverted: '#FFFFFF',
   cardBack: '#1B4B91',
   cardBackPattern: '#2E63B8',
+  cardBackPatternInverted: '#2E63B8',
   cardBorder: '#00000055',
   selectedGlow: '#FFD54A',
   textRed: CARD_INK_RED,
   textBlack: CARD_INK_BLACK,
+  textBlackInverted: CARD_INK_BLACK,
   emptySlot: '#00000033',
   hintGreen: '#3ECF6E',
-  dimOverlay: '#00000066'
+  dimOverlay: '#00000066',
+  dimOverlayInverted: '#00000066'
 }
 
 export const darkColors: TableColors = {
   tableFelt: '#08573F',
   tableFeltDark: '#053D2C',
   cardFace: '#D6D6D6',
+  cardFaceInverted: CARD_INK_BLACK,
   cardBack: '#14346B',
   cardBackPattern: '#22437F',
+  cardBackPatternInverted: '#22437F',
   cardBorder: '#00000055',
   selectedGlow: '#FFD54A',
   textRed: CARD_INK_RED,
   textBlack: CARD_INK_BLACK,
+  textBlackInverted: '#F2F2F2',
   emptySlot: '#FFFFFF33',
   hintGreen: '#3ECF6E',
-  dimOverlay: '#00000070'
+  dimOverlay: '#00000070',
+  dimOverlayInverted: '#FFFFFF70'
 }
 
 // The seed every fresh install/guest effectively starts on - Material Pink 500, chosen because its
@@ -103,6 +136,16 @@ const PROFILE_TINT_ALPHA = 0.55
 // lighten instead of relying on anchor-hue difference alone.
 const ACCENT_LIGHTEN_ALPHA = 0.25
 
+// How far cardBackPatternInverted gets pushed toward black instead - "invert dark mode colors"'s
+// darkened counterpart to the lighten above. Slightly stronger than ACCENT_LIGHTEN_ALPHA (was equal
+// at 0.25, kept symmetric with the lighten above) - bumped up on request, but there's real headroom
+// tension here: cardBackPattern's own un-inverted luminance is fixed regardless of alpha, while this
+// blend's luminance falls linearly as alpha grows, so past a seed-color-dependent threshold (~0.4
+// measured against one profile's tint) the darkened accent's brightness converges on cardBack's own
+// and the pattern silently loses all contrast against it, rather than degrading gracefully. 0.4 hit
+// exactly that wall (confirmed unreadable); this is a smaller, safer step up from the original.
+const ACCENT_DARKEN_ALPHA = 0.3
+
 // getTonalColor targets (0-1 lightness), per appearance mode, for the felt/chrome pair.
 // tableFeltDark is the darker accent already used for the Stack header/Toaster in both palettes -
 // reused here as "chrome" rather than inventing a third TableColors field. Both modes keep the
@@ -123,12 +166,16 @@ export function previewCardBack(seedHex: string, dark: boolean): string {
 
 /** Derives a full TableColors palette tinted toward a seed color (an active player profile's
  * color, or DEFAULT_SEED_COLOR when nothing's been picked - see useTableColors below). Only
- * cardBack/cardBackPattern/tableFelt/tableFeltDark are overridden - every other token is spread
- * from `base` untouched, so legibility-critical tokens (text/borders/glow) never shift with a
- * profile's color. */
+ * cardBack/cardBackPattern/cardBackPatternInverted/tableFelt/tableFeltDark are overridden - every
+ * other token is spread from `base` untouched, so legibility-critical tokens (text/borders/glow)
+ * never shift with a profile's color. */
 function derivePlayerTableColors(profileColor: string, dark: boolean, base: TableColors): TableColors {
   const cardBack = previewCardBack(profileColor, dark)
   const cardBackPattern = getBlendedColor('#FFFFFF', getBlendedColor(profileColor, base.cardBackPattern, PROFILE_TINT_ALPHA), ACCENT_LIGHTEN_ALPHA)
+  // Only actually darkened in dark mode - in light mode this is an exact no-op (equals
+  // cardBackPattern itself), same contract as this file's other *Inverted tokens, just expressed
+  // via `dark` here instead of a light/dark anchor difference (see the interface doc for why).
+  const cardBackPatternInverted = dark ? getBlendedColor('#000000', cardBackPattern, ACCENT_DARKEN_ALPHA) : cardBackPattern
 
   // 'complementary' harmony's own `tertiary` output is the true 180°-opposite hue of cardBack, so
   // this generalizes to whatever hue cardBack ends up as, not just today's blue.
@@ -138,6 +185,7 @@ function derivePlayerTableColors(profileColor: string, dark: boolean, base: Tabl
     ...base,
     cardBack,
     cardBackPattern,
+    cardBackPatternInverted,
     tableFelt: getTonalColor(complementaryHue, dark ? FELT_TONE.dark : FELT_TONE.light),
     tableFeltDark: getTonalColor(complementaryHue, dark ? CHROME_TONE.dark : CHROME_TONE.light)
   }

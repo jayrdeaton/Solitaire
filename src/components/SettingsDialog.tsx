@@ -4,7 +4,7 @@ import { useToast } from '@rific/toaster'
 import { BaseSettingsDialog } from '@tastic/hud'
 import { ReactNode } from 'react'
 import { StyleSheet, View } from 'react-native'
-import { Text } from 'react-native-paper'
+import { Icon, Text } from 'react-native-paper'
 
 import { CardBack } from '@/components/cards/CardBack'
 import { CardFace } from '@/components/cards/CardFace'
@@ -25,7 +25,8 @@ const BACK_STYLE_OPTIONS: { value: Settings['cardBackStyle']; label: string }[] 
 
 const FACE_STYLE_OPTIONS: { value: Settings['cardStyle']; label: string }[] = [
   { value: 'compact', label: 'Compact' },
-  { value: 'decorated', label: 'Decorated' }
+  { value: 'decorated', label: 'Decorated' },
+  { value: 'tarot', label: 'Tarot' }
 ]
 
 // King of Hearts - a court card shows compact-vs-decorated's difference most clearly (a plain
@@ -70,23 +71,38 @@ interface SettingsDialogProps {
 export function SettingsDialog({ visible, onDismiss, children }: SettingsDialogProps) {
   const { settings, updateSettings } = useSettings()
   const colors = useTableColors()
+  const { colors: paperColors } = useAutoPaperTheme()
   const { error } = useToast()
 
   return (
     <BaseSettingsDialog visible={visible} onDismiss={onDismiss} version={release.otaVersion} onUpdateError={(message) => error('Update check failed', message)}>
       {children}
       <SettingsSection>
+        {/* Same bare-row shape as BaseSettingsDialog's own Sound/Haptics rows (an icon badge whose
+        color/glyph flips with state, plus a single-line label, no separate Switch) - that
+        component doesn't export its SettingIcon helper, so the small badge is replicated here
+        rather than imported. */}
+        <TouchableRipple onPress={() => updateSettings({ invertDarkModeColors: !settings.invertDarkModeColors })} style={styles.toggleButton} accessibilityLabel={`Invert dark mode colors ${settings.invertDarkModeColors ? 'on' : 'off'}`}>
+          <View style={styles.toggleContent}>
+            <View style={[styles.iconBadge, { backgroundColor: settings.invertDarkModeColors ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
+              <Icon source={settings.invertDarkModeColors ? 'invert-colors' : 'invert-colors-off'} size={18} color={settings.invertDarkModeColors ? paperColors.tertiary : paperColors.onSurfaceVariant} />
+            </View>
+            <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
+              Invert Dark Mode Colors
+            </Text>
+          </View>
+        </TouchableRipple>
         <View style={styles.row}>
           {FACE_STYLE_OPTIONS.map(({ value, label }) => (
             <PreviewOption key={value} active={settings.cardStyle === value} onPress={() => updateSettings({ cardStyle: value })} accessibilityLabel={label}>
-              <CardFace card={PREVIEW_CARD} colors={colors} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT} cardStyle={value} />
+              <CardFace card={PREVIEW_CARD} colors={colors} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT} cardStyle={value} invertDarkModeColors={settings.invertDarkModeColors} />
             </PreviewOption>
           ))}
         </View>
         <View style={styles.row}>
           {BACK_STYLE_OPTIONS.map(({ value, label }) => (
             <PreviewOption key={value} active={settings.cardBackStyle === value} onPress={() => updateSettings({ cardBackStyle: value })} accessibilityLabel={label}>
-              {value === 'geometric' ? <CardBack colors={colors} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT} /> : <DecoratedCardBack style={value} colors={colors} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT} />}
+              {value === 'geometric' ? <CardBack colors={colors} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT} invertDarkModeColors={settings.invertDarkModeColors} /> : <DecoratedCardBack style={value} colors={colors} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT} invertDarkModeColors={settings.invertDarkModeColors} />}
             </PreviewOption>
           ))}
         </View>
@@ -101,6 +117,15 @@ export function SettingsDialog({ visible, onDismiss, children }: SettingsDialogP
 const styles = StyleSheet.create({
   credit: {
     opacity: 0.7
+  },
+  // Matches BaseSettingsDialog's own iconBadge/toggleButton/toggleContent values exactly, so this
+  // row reads as one of that same family rather than a visually distinct one-off.
+  iconBadge: {
+    alignItems: 'center',
+    borderRadius: 10,
+    height: 36,
+    justifyContent: 'center',
+    width: 36
   },
   previewClip: {
     borderRadius: 3,
@@ -120,5 +145,15 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     gap: 10
+  },
+  toggleButton: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    paddingVertical: 10
+  },
+  toggleContent: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 12
   }
 })

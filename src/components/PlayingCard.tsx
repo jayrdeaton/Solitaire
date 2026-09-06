@@ -35,7 +35,7 @@ export function PlayingCard({ card, selected, disabled, dimmed, onPress, style, 
   const { activeProfile } = useProfiles()
   const { settings } = useSettings()
   const { width, height } = useCardSize()
-  const styles = React.useMemo(() => makeStyles(colors), [colors])
+  const styles = React.useMemo(() => makeStyles(colors, settings.invertDarkModeColors), [colors, settings.invertDarkModeColors])
   const cardSize = { width, height }
   const borderOverlay = <View pointerEvents='none' style={selected ? styles.selectedRing : styles.border} />
   const dimOverlay = dimmed ? <View pointerEvents='none' style={styles.dim} /> : null
@@ -55,7 +55,7 @@ export function PlayingCard({ card, selected, disabled, dimmed, onPress, style, 
         soundDisabled
         style={[styles.card, styles.shadow, cardSize, style]}
       >
-        <View style={[styles.clip, styles.back]}>{settings.cardBackStyle === 'geometric' ? <CardBack colors={colors} width={width} height={height} tag={activeProfile?.tag} /> : <DecoratedCardBack style={settings.cardBackStyle} colors={colors} width={width} height={height} />}</View>
+        <View style={[styles.clip, styles.back]}>{settings.cardBackStyle === 'geometric' ? <CardBack colors={colors} width={width} height={height} tag={activeProfile?.tag} invertDarkModeColors={settings.invertDarkModeColors} /> : <DecoratedCardBack style={settings.cardBackStyle} colors={colors} width={width} height={height} invertDarkModeColors={settings.invertDarkModeColors} />}</View>
         {dimOverlay}
         {borderOverlay}
       </Pressable>
@@ -65,7 +65,7 @@ export function PlayingCard({ card, selected, disabled, dimmed, onPress, style, 
   return (
     <Pressable testID={testID} onPress={onPress} disabled={disabled} soundDisabled style={[styles.card, styles.shadow, cardSize, style]}>
       <View style={[styles.clip, styles.face]}>
-        <CardFace card={card} colors={colors} width={width} height={height} cardStyle={settings.cardStyle} />
+        <CardFace card={card} colors={colors} width={width} height={height} cardStyle={settings.cardStyle} invertDarkModeColors={settings.invertDarkModeColors} />
       </View>
       {dimOverlay}
       {borderOverlay}
@@ -96,12 +96,12 @@ export function FoundationSlot({ suit, onPress, style }: { suit: Suit; onPress?:
   const { width, height } = useCardSize()
   return (
     <EmptySlot onPress={onPress} style={style}>
-      <CardFace card={{ id: 'foundation-hint', suit, rank: 1, faceUp: true }} colors={colors} width={width} height={height} muted cardStyle={settings.cardStyle} />
+      <CardFace card={{ id: 'foundation-hint', suit, rank: 1, faceUp: true }} colors={colors} width={width} height={height} muted cardStyle={settings.cardStyle} invertDarkModeColors={settings.invertDarkModeColors} />
     </EmptySlot>
   )
 }
 
-function makeStyles(colors: TableColors) {
+function makeStyles(colors: TableColors, invertDarkModeColors?: boolean) {
   return StyleSheet.create({
     card: {
       borderRadius: CARD_RADIUS
@@ -160,7 +160,7 @@ function makeStyles(colors: TableColors) {
       top: 0
     },
     dim: {
-      backgroundColor: colors.dimOverlay,
+      backgroundColor: invertDarkModeColors ? colors.dimOverlayInverted : colors.dimOverlay,
       borderRadius: CARD_RADIUS,
       bottom: 0,
       left: 0,

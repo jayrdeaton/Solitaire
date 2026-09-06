@@ -11,6 +11,11 @@ interface DecoratedCardBackProps {
   colors: TableColors
   width: number
   height: number
+  /** Dark mode only: flips `base`'s own literal white/black frame to near-black/white (the same
+   * treatment every decorated face card's #base already gets - see CardFace.tsx), and pulls
+   * `body`'s BACK_ACCENT resolution darker (colors.cardBackPatternInverted) instead of leaving it
+   * unchanged. A no-op in light mode. */
+  invertDarkModeColors?: boolean
 }
 
 /** Substitutes backs.ts' two colour sentinels with the active profile's actual table colours -
@@ -40,15 +45,21 @@ function resolveBackColors(shape: DecoratedShape, cardBack: string, cardBackPatt
  * CardBack.tsx's own geometric design, this has no player-tag monogram slot, since the sheet's
  * medallion has no room carved out for one.
  */
-export const DecoratedCardBack = React.memo(function DecoratedCardBack({ style, colors, width, height }: DecoratedCardBackProps) {
+export const DecoratedCardBack = React.memo(function DecoratedCardBack({ style, colors, width, height, invertDarkModeColors }: DecoratedCardBackProps) {
   const idPrefix = useId()
   const art = cardBacks[style]
   const [minX, minY, vbWidth, vbHeight] = art.viewBox
+  const patternColor = invertDarkModeColors ? colors.cardBackPatternInverted : colors.cardBackPattern
+  // `base`'s own literal frame colors (see backs.ts's header comment - kept as literals, unlike
+  // `body`'s BACK_BASE/BACK_ACCENT sentinels), confirmed via
+  // `grep -oE "fill: '[^']*'|stroke: '[^']*'" backs.ts` - both back styles use the exact same three
+  // values for their frame, so one fixed map (not per-style) covers both.
+  const baseOverrides = invertDarkModeColors ? { black: colors.textBlackInverted, '#FFFFFF': colors.cardFaceInverted, '#000000': colors.textBlackInverted } : undefined
 
   return (
     <Svg width={width} height={height} viewBox={`${minX} ${minY} ${vbWidth} ${vbHeight}`}>
-      {renderDecoratedShape(art.base, 0, `${idPrefix}-base`)}
-      {renderDecoratedShape(resolveBackColors(art.body, colors.cardBack, colors.cardBackPattern), 1, idPrefix)}
+      {renderDecoratedShape(art.base, 0, `${idPrefix}-base`, undefined, undefined, baseOverrides)}
+      {renderDecoratedShape(resolveBackColors(art.body, colors.cardBack, patternColor), 1, idPrefix)}
     </Svg>
   )
 })

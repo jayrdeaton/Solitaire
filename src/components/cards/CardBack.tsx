@@ -20,6 +20,10 @@ interface CardBackProps {
    * monogram. Omit (or pass empty/whitespace) to keep the plain nested-diamond medallion
    * pixel-identical to before - the guest/no-active-profile case. */
   tag?: string
+  /** Dark mode only: flips the frame's white fill/black stroke to near-black/white (see
+   * stores/settings.tsx's invertDarkModeColors), and pulls the pattern's own accent color darker
+   * (colors.cardBackPatternInverted) instead of leaving it unchanged. A no-op in light mode. */
+  invertDarkModeColors?: boolean
 }
 
 function diamondPath(cx: number, cy: number, half: number): string {
@@ -42,7 +46,8 @@ function fitCentered(size: number, cell: number) {
  * Memoized: `colors`/`width`/`height` are stable references, so this can skip re-rendering (and
  * recomputing the whole diamond grid) on unrelated re-renders like the per-second elapsed timer.
  */
-export const CardBack = React.memo(function CardBack({ colors, width, height, tag }: CardBackProps) {
+export const CardBack = React.memo(function CardBack({ colors, width, height, tag, invertDarkModeColors }: CardBackProps) {
+  const patternColor = invertDarkModeColors ? colors.cardBackPatternInverted : colors.cardBackPattern
   const inset = width * 0.09
   const rx = width * 0.06
   const innerW = width - inset * 2
@@ -88,23 +93,23 @@ export const CardBack = React.memo(function CardBack({ colors, width, height, ta
       ornate/plain backs' identical #base treatment (see artwork/backs.ts) - baked into this
       design's own SVG rather than left to PlayingCard's outer View clip, so every back style
       reads with the same built-in edge regardless of which one's active. */}
-      <Rect x={0} y={0} width={width} height={height} rx={rx} fill='#FFFFFF' stroke='#000000' strokeWidth={width * 0.02} />
+      <Rect x={0} y={0} width={width} height={height} rx={rx} fill={invertDarkModeColors ? colors.cardFaceInverted : '#FFFFFF'} stroke={invertDarkModeColors ? colors.textBlackInverted : '#000000'} strokeWidth={width * 0.02} />
       <G transform={`translate(${margin},${margin}) scale(${scaleX},${scaleY})`}>
         <Rect x={0} y={0} width={width} height={height} fill={colors.cardBack} />
-        <Rect x={inset} y={inset} width={innerW} height={innerH} rx={rx} fill='none' stroke={colors.cardBackPattern} strokeWidth={1} strokeOpacity={0.6} />
+        <Rect x={inset} y={inset} width={innerW} height={innerH} rx={rx} fill='none' stroke={patternColor} strokeWidth={1} strokeOpacity={0.6} />
 
-        <Path d={solidCells.join(' ')} fill={colors.cardBackPattern} opacity={0.55} />
-        <Path d={outlineCells.join(' ')} fill='none' stroke={colors.cardBackPattern} strokeWidth={1} strokeOpacity={0.55} />
+        <Path d={solidCells.join(' ')} fill={patternColor} opacity={0.55} />
+        <Path d={outlineCells.join(' ')} fill='none' stroke={patternColor} strokeWidth={1} strokeOpacity={0.55} />
 
-        <Path d={diamondPath(centerX, centerY, cell * 1.45)} fill={colors.cardBack} stroke={colors.cardBackPattern} strokeWidth={1.5} />
-        <Path d={diamondPath(centerX, centerY, medallionHalf)} fill={colors.cardBackPattern} />
+        <Path d={diamondPath(centerX, centerY, cell * 1.45)} fill={colors.cardBack} stroke={patternColor} strokeWidth={1.5} />
+        <Path d={diamondPath(centerX, centerY, medallionHalf)} fill={patternColor} />
         {hasTag && (
-          <SvgText x={centerX} y={centerY} dy={medallionHalf * 0.35} fill={getContrastColor(colors.cardBackPattern)} fontSize={medallionHalf * 1.15} fontWeight='700' textAnchor='middle'>
+          <SvgText x={centerX} y={centerY} dy={medallionHalf * 0.35} fill={getContrastColor(patternColor)} fontSize={medallionHalf * 1.15} fontWeight='700' textAnchor='middle'>
             {tag!.trim().toUpperCase()}
           </SvgText>
         )}
 
-        <Rect x={inset} y={inset} width={innerW} height={innerH} rx={rx} fill='none' stroke={colors.cardBackPattern} strokeWidth={1.5} />
+        <Rect x={inset} y={inset} width={innerW} height={innerH} rx={rx} fill='none' stroke={patternColor} strokeWidth={1.5} />
       </G>
     </Svg>
   )

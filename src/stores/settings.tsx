@@ -4,18 +4,30 @@ import { createContext, ReactNode, useContext, useState } from 'react'
 export interface Settings {
   klondikeDraw: 1 | 3
   spiderSuits: 1 | 2 | 4
-  cardStyle: 'compact' | 'decorated'
+  // 'decorated' renders the full-colour illustrated deck instead of the compact corner-index +
+  // big-pip layout. 'tarot' is a peer option, not a sub-mode of 'compact': the same corner-index +
+  // big-pip layout, but with cups/coins/wands/swords in place of hearts/diamonds/clubs/spades -
+  // hearts/diamonds/clubs/spades' historical tarot counterparts.
+  cardStyle: 'compact' | 'decorated' | 'tarot'
   // 'geometric' is CardBack.tsx's own original design; 'ornate'/'plain' are SVG-cards-derived (see
   // artwork/NOTICE.md), rendered via DecoratedCardBack. Independent of cardStyle above - a face
   // style choice, not a back style choice.
   cardBackStyle: 'geometric' | 'ornate' | 'plain'
+  // Dark mode only: flips black suit ink (spades/clubs) to white and the card face to near-black.
+  // Red suits are never touched. A no-op in light mode (see theme.ts's textBlackInverted/
+  // cardFaceInverted/dimOverlayInverted, which mirror their normal counterparts on lightColors) -
+  // safe to leave on regardless of current appearance. Defaults false: today's dark mode (same
+  // red/black ink as light mode) stays the default look; this is an opt-in alternative, not a
+  // replacement.
+  invertDarkModeColors: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   klondikeDraw: 1,
   spiderSuits: 1,
   cardStyle: 'compact',
-  cardBackStyle: 'geometric'
+  cardBackStyle: 'geometric',
+  invertDarkModeColors: false
 }
 
 const KEY = 'solitaire.settings.v1'

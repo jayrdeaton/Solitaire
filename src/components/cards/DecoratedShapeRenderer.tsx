@@ -9,13 +9,18 @@ import { DecoratedShape } from './artwork/types'
 // of whatever's behind it (e.g. an empty foundation slot's own felt-colored backdrop).
 const WHITE_FILLS = new Set(['#ffffff', 'white'])
 
-/** Resolves a shape's own fill/stroke to `ink` for a monochrome render: the white card-frame
- * background becomes transparent (`'none'`), and everything else (already-black ink, or a suit's
- * baked-in color) becomes `ink`. A shape with no color at all (`undefined`/`'none'`) stays that
- * way either way - there's nothing to recolor. */
-function resolveColor(value: string | undefined, ink: string | undefined): string | undefined {
-  if (!ink || !value || value === 'none') return value
-  return WHITE_FILLS.has(value.toLowerCase()) ? 'none' : ink
+/** Resolves a shape's own fill/stroke. With `ink` set, this is a monochrome render: the white
+ * card-frame background becomes transparent (`'none'`), and everything else (already-black ink,
+ * or a suit's baked-in color) becomes `ink`. Without `ink`, `valueOverrides` (from
+ * artwork/decoratedCustom/colors.ts's buildColorOverrideMap) substitutes a shape's own literal
+ * color for a caller-supplied replacement - e.g. the "invert dark mode colors" setting swapping
+ * baked-in black for white - falling through to the shape's own color unchanged for anything not
+ * in the map. A shape with no color at all (`undefined`/`'none'`) stays that way in every case -
+ * there's nothing to recolor. */
+function resolveColor(value: string | undefined, ink: string | undefined, valueOverrides?: Record<string, string>): string | undefined {
+  if (!value || value === 'none') return value
+  if (ink) return WHITE_FILLS.has(value.toLowerCase()) ? 'none' : ink
+  return valueOverrides?.[value] ?? value
 }
 
 /**
@@ -42,13 +47,19 @@ function resolveColor(value: string | undefined, ink: string | undefined): strin
  * shape's own directly-set fill/stroke survives - see convert()'s 'g' case, which keeps only
  * `transform` from a wrapping group). Every other shape (the pips) sets its own fill directly, so
  * only 'text' needs this correction.
+ *
+ * `valueOverrides`, when passed (and `ink` is not), substitutes shape colors via
+ * artwork/decoratedCustom/colors.ts's buildColorOverrideMap - e.g. the "invert dark mode colors"
+ * setting swapping decoratedCustom's baked-in black for white while leaving red untouched. Ignored
+ * for 'text' shapes whenever `textFill` is already set, so the red-suit numeral correction above
+ * always wins over it - a red rank-corner digit is never touched by invert.
  */
-export function renderDecoratedShape(shape: DecoratedShape, key: number, idPrefix: string, ink?: string, textFill?: string): React.ReactElement {
+export function renderDecoratedShape(shape: DecoratedShape, key: number, idPrefix: string, ink?: string, textFill?: string, valueOverrides?: Record<string, string>): React.ReactElement {
   switch (shape.tag) {
     case 'g': {
-      const children = shape.children.map((child, i) => renderDecoratedShape(child, i, idPrefix, ink, textFill))
-      const fill = resolveColor(shape.fill, ink)
-      const stroke = resolveColor(shape.stroke, ink)
+      const children = shape.children.map((child, i) => renderDecoratedShape(child, i, idPrefix, ink, textFill, valueOverrides))
+      const fill = resolveColor(shape.fill, ink, valueOverrides)
+      const stroke = resolveColor(shape.stroke, ink, valueOverrides)
       if (!shape.clipRect) {
         return (
           <G key={key} transform={shape.transform} fill={fill} stroke={stroke} strokeWidth={shape.strokeWidth}>
@@ -70,20 +81,20 @@ export function renderDecoratedShape(shape: DecoratedShape, key: number, idPrefi
       )
     }
     case 'path':
-      return <Path key={key} d={shape.d} fill={resolveColor(shape.fill, ink)} stroke={resolveColor(shape.stroke, ink)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
+      return <Path key={key} d={shape.d} fill={resolveColor(shape.fill, ink, valueOverrides)} stroke={resolveColor(shape.stroke, ink, valueOverrides)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
     case 'circle':
-      return <Circle key={key} cx={shape.cx} cy={shape.cy} r={shape.r} fill={resolveColor(shape.fill, ink)} stroke={resolveColor(shape.stroke, ink)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
+      return <Circle key={key} cx={shape.cx} cy={shape.cy} r={shape.r} fill={resolveColor(shape.fill, ink, valueOverrides)} stroke={resolveColor(shape.stroke, ink, valueOverrides)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
     case 'rect':
-      return <Rect key={key} x={shape.x} y={shape.y} width={shape.width} height={shape.height} fill={resolveColor(shape.fill, ink)} stroke={resolveColor(shape.stroke, ink)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
+      return <Rect key={key} x={shape.x} y={shape.y} width={shape.width} height={shape.height} fill={resolveColor(shape.fill, ink, valueOverrides)} stroke={resolveColor(shape.stroke, ink, valueOverrides)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
     case 'line':
-      return <Line key={key} x1={shape.x1} y1={shape.y1} x2={shape.x2} y2={shape.y2} stroke={resolveColor(shape.stroke, ink)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
+      return <Line key={key} x1={shape.x1} y1={shape.y1} x2={shape.x2} y2={shape.y2} stroke={resolveColor(shape.stroke, ink, valueOverrides)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
     case 'polygon':
-      return <Polygon key={key} points={shape.points} fill={resolveColor(shape.fill, ink)} stroke={resolveColor(shape.stroke, ink)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
+      return <Polygon key={key} points={shape.points} fill={resolveColor(shape.fill, ink, valueOverrides)} stroke={resolveColor(shape.stroke, ink, valueOverrides)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
     case 'polyline':
-      return <Polyline key={key} points={shape.points} fill={resolveColor(shape.fill, ink)} stroke={resolveColor(shape.stroke, ink)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
+      return <Polyline key={key} points={shape.points} fill={resolveColor(shape.fill, ink, valueOverrides)} stroke={resolveColor(shape.stroke, ink, valueOverrides)} strokeWidth={shape.strokeWidth} transform={shape.transform} />
     case 'text':
       return (
-        <SvgText key={key} x={shape.x} y={shape.y} fontFamily={shape.fontFamily} fontWeight={shape.fontWeight as TextProps['fontWeight']} fontSize={shape.fontSize} fill={ink ? resolveColor(shape.fill, ink) : (textFill ?? shape.fill)} transform={shape.transform}>
+        <SvgText key={key} x={shape.x} y={shape.y} fontFamily={shape.fontFamily} fontWeight={shape.fontWeight as TextProps['fontWeight']} fontSize={shape.fontSize} fill={ink ? resolveColor(shape.fill, ink) : (textFill ?? resolveColor(shape.fill, undefined, valueOverrides))} transform={shape.transform}>
           {shape.content}
         </SvgText>
       )
