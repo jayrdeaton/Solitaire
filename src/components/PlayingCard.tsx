@@ -103,41 +103,8 @@ export function FoundationSlot({ suit, onPress, style }: { suit: Suit; onPress?:
 
 function makeStyles(colors: TableColors, invertDarkModeColors?: boolean) {
   return StyleSheet.create({
-    card: {
-      borderRadius: CARD_RADIUS
-    },
-    // Shadow lives on the outer Pressable, never on the same node as `clip`'s overflow: 'hidden' -
-    // iOS draws a view's shadow and its overflow clip on the same layer, so a masked layer clips
-    // away its own shadow rather than just its content.
-    shadow: {
-      elevation: 4,
-      shadowColor: '#000',
-      shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.3,
-      shadowRadius: 3
-    },
-    clip: {
-      borderRadius: CARD_RADIUS,
-      bottom: 0,
-      left: 0,
-      overflow: 'hidden',
-      position: 'absolute',
-      right: 0,
-      top: 0
-    },
-    face: {
-      backgroundColor: colors.cardFace
-    },
     back: {
       backgroundColor: colors.cardBack
-    },
-    empty: {
-      alignItems: 'center',
-      backgroundColor: 'transparent',
-      borderColor: colors.emptySlot,
-      borderStyle: 'dashed',
-      borderWidth: 2,
-      justifyContent: 'center'
     },
     border: {
       borderColor: colors.cardBorder,
@@ -149,12 +116,14 @@ function makeStyles(colors: TableColors, invertDarkModeColors?: boolean) {
       right: 0,
       top: 0
     },
-    selectedRing: {
-      borderColor: colors.selectedGlow,
+    card: {
+      borderRadius: CARD_RADIUS
+    },
+    clip: {
       borderRadius: CARD_RADIUS,
-      borderWidth: 3,
       bottom: 0,
       left: 0,
+      overflow: 'hidden',
       position: 'absolute',
       right: 0,
       top: 0
@@ -167,6 +136,37 @@ function makeStyles(colors: TableColors, invertDarkModeColors?: boolean) {
       position: 'absolute',
       right: 0,
       top: 0
+    },
+    empty: {
+      alignItems: 'center',
+      backgroundColor: 'transparent',
+      borderColor: colors.emptySlot,
+      borderStyle: 'dashed',
+      borderWidth: 2,
+      justifyContent: 'center'
+    },
+    face: {
+      backgroundColor: colors.cardFace
+    },
+    selectedRing: {
+      borderColor: colors.selectedGlow,
+      borderRadius: CARD_RADIUS,
+      borderWidth: 3,
+      bottom: 0,
+      left: 0,
+      position: 'absolute',
+      right: 0,
+      top: 0
+    },
+    // Shadow lives on the outer Pressable, never on the same node as `clip`'s overflow: 'hidden' -
+    // iOS draws a view's shadow and its overflow clip on the same layer, so a masked layer clips
+    // away its own shadow rather than just its content.
+    shadow: {
+      elevation: 4,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.3,
+      shadowRadius: 3
     }
   })
 }

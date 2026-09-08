@@ -89,7 +89,12 @@ export function DraggableCard({ card, selected, disabled, onPress, onDrop, hidde
   const { originX, originY, dx, dy } = ghost
 
   const latest = useRef({ onDrop, disabled, card, cardWidth })
-  latest.current = { onDrop, disabled, card, cardWidth }
+  // Updated in an effect rather than directly during render (mutating a ref during render isn't
+  // allowed) - still fresh well before handleStart/handleRelease below can actually run, since
+  // those only ever fire from a later gesture callback, never synchronously during this render.
+  useEffect(() => {
+    latest.current = { onDrop, disabled, card, cardWidth }
+  })
   // React Native Web's Pressable can still fire its own native click on the same release a Pan
   // gesture above it already claimed as a drag (see the identical guard and its longer comment in
   // PileView.tsx's DraggableTableauCard, where this was confirmed live) - a completed drag that
@@ -134,6 +139,21 @@ export function DraggableCard({ card, selected, disabled, onPress, onDrop, hidde
     []
   )
 
+  // react-hooks/refs and react-hooks/immutability both assume ordinary render-time JS: a ref
+  // "passed into a function" or a value "returned from a hook" might get read/written synchronously
+  // during render. Neither rule knows about Reanimated worklets or react-native-gesture-handler's
+  // builder API - .onStart/.onUpdate/.onEnd merely REGISTER these callbacks; none of them, or the
+  // measure()/`.value=` calls inside them, ever run during React's render phase. They run later, on
+  // the UI thread, driven by the native gesture recognizer - which is the entire point of this
+  // pattern (60fps-capable dragging with zero React re-renders). There's no alternative shape here:
+  // building a Gesture.Pan() at all means calling .onStart/.onUpdate/.onEnd with callbacks that
+  // close over the SharedValues/refs they need to drive, exactly as Reanimated's and gesture-
+  // handler's own docs recommend. (Confirmed this isn't fixable via config: explicitly enabling the
+  // compiler's own `enableCustomTypeDefinitionForReanimated` environment flag for these two rules
+  // didn't change this file's warning count at all - it only special-cases the literal return value
+  // of a useSharedValue()/useDerivedValue() call, not a value mutated from inside a nested worklet
+  // closure like the ones below. See PileView.tsx's DraggableTableauCard for the identical pattern.)
+  /* eslint-disable react-hooks/refs, react-hooks/immutability */
   const pan = useMemo(
     () =>
       Gesture.Pan()
@@ -159,6 +179,7 @@ export function DraggableCard({ card, selected, disabled, onPress, onDrop, hidde
         }),
     [handleStart, handleRelease, originX, originY, dx, dy, startAbsX, startAbsY, viewRef]
   )
+  /* eslint-enable react-hooks/refs, react-hooks/immutability */
 
   pan.enabled(!disabled && !!onDrop)
 
@@ -180,7 +201,7 @@ export function DraggableCard({ card, selected, disabled, onPress, onDrop, hidde
   return (
     <View style={style}>
       <GestureDetector gesture={pan}>
-        <Animated.View ref={viewRef} style={[(dragging || hidden) && { opacity: 0 }, shakeStyle]}>
+        <Animated.View ref={viewRef} style={[(dragging || hidden) && styles.hiddenWhileFlying, shakeStyle]}>
           <PlayingCard card={card} selected={selected} disabled={disabled} onPress={onPress ? handlePress : undefined} testID={testID} />
         </Animated.View>
       </GestureDetector>
@@ -196,3 +217,9 @@ export function DraggableCard({ card, selected, disabled, onPress, onDrop, hidde
     </View>
   )
 }
+
+const styles = StyleSheet.create({
+  hiddenWhileFlying: {
+    opacity: 0
+  }
+})

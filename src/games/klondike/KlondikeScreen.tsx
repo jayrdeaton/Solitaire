@@ -1,38 +1,39 @@
-import { Pressable, useVibration } from '@rific/feedback-press'
+import { useVibration } from '@rific/feedback-press'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { computeContentBounds } from '@tastic/core'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
-import { useTheme } from 'react-native-paper'
 
 import { faceUpFanOffset } from '@/components/cards/CardFace'
 import { CardSizeProvider, cardWidthForRow } from '@/components/CardSizeContext'
-import { DealCardSpec, DealProvider, useDealAnimator } from '@/components/dealing/DealLayer'
+import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
-import { DragGhostProvider, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
-import { useDropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
-import { formatTime, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { PileDragConfig, PileView } from '@/components/PileView'
-import { FoundationSlot, PlayingCard } from '@/components/PlayingCard'
 import { StockWaste } from '@/components/StockWaste'
-import { fireworksColors, TableColors, useTableColors } from '@/components/theme'
+import { fireworksColors, TableColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
-import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
 import { useGameSession } from '@/components/useGameSession'
-import { ChainSpec, useWinCascade, WinCascadeGhosts, WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
+import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { findSafeAutoPlay, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
-import { isDescendingAltColor, top } from '@/engine/pile'
+import { isDescendingAltColor, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
-import { Card, Suit, SUITS } from '@/engine/types'
-import { clearGameInProgress, loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
-import { useGameStats } from '@/stores/gameStats'
-import { useLastActiveGame } from '@/stores/lastActiveGame'
+import { Card, SUITS } from '@/engine/types'
+import { FoundationCell } from '@/games/shared/FoundationCell'
+import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
+import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
+import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
+import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { WinBanner } from '@/games/shared/WinBanner'
+import { withGameProviders } from '@/games/shared/withGameProviders'
+import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 import { useSettings } from '@/stores/settings'
 
 import { buildKlondikeDealSequence } from './dealSequence'
@@ -42,93 +43,11 @@ import { createKlondikeController, KlondikeState } from './rules'
 const TABLEAU_MAX_HEIGHT = 420
 const TABLEAU_COLUMNS = 7
 const TABLEAU_GAP = 10
-// Plain (theme-independent) style for FoundationCell below - it's a module-level component, so it
-// can't reach KlondikeScreenInner's own theme-derived `styles`.
-const HIDDEN_CARD_STYLE = { opacity: 0 }
 
-/** Records enough about an applied move to reverse its animation later - undoing doesn't just
- * revert to the previous state snapshot, it flies the moved card(s) back from wherever they
- * currently sit (`to`) to their previous pile (`from`), mirroring the forward flight in reverse. */
-interface MoveInfo {
-  from: PileRef
-  to: PileRef
-  count: number
-  anchorCardId: string
-}
-
-interface UndoEntry {
-  state: KlondikeState
-  /** Null when the move being undone had nothing single-card-shaped to fly (stock recycling
-   * shuffles the whole waste back into the stock at once) - undo just reverts instantly then. */
-  move: MoveInfo | null
-}
-
-/** One foundation pile's display. The real `card` stays mounted and registered in CardRegistry
- * the whole time (just invisible while `isFlyingHere`) - the tap-to-move flight measures its
- * destination by looking up exactly this registration, so hiding it by swapping it out entirely
- * (rather than by opacity) would leave the flight with nothing to measure and no real target to
- * land on. A frozen copy of whatever was on top before is shown instead while flying, so the slot
- * doesn't go blank for the whole flight - purely decorative, not itself registered.
- *
- * `slotRef`, separately, always points at this same outer container regardless of whether `card`
- * is hidden - the win cascade (see runWinCascade) needs to measure this slot's position AFTER the
- * real King has already been hidden (won-gated, see the caller), by which point it's no longer
- * CardRegistry-registered at all. */
-function FoundationCell({ card, isFlyingHere, suit, slotRef }: { card: Card | undefined; isFlyingHere: boolean; suit: Suit; slotRef?: (el: View | null) => void }) {
-  const ghost = useDragGhost()
-  const viewRef = useRef<View>(null)
-  const frozen = useFrozenWhileHidden(card, isFlyingHere)
-
-  useEffect(() => {
-    if (!card) return
-    const id = card.id
-    ghost.cardRegistry.register(id, viewRef)
-    return () => ghost.cardRegistry.unregister(id, viewRef)
-  }, [card, ghost.cardRegistry])
-
-  return (
-    <View
-      ref={(el) => {
-        viewRef.current = el
-        slotRef?.(el)
-      }}
-      collapsable={false}
-    >
-      {card ? <PlayingCard card={card} style={isFlyingHere && HIDDEN_CARD_STYLE} /> : <FoundationSlot suit={suit} />}
-      {isFlyingHere && (
-        <View style={StyleSheet.absoluteFill} pointerEvents='none'>
-          {frozen ? <PlayingCard card={frozen} /> : <FoundationSlot suit={suit} />}
-        </View>
-      )}
-    </View>
-  )
-}
-
-/** Thin wrapper so the screen body below can be a descendant of its own DragGhostProvider - it
- * needs useDragGhost() itself now (to drive the tap-to-move fly animation), not just the
- * PileView/DraggableCard children that used to be its only consumers. DealProvider wraps from
- * further out still, for the initial-deal animation (see components/dealing/DealLayer.tsx) - a
- * separate mechanism from DragGhostProvider's single-flight ghost, since a deal needs many cards
- * flying independently at once. */
-export default function KlondikeScreen() {
-  return (
-    <DealProvider>
-      <DragGhostProvider>
-        <WinCascadeProvider>
-          <KlondikeScreenInner />
-        </WinCascadeProvider>
-      </DragGhostProvider>
-    </DealProvider>
-  )
-}
+export default withGameProviders(KlondikeScreenInner)
 
 function KlondikeScreenInner() {
-  const colors = useTableColors()
-  const { dark } = useTheme()
-  const { recordDealWon, recordDealAbandoned } = useGameStats()
-  const { setLastActiveGame, clearLastActiveGame } = useLastActiveGame()
-  const styles = useMemo(() => makeStyles(colors), [colors])
-  const dropZones = useDropZoneRegistry()
+  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { settings } = useSettings()
   const controllerRef = useRef(createKlondikeController(settings.klondikeDraw))
   // The draw count of the game currently in progress - only updated when a new game actually
@@ -138,10 +57,8 @@ function KlondikeScreenInner() {
   // was dealt with, even if the player changes the setting mid-game without starting a new deal.
   const [klondikeDraw, setKlondikeDraw] = useState<1 | 3>(settings.klondikeDraw)
   const [state, setState] = useState<KlondikeState | null>(null)
-  const [undoStack, setUndoStack] = useState<UndoEntry[]>([])
+  const [undoStack, setUndoStack] = useState<UndoEntry<KlondikeState>[]>([])
   const session = useGameSession()
-  const [won, setWon] = useState(false)
-  const recordedWinRef = useRef(false)
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
   const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, TABLEAU_GAP)
@@ -151,12 +68,14 @@ function KlondikeScreenInner() {
   const stockViewRef = useRef<View>(null)
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
   const dealTokenRef = useRef(0)
-  const pendingDealTokenRef = useRef<number | null>(null)
+  const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
-  /** Mirrors pendingDealTokenRef/pendingFlightRef's own shape - set by checkWin, consumed by the
-   * [state]-effect below once the winning foundation cards have actually committed and registered
-   * themselves in CardRegistry (see runWinCascade). */
-  const pendingWinCascadeRef = useRef<{ gen: number } | null>(null)
+  // Reads controllerRef.current live inside isWon (rather than passing controllerRef.current
+  // directly, which would freeze this render's controller into checkWin's closure) - matches the
+  // original inline checkWin, which re-dereferenced controllerRef.current at call time so a
+  // straggling call from a stale render's closure chain still checks against the CURRENT
+  // controller, same as every other controllerRef.current read in this file.
+  const { won, setWon, recordedWinRef, pendingWinCascadeRef, checkWin } = useFoundationWinCheck({ isWon: (s: KlondikeState) => controllerRef.current.isWon(s) }, 'klondike', session, dealTokenRef, recordDealWon)
   /** One ref per foundation slot's own container (see FoundationCell's slotRef) - measured
    * independently of CardRegistry so the win cascade can still find each pile's screen position
    * after its real King has been hidden (won-gated, see the foundation row below), at which point
@@ -197,6 +116,10 @@ function KlondikeScreenInner() {
   // below - suppresses exactly one auto-play check after an undo, so undo doesn't immediately get
   // replayed by the very mechanism it just reverted.
   const justUndidRef = useRef(false)
+  // Guards handleUndo against being called again before its own previous invocation has fully
+  // settled (visually, not just in state) - see handleUndo below for why an overlapping call would
+  // otherwise desync the undo stack or clobber the shared single-flight ghost/deal animation.
+  const undoBusyRef = useRef(false)
 
   function startNewGame() {
     const myToken = ++dealTokenRef.current
@@ -204,6 +127,7 @@ function KlondikeScreenInner() {
     setKlondikeDraw(settings.klondikeDraw)
     const s = controllerRef.current.newGame(randomSeed())
     setUndoStack([])
+    undoBusyRef.current = false
     session.reset()
     setWon(false)
     recordedWinRef.current = false
@@ -212,7 +136,7 @@ function KlondikeScreenInner() {
 
     const dealtIds = new Set(s.tableau.flat().map((c) => c.id))
     setDealHiddenIds(dealtIds)
-    pendingDealTokenRef.current = myToken
+    scheduleDeal(myToken)
     setState(s)
   }
 
@@ -226,6 +150,7 @@ function KlondikeScreenInner() {
     controllerRef.current = createKlondikeController(draw)
     setKlondikeDraw(draw)
     setUndoStack([])
+    undoBusyRef.current = false
     session.restore(saved.moves, saved.elapsedSeconds)
     setWon(false)
     recordedWinRef.current = false
@@ -313,22 +238,6 @@ function KlondikeScreenInner() {
     winCascade.startChains(chains, cardWidth)
   }
 
-  // Runs once the just-set (but fully hidden) tableau has actually committed and its cards have
-  // registered themselves - deliberately NOT called directly from startNewGame. React effects fire
-  // bottom-up per commit (children's before parents'), so by the time THIS effect runs, every
-  // PileView/DraggableTableauCard for the new state has already run its own CardRegistry.register()
-  // effect - calling ghost.cardRegistry.measure() any earlier (e.g. synchronously right after
-  // setState) races the still-mounted *previous* deal's cards against the *new* ones' not-yet-run
-  // registration effects, and mostly measures neither: confirmed live, this returned null for 25 of
-  // 28 destinations when measured immediately after setState, and 0 of 28 once moved here.
-  useEffect(() => {
-    if (pendingDealTokenRef.current === null || pendingDealTokenRef.current !== dealTokenRef.current || !state) return
-    const token = pendingDealTokenRef.current
-    pendingDealTokenRef.current = null
-    runDeal(state, token)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
-
   // Same race as the deal effect above: measuring CardRegistry synchronously right after the
   // setState in applyMove/handleDrawStock would find the still-mounted SOURCE card (the
   // destination card's own registration effect hasn't run yet), so the ghost would "fly" a
@@ -348,9 +257,18 @@ function KlondikeScreenInner() {
       if (dealTokenRef.current !== pending.gen || !landed) {
         ghost.hide()
         setFlying(null)
+        undoBusyRef.current = false
         return
       }
-      ghost.flyTo(landed.x, landed.y, () => setFlying(null), { fast: pending.fast })
+      ghost.flyTo(
+        landed.x,
+        landed.y,
+        () => {
+          setFlying(null)
+          undoBusyRef.current = false
+        },
+        { fast: pending.fast }
+      )
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
@@ -465,14 +383,29 @@ function KlondikeScreenInner() {
   // exactly like a fresh move would. Undoing a stock draw flies back toward the stock instead of a
   // per-card pile - see pendingFlightRef's `viaStock`.
   async function handleUndo() {
-    if (undoStack.length === 0 || !state) return
+    if (undoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
+    undoBusyRef.current = true
     justUndidRef.current = true
+    // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
+    // condition - the only move available once it's true is New Game), so any undo reachable while
+    // won must be undoing the winning move itself. Clears the "You Won!" banner and stops the
+    // bouncing win cascade immediately instead of leaving both stuck on screen over a board that's
+    // already reverted underneath them. Deliberately does NOT reset recordedWinRef - this deal was
+    // genuinely won at some point, and recordedWinRef staying true is what stops both a later re-win
+    // in this same deal from double-recording the stat, and a later "New Game" (without re-winning)
+    // from wrongly recording this already-won deal as abandoned too (see handleNewGame's own !won
+    // guard on recordDealAbandoned).
+    if (won) {
+      setWon(false)
+      winCascade.clear()
+    }
     const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
 
     if (!move) {
       setUndoStack((stack) => stack.slice(0, -1))
       setState(prevState)
+      undoBusyRef.current = false
       return
     }
 
@@ -506,10 +439,13 @@ function KlondikeScreenInner() {
           entries,
           cardWidth,
           () => {},
-          () => {}
+          () => {
+            undoBusyRef.current = false
+          }
         )
       } else {
         setState(prevState)
+        undoBusyRef.current = false
       }
       return
     }
@@ -534,17 +470,7 @@ function KlondikeScreenInner() {
       pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen: dealTokenRef.current }
     } else {
       setState(prevState)
-    }
-  }
-
-  function checkWin(next: KlondikeState, movesSoFar: number) {
-    if (controllerRef.current.isWon(next) && !recordedWinRef.current) {
-      recordedWinRef.current = true
-      session.stopClock()
-      setWon(true)
-      recordDealWon('klondike', { seconds: session.elapsed, moves: movesSoFar, score: computeScore(movesSoFar, session.elapsed) })
-      clearGameInProgress('klondike')
-      pendingWinCascadeRef.current = { gen: dealTokenRef.current }
+      undoBusyRef.current = false
     }
   }
 
@@ -577,7 +503,7 @@ function KlondikeScreenInner() {
   }
 
   // Auto-play-to-foundation: see engine/autoFoundation.ts for the two mechanisms this composes.
-  // Re-run after every settled state change by the watcher effect below - mechanism B (a
+  // Re-run after every settled state change by the watcher effect above - mechanism B (a
   // guaranteed full clear) takes priority and, once true, ignores mechanism A's caution entirely
   // since there's no longer any player decision left to protect.
   function maybeAutoPlay() {
@@ -619,12 +545,7 @@ function KlondikeScreenInner() {
 
   function tableauRunCount(colIndex: number, indexFromTop: number): number {
     if (!state) return 0
-    const pile = state.tableau[colIndex]
-    const count = indexFromTop + 1
-    const run = pile.slice(pile.length - count)
-    if (run.some((c) => !c.faceUp)) return 0
-    if (count > 1 && !isDescendingAltColor(run)) return 0
-    return count
+    return runCountFrom(state.tableau[colIndex], indexFromTop, isDescendingAltColor)
   }
 
   // Draw-1 mirrors handleCardTap's single-ghost flight (see the pendingFlightRef effect above),
@@ -804,36 +725,13 @@ function KlondikeScreenInner() {
     not buried under it. */}
       {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && (
-        <View style={styles.winOverlay}>
-          <View style={styles.winCard}>
-            <Text style={styles.winTitle}>You Won!</Text>
-            <Text style={styles.winSubtitle}>
-              Time: {formatTime(session.elapsed)} · Moves: {session.moves} · Score: {computeScore(session.moves, session.elapsed)}
-            </Text>
-            <Pressable style={styles.button} onPress={startNewGame}>
-              <Text style={styles.buttonText}>New Game</Text>
-            </Pressable>
-          </View>
-        </View>
-      )}
+      {won && <WinBanner colors={colors} elapsedSeconds={session.elapsed} moves={session.moves} score={computeScore(session.moves, session.elapsed)} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }
 
 function makeStyles(colors: TableColors) {
   return StyleSheet.create({
-    button: {
-      backgroundColor: '#ffffffee',
-      borderRadius: 8,
-      paddingHorizontal: 14,
-      paddingVertical: 8
-    },
-    buttonText: {
-      color: colors.tableFeltDark,
-      fontFamily: CARD_FONT_FAMILY,
-      fontWeight: '700'
-    },
     container: {
       backgroundColor: colors.tableFelt,
       flex: 1,
@@ -861,35 +759,6 @@ function makeStyles(colors: TableColors) {
       flexDirection: 'row',
       justifyContent: 'space-between',
       marginBottom: 16
-    },
-    winCard: {
-      alignItems: 'center',
-      backgroundColor: '#ffffffee',
-      borderRadius: 16,
-      gap: 12,
-      padding: 28
-    },
-    winOverlay: {
-      alignItems: 'center',
-      backgroundColor: '#00000088',
-      bottom: 0,
-      justifyContent: 'center',
-      left: 0,
-      position: 'absolute',
-      right: 0,
-      top: 0
-    },
-    winSubtitle: {
-      color: '#444',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      marginBottom: 8
-    },
-    winTitle: {
-      color: colors.tableFeltDark,
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 28,
-      fontWeight: '800'
     }
   })
 }

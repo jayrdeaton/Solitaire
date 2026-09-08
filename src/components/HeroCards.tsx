@@ -168,10 +168,14 @@ export function HeroCards() {
 }
 
 const styles = StyleSheet.create({
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    marginBottom: 20
+  // CardBack's own outer Rect has no rx - it doesn't self-clip to rounded corners - so, same as
+  // PlayingCard.tsx's `clip` style, rounding comes entirely from this wrapping overflow:hidden
+  // View, kept off the shadow-bearing node above (iOS draws a view's shadow and its overflow clip
+  // on the same layer, so a masked layer would otherwise clip away its own shadow).
+  cardClip: {
+    borderRadius: CARD_RADIUS,
+    flex: 1,
+    overflow: 'hidden'
   },
   // borderRadius here (not just on cardClip) so Android's elevation shadow itself follows the
   // rounded shape rather than boxing it.
@@ -183,13 +187,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 3
   },
-  // CardBack's own outer Rect has no rx - it doesn't self-clip to rounded corners - so, same as
-  // PlayingCard.tsx's `clip` style, rounding comes entirely from this wrapping overflow:hidden
-  // View, kept off the shadow-bearing node above (iOS draws a view's shadow and its overflow clip
-  // on the same layer, so a masked layer would otherwise clip away its own shadow).
-  cardClip: {
-    borderRadius: CARD_RADIUS,
-    flex: 1,
-    overflow: 'hidden'
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginBottom: 20
   }
 })

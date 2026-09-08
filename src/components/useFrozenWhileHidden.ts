@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useState } from 'react'
 
 /**
  * Returns `value`, except while `hidden` is true - then it keeps returning whatever `value` was
@@ -14,16 +14,24 @@ import { useRef } from 'react'
  * single value" to lose track of.
  */
 export function useFrozenWhileHidden<T>(value: T, hidden: boolean): T {
-  const wasHiddenRef = useRef(false)
-  const lastVisibleRef = useRef(value)
-  const frozenRef = useRef(value)
+  // React's own sanctioned "adjust state during render" shape (see react.dev's guide of the same
+  // name) rather than mutating a ref during render - each setter below is only ever called when
+  // the value it tracks has actually changed, so this settles within the same render pass instead
+  // of triggering a visible extra frame.
+  const [prevHidden, setPrevHidden] = useState(hidden)
+  const [prevValue, setPrevValue] = useState(value)
+  const [frozen, setFrozen] = useState(value)
 
-  if (!hidden) {
-    lastVisibleRef.current = value
-  } else if (!wasHiddenRef.current) {
-    frozenRef.current = lastVisibleRef.current
+  if (hidden !== prevHidden) {
+    setPrevHidden(hidden)
+    // Freezes `prevValue` (last render's value, still whatever was visible a moment ago), not
+    // this render's `value` - hidden can flip true the same commit `value` already changed to
+    // the incoming card, and it's the outgoing one that should stay on screen during the flight.
+    if (hidden) setFrozen(prevValue)
   }
-  wasHiddenRef.current = hidden
+  if (value !== prevValue) {
+    setPrevValue(value)
+  }
 
-  return hidden ? frozenRef.current : value
+  return hidden ? frozen : value
 }

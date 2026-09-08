@@ -140,7 +140,7 @@ function DealGhostCard({ spec, onDealt, onLanded, containerOffsetX, containerOff
   }))
 
   return (
-    <Animated.View style={[{ position: 'absolute', left: 0, top: 0 }, style]}>
+    <Animated.View style={[styles.ghostCard, style]}>
       <PlayingCard card={spec.card} />
     </Animated.View>
   )
@@ -166,7 +166,10 @@ export function DealProvider({ children }: { children: ReactNode }) {
   // genuine first mount) or its own "already notified" guard, silently stalling that card forever.
   // Folding a monotonic generation into the key instead forces a real unmount+mount - and therefore
   // a full state reset - for every deal, regardless of any id overlap with the one before it.
-  const generationRef = useRef(0)
+  // State, not a ref: it's read in the JSX key below, and reading a ref's `.current` during render
+  // isn't allowed - the increment already sits alongside setCardWidth/setActive in start(), so
+  // routing it through its own setState doesn't add a render that wasn't already happening here.
+  const [generation, setGeneration] = useState(0)
   const overlayRef = useRef<View>(null)
   // spec.from/to are screen-space (measureView/CardRegistry.measure, both viewport-relative on
   // web). But this overlay - a screen-level sibling of {children}, not a descendant - isn't
@@ -216,7 +219,7 @@ export function DealProvider({ children }: { children: ReactNode }) {
   const controller = useMemo<DealAnimator>(
     () => ({
       start(entries, width, onCardLanded, onAllLanded) {
-        generationRef.current += 1
+        setGeneration((g) => g + 1)
         landedIds.current = new Set()
         handles.current = new Map()
         totalRef.current = entries.length
@@ -248,7 +251,7 @@ export function DealProvider({ children }: { children: ReactNode }) {
           <CardSizeProvider width={cardWidth}>
             {active.map((spec) => (
               <DealGhostCard
-                key={`${generationRef.current}-${spec.cardId}`}
+                key={`${generation}-${spec.cardId}`}
                 spec={spec}
                 onDealt={handleDealt}
                 onLanded={handleLanded}
@@ -273,3 +276,11 @@ export function DealProvider({ children }: { children: ReactNode }) {
     </DealContext.Provider>
   )
 }
+
+const styles = StyleSheet.create({
+  ghostCard: {
+    left: 0,
+    position: 'absolute',
+    top: 0
+  }
+})

@@ -3,52 +3,44 @@
 import { Pressable, useVibration } from '@rific/feedback-press'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { computeContentBounds } from '@tastic/core'
-import { RefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { RefObject, useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
-import { useTheme } from 'react-native-paper'
 import Animated, { SharedValue, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
 
 import { CARD_ASPECT, CardSizeProvider, cardWidthForRow, FACE_UP_OFFSET_RATIO } from '@/components/CardSizeContext'
-import { DealCardSpec, DealProvider, useDealAnimator } from '@/components/dealing/DealLayer'
+import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView, ScreenPoint } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
+import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { autoMoveSpringFor } from '@/components/dragdrop/dragSpring'
-import { DragGhostProvider, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
-import { useDropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
 import { formatTime, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
 import { StockWaste } from '@/components/StockWaste'
-import { fireworksColors, TableColors, useTableColors } from '@/components/theme'
+import { fireworksColors, TableColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
 import { useGameSession } from '@/components/useGameSession'
-import { useWinCascade, WinCascadeGhosts, WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
+import { useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { PileRef } from '@/engine/gameTypes'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
-import { clearGameInProgress, loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
-import { useGameStats } from '@/stores/gameStats'
-import { useLastActiveGame } from '@/stores/lastActiveGame'
+import { HIDDEN_CARD_STYLE } from '@/games/shared/FoundationCell'
+import { MoveInfo } from '@/games/shared/undoTypes'
+import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
+import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
+import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { withGameProviders } from '@/games/shared/withGameProviders'
+import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 
 import { buildPyramidDealSequence } from './dealSequence'
 import { cardAt, isExposed, PyramidController, PyramidState, rowColOf } from './rules'
 
 const ROWS = 7
 const COL_GAP = 6 // horizontal gap between cards within a row - no overlap, so corner pips stay visible
-
-/** Records enough about an applied stock draw to reverse its animation later (stock -> waste) -
- * see handleUndo's `viaStock` branch. Mutually exclusive with UndoEntry's `removedCards` below - a
- * stock draw and a pairing/King removal are never the same move. */
-interface MoveInfo {
-  from: PileRef
-  to: PileRef
-  count: number
-  anchorCardId: string
-}
 
 /** One card's original spot, recorded so undoing a pairing/King removal can fly it back there
  * (see handleUndo's undoRemoval branch) instead of just reappearing there instantly. ref.zone is
@@ -60,16 +52,14 @@ interface RemovedCardRef {
 
 interface UndoEntry {
   state: PyramidState
-  /** Non-null for a stock draw - see MoveInfo above. */
+  /** Non-null for a stock draw (the only MoveInfo-shaped move this game has - see handleUndo's
+   * `viaStock` branch). Mutually exclusive with `removedCards` below - a stock draw and a
+   * pairing/King removal are never the same move. */
   move: MoveInfo | null
   /** Non-null for a pairing/King removal - always 1 (a solo King) or 2 (a pair) entries, since
    * Pyramid removals are never more than a pair. Mutually exclusive with `move` above. */
   removedCards: RemovedCardRef[] | null
 }
-
-// Plain (theme-independent) style for DiscardCell below - it's a module-level component, so it
-// can't reach PyramidScreenInner's own theme-derived `styles`.
-const HIDDEN_CARD_STYLE = { opacity: 0 }
 
 /** The discard pile's own display - cards removed via a pair or solo King land here (see
  * rules.ts's `discard` field). Always face-up and non-interactive (`disabled`, no DropZone/onPress
@@ -139,11 +129,22 @@ function FlyingPairCard({ card, from, to, containerOffsetX, containerOffsetY, on
   }))
 
   return (
-    <Animated.View style={[{ position: 'absolute', left: 0, top: 0 }, style]}>
+    <Animated.View style={[pairFlightStyles.ghostCard, style]}>
       <PlayingCard card={card} />
     </Animated.View>
   )
 }
+
+// Module-level (not the theme-dependent `styles` inside PyramidScreenInner below) - FlyingPairCard
+// is its own top-level component with no access to that function-local variable, and this style
+// has no theme dependency anyway (always the same three constants).
+const pairFlightStyles = StyleSheet.create({
+  ghostCard: {
+    left: 0,
+    position: 'absolute',
+    top: 0
+  }
+})
 
 /** Renders Pyramid's pair-removal flight: "first" and "second" travel to the discard pile
  * independently, each from its own real position, rather than through the single shared `ghost`
@@ -199,31 +200,10 @@ function cardPosition(row: number, col: number, cardWidth: number, cardHeight: n
   return { left, top }
 }
 
-/** Both DealProvider and DragGhostProvider wrap from outside PyramidScreenInner, the same split
- * Klondike/FreeCell/Spider use - PyramidScreenInner needs useDragGhost() itself now (to drive the
- * stock-draw fly animation), not just the DraggableCard/DropZone children that used to be its only
- * consumers. Moving DragGhostProvider up here doesn't change the rendered tree: neither it nor
- * DealProvider add a wrapping View of their own, so the ghost overlay still ends up as a plain
- * sibling of PyramidScreenInner's returned content, exactly as before. */
-export default function PyramidScreen() {
-  return (
-    <DealProvider>
-      <DragGhostProvider>
-        <WinCascadeProvider>
-          <PyramidScreenInner />
-        </WinCascadeProvider>
-      </DragGhostProvider>
-    </DealProvider>
-  )
-}
+export default withGameProviders(PyramidScreenInner)
 
 function PyramidScreenInner() {
-  const colors = useTableColors()
-  const { dark } = useTheme()
-  const { recordDealWon, recordDealAbandoned } = useGameStats()
-  const { setLastActiveGame, clearLastActiveGame } = useLastActiveGame()
-  const styles = useMemo(() => makeStyles(colors), [colors])
-  const dropZones = useDropZoneRegistry()
+  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
   const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, TRIANGLE_WIDTH_UNITS, COL_GAP)
@@ -232,7 +212,6 @@ function PyramidScreenInner() {
   const [selected, setSelected] = useState<PileRef | null>(null)
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([])
   const session = useGameSession()
-  const [won, setWon] = useState(false)
   // Which card (if any) should play its "that pairing didn't work" shake right now - bumped
   // (not toggled) so tapping into the same failed pairing twice in a row re-triggers it both
   // times. Always exactly one card (the just-tapped one, `to` in attemptMove) since Pyramid
@@ -247,7 +226,7 @@ function PyramidScreenInner() {
   const discardViewRef = useRef<View>(null)
   const [pyramidHiddenIds, setPyramidHiddenIds] = useState<Set<string>>(new Set())
   const dealTokenRef = useRef(0)
-  const pendingDealTokenRef = useRef<number | null>(null)
+  const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const ghost = useDragGhost()
   const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
   /** A flight awaiting its post-commit measurement + ghost.flyTo (see the effect below) - set by
@@ -257,10 +236,10 @@ function PyramidScreenInner() {
    * real per-card-registered waste slot. */
   const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean } | null>(null)
   const winCascade = useWinCascade()
-  /** Mirrors pendingDealTokenRef/pendingFlightRef's own shape - set by the win-check effect,
-   * consumed by the effect below once the winning discard pile has actually committed (see
-   * runWinCascade). */
-  const pendingWinCascadeRef = useRef<{ gen: number } | null>(null)
+  // Derived from `state` every render (see useDerivedWinCheck) rather than mirrored into its own
+  // useState: it's a pure function of state, so Undo-ing out of a won position correctly drops the
+  // win banner immediately, rather than leaving it stuck showing.
+  const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(PyramidController, state, 'pyramid', session, dealTokenRef, recordDealWon)
   /** Pyramid's pair-removal flight - both cards travel to the discard pile independently, each
    * from its own real position (see flyPairIndependently/PairFlightGhosts below), rather than
    * through the single shared `ghost` above, which can only ever animate one origin/delta for its
@@ -276,6 +255,11 @@ function PyramidScreenInner() {
    * (CardRegistry can only measure a card once it's actually mounted there), and keeping both
    * kinds on one path is simpler than splitting an immediate case out from a deferred one. */
   const pendingRemovalUndoRef = useRef<{ removed: RemovedCardRef[]; discardOrigin: ScreenPoint } | null>(null)
+  // Guards handleUndo against being called again before its own previous invocation has fully
+  // settled (visually, not just in state) - see handleUndo/undoRemoval below for why an overlapping
+  // call would otherwise desync the undo stack or clobber the shared single-flight ghost/pair-flight
+  // animation.
+  const undoBusyRef = useRef(false)
 
   // Same race documented for Klondike's deal/tap-move fixes: measuring CardRegistry synchronously
   // right after the setState in handleDrawStock would find the still-mounted PREVIOUS waste card
@@ -289,10 +273,14 @@ function PyramidScreenInner() {
     ;(async () => {
       const landed = pending.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(pending.cardId)
       if (landed) {
-        ghost.flyTo(landed.x, landed.y, () => setFlying(null))
+        ghost.flyTo(landed.x, landed.y, () => {
+          setFlying(null)
+          undoBusyRef.current = false
+        })
       } else {
         ghost.hide()
         setFlying(null)
+        undoBusyRef.current = false
       }
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -329,6 +317,7 @@ function PyramidScreenInner() {
         if (unresolved.some((r) => r.ref.zone === 'waste')) setFlying(null)
       }
       if (specs.length > 0) startPairFlight(specs)
+      else undoBusyRef.current = false
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
@@ -342,28 +331,6 @@ function PyramidScreenInner() {
     }
     return ghost.cardRegistry.measure(cardId)
   }
-
-  // Runs once the just-set state has actually committed - see runDeal's comment above for why this
-  // can't be called directly from startNewGame.
-  useEffect(() => {
-    if (pendingDealTokenRef.current === null || pendingDealTokenRef.current !== dealTokenRef.current || !state) return
-    const token = pendingDealTokenRef.current
-    pendingDealTokenRef.current = null
-    runDeal(state, token)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
-
-  useEffect(() => {
-    if (!state) return
-    if (!won && PyramidController.isWon(state)) {
-      setWon(true)
-      session.stopClock()
-      recordDealWon('pyramid', { seconds: session.elapsed, moves: session.moves, score: computeScore(session.moves, session.elapsed) })
-      clearGameInProgress('pyramid')
-      pendingWinCascadeRef.current = { gen: dealTokenRef.current }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
 
   // state.discard always holds all 52 cards by the time isWon() is true (rules.ts's
   // sweepRemainderOnWin folds in whatever was left in stock/waste on the winning move), in true
@@ -394,14 +361,15 @@ function PyramidScreenInner() {
     const s = PyramidController.newGame(randomSeed())
     setSelected(null)
     setUndoStack([])
+    undoBusyRef.current = false
     session.reset()
-    setWon(false)
+    recordedWinRef.current = false
     winCascade.clear()
     pendingWinCascadeRef.current = null
 
     const dealtIds = new Set(s.pyramid.filter((c): c is Card => !!c).map((c) => c.id))
     setPyramidHiddenIds(dealtIds)
-    pendingDealTokenRef.current = myToken
+    scheduleDeal(myToken)
     setState(s)
   }
 
@@ -411,8 +379,9 @@ function PyramidScreenInner() {
     ++dealTokenRef.current
     setSelected(null)
     setUndoStack([])
+    undoBusyRef.current = false
     session.restore(saved.moves, saved.elapsedSeconds)
-    setWon(false)
+    recordedWinRef.current = false
     setPyramidHiddenIds(new Set())
     setState(saved.state)
   }
@@ -496,10 +465,11 @@ function PyramidScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Saves after every move/undo/autoplay/fresh-deal (all flow through setState). Gated on !won:
-  // Undo is never disabled post-win (a pre-existing gap, out of scope here), so without this guard,
-  // winning and then tapping the still-enabled Undo would resurrect a save for an already-resolved
-  // deal right after the win-check effect above just cleared it.
+  // Saves after every move/undo/autoplay/fresh-deal (all flow through setState). Gated on !won so
+  // a just-won deal doesn't get checkpointed as still in-progress (the win-check effect above
+  // clears the save outright instead) - since `won` is derived fresh from `state` on every render,
+  // undoing back out of a won position re-enables saving again on that same render, no separate
+  // reset needed.
   useEffect(() => {
     if (state && !won) saveGameInProgress('pyramid', { state, moves: session.moves, elapsedSeconds: session.elapsed })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -511,7 +481,15 @@ function PyramidScreenInner() {
   // re-rendered, so the ORIGIN has to be captured here, synchronously against the still-current
   // state), then revert and fly it back toward the stock (see pendingFlightRef's `viaStock`).
   async function handleUndo() {
-    if (undoStack.length === 0 || !state) return
+    if (undoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
+    undoBusyRef.current = true
+    // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
+    // condition - the only move available once it's true is New Game), so any undo reachable while
+    // won must be undoing the winning move itself. `won` (derived from state above) clears itself
+    // on the very next render once prevState commits below, but the bouncing win cascade doesn't
+    // stop on its own - it only ever stops via winCascade.clear() (see startNewGame), so without
+    // this it would keep animating over a board that's already reverted underneath it.
+    if (won) winCascade.clear()
     const entry = undoStack[undoStack.length - 1]
     const { move, removedCards, state: prevState } = entry
 
@@ -524,6 +502,7 @@ function PyramidScreenInner() {
       setUndoStack((stack) => stack.slice(0, -1))
       setState(prevState)
       setSelected(null)
+      undoBusyRef.current = false
       return
     }
 
@@ -546,6 +525,7 @@ function PyramidScreenInner() {
       pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: true }
     } else {
       setState(prevState)
+      undoBusyRef.current = false
     }
   }
 
@@ -567,6 +547,7 @@ function PyramidScreenInner() {
 
     if (!discardOrigin) {
       setState(prevState)
+      undoBusyRef.current = false
       return
     }
 
@@ -677,6 +658,7 @@ function PyramidScreenInner() {
     if (pairFlightLandedRef.current >= pairFlightTotalRef.current) {
       setPairFlight(null)
       setFlying(null)
+      undoBusyRef.current = false
     }
   }
 
@@ -953,7 +935,14 @@ function PyramidScreenInner() {
       <PairFlightGhosts flight={pairFlight} onCardLanded={handlePairFlightLanded} />
       <WinCascadeGhosts />
       {won && (
-        <View style={styles.winOverlay}>
+        // box-none (not the default 'auto'): this View covers the full screen, but only its
+        // centered winBanner content should ever catch a tap - left uncorrected, the transparent
+        // surrounding area silently swallows every touch across the whole screen, including
+        // GameChrome's header buttons underneath it (Home/Undo/Settings), since this renders as a
+        // later sibling of GameChrome and therefore wins pointer-event hit-testing by plain DOM
+        // order (see the comment above on why Fireworks/WinCascadeGhosts/this all live at this
+        // level). Confirmed live: Undo was completely unreachable post-win until this was added.
+        <View style={styles.winOverlay} pointerEvents='box-none'>
           <View style={styles.winBanner}>
             <Text style={styles.winText}>
               Pyramid cleared! {formatTime(session.elapsed)} · {session.moves} moves · Score {computeScore(session.moves, session.elapsed)}
@@ -970,12 +959,6 @@ function PyramidScreenInner() {
 
 function makeStyles(colors: TableColors) {
   return StyleSheet.create({
-    container: {
-      alignItems: 'center',
-      backgroundColor: colors.tableFelt,
-      flex: 1,
-      padding: 16
-    },
     // GameChrome's own content area now centers a natural-width board itself (see GameChrome.tsx's
     // GAME_CONTENT_MAX_WIDTH/ContentGutter wiring) - board no longer needs width:'100%' to opt into
     // that. alignItems:'center' still does its own separate job here: centering controlRow (narrower
@@ -983,6 +966,38 @@ function makeStyles(colors: TableColors) {
     // width instead of an artificial full-window one.
     board: {
       alignItems: 'center'
+    },
+    button: {
+      backgroundColor: '#ffffffee',
+      borderRadius: 8,
+      paddingHorizontal: 18,
+      paddingVertical: 10
+    },
+    buttonText: {
+      color: colors.tableFeltDark,
+      fontFamily: CARD_FONT_FAMILY,
+      fontSize: 14,
+      fontWeight: '700'
+    },
+    container: {
+      alignItems: 'center',
+      backgroundColor: colors.tableFelt,
+      flex: 1,
+      padding: 16
+    },
+    controlRow: {
+      flexDirection: 'row',
+      gap: 24,
+      marginBottom: 20
+    },
+    hiddenCard: {
+      opacity: 0
+    },
+    pyramidCard: {
+      position: 'absolute'
+    },
+    stockRow: {
+      gap: 24
     },
     timer: {
       color: '#fff',
@@ -1000,31 +1015,12 @@ function makeStyles(colors: TableColors) {
       position: 'relative',
       zIndex: 0
     },
-    pyramidCard: {
-      position: 'absolute'
-    },
-    hiddenCard: {
-      opacity: 0
-    },
-    controlRow: {
-      flexDirection: 'row',
-      gap: 24,
-      marginBottom: 20
-    },
-    stockRow: {
-      gap: 24
-    },
-    button: {
+    winBanner: {
+      alignItems: 'center',
       backgroundColor: '#ffffffee',
-      borderRadius: 8,
-      paddingHorizontal: 18,
-      paddingVertical: 10
-    },
-    buttonText: {
-      color: colors.tableFeltDark,
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 14,
-      fontWeight: '700'
+      borderRadius: 12,
+      gap: 12,
+      padding: 18
     },
     // Transparent (unlike Klondike/FreeCell's own winOverlay) - Pyramid's win treatment was never a
     // dimmed scrim, just a centered card; this only exists now to center winBanner as a screen-level
@@ -1037,13 +1033,6 @@ function makeStyles(colors: TableColors) {
       position: 'absolute',
       right: 0,
       top: 0
-    },
-    winBanner: {
-      alignItems: 'center',
-      backgroundColor: '#ffffffee',
-      borderRadius: 12,
-      gap: 12,
-      padding: 18
     },
     winText: {
       color: colors.tableFeltDark,

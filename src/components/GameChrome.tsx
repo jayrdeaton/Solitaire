@@ -1,4 +1,4 @@
-import { IconButton } from '@rific/feedback-press'
+import { IconButton, useHoldToRepeat } from '@rific/feedback-press'
 import { ConfirmDialog, ContentGutter, CornerActionButtons } from '@tastic/hud'
 import { useRouter } from 'expo-router'
 import { ReactNode, useMemo, useState } from 'react'
@@ -39,6 +39,15 @@ export const GAME_CONTENT_PADDING = 12
  * `computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)` first - same as GAME_CONTENT_PADDING
  * above, one true shared value, not a per-game guess. */
 export const GAME_CONTENT_MAX_WIDTH = 1040
+
+// Press-and-hold-to-repeat undo (see the IconButton below) - matches the delayLongPress/repeat-tick
+// convention @rific/feedback-press's own useHoldToRepeat is already used with elsewhere (Swirlio's
+// hold-to-repeat FABs). UNDO_HOLD_REPEAT_MS is tuned to this app's own measured ~150-300ms undo-
+// flight settle time (see dragSpring.ts/dealSpring.ts) - each game's own handleUndo guards itself
+// against being re-entered before that settle completes, so a tick that lands mid-animation is
+// simply dropped rather than desyncing anything.
+const UNDO_LONG_PRESS_MS = 400
+const UNDO_HOLD_REPEAT_MS = 250
 
 interface GameChromeProps {
   /** Shown top-center, in the band New Game/Undo/Settings share - which game (and, where a game
@@ -86,6 +95,7 @@ export function GameChrome({ title, onNewGame, onUndo, undoDisabled, hasProgress
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [confirmNewGameVisible, setConfirmNewGameVisible] = useState(false)
   const { clearLastActiveGame } = useLastActiveGame()
+  const undoHold = useHoldToRepeat(onUndo, UNDO_HOLD_REPEAT_MS)
 
   return (
     <View style={styles.screen}>
@@ -104,7 +114,7 @@ export function GameChrome({ title, onNewGame, onUndo, undoDisabled, hasProgress
         </Text>
       </View>
 
-      <IconButton icon='undo' iconColor={CHROME_FG} size={24} disabled={undoDisabled} style={[styles.cornerAdjacentButton, { top: 8 + insets.top, right: 96 + insets.right }]} onPress={onUndo} accessibilityLabel='Undo' />
+      <IconButton icon='undo' iconColor={CHROME_FG} size={24} disabled={undoDisabled} style={[styles.cornerAdjacentButton, { top: 8 + insets.top, right: 96 + insets.right }]} onPress={onUndo} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={UNDO_LONG_PRESS_MS} accessibilityLabel='Undo' />
 
       <IconButton
         icon='cards-playing-outline'
@@ -179,30 +189,12 @@ export function GameChrome({ title, onNewGame, onUndo, undoDisabled, hasProgress
 
 function makeStyles(colors: TableColors) {
   return StyleSheet.create({
-    screen: {
-      backgroundColor: colors.tableFelt,
-      flex: 1
-    },
-    // ContentGutter's own row needs this to consume `screen`'s full remaining height - the same
-    // flex:1 that used to govern the ScrollView directly against `screen`, one level further in -
-    // so its two gutters (and anything a game optionally renders into them) run the full vertical
-    // extent of the play area, not just as tall as the board happens to be.
-    gutterRow: {
-      flex: 1
-    },
-    // Without an explicit style here (contentContainerStyle alone isn't enough), a vertical
-    // ScrollView's cross-axis (width) sizes to its content instead of its parent - harmless for
-    // content narrower than the screen, but a wider board (Spider's 10 columns) just grows the
-    // whole page instead of being constrained and clipped/scrollable within the viewport.
-    scroll: {
-      flex: 1
-    },
     content: {
-      paddingHorizontal: GAME_CONTENT_PADDING,
       // Centers any top-level child narrower than the available content width (e.g. a board once
       // genuinely narrower than GAME_CONTENT_MAX_WIDTH's own cap) instead of leaving it
       // default-stretched full-width and therefore left-anchored.
-      alignItems: 'center'
+      alignItems: 'center',
+      paddingHorizontal: GAME_CONTENT_PADDING
     },
     // The title wrap, the two corner-adjacent icon buttons, and the corner buttons themselves are
     // all absolutely positioned siblings of the scrolling content - on web, a later positioned
@@ -210,25 +202,6 @@ function makeStyles(colors: TableColors) {
     // elevated explicitly (see PileView's identical stacking-context note), so every chrome layer
     // needs its own zIndex to reliably sit above the board and receive taps regardless of source
     // order.
-    titleWrap: {
-      position: 'absolute',
-      // Fixed height matching IconButton's own 40px touchable (see cornerAdjacentButton), centered
-      // via justifyContent rather than left to this text's natural line-height, so it lines up
-      // with the icon row exactly instead of hugging the top of the same nominal offset.
-      height: 40,
-      justifyContent: 'center',
-      // Left-aligned (hugging the Back button, like a standard nav-bar title), not centered in
-      // its own left/right band - that band is sized to clear the right-side icon cluster, which
-      // isn't the same as being centered on the screen.
-      alignItems: 'flex-start',
-      zIndex: 10
-    },
-    titleText: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      fontWeight: '700'
-    },
     // Shared by the New Game and Undo icon buttons - both cluster to the left of Settings, in
     // reach-for-it-occasionally order (New Game furthest out, Undo closest), with Back and the
     // title occupying the opposite corner as a navigation pair instead.
@@ -243,6 +216,30 @@ function makeStyles(colors: TableColors) {
       top: 0,
       zIndex: 10
     },
+    // ContentGutter's own row needs this to consume `screen`'s full remaining height - the same
+    // flex:1 that used to govern the ScrollView directly against `screen`, one level further in -
+    // so its two gutters (and anything a game optionally renders into them) run the full vertical
+    // extent of the play area, not just as tall as the board happens to be.
+    gutterRow: {
+      flex: 1
+    },
+    screen: {
+      backgroundColor: colors.tableFelt,
+      flex: 1
+    },
+    // Without an explicit style here (contentContainerStyle alone isn't enough), a vertical
+    // ScrollView's cross-axis (width) sizes to its content instead of its parent - harmless for
+    // content narrower than the screen, but a wider board (Spider's 10 columns) just grows the
+    // whole page instead of being constrained and clipped/scrollable within the viewport.
+    scroll: {
+      flex: 1
+    },
+    timerText: {
+      color: '#fff',
+      fontFamily: CARD_FONT_FAMILY,
+      fontSize: 16,
+      fontVariant: ['tabular-nums']
+    },
     timerWrap: {
       alignItems: 'center',
       left: 0,
@@ -250,11 +247,24 @@ function makeStyles(colors: TableColors) {
       right: 0,
       zIndex: 10
     },
-    timerText: {
+    titleText: {
       color: '#fff',
       fontFamily: CARD_FONT_FAMILY,
       fontSize: 16,
-      fontVariant: ['tabular-nums']
+      fontWeight: '700'
+    },
+    titleWrap: {
+      // Left-aligned (hugging the Back button, like a standard nav-bar title), not centered in
+      // its own left/right band - that band is sized to clear the right-side icon cluster, which
+      // isn't the same as being centered on the screen.
+      alignItems: 'flex-start',
+      // Fixed height matching IconButton's own 40px touchable (see cornerAdjacentButton), centered
+      // via justifyContent rather than left to this text's natural line-height, so it lines up
+      // with the icon row exactly instead of hugging the top of the same nominal offset.
+      height: 40,
+      justifyContent: 'center',
+      position: 'absolute',
+      zIndex: 10
     }
   })
 }

@@ -1,38 +1,41 @@
-import { Pressable, useVibration } from '@rific/feedback-press'
+import { useVibration } from '@rific/feedback-press'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { computeContentBounds } from '@tastic/core'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
-import { useTheme } from 'react-native-paper'
 
 import { faceUpFanOffset } from '@/components/cards/CardFace'
 import { CardSizeProvider, cardWidthForRow } from '@/components/CardSizeContext'
-import { DealCardSpec, DealProvider, useDealAnimator } from '@/components/dealing/DealLayer'
+import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
-import { DragGhostProvider, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
-import { useDropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
-import { formatTime, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { PileDragConfig, PileView } from '@/components/PileView'
-import { EmptySlot, FoundationSlot, PlayingCard } from '@/components/PlayingCard'
-import { fireworksColors, TableColors, useTableColors } from '@/components/theme'
+import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
+import { fireworksColors, TableColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
 import { useGameSession } from '@/components/useGameSession'
-import { ChainSpec, useWinCascade, WinCascadeGhosts, WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
+import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { findSafeAutoPlay, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
-import { isDescendingAltColor, top } from '@/engine/pile'
+import { isDescendingAltColor, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
-import { Card, Suit, SUITS } from '@/engine/types'
-import { clearGameInProgress, loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
-import { useGameStats } from '@/stores/gameStats'
-import { useLastActiveGame } from '@/stores/lastActiveGame'
+import { Card, SUITS } from '@/engine/types'
+import { FoundationCell } from '@/games/shared/FoundationCell'
+import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
+import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
+import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
+import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { WinBanner } from '@/games/shared/WinBanner'
+import { withGameProviders } from '@/games/shared/withGameProviders'
+import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 
 import { buildFreeCellDealSequence } from './dealSequence'
 import { FreeCellController, FreeCellState } from './rules'
@@ -40,71 +43,12 @@ import { FreeCellController, FreeCellState } from './rules'
 const TABLEAU_MAX_HEIGHT = 460
 const TABLEAU_COLUMNS = 8
 const TABLEAU_GAP = 10
-// Plain (theme-independent) style for FoundationCell below - it's a module-level component, so it
-// can't reach FreeCellScreenInner's own theme-derived `styles`.
-const HIDDEN_CARD_STYLE = { opacity: 0 }
 // FreeCell has no stock pile of its own to visually deal from (rules.ts's newGame deals straight
 // into the tableau; freecells start, and stay, empty throughout the deal) - the far-right freecell
 // doubles as the deck the deal animation flies out of instead, showing this face-down placeholder
 // only while dealing (see the freecells row below). Never a real card - just needs to be
 // Card-shaped, since a face-down PlayingCard never reads rank/suit.
 const DECK_PLACEHOLDER_CARD: Card = { id: 'freecell-deck-origin', suit: 'spades', rank: 1, faceUp: false }
-
-/** Records enough about an applied move to reverse its animation later - undoing doesn't just
- * revert to the previous state snapshot, it flies the moved card(s) back from wherever they
- * currently sit (`to`) to their previous pile (`from`), mirroring the forward flight in reverse. */
-interface MoveInfo {
-  from: PileRef
-  to: PileRef
-  count: number
-  anchorCardId: string
-}
-
-interface UndoEntry {
-  state: FreeCellState
-  move: MoveInfo
-}
-
-/** One foundation pile's display. The real `card` stays mounted and registered in CardRegistry
- * the whole time (just invisible while `isFlyingHere`) - the tap-to-move flight measures its
- * destination by looking up exactly this registration, so hiding it by swapping it out entirely
- * (rather than by opacity) would leave the flight with nothing to measure and no real target to
- * land on. A frozen copy of whatever was on top before is shown instead while flying, so the slot
- * doesn't go blank for the whole flight - purely decorative, not itself registered.
- *
- * `slotRef`, separately, always points at this same outer container regardless of whether `card`
- * is hidden - the win cascade (see runWinCascade) needs to measure this slot's position AFTER the
- * real King has already been hidden (won-gated, see the caller), by which point it's no longer
- * CardRegistry-registered at all. */
-function FoundationCell({ card, isFlyingHere, suit, slotRef }: { card: Card | undefined; isFlyingHere: boolean; suit: Suit; slotRef?: (el: View | null) => void }) {
-  const ghost = useDragGhost()
-  const viewRef = useRef<View>(null)
-  const frozen = useFrozenWhileHidden(card, isFlyingHere)
-
-  useEffect(() => {
-    if (!card) return
-    const id = card.id
-    ghost.cardRegistry.register(id, viewRef)
-    return () => ghost.cardRegistry.unregister(id, viewRef)
-  }, [card, ghost.cardRegistry])
-
-  return (
-    <View
-      ref={(el) => {
-        viewRef.current = el
-        slotRef?.(el)
-      }}
-      collapsable={false}
-    >
-      {card ? <PlayingCard card={card} style={isFlyingHere && HIDDEN_CARD_STYLE} /> : <FoundationSlot suit={suit} />}
-      {isFlyingHere && (
-        <View style={StyleSheet.absoluteFill} pointerEvents='none'>
-          {frozen ? <PlayingCard card={frozen} /> : <FoundationSlot suit={suit} />}
-        </View>
-      )}
-    </View>
-  )
-}
 
 /** A freecell's display - same reasoning as FoundationCell above: the real `card` stays mounted
  * and registered (via DraggableCard, just hidden by opacity) so the flight has something to
@@ -138,35 +82,13 @@ function FreecellCell({
   )
 }
 
-/** Thin wrapper so the screen body below can be a descendant of its own DragGhostProvider - it
- * needs useDragGhost() itself now (to drive the tap-to-move fly animation), not just the
- * PileView/DraggableCard children that used to be its only consumers. DealProvider wraps from
- * further out still, for the initial-deal animation (see components/dealing/DealLayer.tsx) - the
- * same split Klondike/Pyramid/Spider use. */
-export default function FreeCellScreen() {
-  return (
-    <DealProvider>
-      <DragGhostProvider>
-        <WinCascadeProvider>
-          <FreeCellScreenInner />
-        </WinCascadeProvider>
-      </DragGhostProvider>
-    </DealProvider>
-  )
-}
+export default withGameProviders(FreeCellScreenInner)
 
 function FreeCellScreenInner() {
-  const colors = useTableColors()
-  const { dark } = useTheme()
-  const { recordDealWon, recordDealAbandoned } = useGameStats()
-  const { setLastActiveGame, clearLastActiveGame } = useLastActiveGame()
-  const styles = useMemo(() => makeStyles(colors), [colors])
-  const dropZones = useDropZoneRegistry()
+  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const [state, setState] = useState<FreeCellState | null>(null)
-  const [undoStack, setUndoStack] = useState<UndoEntry[]>([])
+  const [undoStack, setUndoStack] = useState<UndoEntry<FreeCellState, MoveInfo>[]>([])
   const session = useGameSession()
-  const [won, setWon] = useState(false)
-  const recordedWinRef = useRef(false)
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
   const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, TABLEAU_GAP)
@@ -188,12 +110,9 @@ function FreeCellScreenInner() {
   // every card has finished landing. See runDeal's setTimeout for the timing.
   const [deckVisible, setDeckVisible] = useState(false)
   const dealTokenRef = useRef(0)
-  const pendingDealTokenRef = useRef<number | null>(null)
+  const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
-  /** Mirrors pendingDealTokenRef/pendingAutoMoveCardIdRef's own shape - set by checkWin, consumed
-   * by the [state]-effect below once the winning foundation cards have actually committed and
-   * registered themselves in CardRegistry (see runWinCascade). */
-  const pendingWinCascadeRef = useRef<{ gen: number } | null>(null)
+  const { won, setWon, recordedWinRef, pendingWinCascadeRef, checkWin } = useFoundationWinCheck(FreeCellController, 'freecell', session, dealTokenRef, recordDealWon)
   /** One ref per foundation slot's own container (see FoundationCell's slotRef) - measured
    * independently of CardRegistry so the win cascade can still find each pile's screen position
    * after its real King has been hidden (won-gated, see the foundation row below), at which point
@@ -216,6 +135,10 @@ function FreeCellScreenInner() {
   // below - suppresses exactly one auto-play check after an undo, so undo doesn't immediately get
   // replayed by the very mechanism it just reverted.
   const justUndidRef = useRef(false)
+  // Guards handleUndo against being called again before its own previous invocation has fully
+  // settled (visually, not just in state) - see handleUndo below for why an overlapping call would
+  // otherwise desync the undo stack or clobber the shared single-flight ghost animation.
+  const undoBusyRef = useRef(false)
 
   // Resumes a saved board if one exists, otherwise deals fresh - either way, this screen becomes
   // the "last active game" for as long as it stays mounted (see app/index.tsx), and stops being it
@@ -327,19 +250,6 @@ function FreeCellScreenInner() {
     winCascade.startChains(chains, cardWidth)
   }
 
-  // Runs once the just-set (but fully hidden) tableau has actually committed and its cards have
-  // registered themselves, and only once the deck placeholder below has too - same reasoning as
-  // Klondike's identical effect: measuring any earlier (e.g. synchronously right after setState)
-  // races the still-mounted previous deal's cards against the new ones' not-yet-run registration
-  // effects.
-  useEffect(() => {
-    if (pendingDealTokenRef.current === null || pendingDealTokenRef.current !== dealTokenRef.current || !state) return
-    const token = pendingDealTokenRef.current
-    pendingDealTokenRef.current = null
-    runDeal(state, token)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
-
   // Measuring CardRegistry synchronously right after the setState in applyMove would find the
   // still-mounted SOURCE card (the destination card's own registration effect hasn't run yet), so
   // the ghost would "fly" a near-zero distance back to roughly where it started - indistinguishable
@@ -358,9 +268,18 @@ function FreeCellScreenInner() {
       if (dealTokenRef.current !== pending.gen || !landed) {
         ghost.hide()
         setFlying(null)
+        undoBusyRef.current = false
         return
       }
-      ghost.flyTo(landed.x, landed.y, () => setFlying(null), { fast: pending.fast })
+      ghost.flyTo(
+        landed.x,
+        landed.y,
+        () => {
+          setFlying(null)
+          undoBusyRef.current = false
+        },
+        { fast: pending.fast }
+      )
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
@@ -395,6 +314,7 @@ function FreeCellScreenInner() {
     const myToken = ++dealTokenRef.current
     const s = FreeCellController.newGame(randomSeed())
     setUndoStack([])
+    undoBusyRef.current = false
     session.reset()
     setWon(false)
     recordedWinRef.current = false
@@ -404,7 +324,7 @@ function FreeCellScreenInner() {
     const dealtIds = new Set(s.tableau.flat().map((c) => c.id))
     setDealHiddenIds(dealtIds)
     setDeckVisible(true)
-    pendingDealTokenRef.current = myToken
+    scheduleDeal(myToken)
     setState(s)
   }
 
@@ -414,6 +334,7 @@ function FreeCellScreenInner() {
   function restoreGame(saved: SavedGame<FreeCellState>) {
     ++dealTokenRef.current
     setUndoStack([])
+    undoBusyRef.current = false
     session.restore(saved.moves, saved.elapsedSeconds)
     setWon(false)
     recordedWinRef.current = false
@@ -444,8 +365,22 @@ function FreeCellScreenInner() {
   // state), then revert and mark `move.from` as incoming so it flies the rest of the way there
   // exactly like a fresh move would.
   async function handleUndo() {
-    if (undoStack.length === 0 || !state) return
+    if (undoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
+    undoBusyRef.current = true
     justUndidRef.current = true
+    // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
+    // condition - the only move available once it's true is New Game), so any undo reachable while
+    // won must be undoing the winning move itself. Clears the "You Won!" banner and stops the
+    // bouncing win cascade immediately instead of leaving both stuck on screen over a board that's
+    // already reverted underneath them. Deliberately does NOT reset recordedWinRef - this deal was
+    // genuinely won at some point, and recordedWinRef staying true is what stops both a later re-win
+    // in this same deal from double-recording the stat, and a later "New Game" (without re-winning)
+    // from wrongly recording this already-won deal as abandoned too (see handleNewGame's own !won
+    // guard on recordDealAbandoned).
+    if (won) {
+      setWon(false)
+      winCascade.clear()
+    }
     const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
 
@@ -469,17 +404,7 @@ function FreeCellScreenInner() {
       pendingAutoMoveCardIdRef.current = { cardId: move.anchorCardId, gen: dealTokenRef.current }
     } else {
       setState(prevState)
-    }
-  }
-
-  function checkWin(next: FreeCellState, movesSoFar: number) {
-    if (FreeCellController.isWon(next) && !recordedWinRef.current) {
-      recordedWinRef.current = true
-      session.stopClock()
-      setWon(true)
-      recordDealWon('freecell', { seconds: session.elapsed, moves: movesSoFar, score: computeScore(movesSoFar, session.elapsed) })
-      clearGameInProgress('freecell')
-      pendingWinCascadeRef.current = { gen: dealTokenRef.current }
+      undoBusyRef.current = false
     }
   }
 
@@ -615,11 +540,7 @@ function FreeCellScreenInner() {
 
   function tableauRunCount(colIndex: number, indexFromTop: number): number {
     if (!state) return 0
-    const pile = state.tableau[colIndex]
-    const count = indexFromTop + 1
-    const run = pile.slice(pile.length - count)
-    if (count > 1 && !isDescendingAltColor(run)) return 0
-    return count
+    return runCountFrom(state.tableau[colIndex], indexFromTop, isDescendingAltColor)
   }
 
   if (!state) {
@@ -701,36 +622,13 @@ function FreeCellScreenInner() {
     not buried under it. */}
       {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && (
-        <View style={styles.winOverlay}>
-          <View style={styles.winCard}>
-            <Text style={styles.winTitle}>You Won!</Text>
-            <Text style={styles.winSubtitle}>
-              Time: {formatTime(session.elapsed)} · Moves: {session.moves} · Score: {computeScore(session.moves, session.elapsed)}
-            </Text>
-            <Pressable style={styles.button} onPress={startNewGame}>
-              <Text style={styles.buttonText}>New Game</Text>
-            </Pressable>
-          </View>
-        </View>
-      )}
+      {won && <WinBanner colors={colors} elapsedSeconds={session.elapsed} moves={session.moves} score={computeScore(session.moves, session.elapsed)} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }
 
 function makeStyles(colors: TableColors) {
   return StyleSheet.create({
-    button: {
-      backgroundColor: '#ffffffee',
-      borderRadius: 8,
-      paddingHorizontal: 14,
-      paddingVertical: 8
-    },
-    buttonText: {
-      color: colors.tableFeltDark,
-      fontFamily: CARD_FONT_FAMILY,
-      fontWeight: '700'
-    },
     container: {
       backgroundColor: colors.tableFelt,
       flex: 1,
@@ -763,35 +661,6 @@ function makeStyles(colors: TableColors) {
       flexDirection: 'row',
       justifyContent: 'space-between',
       marginBottom: 16
-    },
-    winCard: {
-      alignItems: 'center',
-      backgroundColor: '#ffffffee',
-      borderRadius: 16,
-      gap: 12,
-      padding: 28
-    },
-    winOverlay: {
-      alignItems: 'center',
-      backgroundColor: '#00000088',
-      bottom: 0,
-      justifyContent: 'center',
-      left: 0,
-      position: 'absolute',
-      right: 0,
-      top: 0
-    },
-    winSubtitle: {
-      color: '#444',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      marginBottom: 8
-    },
-    winTitle: {
-      color: colors.tableFeltDark,
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 28,
-      fontWeight: '800'
     }
   })
 }

@@ -4,6 +4,7 @@ import { Toaster, ToastProvider } from '@rific/toaster'
 import { Stack } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
 import { useEffect, useState } from 'react'
+import { StyleSheet } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import * as RNPaper from 'react-native-paper'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
@@ -136,7 +137,7 @@ export default function RootLayout() {
   if (!themeLoaded || !appSettingsLoaded || !profilesLoaded || !vibrateLoaded || !soundFxLoaded || !lastActiveGameLoaded || !fontsLoaded) return null
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider>
         <ProfilesProvider initialState={profilesInitial!}>
           <GameStatsProvider>
@@ -160,3 +161,9 @@ export default function RootLayout() {
     </GestureHandlerRootView>
   )
 }
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1
+  }
+})

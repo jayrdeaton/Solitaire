@@ -55,3 +55,18 @@ export function buriedCount(pile: Card[], isValidRun: (cards: Card[]) => boolean
   }
   return runStart
 }
+
+/** True if the top `indexFromTop + 1` cards of `pile` are all face-up and (when more than one)
+ * form a valid run per `isValidRun` - i.e. legally draggable as one unit starting at that depth.
+ * Returns that run length if so, 0 otherwise. Shared by Klondike/FreeCell (isValidRun =
+ * isDescendingAltColor) and Spider (isValidRun = isDescendingSameSuit) for their drag-config
+ * getRunCount callbacks - Pyramid has no multi-card tableau runs, so N/A there. The face-up check
+ * is a no-op for FreeCell (whose whole tableau is always face-up), but must stay unconditional:
+ * Klondike has genuine face-down cards, and a run dipping into one is never draggable. */
+export function runCountFrom(pile: Card[], indexFromTop: number, isValidRun: (cards: Card[]) => boolean): number {
+  const count = indexFromTop + 1
+  const run = pile.slice(pile.length - count)
+  if (run.some((c) => !c.faceUp)) return 0
+  if (count > 1 && !isValidRun(run)) return 0
+  return count
+}

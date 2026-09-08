@@ -2,9 +2,10 @@
 
 import { pickBestTableauTarget } from '@/engine/autoMove'
 import { shuffledDeck } from '@/engine/deck'
+import { canPlaceOnFoundation, suitIndex } from '@/engine/foundation'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { isDescendingAltColor, top } from '@/engine/pile'
-import { Card, cardColor, SUITS } from '@/engine/types'
+import { Card, cardColor, cloneCard } from '@/engine/types'
 
 export interface KlondikeState {
   /** 7 tableau columns. */
@@ -22,10 +23,10 @@ function cloneState(state: KlondikeState): KlondikeState {
     // would leave that same card object shared with the pre-move state sitting in the undo stack,
     // silently "flipping" it there too. Matches Spider's/Pyramid's cloneState, which already clone
     // at the card level for the same reason.
-    tableau: state.tableau.map((col) => col.map((c) => ({ ...c }))),
-    foundation: state.foundation.map((f) => f.map((c) => ({ ...c }))),
-    stock: state.stock.map((c) => ({ ...c })),
-    waste: state.waste.map((c) => ({ ...c }))
+    tableau: state.tableau.map((col) => col.map(cloneCard)),
+    foundation: state.foundation.map((f) => f.map(cloneCard)),
+    stock: state.stock.map(cloneCard),
+    waste: state.waste.map(cloneCard)
   }
 }
 
@@ -55,18 +56,6 @@ function canPlaceOnTableau(dest: Card[], moving: Card[]): boolean {
   const destColor = cardColor(destTop.suit)
   const movingColor = cardColor(movingTop.suit)
   return movingTop.rank === destTop.rank - 1 && destColor !== movingColor
-}
-
-function canPlaceOnFoundation(dest: Card[], moving: Card): boolean {
-  const destTop = top(dest)
-  if (destTop === undefined) {
-    return moving.rank === 1
-  }
-  return destTop.suit === moving.suit && moving.rank === destTop.rank + 1
-}
-
-function suitIndex(suit: Card['suit']): number {
-  return SUITS.indexOf(suit)
 }
 
 export function createKlondikeController(drawCount: 1 | 3): GameController<KlondikeState> {

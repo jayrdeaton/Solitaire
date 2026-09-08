@@ -1,5 +1,5 @@
 import { makeDeck, shuffledDeck } from '@/engine/deck'
-import { isDescendingAltColor, isDescendingSameSuit } from '@/engine/pile'
+import { isDescendingAltColor, isDescendingSameSuit, runCountFrom } from '@/engine/pile'
 import { mulberry32, shuffle } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
@@ -74,6 +74,39 @@ describe('pile helpers', () => {
   it('rejects a mixed-suit run for same-suit check', () => {
     const run = [card('hearts', 10), card('diamonds', 9)]
     expect(isDescendingSameSuit(run)).toBe(false)
+  })
+
+  describe('runCountFrom', () => {
+    it('returns the run length for a single face-up card', () => {
+      const pile = [card('clubs', 8), card('hearts', 7)]
+      expect(runCountFrom(pile, 0, isDescendingAltColor)).toBe(1)
+    })
+
+    it('returns the run length for a valid multi-card run', () => {
+      const pile = [card('clubs', 8), card('hearts', 7), card('spades', 6)]
+      expect(runCountFrom(pile, 1, isDescendingAltColor)).toBe(2)
+    })
+
+    it('returns 0 when the requested depth is not a valid run', () => {
+      const pile = [card('clubs', 8), card('spades', 7)] // same color, not alternating
+      expect(runCountFrom(pile, 1, isDescendingAltColor)).toBe(0)
+    })
+
+    it('returns 0 when the run dips into a face-down card, even if it would otherwise be valid', () => {
+      // A 2-card alt-color run (black 8, red 7) that isn't draggable because the deeper card
+      // (the 8) is still face-down - the exact case that made a naive Klondike/FreeCell merge
+      // unsafe (FreeCell's tableau is always face-up, so it never needed this guard itself).
+      const pile = [{ ...card('clubs', 8), faceUp: false }, card('hearts', 7)]
+      expect(runCountFrom(pile, 1, isDescendingAltColor)).toBe(0)
+    })
+
+    it('does not require isValidRun to hold for a single face-up card', () => {
+      // count === 1 skips the isValidRun check entirely - isDescendingSameSuit would trivially
+      // pass on a 1-element array anyway, but this pins down that runCountFrom itself never calls
+      // isValidRun for a lone card.
+      const pile = [card('hearts', 5)]
+      expect(runCountFrom(pile, 0, isDescendingSameSuit)).toBe(1)
+    })
   })
 })
 

@@ -92,12 +92,12 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
     <View style={[styles.group, style]}>
       <View style={styles.wasteArea}>
         {frozenBehind2 && (
-          <View style={[styles.wasteBehindCard, { left: -fanOffset * 2, zIndex: 1 }]} pointerEvents='none'>
+          <View style={[styles.wasteBehindCard, styles.wasteBehindFar, { left: -fanOffset * 2 }]} pointerEvents='none'>
             <PlayingCard card={frozenBehind2} />
           </View>
         )}
         {frozenBehind1 && (
-          <View style={[styles.wasteBehindCard, { left: -fanOffset, zIndex: 2 }]} pointerEvents='none'>
+          <View style={[styles.wasteBehindCard, styles.wasteBehindNear, { left: -fanOffset }]} pointerEvents='none'>
             <PlayingCard card={frozenBehind1} />
           </View>
         )}
@@ -129,6 +129,10 @@ function makeStyles(colors: TableColors) {
       flexDirection: 'row',
       gap: 10
     },
+    recycleIcon: {
+      color: colors.emptySlot,
+      fontSize: 24
+    },
     // position: 'relative' alone doesn't establish a stacking context in React Native (see
     // PileView's own container style for the same note) - the explicit zIndex here scopes
     // wasteBehindCard's/the DropZone's zIndex values to just this group, instead of leaking out
@@ -144,14 +148,20 @@ function makeStyles(colors: TableColors) {
       position: 'absolute',
       top: 0
     },
+    // The farther-back of the two draw-3 behind slots (wasteBehind[1]) - beneath wasteBehindNear,
+    // which itself sits beneath wasteTopZone (3).
+    wasteBehindFar: {
+      zIndex: 1
+    },
+    // The nearer of the two draw-3 behind slots (wasteBehind[0]) - above wasteBehindFar, still
+    // beneath wasteTopZone (3).
+    wasteBehindNear: {
+      zIndex: 2
+    },
     // Always above both wasteBehindCard slots (zIndex 1 and 2 above) - wasteTop is always the
     // frontmost, fully-visible card regardless of wasteHiddenCount.
     wasteTopZone: {
       zIndex: 3
-    },
-    recycleIcon: {
-      color: colors.emptySlot,
-      fontSize: 24
     }
   })
 }

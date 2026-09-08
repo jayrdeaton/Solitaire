@@ -1,4 +1,4 @@
-import { RefObject, useRef } from 'react'
+import { RefObject, useState } from 'react'
 import { View } from 'react-native'
 
 interface Rect {
@@ -48,7 +48,9 @@ export class CardRegistry {
 }
 
 export function useCardRegistry(): CardRegistry {
-  const ref = useRef<CardRegistry | null>(null)
-  if (!ref.current) ref.current = new CardRegistry()
-  return ref.current
+  // A lazy useState initializer (not useRef) - it runs exactly once on mount, same as the old
+  // ref-based lazy-init, but without mutating a ref during render (the setter is never called, so
+  // this never actually re-renders).
+  const [registry] = useState(() => new CardRegistry())
+  return registry
 }

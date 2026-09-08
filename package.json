@@ -6,14 +6,14 @@
   "type": "commonjs",
   "main": "expo-router/entry",
   "scripts": {
-    "android": "expo start --android",
+    "android": "expo run:android",
     "build": "rific-updater-build",
     "client": "expo start --dev-client",
     "doctor": "expo install --fix && npx expo-doctor@latest",
     "fingerprint:compare": "eas fingerprint:compare",
     "fix": "expo lint . --fix",
     "postinstall": "setup-skia-web",
-    "ios": "expo start --ios",
+    "ios": "expo run:ios",
     "lint": "expo lint .",
     "reset": "expo start -c",
     "run": "eas build:run",
@@ -90,6 +90,7 @@
     "jest-expo": "~57.0.5",
     "prettier": "^3.9.6",
     "svgson": "^5.3.1",
+    "test-renderer": "^1.2.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.65.0"
   }

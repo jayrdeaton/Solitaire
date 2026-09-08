@@ -12,7 +12,7 @@
 import { shuffledDeck } from '@/engine/deck'
 import { GameController, Move, PileRef } from '@/engine/gameTypes'
 import { top } from '@/engine/pile'
-import { Card } from '@/engine/types'
+import { Card, cloneCard } from '@/engine/types'
 
 export interface PyramidState {
   /** Flat 28-slot triangle; `null` once that card has been removed. */
@@ -63,10 +63,6 @@ export function isExposed(pyramid: (Card | null)[], row: number, col: number): b
 function isExposedAt(pyramid: (Card | null)[], index: number): boolean {
   const { row, col } = rowColOf(index)
   return isExposed(pyramid, row, col)
-}
-
-function cloneCard(c: Card): Card {
-  return { ...c }
 }
 
 function cloneState(state: PyramidState): PyramidState {

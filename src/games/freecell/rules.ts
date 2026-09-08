@@ -2,9 +2,10 @@
 
 import { pickBestTableauTarget } from '@/engine/autoMove'
 import { shuffledDeck } from '@/engine/deck'
+import { canPlaceOnFoundation, suitIndex } from '@/engine/foundation'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { isDescendingAltColor, top } from '@/engine/pile'
-import { Card, cardColor, SUITS } from '@/engine/types'
+import { Card, cardColor } from '@/engine/types'
 
 export interface FreeCellState {
   /** 8 tableau columns, all cards always face-up. */
@@ -25,16 +26,6 @@ function cloneState(state: FreeCellState): FreeCellState {
     freecells: state.freecells.slice(),
     foundation: state.foundation.map((f) => f.slice())
   }
-}
-
-function suitIndex(suit: Card['suit']): number {
-  return SUITS.indexOf(suit)
-}
-
-function canPlaceOnFoundation(dest: Card[], moving: Card): boolean {
-  const destTop = top(dest)
-  if (destTop === undefined) return moving.rank === 1
-  return destTop.suit === moving.suit && moving.rank === destTop.rank + 1
 }
 
 /** A single card (the top of the moving group) landing on a tableau column. */

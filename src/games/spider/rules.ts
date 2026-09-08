@@ -2,7 +2,7 @@ import { pickBestTableauTarget } from '@/engine/autoMove'
 import { shuffledDeck } from '@/engine/deck'
 import { GameController, Move, PileRef } from '@/engine/gameTypes'
 import { isDescendingSameSuit, top } from '@/engine/pile'
-import { Card, SUITS } from '@/engine/types'
+import { Card, cloneCard, SUITS } from '@/engine/types'
 
 export interface SpiderState {
   tableau: Card[][]
@@ -22,10 +22,10 @@ const DEAL_COUNTS = [6, 6, 6, 6, 5, 5, 5, 5, 5, 5] // 4 columns of 6, 6 columns 
 
 function cloneState(state: SpiderState): SpiderState {
   return {
-    tableau: state.tableau.map((col) => col.map((c) => ({ ...c }))),
-    stock: state.stock.map((c) => ({ ...c })),
-    completed: state.completed.map((c) => ({ ...c })),
-    completedRuns: state.completedRuns.map((run) => run.map((c) => ({ ...c })))
+    tableau: state.tableau.map((col) => col.map(cloneCard)),
+    stock: state.stock.map(cloneCard),
+    completed: state.completed.map(cloneCard),
+    completedRuns: state.completedRuns.map((run) => run.map(cloneCard))
   }
 }
 

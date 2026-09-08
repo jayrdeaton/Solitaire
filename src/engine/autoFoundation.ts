@@ -23,18 +23,13 @@
 // can't return true while the stock still has cards in it: isWon requires all 52 cards on
 // foundations, and nothing here can ever draw from stock to reach them.
 
+import { canPlaceOnFoundation, suitIndex } from './foundation'
 import { AccessibleCard, GameController, PileRef } from './gameTypes'
 import { top } from './pile'
 import { Card, cardColor, Suit, SUITS } from './types'
 
-function canPlaceOnFoundation(dest: Card[], moving: Card): boolean {
-  const destTop = top(dest)
-  if (destTop === undefined) return moving.rank === 1
-  return destTop.suit === moving.suit && moving.rank === destTop.rank + 1
-}
-
 function foundationRank(foundation: Card[][], suit: Suit): number {
-  return top(foundation[SUITS.indexOf(suit)])?.rank ?? 0
+  return top(foundation[suitIndex(suit)])?.rank ?? 0
 }
 
 /** True if no card of the opposite color could still need `card` as a tableau landing spot - see
@@ -51,7 +46,7 @@ export function isSafeAutoPlay(foundation: Card[][], card: Card): boolean {
  * can make the next card both accessible and safe. */
 export function findSafeAutoPlay(accessible: AccessibleCard[], foundation: Card[][]): AccessibleCard | null {
   for (const entry of accessible) {
-    if (canPlaceOnFoundation(foundation[SUITS.indexOf(entry.card.suit)], entry.card) && isSafeAutoPlay(foundation, entry.card)) {
+    if (canPlaceOnFoundation(foundation[suitIndex(entry.card.suit)], entry.card) && isSafeAutoPlay(foundation, entry.card)) {
       return entry
     }
   }
@@ -63,7 +58,7 @@ export function findSafeAutoPlay(accessible: AccessibleCard[], foundation: Card[
 function findNextFoundationMove<TState>(controller: GameController<TState>, state: TState): AccessibleCard | null {
   if (!controller.accessibleCards) return null
   for (const entry of controller.accessibleCards(state)) {
-    const to: PileRef = { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) }
+    const to: PileRef = { zone: 'foundation', index: suitIndex(entry.card.suit) }
     if (controller.tryMove(state, { from: entry.ref, to, count: 1 })) return entry
   }
   return null
@@ -79,7 +74,7 @@ export function isFullyAutoCompletable<TState>(controller: GameController<TState
   while (!controller.isWon(cur)) {
     const entry = findNextFoundationMove(controller, cur)
     if (!entry) return false
-    const to: PileRef = { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) }
+    const to: PileRef = { zone: 'foundation', index: suitIndex(entry.card.suit) }
     const result = controller.tryMove(cur, { from: entry.ref, to, count: 1 })
     if (!result) return false // unreachable - findNextFoundationMove only returns moves tryMove already accepted
     cur = result

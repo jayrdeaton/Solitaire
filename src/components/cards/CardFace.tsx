@@ -139,6 +139,11 @@ export const CardFace = React.memo(function CardFace({ card, colors, width, heig
 
   return (
     <View
+      // Every property below is a function of this instance's own props (width/height/muted/color/
+      // invertDarkModeColors, or a theme color drawn from one of those) - there's no constant
+      // subset left to hoist into the static StyleSheet below, so this stays inline rather than
+      // faking a fixed style just to satisfy the linter.
+      // eslint-disable-next-line react-native/no-inline-styles
       style={{
         width,
         height,
@@ -165,7 +170,7 @@ export const CardFace = React.memo(function CardFace({ card, colors, width, heig
           box doesn't sit flush with its own top edge the way an SVG's does, so matching
           box tops still reads as uneven; centering the row is more forgiving. There's
           deliberately no mirrored bottom copy - these cards are never viewed upside down. */}
-      <View style={[styles.cornerRow, { top: width * CORNER_ROW_TOP_FRACTION, left: -2, right: 3, height: cornerRowHeight }]}>
+      <View style={[styles.cornerRow, { top: width * CORNER_ROW_TOP_FRACTION, height: cornerRowHeight }]}>
         <Text numberOfLines={1} style={[styles.rankText, { color, fontSize: width * 0.34, width: width * RANK_TEXT_WIDTH_FRACTION, letterSpacing: -width * 0.02 }]}>
           {rankLabel(card.rank)}
         </Text>
@@ -173,7 +178,7 @@ export const CardFace = React.memo(function CardFace({ card, colors, width, heig
       </View>
 
       {courtRank ? (
-        <View style={{ position: 'absolute', left: 0, right: 0, top: cornerRowHeight + height * COURT_TOP_INSET_FRACTION }}>{muted ? <CourtFigure rank={courtRank} color={color} width={width} height={height - cornerRowHeight} /> : <DecoratedCourtFigure suit={card.suit} rank={courtRank} width={width} height={height - cornerRowHeight} colorOverrides={colorOverrides} />}</View>
+        <View style={[styles.courtFigureWrap, { top: cornerRowHeight + height * COURT_TOP_INSET_FRACTION }]}>{muted ? <CourtFigure rank={courtRank} color={color} width={width} height={height - cornerRowHeight} /> : <DecoratedCourtFigure suit={card.suit} rank={courtRank} width={width} height={height - cornerRowHeight} colorOverrides={colorOverrides} />}</View>
       ) : (
         <View style={[styles.centerFill, { top: cornerRowHeight }]}>
           <SuitPip suit={card.suit} color={color} size={width * 0.74} theme={isTarot ? 'tarot' : 'standard'} />
@@ -196,8 +201,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
+    // Nudges the row slightly wider than the card's own edges (a hair off each side) - purely a
+    // visual balance tweak for the rank/suit glyphs, unrelated to `top`/`height` below (both
+    // genuinely dynamic fractions of `width`, so they stay inline rather than living here).
+    left: -2,
     position: 'absolute',
+    right: 3,
     zIndex: 2
+  },
+  courtFigureWrap: {
+    left: 0,
+    position: 'absolute',
+    right: 0
   },
   rankText: {
     fontFamily: CARD_FONT_FAMILY,

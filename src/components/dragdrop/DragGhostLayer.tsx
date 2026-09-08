@@ -126,6 +126,17 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
     settle()
   }
 
+  // react-hooks/immutability flags dx/dy/originX/originY.value= below as mutating "a value passed
+  // as an argument to" useMemo, the same way it would for a plain captured object - it has no
+  // model of Reanimated SharedValues as a side-channel that deliberately lives outside React's
+  // render/memoization system: mutating `.value` never re-renders anything and isn't part of any
+  // memoized computation, so it can't invalidate `controller`'s own memoization regardless of when
+  // snapBack/flyTo actually run (always later, from a caller's own event handler - never during
+  // this render). Confirmed this isn't fixable via config either: explicitly enabling the
+  // compiler's `enableCustomTypeDefinitionForReanimated` environment flag for this rule didn't
+  // change this file's warning count - it only special-cases a useSharedValue()/useDerivedValue()
+  // call's own immediate return value, not one mutated from inside a memoized closure like this.
+  /* eslint-disable react-hooks/immutability */
   const controller = useMemo<DragGhostController>(
     () => ({
       originX,
@@ -175,6 +186,7 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
     }),
     [originX, originY, dx, dy, cardRegistry, playInvalidSound, hapticInvalid]
   )
+  /* eslint-enable react-hooks/immutability */
 
   // Reveals the real card (and hides the ghost) `config.duration` after a flight starts, instead
   // of waiting on withSpring's own per-axis completion callback the way flyTo/snapBack originally
@@ -209,9 +221,9 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
       <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
         {ghost && (
           <CardSizeProvider width={ghost.cardWidth}>
-            <Animated.View style={[{ position: 'absolute', left: 0, top: 0 }, animatedStyle]}>
+            <Animated.View style={[styles.ghostLayer, animatedStyle]}>
               {ghost.cards.map((c, i) => (
-                <View key={c.id} style={{ position: 'absolute', top: i * ghost.offsetStep, left: 0 }}>
+                <View key={c.id} style={[styles.stackedCard, { top: i * ghost.offsetStep }]}>
                   <PlayingCard card={c} />
                 </View>
               ))}
@@ -222,3 +234,15 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
     </DragGhostContext.Provider>
   )
 }
+
+const styles = StyleSheet.create({
+  ghostLayer: {
+    left: 0,
+    position: 'absolute',
+    top: 0
+  },
+  stackedCard: {
+    left: 0,
+    position: 'absolute'
+  }
+})

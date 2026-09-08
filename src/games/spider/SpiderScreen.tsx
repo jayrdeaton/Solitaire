@@ -3,32 +3,34 @@ import { Fireworks } from '@tastic/animations/fireworks'
 import { computeContentBounds } from '@tastic/core'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, Text, useWindowDimensions, View, ViewStyle } from 'react-native'
-import { useTheme } from 'react-native-paper'
 
 import { faceUpFanOffset } from '@/components/cards/CardFace'
 import { CardSizeProvider, cardWidthForRow, useCardSize } from '@/components/CardSizeContext'
-import { DealCardSpec, DealProvider, useDealAnimator } from '@/components/dealing/DealLayer'
+import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
-import { DragGhostProvider, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
-import { useDropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
 import { formatTime, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
-import { fireworksColors, TableColors, useTableColors } from '@/components/theme'
+import { fireworksColors, TableColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { useGameSession } from '@/components/useGameSession'
-import { ChainSpec, useWinCascade, WinCascadeGhosts, WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
+import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { PileRef } from '@/engine/gameTypes'
+import { isDescendingSameSuit, runCountFrom } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
-import { clearGameInProgress, loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
-import { useGameStats } from '@/stores/gameStats'
-import { useLastActiveGame } from '@/stores/lastActiveGame'
+import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
+import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
+import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
+import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { withGameProviders } from '@/games/shared/withGameProviders'
+import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 import { useSettings } from '@/stores/settings'
 
 import { buildSpiderDealSequence } from './dealSequence'
@@ -54,57 +56,15 @@ function stockPacketId(index: number): string {
   return `stock-packet-${index}`
 }
 
-/** Records enough about an applied move to reverse its animation later - undoing doesn't just
- * revert to the previous state snapshot, it flies the moved card(s) back from wherever they
- * currently sit (`to`) to their previous pile (`from`), mirroring the forward flight in reverse. */
-interface MoveInfo {
-  from: PileRef
-  to: PileRef
-  count: number
-  anchorCardId: string
-}
+/** Null for a stock deal (10 cards land across every column at once - see runDeal - rather than
+ * one card landing somewhere new, so there's no single MoveInfo shape to record) - handleUndo
+ * detects this case itself and flies all 10 back to the stock fan (see runUndoDeal). */
+type HistoryEntry = UndoEntry<SpiderState>
 
-interface HistoryEntry {
-  state: SpiderState
-  /** Null for a stock deal (10 cards land across every column at once - see runDeal - rather than
-   * one card landing somewhere new, so there's no single MoveInfo shape to record) - handleUndo
-   * detects this case itself and flies all 10 back to the stock fan (see runUndoDeal). */
-  move: MoveInfo | null
-}
-
-function isDescendingSameSuitRun(cards: Card[]): boolean {
-  for (let i = 1; i < cards.length; i++) {
-    if (cards[i].rank !== cards[i - 1].rank - 1) return false
-    if (cards[i].suit !== cards[i - 1].suit) return false
-  }
-  return true
-}
-
-/** Thin wrapper so the screen body below can be a descendant of its own DragGhostProvider - it
- * needs useDragGhost() itself now (to drive the tap-to-move fly animation), not just the
- * PileView children that used to be its only consumers. DealProvider wraps from further out
- * still, for both the initial deal and every later stock-deal (see runInitialDeal/runDeal below)
- * - a separate mechanism from DragGhostProvider's single-flight ghost, since either one needs up
- * to 54 (or 10) cards flying independently at once. */
-export default function SpiderScreen() {
-  return (
-    <DealProvider>
-      <DragGhostProvider>
-        <WinCascadeProvider>
-          <SpiderScreenInner />
-        </WinCascadeProvider>
-      </DragGhostProvider>
-    </DealProvider>
-  )
-}
+export default withGameProviders(SpiderScreenInner)
 
 function SpiderScreenInner() {
-  const colors = useTableColors()
-  const { dark } = useTheme()
-  const { recordDealWon, recordDealAbandoned } = useGameStats()
-  const { setLastActiveGame, clearLastActiveGame } = useLastActiveGame()
-  const styles = useMemo(() => makeStyles(colors), [colors])
-  const dropZones = useDropZoneRegistry()
+  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { settings } = useSettings()
   const [ready, setReady] = useState(false)
   // The suit count of the game currently in progress - only updated when a new game actually
@@ -118,10 +78,8 @@ function SpiderScreenInner() {
   const [state, setState] = useState<SpiderState | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const session = useGameSession()
-  const [won, setWon] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
 
-  const recordedRef = useRef(false)
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
   const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, TABLEAU_GAP)
@@ -135,12 +93,9 @@ function SpiderScreenInner() {
    * packet dealt from - see handleDrawStock) rather than a bare token, since a card can immediately
    * complete (and get removed as part of) a run the instant it's dealt - see runDeal's comment. */
   const pendingDealRef = useRef<{ dealt: { card: Card; colIndex: number }[]; origin: { x: number; y: number } | null; token: number } | null>(null)
-  /** An initial deal awaiting its post-commit measurement + deal.start() (see runInitialDeal/the
-   * effect below) - just a token, unlike pendingDealRef above: the freshly dealt tableau can't
-   * have already completed a run before any of its cards have even landed, so there's no need to
-   * stash a pre-captured card list - runInitialDeal re-reads it straight from `state`, exactly
-   * like Klondike's own initial-deal effect does. */
-  const pendingInitialDealTokenRef = useRef<number | null>(null)
+  // runInitialDeal re-reads the dealt tableau straight from `state`, exactly like Klondike's own
+  // initial-deal effect does - see useDeferredDeal's own doc comment for the race this guards.
+  const scheduleInitialDeal = useDeferredDeal(state, dealTokenRef, runInitialDeal)
   /** An undone stock deal awaiting its post-commit measurement + deal.start() (see runUndoDeal/the
    * effect below) - the mirror image of pendingDealRef: this flight's origins (where the dealt
    * cards currently sit) are measured up front, before the revert below removes them, while its
@@ -153,11 +108,15 @@ function SpiderScreenInner() {
     token: number
   } | null>(null)
   const pendingAutoMoveCardIdRef = useRef<string | null>(null)
+  // Guards handleUndo against being called again before its own previous invocation has fully
+  // settled (visually, not just in state) - see handleUndo/runUndoDeal below for why an overlapping
+  // call would otherwise desync `history` or clobber the shared single-flight ghost/deal animation.
+  const undoBusyRef = useRef(false)
   const winCascade = useWinCascade()
-  /** Mirrors pendingInitialDealTokenRef/pendingDealRef's own shape - set by the win-check effect,
-   * consumed by the [state]-effect below once the winning completed-run slots have actually
-   * committed (see runWinCascade). */
-  const pendingWinCascadeRef = useRef<{ gen: number } | null>(null)
+  // Derived from `state` every render (see useDerivedWinCheck) rather than mirrored into its own
+  // useState: it's a pure function of state, so Undo-ing out of a won position correctly drops the
+  // win banner immediately, rather than leaving it stuck showing.
+  const { won, recordedRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, 'spider', session, dealTokenRef, recordDealWon)
   /** One ref per completed-sequence slot below - unlike a foundation pile's own card, these slots
    * have no per-card CardRegistry registration (there's no single occupant identity to track, just
    * "is this run done or not") - measured the same plain-view way Pyramid's discard pile is. */
@@ -175,8 +134,8 @@ function SpiderScreenInner() {
       const myToken = ++dealTokenRef.current
       const s = ctrl.newGame(randomSeed())
       setHistory([])
+      undoBusyRef.current = false
       session.reset()
-      setWon(false)
       setMessage(null)
       recordedRef.current = false
       winCascade.clear()
@@ -184,7 +143,7 @@ function SpiderScreenInner() {
 
       const dealtIds = new Set(s.tableau.flat().map((c) => c.id))
       setDealHiddenIds(dealtIds)
-      pendingInitialDealTokenRef.current = myToken
+      scheduleInitialDeal(myToken)
       setState(s)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -202,8 +161,8 @@ function SpiderScreenInner() {
     const suits = saved.config === 1 || saved.config === 2 || saved.config === 4 ? saved.config : settings.spiderSuits
     setNumSuits(suits)
     setHistory([])
+    undoBusyRef.current = false
     session.restore(saved.moves, saved.elapsedSeconds)
-    setWon(false)
     setMessage(null)
     recordedRef.current = false
     setDealHiddenIds(new Set())
@@ -225,31 +184,17 @@ function SpiderScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Saves after every move/undo/autoplay/fresh-deal (all flow through setState). Gated on !won:
-  // Undo is never disabled post-win (a pre-existing gap, out of scope here), so without this guard,
-  // winning and then tapping the still-enabled Undo would resurrect a save for an already-resolved
-  // deal right after the win-check effect below just cleared it.
+  // Saves after every move/undo/autoplay/fresh-deal (all flow through setState). Gated on !won so
+  // a just-won deal doesn't get checkpointed as still in-progress (the win-check effect below
+  // clears the save outright instead) - since `won` is derived fresh from `state` on every render,
+  // undoing back out of a won position re-enables saving again on that same render, no separate
+  // reset needed.
   useEffect(() => {
     if (state && !won) {
       saveGameInProgress('spider', { state, moves: session.moves, elapsedSeconds: session.elapsed, config: numSuits })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, won, numSuits])
-
-  useEffect(() => {
-    if (!state) return
-    if (controller.isWon(state) && !won) {
-      setWon(true)
-      if (!recordedRef.current) {
-        recordedRef.current = true
-        session.stopClock()
-        recordDealWon('spider', { seconds: session.elapsed, moves: session.moves, score: computeScore(session.moves, session.elapsed) })
-        clearGameInProgress('spider')
-        pendingWinCascadeRef.current = { gen: dealTokenRef.current }
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
 
   // Foundation-equivalent measurement for Spider's win cascade: each completed run's own slot
   // (see completedSlotRefs above) is a stable, always-mounted plain View - unlike a foundation
@@ -288,10 +233,14 @@ function SpiderScreenInner() {
     ;(async () => {
       const landed = await ghost.cardRegistry.measure(cardId)
       if (landed) {
-        ghost.flyTo(landed.x, landed.y, () => setFlying(null))
+        ghost.flyTo(landed.x, landed.y, () => {
+          setFlying(null)
+          undoBusyRef.current = false
+        })
       } else {
         ghost.hide()
         setFlying(null)
+        undoBusyRef.current = false
       }
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -389,14 +338,6 @@ function SpiderScreenInner() {
     )
   }
 
-  useEffect(() => {
-    if (pendingInitialDealTokenRef.current === null || pendingInitialDealTokenRef.current !== dealTokenRef.current || !state) return
-    const token = pendingInitialDealTokenRef.current
-    pendingInitialDealTokenRef.current = null
-    runInitialDeal(state, token)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
-
   // Reverses a stock deal's own forward flight (see runDeal/handleDrawStock): the 10 cards that
   // deal placed fly from their current tableau spots - already measured by the caller, before its
   // own revert removed them - back to the stock fan's restored packet, converging on that one
@@ -406,20 +347,28 @@ function SpiderScreenInner() {
   // here already uses for an unmeasurable side.
   async function runUndoDeal(entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null }[], destinationPacketIndex: number, token: number) {
     const destination = await ghost.cardRegistry.measure(stockPacketId(destinationPacketIndex))
-    if (dealTokenRef.current !== token || !destination) return
+    if (dealTokenRef.current !== token || !destination) {
+      undoBusyRef.current = false
+      return
+    }
 
     const dealEntries: DealCardSpec[] = []
     entries.forEach((e) => {
       if (!e.origin) return
       dealEntries.push({ cardId: e.card.id, card: e.card, from: e.origin, to: destination, delayMs: e.delayMs })
     })
-    if (dealEntries.length === 0) return
+    if (dealEntries.length === 0) {
+      undoBusyRef.current = false
+      return
+    }
 
     deal.start(
       dealEntries,
       cardWidth,
       () => {},
-      () => {}
+      () => {
+        undoBusyRef.current = false
+      }
     )
   }
 
@@ -476,6 +425,12 @@ function SpiderScreenInner() {
     const movingCards = sourcePile.slice(sourcePile.length - move.count)
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
+    // react-hooks/immutability treats `ghost` (from useDragGhost(), a custom hook) as an opaque
+    // value - it can't see that originX/originY/dx/dy are Reanimated SharedValues, mutable by
+    // design, the same way it can't for the identical pattern in PileView.tsx/DraggableCard.tsx's
+    // own worklets (see DragGhostLayer.tsx for the full explanation, including why this isn't
+    // fixable via the compiler's own Reanimated-aware config flag).
+    /* eslint-disable-next-line react-hooks/immutability */
     ghost.originX.value = origin.x
     ghost.originY.value = origin.y
     ghost.dx.value = 0
@@ -513,16 +468,16 @@ function SpiderScreenInner() {
 
   function tableauRunCount(colIndex: number, indexFromTop: number): number {
     if (!state) return 0
-    const col = state.tableau[colIndex]
-    const count = indexFromTop + 1
-    const run = col.slice(col.length - count)
-    if (!run.every((c) => c.faceUp) || !isDescendingSameSuitRun(run)) return 0
-    return count
+    return runCountFrom(state.tableau[colIndex], indexFromTop, isDescendingSameSuit)
   }
 
   async function handleDrawStock() {
     if (won) return
     if (!controller.drawStock) return
+    // A stock draw bumps dealTokenRef below, which would silently orphan a still-in-flight undo of
+    // a previous stock deal (runUndoDeal's own effect drops any pending flight once its token no
+    // longer matches) - reset eagerly so that race can never leave handleUndo's busy guard stuck.
+    undoBusyRef.current = false
     // Captured from the PRE-deal stock - see runDeal's comment on why this can't be re-derived
     // from the post-deal tableau.
     const dealt = state!.stock.slice(0, TABLEAU_COLUMNS).map((card, colIndex) => ({ card, colIndex }))
@@ -559,7 +514,15 @@ function SpiderScreenInner() {
   // state), then revert and mark `move.from` as incoming so it flies the rest of the way there
   // exactly like a fresh move would.
   async function handleUndo() {
-    if (history.length === 0 || !state) return
+    if (undoBusyRef.current || flying !== null || history.length === 0 || !state) return
+    undoBusyRef.current = true
+    // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
+    // condition - the only move available once it's true is New Game), so any undo reachable while
+    // won must be undoing the winning move itself. `won` (derived from state above) clears itself
+    // on the very next render once prevState commits below, but the bouncing win cascade doesn't
+    // stop on its own - it only ever stops via winCascade.clear() (see startNewGame), so without
+    // this it would keep animating over a board that's already reverted underneath it.
+    if (won) winCascade.clear()
     const entry = history[history.length - 1]
     const { move, state: prevState } = entry
 
@@ -597,6 +560,8 @@ function SpiderScreenInner() {
     setHistory((h) => h.slice(0, -1))
 
     if (origin) {
+      // Same false positive as handlePressCard's identical block above - see its comment.
+      /* eslint-disable-next-line react-hooks/immutability */
       ghost.originX.value = origin.x
       ghost.originY.value = origin.y
       ghost.dx.value = 0
@@ -609,6 +574,7 @@ function SpiderScreenInner() {
       pendingAutoMoveCardIdRef.current = move.anchorCardId
     } else {
       setState(prevState)
+      undoBusyRef.current = false
     }
   }
 
@@ -629,6 +595,11 @@ function SpiderScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
+      {/* onUndo={handleUndo} closes over handleUndo, which has its own disabled, justified
+      react-hooks/immutability false positive (see handleUndo's own `ghost.originX.value=` block
+      above) - the compiler flags this element too since it (indirectly) passes that same closure
+      down. */}
+      {/* eslint-disable-next-line react-hooks/immutability */}
       <GameChrome title={`Spider · ${numSuits} Suit${numSuits > 1 ? 's' : ''}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={history.length === 0} hasProgress={session.moves > 0} elapsedSeconds={session.elapsed} movesCount={session.moves} settingsContent={<SpiderSettingsSection />}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + TABLEAU_GAP * (TABLEAU_COLUMNS - 1) }]}>
           <View style={styles.completedGroup}>
@@ -747,31 +718,6 @@ function StockFan({ count, onPress }: { count: number; onPress: () => void }) {
 
 function makeStyles(colors: TableColors) {
   return StyleSheet.create({
-    loadingContainer: {
-      alignItems: 'center',
-      backgroundColor: colors.tableFelt,
-      flex: 1,
-      justifyContent: 'center'
-    },
-    loadingText: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16
-    },
-    // width is set inline (cardWidth * TABLEAU_COLUMNS + gaps) rather than left to stretch - on a
-    // wide-enough screen, cardWidthForRow clamps cardWidth at its max, so the tableau row below
-    // stops growing and ends up narrower than the full available width. Left unconstrained, this
-    // row's own space-between would still spread across that full (wider) width, dragging StockFan
-    // past the tableau's real right edge instead of lining up with column 10.
-    topRow: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      marginBottom: 16
-    },
-    completedGroup: {
-      flexDirection: 'row',
-      gap: TABLEAU_GAP
-    },
     button: {
       backgroundColor: '#ffffff22',
       borderRadius: 8,
@@ -783,6 +729,22 @@ function makeStyles(colors: TableColors) {
       fontFamily: CARD_FONT_FAMILY,
       fontSize: 13,
       fontWeight: '600'
+    },
+    column: {},
+    completedGroup: {
+      flexDirection: 'row',
+      gap: TABLEAU_GAP
+    },
+    loadingContainer: {
+      alignItems: 'center',
+      backgroundColor: colors.tableFelt,
+      flex: 1,
+      justifyContent: 'center'
+    },
+    loadingText: {
+      color: '#fff',
+      fontFamily: CARD_FONT_FAMILY,
+      fontSize: 16
     },
     message: {
       color: '#FFE082',
@@ -796,7 +758,16 @@ function makeStyles(colors: TableColors) {
       gap: TABLEAU_GAP,
       paddingBottom: 24
     },
-    column: {},
+    // width is set inline (cardWidth * TABLEAU_COLUMNS + gaps) rather than left to stretch - on a
+    // wide-enough screen, cardWidthForRow clamps cardWidth at its max, so the tableau row below
+    // stops growing and ends up narrower than the full available width. Left unconstrained, this
+    // row's own space-between would still spread across that full (wider) width, dragging StockFan
+    // past the tableau's real right edge instead of lining up with column 10.
+    topRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      marginBottom: 16
+    },
     winBanner: {
       alignItems: 'center',
       backgroundColor: '#08573Fee',
@@ -807,14 +778,14 @@ function makeStyles(colors: TableColors) {
       position: 'absolute',
       right: 0
     },
+    winButton: {
+      backgroundColor: colors.hintGreen
+    },
     winText: {
       color: '#fff',
       fontFamily: CARD_FONT_FAMILY,
       fontSize: 20,
       fontWeight: '800'
-    },
-    winButton: {
-      backgroundColor: colors.hintGreen
     }
   })
 }

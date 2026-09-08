@@ -1,4 +1,4 @@
-import { createContext, ReactNode, RefObject, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, useWindowDimensions, View } from 'react-native'
 import Animated, { Easing, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withRepeat, withSequence, withTiming } from 'react-native-reanimated'
 
@@ -31,8 +31,10 @@ interface WinCascadeContextValue {
   controller: WinCascadeController
   cascade: CascadeState
   /** Shared with WinCascadeGhosts purely for its ghost keys - see WinCascadeProvider's own comment
-   * on why a fresh generation forces a real unmount+remount instead of reusing stale instances. */
-  generationRef: RefObject<number>
+   * on why a fresh generation forces a real unmount+remount instead of reusing stale instances.
+   * State, not a ref: WinCascadeGhosts reads it during render, and reading a ref's `.current`
+   * during render isn't allowed. */
+  generation: number
 }
 
 const WinCascadeContext = createContext<WinCascadeContextValue | null>(null)
@@ -125,7 +127,7 @@ function ChainGhostCard({ card, path, delayMs, containerOffsetX, containerOffset
   }))
 
   return (
-    <Animated.View style={[{ position: 'absolute', left: 0, top: 0 }, style]}>
+    <Animated.View style={[styles.ghostCard, style]}>
       <PlayingCard card={card} />
     </Animated.View>
   )
@@ -149,7 +151,7 @@ type CascadeState = { mode: 'idle' } | { mode: 'chains'; chains: ResolvedChain[]
  * this module, has to own where in its tree the cards actually paint. */
 export function WinCascadeProvider({ children }: { children: ReactNode }) {
   const [cascade, setCascade] = useState<CascadeState>({ mode: 'idle' })
-  const generationRef = useRef(0)
+  const [generation, setGeneration] = useState(0)
   const { width: winWidth, height: winHeight } = useWindowDimensions()
   // Read at startChains-call time via the ref (not the useMemo's own deps) so the controller
   // identity stays stable across resizes, the same way useDealAnimator's does.
@@ -168,7 +170,7 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
   const controller = useMemo<WinCascadeController>(
     () => ({
       startChains(chains, cardWidth) {
-        generationRef.current += 1
+        setGeneration((g) => g + 1)
         if (chains.length === 0) {
           setCascade({ mode: 'idle' })
           return
@@ -181,14 +183,14 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
         setCascade({ mode: 'chains', chains: resolved, cardWidth })
       },
       clear() {
-        generationRef.current += 1
+        setGeneration((g) => g + 1)
         setCascade({ mode: 'idle' })
       }
     }),
     []
   )
 
-  const value = useMemo<WinCascadeContextValue>(() => ({ controller, cascade, generationRef }), [controller, cascade])
+  const value = useMemo<WinCascadeContextValue>(() => ({ controller, cascade, generation }), [controller, cascade, generation])
 
   return <WinCascadeContext.Provider value={value}>{children}</WinCascadeContext.Provider>
 }
@@ -203,7 +205,7 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
 export function WinCascadeGhosts() {
   const ctx = useContext(WinCascadeContext)
   if (!ctx) throw new Error('WinCascadeGhosts must be used within a WinCascadeProvider')
-  const { cascade, generationRef } = ctx
+  const { cascade, generation } = ctx
 
   const overlayRef = useRef<View>(null)
   const containerOffsetX = useSharedValue(0)
@@ -220,7 +222,15 @@ export function WinCascadeGhosts() {
 
   return (
     <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
-      {cascade.mode === 'chains' && <CardSizeProvider width={cascade.cardWidth}>{cascade.chains.flatMap((chain) => chain.cards.map(({ card, delayMs }) => <ChainGhostCard key={`${generationRef.current}-${card.id}`} card={card} path={chain.path} delayMs={delayMs} containerOffsetX={containerOffsetX} containerOffsetY={containerOffsetY} />))}</CardSizeProvider>}
+      {cascade.mode === 'chains' && <CardSizeProvider width={cascade.cardWidth}>{cascade.chains.flatMap((chain) => chain.cards.map(({ card, delayMs }) => <ChainGhostCard key={`${generation}-${card.id}`} card={card} path={chain.path} delayMs={delayMs} containerOffsetX={containerOffsetX} containerOffsetY={containerOffsetY} />))}</CardSizeProvider>}
     </View>
   )
 }
+
+const styles = StyleSheet.create({
+  ghostCard: {
+    left: 0,
+    position: 'absolute',
+    top: 0
+  }
+})

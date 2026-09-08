@@ -1,5 +1,5 @@
 import { SoundContext, useSoundSettings, useVibration } from '@rific/feedback-press'
-import { useCallback, useContext, useRef } from 'react'
+import { useCallback, useContext, useEffect, useRef } from 'react'
 
 // Platform-split (useCardSoundPlayers.ts / .web.ts) - web needs a genuinely different
 // implementation, not just a different backend flag, to avoid the <audio>-element playback
@@ -28,7 +28,12 @@ export function useCardSoundEffects() {
   } = useSoundSettings()
   const vibration = useVibration()
   const latest = useRef({ selection, notification, enabled, vibration })
-  latest.current = { selection, notification, enabled, vibration }
+  // Updated in an effect rather than directly during render (mutating a ref during render isn't
+  // allowed) - still fresh well before any of the callbacks below can actually fire, since those
+  // only ever run from a later event/gesture callback, never synchronously during this render.
+  useEffect(() => {
+    latest.current = { selection, notification, enabled, vibration }
+  })
 
   // playCardSound/hapticCard are always fired together, the instant a move is confirmed - a
   // drag's pickup, a tap that resolves to a valid auto-move, an Undo, a stock draw, or (in

@@ -119,7 +119,12 @@ function DraggableTableauCard({ card, selected, dimmed, cardStyle, runCount, ind
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shakeToken])
   const latest = useRef({ runCount, indexFromTop, onDragStart, onDragEnd, cardId: card.id })
-  latest.current = { runCount, indexFromTop, onDragStart, onDragEnd, cardId: card.id }
+  // Updated in an effect rather than directly during render (mutating a ref during render isn't
+  // allowed) - still fresh well before handleStart/handleEnd below can actually run, since those
+  // only ever fire from a later gesture callback, never synchronously during this render.
+  useEffect(() => {
+    latest.current = { runCount, indexFromTop, onDragStart, onDragEnd, cardId: card.id }
+  })
   // Position is tracked via e.absoluteX/Y (screen-space pointer position) minus its value at
   // gesture start, rather than Gesture.Pan()'s own translationX/Y - instrumented testing showed
   // translationX/Y can report a stale 0 for an entire gesture on web while absoluteX/Y keeps
@@ -162,6 +167,21 @@ function DraggableTableauCard({ card, selected, dimmed, cardStyle, runCount, ind
     }, 0)
   }, [])
 
+  // react-hooks/refs and react-hooks/immutability both assume ordinary render-time JS: a ref
+  // "passed into a function" or a value "returned from a hook" might get read/written synchronously
+  // during render. Neither rule knows about Reanimated worklets or react-native-gesture-handler's
+  // builder API - .onStart/.onUpdate/.onEnd merely REGISTER these callbacks; none of them, or the
+  // measure()/`.value=` calls inside them, ever run during React's render phase. They run later, on
+  // the UI thread, driven by the native gesture recognizer - which is the entire point of this
+  // pattern (60fps-capable dragging with zero React re-renders). There's no alternative shape here:
+  // building a Gesture.Pan() at all means calling .onStart/.onUpdate/.onEnd with callbacks that
+  // close over the SharedValues/refs they need to drive, exactly as Reanimated's and gesture-
+  // handler's own docs recommend. (Confirmed this isn't fixable via config: explicitly enabling the
+  // compiler's own `enableCustomTypeDefinitionForReanimated` environment flag for these two rules
+  // didn't change this file's warning count at all - it only special-cases the literal return value
+  // of a useSharedValue()/useDerivedValue() call, not a value mutated from inside a nested worklet
+  // closure like the ones below.)
+  /* eslint-disable react-hooks/refs, react-hooks/immutability */
   const pan = useMemo(
     () =>
       Gesture.Pan()
@@ -187,6 +207,7 @@ function DraggableTableauCard({ card, selected, dimmed, cardStyle, runCount, ind
         }),
     [handleStart, handleEnd, originX, originY, dx, dy, startAbsX, startAbsY, viewRef]
   )
+  /* eslint-enable react-hooks/refs, react-hooks/immutability */
 
   pan.enabled(runCount > 0)
 

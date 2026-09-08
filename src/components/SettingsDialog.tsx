@@ -41,6 +41,10 @@ function PreviewOption({ active, onPress, accessibilityLabel, children }: { acti
 
   return (
     <TouchableRipple onPress={onPress} style={styles.previewOption} accessibilityLabel={accessibilityLabel}>
+      {/* borderColor genuinely can't live in the static StyleSheet below - it's a function of both
+      `active` (this instance's own prop) and the live Paper theme's secondary color, neither of
+      which a module-level StyleSheet.create can see. */}
+      {/* eslint-disable-next-line react-native/no-inline-styles */}
       <View style={[styles.previewFrame, { borderColor: active ? paperColors.secondary : 'transparent' }]}>
         {/* Card-back previews always paint their own full backdrop, so this only actually shows
         through for compact-style card faces, which (unlike decorated, whose sheet-derived art
