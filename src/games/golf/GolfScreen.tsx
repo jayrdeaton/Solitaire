@@ -529,7 +529,7 @@ function GolfScreenInner() {
       Reanimated SharedValue API (see handleUndo's own doc comment above). Same false-positive class
       as the disables inside handleUndo/handleDrawStock/handleCardTap above. */}
       {/* eslint-disable-next-line react-hooks/immutability */}
-      <GameChrome title='Golf' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<GolfSettingsSection />} rules={GOLF_RULES}>
+      <GameChrome title='Golf' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<GolfSettingsSection />} rules={GOLF_RULES}>
         {/* No foundation row at all (unlike Klondike/FreeCell/Yukon) - Golf has no suit-based
         foundation, just the stock/waste pair. Narrower than the tableau below, so it's centered
         above it by GameChrome's own content styling rather than stretched/pinned to an edge. */}

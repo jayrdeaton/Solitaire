@@ -767,7 +767,7 @@ function CanfieldScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Canfield' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<CanfieldSettingsSection />} rules={CANFIELD_RULES}>
+      <GameChrome title='Canfield' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<CanfieldSettingsSection />} rules={CANFIELD_RULES}>
         <View style={styles.board}>
           <View style={[styles.topRow, { gap }]}>
             <View style={[styles.foundationsGroup, { gap }]}>

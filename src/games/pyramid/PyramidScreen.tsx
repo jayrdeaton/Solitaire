@@ -1,6 +1,6 @@
 // Pyramid solitaire screen: triangle tap-to-select board + stock/waste row.
 
-import { Pressable, useVibration } from '@rific/feedback-press'
+import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CARD_ASPECT, CardSizeProvider, type TableColors } from '@tastic/cards'
@@ -18,7 +18,7 @@ import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { autoMoveSpringFor } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
-import { formatTime, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { PlayingCard } from '@/components/PlayingCard'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
@@ -38,6 +38,7 @@ import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 
@@ -370,10 +371,19 @@ function PyramidScreenInner() {
   useEffect(() => {
     const pending = pendingWinCascadeRef.current
     if (!pending || !state) return
+    // The winning pair/King's own removal flight (flyPairIndependently/flyToDiscardPile) is still
+    // travelling to the discard pile on this exact commit - state.discard already includes it
+    // (rules.ts's sweepRemainderOnWin), so starting the cascade now would render that same card
+    // twice at once: once mid-flight via PairFlightGhosts/the shared ghost, once already bouncing
+    // at the discard pile via WinCascadeGhosts (whose head-of-chain card gets a zero entrance
+    // delay). Wait for `flying` to clear (handlePairFlightLanded/flyToDiscardPile's own callback)
+    // before capturing state.discard, so the cascade only ever shows a card once it's actually
+    // landed for real.
+    if (flying) return
     pendingWinCascadeRef.current = null
     runWinCascade(state, pending.gen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
+  }, [state, flying])
 
   function pushUndo(prev: PyramidState, move: MoveInfo | null, removedCards: RemovedCardRef[] | null = null) {
     setUndoStack((stack) => [...stack, { state: prev, move, removedCards }])
@@ -1052,7 +1062,7 @@ function PyramidScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={PYRAMID_RULES}>
+      <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={PYRAMID_RULES}>
         <View style={styles.board}>
           <View style={[styles.controlRow, { width }]}>
             <DiscardCell card={won ? undefined : state.discard[state.discard.length - 1]} isFlyingHere={!!flying && flying.to.zone === 'discard'} viewRef={discardViewRef} />
@@ -1085,33 +1095,12 @@ function PyramidScreenInner() {
       </GameChrome>
       {/* Fireworks and the bouncing cascade both paint above the whole board by plain sibling order
     (see WinCascadeGhosts' own doc comment for why nesting depth alone can't do this) - the win
-    banner comes last of all three so it's the one thing guaranteed to sit on top of the animation,
-    not buried under it. Also why winBanner itself became a full-screen centering overlay here
-    (position:absolute, see its style) instead of staying an in-flow block under controlRow: an
-    in-flow, deeply-nested position can't reliably out-paint these screen-level siblings at all,
-    regardless of styling. */}
+    dialog comes last of all three so it's the one thing guaranteed to sit on top of the animation,
+    not buried under it (also backstopped by WinBanner's own explicit zIndex). */}
       {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <PairFlightGhosts flight={pairFlight} onCardLanded={handlePairFlightLanded} />
       <WinCascadeGhosts />
-      {won && (
-        // box-none (not the default 'auto'): this View covers the full screen, but only its
-        // centered winBanner content should ever catch a tap - left uncorrected, the transparent
-        // surrounding area silently swallows every touch across the whole screen, including
-        // GameChrome's header buttons underneath it (Home/Undo/Settings), since this renders as a
-        // later sibling of GameChrome and therefore wins pointer-event hit-testing by plain DOM
-        // order (see the comment above on why Fireworks/WinCascadeGhosts/this all live at this
-        // level). Confirmed live: Undo was completely unreachable post-win until this was added.
-        <View style={styles.winOverlay} pointerEvents='box-none'>
-          <View style={styles.winBanner}>
-            <Text style={styles.winText}>
-              Pyramid cleared! {formatTime(session.getElapsed())} · {session.moves} moves · Score {computeScore(session.moves, session.getElapsed())}
-            </Text>
-            <Pressable style={styles.button} onPress={startNewGame}>
-              <Text style={styles.buttonText}>New Game</Text>
-            </Pressable>
-          </View>
-        </View>
-      )}
+      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }
@@ -1125,18 +1114,6 @@ function makeStyles(colors: TableColors) {
     // width instead of an artificial full-window one.
     board: {
       alignItems: 'center'
-    },
-    button: {
-      backgroundColor: '#ffffffee',
-      borderRadius: 8,
-      paddingHorizontal: 18,
-      paddingVertical: 10
-    },
-    buttonText: {
-      color: colors.tableFeltDark,
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 14,
-      fontWeight: '700'
     },
     container: {
       alignItems: 'center',
@@ -1178,31 +1155,6 @@ function makeStyles(colors: TableColors) {
       marginBottom: 20,
       position: 'relative',
       zIndex: 0
-    },
-    winBanner: {
-      alignItems: 'center',
-      backgroundColor: '#ffffffee',
-      borderRadius: 12,
-      gap: 12,
-      padding: 18
-    },
-    // Transparent (unlike Klondike/FreeCell's own winOverlay) - Pyramid's win treatment was never a
-    // dimmed scrim, just a centered card; this only exists now to center winBanner as a screen-level
-    // overlay instead of an in-flow block (see the JSX for why it has to be one).
-    winOverlay: {
-      alignItems: 'center',
-      bottom: 0,
-      justifyContent: 'center',
-      left: 0,
-      position: 'absolute',
-      right: 0,
-      top: 0
-    },
-    winText: {
-      color: colors.tableFeltDark,
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 18,
-      fontWeight: '800'
     }
   })
 }

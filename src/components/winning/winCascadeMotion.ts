@@ -27,3 +27,10 @@ export const BOUNCE_V_HALF_PERIOD_MAX_MS = 950
 export const BOUNCE_H_MARGIN_PX = 12
 export const BOUNCE_H_HALF_PERIOD_MIN_MS = 3200
 export const BOUNCE_H_HALF_PERIOD_MAX_MS = 4800
+
+// Per-cycle nudge applied to a chain's own apex AND floor (see driftApexY/driftFloorY in
+// WinCascadeLayer) - small enough that consecutive bounces still read as one continuous motion
+// rather than a new random chain every cycle, but enough that a pile visibly wanders to a
+// different height (and depth) over a handful of bounces instead of locking to whatever it
+// happened to draw at launch, forever.
+export const BOUNCE_DRIFT_MAX_PX = 90

@@ -1,13 +1,13 @@
 import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
 import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { StyleSheet, useWindowDimensions, View } from 'react-native'
+import { AppState, StyleSheet, useWindowDimensions, View } from 'react-native'
 import Animated, { Easing, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withRepeat, withSequence, withTiming } from 'react-native-reanimated'
 
 import { Card } from '@/engine/types'
 
 import { ScreenPoint } from '../dealing/measureView'
 import { PlayingCard } from '../PlayingCard'
-import { BOUNCE_FLOOR_MARGIN_PX, BOUNCE_H_HALF_PERIOD_MAX_MS, BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_H_MARGIN_PX, BOUNCE_MIN_SPAN_PX, BOUNCE_TOP_MARGIN_PX, BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, CHAIN_SEGMENT_DELAY_MS } from './winCascadeMotion'
+import { BOUNCE_DRIFT_MAX_PX, BOUNCE_FLOOR_MARGIN_PX, BOUNCE_H_HALF_PERIOD_MAX_MS, BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_H_MARGIN_PX, BOUNCE_MIN_SPAN_PX, BOUNCE_TOP_MARGIN_PX, BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, CHAIN_SEGMENT_DELAY_MS } from './winCascadeMotion'
 
 export interface ChainSpec {
   /** Head-to-tail order - index 0 leads the chain (e.g. a foundation pile's King, or Pyramid's
@@ -53,14 +53,39 @@ interface ChainPath {
   floorY: number
   apexY: number
   vHalfPeriodMs: number
-  nearX: number
-  farX: number
+  /** Wall this chain heads toward on its one-time launch leg, then away from/back to forever after
+   * (see the coin flip below for why this isn't always the geometrically nearer wall). */
+  firstX: number
+  secondX: number
   hHalfPeriodMs: number
   initialLegMs: number
+  /** Lowest the floor is ever allowed to drift down to (see driftFloorY) - the same bottomBound
+   * buildChainPath itself drew floorY within, so drifting never pushes a card below the screen. */
+  maxFloorY: number
 }
 
 function randomBetween(min: number, max: number): number {
   return min + Math.random() * (max - min)
+}
+
+/** Nudges a chain's apex a small random amount every bounce cycle, clamped to stay above the top
+ * margin and at least BOUNCE_MIN_SPAN_PX below the floor it's currently paired with - a wander
+ * rather than a full reroll, so a pile's bounce height visibly changes over time instead of locking
+ * to whichever height it happened to draw at launch, while still reading as one continuous motion
+ * rather than a new random chain every cycle. */
+function driftApexY(apexY: number, floorY: number): number {
+  const next = apexY + randomBetween(-BOUNCE_DRIFT_MAX_PX, BOUNCE_DRIFT_MAX_PX)
+  const maxApex = floorY - BOUNCE_MIN_SPAN_PX
+  return Math.min(Math.max(next, BOUNCE_TOP_MARGIN_PX), maxApex)
+}
+
+/** Same idea as driftApexY, mirrored for the floor: nudged each cycle, clamped to stay at least
+ * BOUNCE_MIN_SPAN_PX below the apex it's currently paired with and no lower than maxFloorY (the
+ * screen's actual bottom bound for this chain's card size). */
+function driftFloorY(floorY: number, apexY: number, maxFloorY: number): number {
+  const next = floorY + randomBetween(-BOUNCE_DRIFT_MAX_PX, BOUNCE_DRIFT_MAX_PX)
+  const minFloor = apexY + BOUNCE_MIN_SPAN_PX
+  return Math.min(Math.max(next, minFloor), maxFloorY)
 }
 
 function buildChainPath(origin: ScreenPoint, bounds: { width: number; height: number }, cardWidth: number, cardHeight: number): ChainPath {
@@ -80,13 +105,20 @@ function buildChainPath(origin: ScreenPoint, bounds: { width: number; height: nu
   const rightX = bounds.width - cardWidth - BOUNCE_H_MARGIN_PX
   const nearX = Math.abs(origin.x - leftX) < Math.abs(rightX - origin.x) ? leftX : rightX
   const farX = nearX === leftX ? rightX : leftX
+  // Which wall a chain heads toward first is its own coin flip, not always the geometrically nearer
+  // one - otherwise every chain starting from roughly the same spot (e.g. the foundation piles,
+  // racked right next to each other) all set off on the same first leg in lockstep.
+  const startTowardFar = Math.random() < 0.5
+  const firstX = startTowardFar ? farX : nearX
+  const secondX = startTowardFar ? nearX : farX
   const hHalfPeriodMs = randomBetween(BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_H_HALF_PERIOD_MAX_MS)
-  // The one-time leg from the real origin to whichever wall is nearer, scaled to that fraction of
-  // the full wall-to-wall span, so it moves at the same speed the steady-state loop will.
+  // The one-time leg from the real origin to whichever wall it's heading toward first, scaled to
+  // that fraction of the full wall-to-wall span, so it moves at the same speed the steady-state
+  // loop will regardless of which wall (and therefore how far) that first leg turned out to be.
   const span = Math.max(1, Math.abs(rightX - leftX))
-  const initialLegMs = hHalfPeriodMs * (Math.abs(origin.x - nearX) / span)
+  const initialLegMs = hHalfPeriodMs * (Math.abs(origin.x - firstX) / span)
 
-  return { origin, floorY, apexY, vHalfPeriodMs, nearX, farX, hHalfPeriodMs, initialLegMs }
+  return { origin, floorY, apexY, vHalfPeriodMs, firstX, secondX, hHalfPeriodMs, initialLegMs, maxFloorY: bottomBound }
 }
 
 function ChainGhostCard({ card, path, delayMs, containerOffsetX, containerOffsetY }: { card: Card; path: ChainPath; delayMs: number; containerOffsetX: SharedValue<number>; containerOffsetY: SharedValue<number> }) {
@@ -97,21 +129,36 @@ function ChainGhostCard({ card, path, delayMs, containerOffsetX, containerOffset
   useEffect(() => {
     opacity.value = withDelay(delayMs, withTiming(1, { duration: 0 }))
 
-    // Staged via a plain JS timer rather than nesting withRepeat inside withSequence (which this
+    // Staged via plain JS timers rather than nesting withRepeat inside withSequence (which this
     // codebase's own Reanimated-on-web idiom avoids elsewhere too, e.g. DealLayer/DragGhostLayer
     // never trust an animation's own completion callback) - the one-time launch leg from the real
-    // origin plays first; once it's done, a second assignment kicks off the infinite steady-state
-    // loop. A real elastic bounce under constant gravity is an exactly-periodic parabola, so one
-    // repeating fall+rise segment reproduces it with no per-cycle authoring needed.
+    // origin plays first; once it's done, a second assignment kicks off the steady-state loop.
     by.value = withDelay(delayMs, withTiming(path.apexY, { duration: path.vHalfPeriodMs, easing: Easing.out(Easing.quad) }))
-    bx.value = withDelay(delayMs, withTiming(path.nearX, { duration: path.initialLegMs, easing: Easing.linear }))
+    bx.value = withDelay(delayMs, withTiming(path.firstX, { duration: path.initialLegMs, easing: Easing.linear }))
 
-    const verticalTimer = setTimeout(() => {
-      by.value = withRepeat(withSequence(withTiming(path.floorY, { duration: path.vHalfPeriodMs, easing: Easing.in(Easing.quad) }), withTiming(path.apexY, { duration: path.vHalfPeriodMs, easing: Easing.out(Easing.quad) })), -1, false)
-    }, delayMs + path.vHalfPeriodMs)
+    // The vertical loop can't just be a fixed withRepeat(-1) of the same floor<->apex pair forever
+    // (that's what locked every pile to whatever height it happened to draw at launch) - both ends
+    // drift a little every cycle instead, so it's driven recursively: fall to a newly drifted floor,
+    // then rise to a newly drifted apex, then fall again, forever, each leg scheduled by its own
+    // timer once the previous one's duration has elapsed. Each drift is computed against the other
+    // end's current (already-settled) value, so the two can never drift into/past each other.
+    let apexY = path.apexY
+    let floorY = path.floorY
+    let verticalTimer: ReturnType<typeof setTimeout>
+    const fall = () => {
+      floorY = driftFloorY(floorY, apexY, path.maxFloorY)
+      by.value = withTiming(floorY, { duration: path.vHalfPeriodMs, easing: Easing.in(Easing.quad) })
+      verticalTimer = setTimeout(rise, path.vHalfPeriodMs)
+    }
+    const rise = () => {
+      apexY = driftApexY(apexY, floorY)
+      by.value = withTiming(apexY, { duration: path.vHalfPeriodMs, easing: Easing.out(Easing.quad) })
+      verticalTimer = setTimeout(fall, path.vHalfPeriodMs)
+    }
+    verticalTimer = setTimeout(fall, delayMs + path.vHalfPeriodMs)
 
     const horizontalTimer = setTimeout(() => {
-      bx.value = withRepeat(withSequence(withTiming(path.farX, { duration: path.hHalfPeriodMs, easing: Easing.linear }), withTiming(path.nearX, { duration: path.hHalfPeriodMs, easing: Easing.linear })), -1, false)
+      bx.value = withRepeat(withSequence(withTiming(path.secondX, { duration: path.hHalfPeriodMs, easing: Easing.linear }), withTiming(path.firstX, { duration: path.hHalfPeriodMs, easing: Easing.linear })), -1, false)
     }, delayMs + path.initialLegMs)
 
     return () => {
@@ -156,6 +203,9 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
   // Read at startChains-call time via the ref (not the useMemo's own deps) so the controller
   // identity stays stable across resizes, the same way useDealAnimator's does.
   const boundsRef = useRef({ width: winWidth, height: winHeight })
+  // Remembers the args of the most recent startChains call (null once idle/cleared) purely so the
+  // AppState effect below can relaunch the same cascade - see its own comment for why.
+  const lastStartRef = useRef<{ chains: ChainSpec[]; cardWidth: number } | null>(null)
 
   useEffect(() => {
     // useWindowDimensions() can transiently report a degenerate 0x0 size (e.g. right after a fresh
@@ -170,6 +220,7 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
   const controller = useMemo<WinCascadeController>(
     () => ({
       startChains(chains, cardWidth) {
+        lastStartRef.current = chains.length > 0 ? { chains, cardWidth } : null
         setGeneration((g) => g + 1)
         if (chains.length === 0) {
           setCascade({ mode: 'idle' })
@@ -183,12 +234,33 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
         setCascade({ mode: 'chains', chains: resolved, cardWidth })
       },
       clear() {
+        lastStartRef.current = null
         setGeneration((g) => g + 1)
         setCascade({ mode: 'idle' })
       }
     }),
     []
   )
+
+  useEffect(() => {
+    // The cascade's bounce/drift loops are plain JS timers layered under Reanimated tweens (see
+    // ChainGhostCard) - backgrounding the app (or, on web, switching tabs; react-native-web maps
+    // AppState's 'active' to the browser's visibilitychange event, same as HeroCards.tsx's own use
+    // of this pattern) throttles or freezes those timers independently of Reanimated's own clock,
+    // which can desync badly enough that some cards' entrance opacity never resolves, stranding them
+    // invisible while the rest of the cascade keeps bouncing. Rather than trying to make an
+    // indefinite, timer-driven loop resilient to being suspended at an arbitrary point (three
+    // different platform lifecycle models, for a purely decorative effect), just relaunch the same
+    // cascade from scratch on resume - startChains already forces a full remount via the generation
+    // bump, which resets every card's timers/shared values cleanly.
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active') return
+      if (lastStartRef.current) {
+        controller.startChains(lastStartRef.current.chains, lastStartRef.current.cardWidth)
+      }
+    })
+    return () => subscription.remove()
+  }, [controller])
 
   const value = useMemo<WinCascadeContextValue>(() => ({ controller, cascade, generation }), [controller, cascade, generation])
 

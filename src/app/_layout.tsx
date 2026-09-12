@@ -47,7 +47,13 @@ function ThemedStack() {
 
 function ThemedToaster() {
   const colors = useTableColors()
-  return <Toaster backgroundColor={colors.tableFeltDark} textColor='#fff' />
+  // clearButton/historyButton default to a "clear"/"history" chip stacked above the toasts - this
+  // app never surfaces a reason to dig through past toasts or bulk-dismiss them, so both are turned
+  // off outright (passing null, not omitting the prop, is what actually suppresses the default -
+  // see @rific/toaster's Toaster: `resolvedXButton = xButton === void 0 ? defaultXButton : xButton`).
+  // limit is already 3 by default; passed explicitly so it doesn't silently drift with a future
+  // library bump.
+  return <Toaster backgroundColor={colors.tableFeltDark} textColor='#fff' clearButton={null} historyButton={null} limit={3} />
 }
 
 /** Keeps auto-paper's own theme (colors.primary/secondary/tertiary, used by every Paper-flavored

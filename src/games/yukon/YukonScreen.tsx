@@ -806,7 +806,7 @@ function YukonScreenInner() {
       above) - the compiler flags this element too since it (indirectly) passes that same closure
       down, same as SpiderScreen.tsx's identical GameChrome usage. */}
       {/* eslint-disable-next-line react-hooks/immutability */}
-      <GameChrome title='Yukon' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={YUKON_RULES}>
+      <GameChrome title='Yukon' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={YUKON_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={styles.foundationsGroup}>
             {state.foundation.map((pile, i) => {

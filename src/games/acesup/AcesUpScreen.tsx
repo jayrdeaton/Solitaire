@@ -548,7 +548,7 @@ function AcesUpScreenInner() {
   return (
     <CardSizeProvider width={cardWidth}>
       {/* eslint-disable-next-line react-hooks/immutability */}
-      <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={ACESUP_RULES}>
+      <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={ACESUP_RULES}>
         <View style={[styles.topRow, { width: pilesWidth }]}>
           <DiscardCell card={state.discard[state.discard.length - 1]} isFlyingHere={!!flying && flying.to.zone === 'discard'} viewRef={discardViewRef} />
           <View ref={stockViewRef} collapsable={false}>

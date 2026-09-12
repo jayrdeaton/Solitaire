@@ -44,7 +44,7 @@ import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/game
 import { useSettings } from '@/stores/settings'
 
 import { buildFreeCellDealSequence } from './dealSequence'
-import { FreeCellController, FreeCellState, maxSupermoveCount } from './rules'
+import { countEmptyFreecells, countEmptyTableauColumns, FreeCellController, FreeCellState, maxSupermoveCount } from './rules'
 
 // Floor for useTableauMaxHeight below, not a fixed height anymore - a short screen never fans out
 // less generously than this, but a screen with real headroom to spare now gets more of it.
@@ -717,7 +717,27 @@ function FreeCellScreenInner() {
   // anchor card id for the [state]-effect above to measure and fly the ghost onto, instead of it
   // just vanishing/appearing at the destination instantly.
   function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean; fast?: boolean }): boolean {
-    if (!applyMove(from, to, count, anchorCardId, opts)) return false
+    if (!applyMove(from, to, count, anchorCardId, opts)) {
+      // tableauRunCount's dimming only rules out a run that could NEVER move anywhere (the
+      // best-case cap, assuming a non-empty destination - see its own comment). A run that passed
+      // that check can still fail here specifically when the player aims it at an empty column:
+      // that column can't double as its own intermediate storage, so its real cap is one factor of
+      // 2 smaller than the best case. Since any card may start an empty column regardless of rank
+      // (canPlaceOnTableau), this capacity check is the ONLY way a >1-count move to an empty column
+      // can fail - so surface it, rather than leaving the player to guess why it silently bounced.
+      if (state && to.zone === 'tableau' && count > 1) {
+        const cap = maxSupermoveCount(state, to.index)
+        if (count > cap) {
+          const freecells = countEmptyFreecells(state)
+          // Excludes `to` itself, matching what actually fed `cap` above - the destination can't
+          // double as its own intermediate storage, so this is the count of OTHER empty columns
+          // that could help, not the board's total (which would be one higher here).
+          const otherEmptyCols = countEmptyTableauColumns(state, to.index)
+          infoToast(`Only ${cap} card${cap === 1 ? '' : 's'} can move to an empty column with ${freecells} free cell${freecells === 1 ? '' : 's'} and ${otherEmptyCols} other empty column${otherEmptyCols === 1 ? '' : 's'}.`)
+        }
+      }
+      return false
+    }
     setFlying({ to, count })
     pendingAutoMoveCardIdRef.current = { cardId: anchorCardId, fast: opts?.fast, gen: dealTokenRef.current }
     return true
@@ -787,7 +807,7 @@ function FreeCellScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={FREECELL_RULES}>
+      <GameChrome title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={FREECELL_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={styles.foundationsGroup}>
             {state.foundation.map((pile, i) => {

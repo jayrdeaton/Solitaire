@@ -14,7 +14,7 @@ import { measureView, ScreenPoint } from '@/components/dealing/measureView'
 import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { autoMoveSpringFor } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
-import { formatTime, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
 import { fireworksColors } from '@/components/theme'
@@ -35,6 +35,7 @@ import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 import { useSettings } from '@/stores/settings'
@@ -1293,7 +1294,7 @@ function SpiderScreenInner() {
       above) - the compiler flags this element too since it (indirectly) passes that same closure
       down. */}
       {/* eslint-disable-next-line react-hooks/immutability */}
-      <GameChrome title='Spider' subtitle={`${numSuits} Suit${numSuits > 1 ? 's' : ''}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={history.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<SpiderSettingsSection />} rules={SPIDER_RULES}>
+      <GameChrome title='Spider' subtitle={`${numSuits} Suit${numSuits > 1 ? 's' : ''}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={history.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<SpiderSettingsSection />} rules={SPIDER_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.completedGroup, { gap }]}>
             {Array.from({ length: 8 }).map((_, i) => {
@@ -1347,21 +1348,12 @@ function SpiderScreenInner() {
       </GameChrome>
       {/* Fireworks and the bouncing cascade both paint above the whole board by plain sibling order
     (see WinCascadeGhosts' own doc comment for why nesting depth alone can't do this) - the win
-    banner comes last of all three so it's the one thing guaranteed to sit on top of the animation,
-    not buried under it. */}
+    dialog comes last of all three so it's the one thing guaranteed to sit on top of the animation,
+    not buried under it (also backstopped by WinBanner's own explicit zIndex). */}
       {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <SequenceFlightGhosts flights={sequenceFlights} onCardLanded={handleSequenceFlightLanded} />
       <WinCascadeGhosts />
-      {won ? (
-        <View style={styles.winBanner}>
-          <Text style={styles.winText}>
-            You won! {formatTime(session.getElapsed())} · {session.moves} moves · Score {computeScore(session.moves, session.getElapsed())}
-          </Text>
-          <Pressable style={[styles.button, styles.winButton]} onPress={handleNewGame}>
-            <Text style={styles.buttonText}>New Game</Text>
-          </Pressable>
-        </View>
-      ) : null}
+      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
     </CardSizeProvider>
   )
 }
@@ -1424,18 +1416,6 @@ function StockFan({ count, onPress, hinted }: { count: number; onPress: () => vo
 
 function makeStyles(colors: TableColors) {
   return StyleSheet.create({
-    button: {
-      backgroundColor: '#ffffff22',
-      borderRadius: 8,
-      paddingHorizontal: 10,
-      paddingVertical: 6
-    },
-    buttonText: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 13,
-      fontWeight: '600'
-    },
     column: {},
     completedGroup: {
       flexDirection: 'row'
@@ -1471,25 +1451,6 @@ function makeStyles(colors: TableColors) {
       flexDirection: 'row',
       justifyContent: 'space-between',
       marginBottom: 16
-    },
-    winBanner: {
-      alignItems: 'center',
-      backgroundColor: '#08573Fee',
-      bottom: 0,
-      gap: 12,
-      left: 0,
-      paddingVertical: 20,
-      position: 'absolute',
-      right: 0
-    },
-    winButton: {
-      backgroundColor: colors.hintGreen
-    },
-    winText: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 20,
-      fontWeight: '800'
     }
   })
 }

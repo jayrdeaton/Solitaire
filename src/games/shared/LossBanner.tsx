@@ -3,6 +3,7 @@ import { type TableColors } from '@tastic/cards'
 import { useMemo } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 
+import { GAME_DIALOG_Z_INDEX } from '@/components/GameChrome'
 import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 
 export interface LossBannerProps {
@@ -59,7 +60,8 @@ function makeStyles(colors: TableColors) {
       left: 0,
       position: 'absolute',
       right: 0,
-      top: 0
+      top: 0,
+      zIndex: GAME_DIALOG_Z_INDEX
     },
     subtitle: {
       color: '#444',

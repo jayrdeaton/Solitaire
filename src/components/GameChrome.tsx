@@ -7,6 +7,7 @@ import { Pressable as RNPressable, ScrollView, StyleSheet, Text, View } from 're
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
+import { computeScore } from '@/engine/score'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
 
 import { RulesDialog } from './RulesDialog'
@@ -56,6 +57,21 @@ export const GAME_CONTENT_TOP_PADDING = 56
 // breathing room above that, so the last row of board content doesn't sit flush against either row.
 export const GAME_CONTENT_BOTTOM_PADDING = 88
 
+/** zIndex for a screen-level win/loss dialog (WinBanner/LossBanner, or a game's own custom banner
+ * like Spider's/Pyramid's) - comfortably above every other explicit zIndex anywhere in this app
+ * (GameChrome's own chrome at 10; SequenceFlightGhosts' per-card zIndex, which can climb into the
+ * low thousands for a long run) and high enough to win even if a dialog and some other screen-level
+ * overlay (Fireworks, WinCascadeGhosts, or the single shared drag/deal ghost - the latter two render
+ * from a provider that wraps the whole screen, so they're true DOM/view siblings of the dialog, not
+ * just siblings-in-spirit) turn out to share a stacking context on a given platform. Every dialog
+ * previously relied purely on being the last JSX sibling ("later sibling wins"), which this
+ * codebase's own comments already flag as unreliable for anything that actually matters (see the
+ * zIndex:10 comment below) - confirmed to fail for real on Spider's win-cascade animation and on
+ * AcesUp's winning move (whose flight ghost is a structural sibling of the whole screen, including
+ * the dialog, regardless of this file's own JSX order). Don't rely on JSX order for a dialog again;
+ * set this explicitly instead. */
+export const GAME_DIALOG_Z_INDEX = 9999
+
 // Press-and-hold-to-repeat undo (see the IconButton below) - matches the delayLongPress/repeat-tick
 // convention @rific/feedback-press's own useHoldToRepeat is already used with elsewhere (Swirlio's
 // hold-to-repeat FABs). UNDO_HOLD_REPEAT_MS is tuned to this app's own measured ~150-300ms undo-
@@ -90,6 +106,13 @@ interface GameChromeProps {
   onHint: () => void
   /** True once the deal is won - a hint has nothing left to suggest. */
   hintDisabled?: boolean
+  /** True once the deal is won - hides the footer (Undo/New Game/Hint/Rules) and the moves/timer/
+   * score row below, since the win dialog (WinBanner) already shows all three and covers the board
+   * anyway. Deliberately NOT the same thing as `hintDisabled`: AcesUp passes `won || stuck` for the
+   * latter (a stuck, unwinnable deal has nothing left to hint either), but a stuck deal isn't a win -
+   * its LossBanner has no score to duplicate, and Undo stays reachable there on purpose, so this
+   * chrome should keep showing while merely stuck. */
+  won: boolean
   /** Whether the current deal has had any real player moves - gates the New Game confirm dialog
    * below. Deliberately NOT the same thing as `!undoDisabled`: a resumed deal (see
    * stores/gameInProgress.ts) always restores with an empty undo stack (undo history isn't
@@ -129,12 +152,13 @@ interface GameChromeProps {
  * toggleFooter and the RNPressable wrapping {children} below), since those three are game controls
  * reached for far less often than anything mid-board and don't need to stay onscreen while the
  * player's actually working the tableau - unlike the moves/timer readout, which stays put
- * regardless of the footer's own hidden state.
+ * regardless of the footer's own hidden state (though both disappear together once `won`, per
+ * GameChromeProps' own doc comment on it).
  *
  * Previously each of the four game screens hand-rolled its own version of this row (and Pyramid's
  * had drifted to a bottom button row entirely) - unifying it here means a layout tweak (like this
  * one, and the header/footer regrouping that followed it) only has to happen once. */
-export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, hintDisabled, hasProgress, getElapsedSeconds, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
+export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, hintDisabled, won, hasProgress, getElapsedSeconds, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const colors = useTableColors()
@@ -223,7 +247,11 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
         </Text>
       </Pressable>
 
-      <View style={styles.cornerButtons}>
+      {/* box-none: this box spans the full screen width (left:0/right:0) to place Home and Settings
+      at its two far ends, but the dead space between them isn't a button - box-none lets a tap
+      there fall through to tableTapCatcher underneath instead of being silently swallowed (see
+      footerWrap's identical fix/comment below). */}
+      <View style={styles.cornerButtons} pointerEvents='box-none'>
         <CornerActionButtons
           onBack={() => {
             // Cleared explicitly on the tap itself, not left to each screen's own unmount cleanup:
@@ -248,49 +276,65 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
         />
       </View>
 
-      {/* Moves + elapsed time - always visible (not part of footerAnimatedStyle/footerVisible
-      below), sitting in its own row above the footer. Unlike Undo/New Game/Hint, this is a
-      read-only status line, not a control reached for occasionally - there's no reason tapping
-      the table to declutter the board should also take this away entirely, but it does slide
-      down to fill the footer's own spot once those buttons are gone (movesTimerAnimatedStyle),
-      rather than sitting stranded above an empty gap. */}
-      <Animated.View style={[styles.movesTimerWrap, { bottom: MOVES_TIMER_BOTTOM + insets.bottom }, movesTimerAnimatedStyle]} pointerEvents='none'>
-        <Text style={styles.timerText} numberOfLines={1}>
-          {movesCount} · {formatTime(displayedElapsed)}
-        </Text>
-      </Animated.View>
+      {/* Moves + elapsed time + running score - visible throughout play (not part of
+      footerAnimatedStyle/footerVisible below), sitting in its own row above the footer. Unlike
+      Undo/New Game/Hint, this is a read-only status line, not a control reached for occasionally -
+      there's no reason tapping the table to declutter the board should also take this away
+      entirely, but it does slide down to fill the footer's own spot once those buttons are gone
+      (movesTimerAnimatedStyle), rather than sitting stranded above an empty gap. Hidden entirely
+      once `won`, alongside the footer below - see GameChromeProps' own doc comment on `won`: the
+      win dialog already shows the same three numbers, so this would just be a stale duplicate
+      sitting behind it. */}
+      {!won && (
+        <Animated.View style={[styles.movesTimerWrap, { bottom: MOVES_TIMER_BOTTOM + insets.bottom }, movesTimerAnimatedStyle]} pointerEvents='none'>
+          <Text style={styles.timerText} numberOfLines={1}>
+            {movesCount} · {computeScore(movesCount, displayedElapsed)} · {formatTime(displayedElapsed)}
+          </Text>
+        </Animated.View>
+      )}
 
       {/* Undo/New Game/Hint/Rules - the controls reached for far less often than anything
       mid-board, tucked into a footer the player can hide (tap empty table felt) to get them out
       of the way of the board, then bring back the same way. Hint is disabled once the deal is won
       - see GameChromeProps' own doc comment. Rules also still opens by tapping the title itself
       (see the titleWrap comment above) - this icon is a second, more discoverable way in, matching
-      the other three exactly, rather than the title's own glyph crowding the text. */}
-      <Animated.View style={[styles.footerWrap, { bottom: FOOTER_BOTTOM + insets.bottom }, footerAnimatedStyle]} pointerEvents={footerVisible ? 'auto' : 'none'}>
-        <IconButton icon='undo' iconColor={CHROME_FG} size={24} disabled={undoDisabled} onPress={onUndo} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={UNDO_LONG_PRESS_MS} accessibilityLabel='Undo' />
+      the other three exactly, rather than the title's own glyph crowding the text. Hidden entirely
+      once `won` (see the moves/timer row's own comment just above) - the win dialog's "New Game"
+      button already covers that one control, and there's nothing left to Undo/Hint/check Rules for
+      on a finished board. */}
+      {!won && (
+        // box-none (not 'auto') while visible: footerWrap's own box spans the full screen width
+        // (left:0/right:0), wider than the centered icon row it actually contains, so plain 'auto'
+        // silently swallowed every tap in that empty side margin - never reaching a handler,
+        // including tableTapCatcher's own onPress underneath - instead of doing nothing visible but
+        // otherwise harmless. box-none lets only the icons themselves (and their own touch targets)
+        // claim a tap, same idiom WinBanner/LossBanner already use for their own full-screen overlay.
+        <Animated.View style={[styles.footerWrap, { bottom: FOOTER_BOTTOM + insets.bottom }, footerAnimatedStyle]} pointerEvents={footerVisible ? 'box-none' : 'none'}>
+          <IconButton icon='undo' iconColor={CHROME_FG} size={24} disabled={undoDisabled} onPress={onUndo} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={UNDO_LONG_PRESS_MS} accessibilityLabel='Undo' />
 
-        <IconButton
-          icon='cards-playing-outline'
-          iconColor={CHROME_FG}
-          size={24}
-          onPress={() => {
-            // Nothing to lose yet - deal immediately, no warning. Otherwise, dealing a new game
-            // abandons the one in progress (counted as a loss - see stores/gameStats.tsx), so confirm
-            // first rather than losing the player's board to a stray tap - see the ConfirmDialog
-            // below, which owns the actual prompt.
-            if (!hasProgress) {
-              onNewGame()
-              return
-            }
-            setConfirmNewGameVisible(true)
-          }}
-          accessibilityLabel='New Game'
-        />
+          <IconButton
+            icon='cards-playing-outline'
+            iconColor={CHROME_FG}
+            size={24}
+            onPress={() => {
+              // Nothing to lose yet - deal immediately, no warning. Otherwise, dealing a new game
+              // abandons the one in progress (counted as a loss - see stores/gameStats.tsx), so confirm
+              // first rather than losing the player's board to a stray tap - see the ConfirmDialog
+              // below, which owns the actual prompt.
+              if (!hasProgress) {
+                onNewGame()
+                return
+              }
+              setConfirmNewGameVisible(true)
+            }}
+            accessibilityLabel='New Game'
+          />
 
-        <IconButton icon='lightbulb-on-outline' iconColor={CHROME_FG} size={24} disabled={hintDisabled} onPress={onHint} accessibilityLabel='Hint' />
+          <IconButton icon='lightbulb-on-outline' iconColor={CHROME_FG} size={24} disabled={hintDisabled} onPress={onHint} accessibilityLabel='Hint' />
 
-        <IconButton icon='information-outline' iconColor={CHROME_FG} size={24} onPress={() => setRulesOpen(true)} accessibilityLabel='Rules' />
-      </Animated.View>
+          <IconButton icon='information-outline' iconColor={CHROME_FG} size={24} onPress={() => setRulesOpen(true)} accessibilityLabel='Rules' />
+        </Animated.View>
+      )}
 
       <SettingsDialog visible={settingsOpen} onDismiss={() => setSettingsOpen(false)}>
         {settingsContent}
@@ -322,6 +366,14 @@ function makeStyles(colors: TableColors) {
       // genuinely narrower than GAME_CONTENT_MAX_WIDTH's own cap) instead of leaving it
       // default-stretched full-width and therefore left-anchored.
       alignItems: 'center',
+      // Without this, a vertical ScrollView's content container shrink-wraps to its actual content
+      // height - shorter than the screen on every board that doesn't fill it (most of them, most of
+      // the time) - leaving a dead band of table felt below the board that tableTapCatcher's own
+      // Pressable (nested inside this container) can't reach either, since it inherits the same
+      // shrink-wrapped height. flexGrow:1 makes this container at least as tall as the ScrollView's
+      // own viewport when content is shorter (harmless when content is taller - flexGrow can't
+      // shrink it below that, so a tall board like Pyramid's still scrolls exactly as before).
+      flexGrow: 1,
       paddingHorizontal: GAME_CONTENT_PADDING
     },
     // The title wrap, the moves/timer band, the footer, and the corner buttons themselves are
@@ -381,9 +433,14 @@ function makeStyles(colors: TableColors) {
     // Wraps {children} as the table-tap-to-hide-footer catcher (see where it's rendered) -
     // reproduces `content`'s own alignItems: 'center' so wrapping it doesn't change how a board
     // narrower than the available width lays out (Spider's board is several top-level siblings,
-    // not one, so this can't be left to the default alignItems: 'stretch').
+    // not one, so this can't be left to the default alignItems: 'stretch'). flexGrow:1 makes this
+    // Pressable itself fill `content`'s own (now flexGrow:1) height, the same reasoning as
+    // `content`'s own comment - without it, this Pressable would still shrink-wrap around
+    // {children} even once its taller parent gave it room to grow, leaving that same dead band of
+    // untappable felt one level further in.
     tableTapCatcher: {
       alignItems: 'center',
+      flexGrow: 1,
       width: '100%'
     },
     timerText: {

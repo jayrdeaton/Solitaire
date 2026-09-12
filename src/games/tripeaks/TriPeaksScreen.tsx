@@ -549,7 +549,7 @@ function TriPeaksScreenInner() {
       SharedValue API (see handleUndo's own doc comment above). Same false-positive class as the
       disables inside handleUndo/handleDrawStock/handleCardTap above. */}
       {/* eslint-disable-next-line react-hooks/immutability */}
-      <GameChrome title='TriPeaks' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<TriPeaksSettingsSection />} rules={TRIPEAKS_RULES}>
+      <GameChrome title='TriPeaks' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<TriPeaksSettingsSection />} rules={TRIPEAKS_RULES}>
         <View style={styles.board}>
           <View ref={wasteViewRef} collapsable={false} style={styles.controlRow}>
             <StockWaste

@@ -62,12 +62,14 @@ function runLengthAtTop(column: Card[]): number {
   return len
 }
 
-function countEmptyFreecells(state: FreeCellState): number {
+export function countEmptyFreecells(state: FreeCellState): number {
   return state.freecells.filter((c) => c === null).length
 }
 
-/** Count empty tableau columns, excluding `excludeIndex` (the move's own destination doesn't help). */
-function countEmptyTableauColumns(state: FreeCellState, excludeIndex: number): number {
+/** Count empty tableau columns, excluding `excludeIndex` (the move's own destination doesn't help).
+ * Exported alongside countEmptyFreecells/maxSupermoveCount so a UI can explain a failed move in
+ * terms of the exact numbers that produced its cap (see FreeCellScreen.tsx's completeMove). */
+export function countEmptyTableauColumns(state: FreeCellState, excludeIndex: number): number {
   return state.tableau.filter((col, i) => i !== excludeIndex && col.length === 0).length
 }
 

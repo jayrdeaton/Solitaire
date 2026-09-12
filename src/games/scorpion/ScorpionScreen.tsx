@@ -605,7 +605,7 @@ function ScorpionScreenInner() {
   return (
     <CardSizeProvider width={cardWidth}>
       {/* eslint-disable-next-line react-hooks/immutability */}
-      <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
+      <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
         <View style={styles.topRow}>{state.stock.length > 0 && <StockPacket onPress={handleDrawStock} highlighted={activeHint?.kind === 'drawStock'} />}</View>
 
         <View style={[styles.tableauRow, { gap }]}>
