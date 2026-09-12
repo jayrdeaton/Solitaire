@@ -1,3 +1,4 @@
+import { faceUpFanOffset, useCardSize } from '@tastic/cards'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
@@ -6,8 +7,6 @@ import Animated, { measure, runOnJS, useAnimatedRef, useAnimatedStyle, useShared
 import { PileRef } from '@/engine/gameTypes'
 import { Card } from '@/engine/types'
 
-import { faceUpFanOffset } from './cards/CardFace'
-import { useCardSize } from './CardSizeContext'
 import { useDragGhost } from './dragdrop/DragGhostLayer'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
 import { EmptySlot, PlayingCard } from './PlayingCard'
@@ -32,6 +31,10 @@ interface PileViewProps {
   cards: Card[]
   /** How many cards counting from the top are currently selected (for a multi-card drag/move). */
   selectedCount?: number
+  /** How many cards counting from the top are the Hint feature's suggested source/destination -
+   * same "top N of this pile" shape as selectedCount, rendered as a pulsing green ring instead of
+   * selectedCount's static gold one (see PlayingCard's own `hinted` prop). */
+  hintCount?: number
   /** `measure` is lazy - call it only if a move actually applies. See DraggableTableauCardProps'
    * onPress below for why. */
   onPressCard?: (card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) => void
@@ -68,6 +71,7 @@ interface PileViewProps {
 interface DraggableTableauCardProps {
   card: Card
   selected: boolean
+  hinted: boolean
   dimmed: boolean
   cardStyle: StyleProp<ViewStyle>
   runCount: number
@@ -108,7 +112,7 @@ interface DraggableTableauCardProps {
  * screen-level auto-move handlers that call `ghost.cardRegistry.measure(cardId)` after applying a
  * move.
  */
-function DraggableTableauCard({ card, selected, dimmed, cardStyle, runCount, indexFromTop, isHidden, shakeToken, onPress, onDragStart, onDragEnd }: DraggableTableauCardProps) {
+function DraggableTableauCard({ card, selected, hinted, dimmed, cardStyle, runCount, indexFromTop, isHidden, shakeToken, onPress, onDragStart, onDragEnd }: DraggableTableauCardProps) {
   const viewRef = useAnimatedRef<Animated.View>()
   const ghost = useDragGhost()
   const shakeX = useSharedValue(0)
@@ -229,14 +233,14 @@ function DraggableTableauCard({ card, selected, dimmed, cardStyle, runCount, ind
   return (
     <GestureDetector gesture={pan}>
       <Animated.View ref={viewRef} style={[cardStyle, isHidden && styles.hidden, shakeStyle]}>
-        <PlayingCard card={card} selected={selected} dimmed={dimmed} onPress={onPress ? handlePress : undefined} />
+        <PlayingCard card={card} selected={selected} hinted={hinted} dimmed={dimmed} onPress={onPress ? handlePress : undefined} />
       </Animated.View>
     </GestureDetector>
   )
 }
 
 /** A vertical fanned stack, used for tableau/reserve columns across every game. */
-export function PileView({ cards, selectedCount = 0, onPressCard, onPressEmpty, faceDownOffset, faceUpOffset, maxHeight, style, drag, hiddenCount = 0, hiddenCardIds, dimUnplayable = false, shakeCardId, shakeCount = 1, shakeToken }: PileViewProps) {
+export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard, onPressEmpty, faceDownOffset, faceUpOffset, maxHeight, style, drag, hiddenCount = 0, hiddenCardIds, dimUnplayable = false, shakeCardId, shakeCount = 1, shakeToken }: PileViewProps) {
   const { width: cardWidth, height: cardHeight } = useCardSize()
   // Fan offsets default to a fraction of the current card size, rather than a fixed pixel value,
   // so the fan still looks proportional when the card size scales up/down with the viewport.
@@ -278,7 +282,7 @@ export function PileView({ cards, selectedCount = 0, onPressCard, onPressEmpty, 
   if (cards.length === 0) {
     return (
       <View style={[styles.container, { width: cardWidth }, style]}>
-        <EmptySlot onPress={onPressEmpty} />
+        <EmptySlot onPress={onPressEmpty} hinted={hintCount > 0} />
       </View>
     )
   }
@@ -324,6 +328,7 @@ export function PileView({ cards, selectedCount = 0, onPressCard, onPressEmpty, 
       {cards.map((card, i) => {
         const indexFromTop = cards.length - 1 - i
         const isSelected = indexFromTop < selectedCount
+        const isHinted = indexFromTop < hintCount
         const runCount = drag && card.faceUp ? drag.getRunCount(indexFromTop) : 0
         const isDimmed = dimUnplayable && !!drag && card.faceUp && runCount === 0
         // A card only responds to taps if it's actually a legal move source - the same signal
@@ -336,7 +341,7 @@ export function PileView({ cards, selectedCount = 0, onPressCard, onPressEmpty, 
         const isPressable = runCount > 0
         const cardStyle = { position: 'absolute' as const, top: offsets[i] * scale, left: 0, zIndex: i }
 
-        return <DraggableTableauCard key={card.id} card={card} selected={isSelected} dimmed={isDimmed} cardStyle={cardStyle} runCount={runCount} indexFromTop={indexFromTop} isHidden={isCardHidden(card, indexFromTop)} shakeToken={shakeStartIndexFromTop !== null && indexFromTop <= shakeStartIndexFromTop && indexFromTop > shakeStartIndexFromTop - shakeCount ? shakeToken : undefined} onPress={isPressable ? onPressCard : undefined} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
+        return <DraggableTableauCard key={card.id} card={card} selected={isSelected} hinted={isHinted} dimmed={isDimmed} cardStyle={cardStyle} runCount={runCount} indexFromTop={indexFromTop} isHidden={isCardHidden(card, indexFromTop)} shakeToken={shakeStartIndexFromTop !== null && indexFromTop <= shakeStartIndexFromTop && indexFromTop > shakeStartIndexFromTop - shakeCount ? shakeToken : undefined} onPress={isPressable ? onPressCard : undefined} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
       })}
       {allCardsHidden && (
         <View style={StyleSheet.absoluteFill} pointerEvents='none'>

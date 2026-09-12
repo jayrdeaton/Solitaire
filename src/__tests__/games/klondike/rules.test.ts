@@ -1,6 +1,10 @@
 import { Card, SUITS } from '@/engine/types'
 import { createKlondikeController, KlondikeState } from '@/games/klondike/rules'
 
+function card(suit: Card['suit'], rank: Card['rank'], faceUp = true, deckIndex = 0): Card {
+  return { id: `${suit}-${rank}-${deckIndex}`, suit, rank, faceUp }
+}
+
 function countCards(state: KlondikeState): number {
   const tableauCount = state.tableau.reduce((sum, col) => sum + col.length, 0)
   const foundationCount = state.foundation.reduce((sum, f) => sum + f.length, 0)
@@ -273,5 +277,133 @@ describe('Klondike drawStock', () => {
       waste: []
     }
     expect(controller.drawStock!(state)).toBeNull()
+  })
+})
+
+// Regression test for a real bug: legalMoves used to enumerate EVERY legal tableau destination for
+// a given (source column, card count), while autoMoveHint (tap-to-auto-move) already computed a
+// single "best" destination via pickBestTableauTarget. When two columns both happened to offer a
+// legal landing spot for the same card, Hint could highlight one while tapping the card sent it to
+// the other. legalMoves now builds the same candidate list and calls pickBestTableauTarget itself,
+// so it always collapses to the one destination autoMoveHint would also pick.
+describe('Klondike legalMoves destination selection', () => {
+  it('collapses multiple legal tableau destinations for the same (from, count) to the single best one, matching autoMoveHint', () => {
+    const controller = createKlondikeController(1)
+    const state: KlondikeState = {
+      tableau: [
+        [card('hearts', 8)], // col0: source - red 8
+        [card('spades', 9)], // col1: black 9 - a legal destination (leftmost)
+        [card('clubs', 9)], // col2: black 9 - also a legal destination
+        [],
+        [],
+        [],
+        []
+      ],
+      foundation: [[], [], [], []],
+      stock: [],
+      waste: []
+    }
+
+    const tableauMovesFromCol0 = controller.legalMoves(state).filter((m) => m.from.zone === 'tableau' && m.from.index === 0 && m.to.zone === 'tableau')
+    expect(tableauMovesFromCol0).toHaveLength(1)
+    expect(tableauMovesFromCol0[0].to.index).toBe(1) // tie-break: fewest buried, same pile size -> leftmost
+
+    const autoHint = controller.autoMoveHint!(state, { zone: 'tableau', index: 0 }, 'hearts-8-0')
+    expect(autoHint).toEqual(tableauMovesFromCol0[0])
+  })
+})
+
+describe('Klondike scoreHintMove', () => {
+  const controller = createKlondikeController(1)
+
+  function moveTo(state: KlondikeState, from: number, count: number, to: number) {
+    const move = controller.legalMoves(state).find((m) => m.from.zone === 'tableau' && m.from.index === from && m.count === count && m.to.zone === 'tableau' && m.to.index === to)
+    if (!move) throw new Error(`expected a legal tableau move from=${from} count=${count} to=${to}`)
+    return move
+  }
+
+  function scoreOf(state: KlondikeState, from: number, count: number, to: number) {
+    return controller.scoreHintMove!(state, moveTo(state, from, count, to))
+  }
+
+  // Regression test for the same fragmentation bug fixed in Spider: the previous scorer rated
+  // "peel part of a nice run off to park it on some unrelated matching card" the same as any other
+  // harmless move, so Hint could suggest tearing apart a good run for no reason. Klondike has no
+  // foundation special-case here (findHint already sorts foundation-bound moves first, unconditionally).
+  it('never prefers fragmenting a coherent run over relocating it intact', () => {
+    const state: KlondikeState = {
+      tableau: [
+        [card('spades', 9), card('hearts', 8), card('clubs', 7), card('diamonds', 6)], // col0: a full 4-run
+        [card('spades', 7)], // col1: takes just the 6 (fragment of 1)
+        [card('diamonds', 8)], // col2: takes the top 2 (7,6)
+        [card('clubs', 9)], // col3: takes the top 3 (8,7,6)
+        [card('hearts', 10)], // col4: takes the whole run (4)
+        [],
+        []
+      ],
+      foundation: [[], [], [], []],
+      stock: [],
+      waste: []
+    }
+
+    const fragment1 = scoreOf(state, 0, 1, 1) // rips the 6 off the run, onto the lone black 7
+    const fragment2 = scoreOf(state, 0, 2, 2) // rips 7,6 off, onto the lone red 8
+    const fragment3 = scoreOf(state, 0, 3, 3) // rips 8,7,6 off, onto the lone black 9
+    const intactRelocation = scoreOf(state, 0, 4, 4) // the whole run, kept together
+
+    expect(intactRelocation).toBeGreaterThan(fragment1)
+    expect(intactRelocation).toBeGreaterThan(fragment2)
+    expect(intactRelocation).toBeGreaterThan(fragment3)
+    expect(fragment1).toBeLessThan(0)
+    expect(fragment2).toBeLessThan(0)
+  })
+
+  it('ranks revealing a face-down card far above a move that reveals nothing', () => {
+    const state: KlondikeState = {
+      tableau: [
+        [card('diamonds', 9, false), card('clubs', 5)], // col0: moving the 5 exposes the face-down 9
+        [card('hearts', 6)], // col1: destination for the 5
+        [card('clubs', 9), card('spades', 3)], // col2: moving the 3 exposes nothing new (already face-up)
+        [card('hearts', 4)], // col3: destination for the 3
+        [],
+        [],
+        []
+      ],
+      foundation: [[], [], [], []],
+      stock: [],
+      waste: []
+    }
+
+    const revealMove = scoreOf(state, 0, 1, 1) // 5 -> 6, exposes the face-down 9
+    const plainConsolidation = scoreOf(state, 2, 1, 3) // 3 -> 4, nothing revealed
+
+    expect(revealMove).toBeGreaterThan(plainConsolidation)
+    expect(revealMove).toBeGreaterThan(400) // comfortably clears the structural/empty-column range
+  })
+
+  // Klondike's empty tableau columns only ever accept a King (unlike Spider's, which take any
+  // card) - so "spending" one is a real, scarce move here too, just reachable through fewer shapes.
+  it('treats empty columns as a resource whose net change matters, not a flat penalty', () => {
+    const state: KlondikeState = {
+      tableau: [
+        [card('spades', 13)], // col0: a lone King - moving it is a purely lateral shuffle
+        [], // col1: empty - destination for the lone King
+        [card('hearts', 5)], // col2: a lone card whose move frees this column
+        [card('spades', 6)], // col3: destination that extends into a real 2-run
+        [card('clubs', 8), card('diamonds', 7)], // col4: a 2-card run occupying the whole column
+        [card('hearts', 9)], // col5: destination for the whole run
+        [] // col6: empty, so the King has two candidate empty destinations (leftmost wins)
+      ],
+      foundation: [[], [], [], []],
+      stock: [],
+      waste: []
+    }
+
+    const lateralIntoEmptyColumn = scoreOf(state, 0, 1, 1) // King -> empty column, net wash
+    const extendsRunAndFreesColumn = scoreOf(state, 2, 1, 3) // 5 -> 6, frees col2
+    const relocatesWholeRunAndFreesColumn = scoreOf(state, 4, 2, 5) // whole run -> a lone 9, frees col4
+
+    expect(extendsRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
+    expect(relocatesWholeRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
   })
 })

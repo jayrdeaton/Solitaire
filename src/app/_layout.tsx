@@ -32,6 +32,13 @@ function ThemedStack() {
       <Stack.Screen name='spider' options={{ title: 'Spider' }} />
       <Stack.Screen name='freecell' options={{ title: 'FreeCell' }} />
       <Stack.Screen name='pyramid' options={{ title: 'Pyramid' }} />
+      <Stack.Screen name='yukon' options={{ title: 'Yukon' }} />
+      <Stack.Screen name='golf' options={{ title: 'Golf' }} />
+      <Stack.Screen name='tripeaks' options={{ title: 'TriPeaks' }} />
+      <Stack.Screen name='canfield' options={{ title: 'Canfield' }} />
+      <Stack.Screen name='fortythieves' options={{ title: 'Forty Thieves' }} />
+      <Stack.Screen name='scorpion' options={{ title: 'Scorpion' }} />
+      <Stack.Screen name='acesup' options={{ title: 'Aces Up' }} />
       <Stack.Screen name='achievements' options={{ title: 'Achievements' }} />
       <Stack.Screen name='profiles' options={{ title: 'Profiles' }} />
     </Stack>

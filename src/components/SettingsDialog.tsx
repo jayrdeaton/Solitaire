@@ -1,14 +1,12 @@
 import { useAutoPaperTheme } from '@rific/auto-paper'
 import { TouchableRipple } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
+import { CardBack, CardFace, DecoratedCardBack } from '@tastic/cards'
 import { BaseSettingsDialog } from '@tastic/hud'
 import { ReactNode } from 'react'
 import { StyleSheet, View } from 'react-native'
 import { Icon, Text } from 'react-native-paper'
 
-import { CardBack } from '@/components/cards/CardBack'
-import { CardFace } from '@/components/cards/CardFace'
-import { DecoratedCardBack } from '@/components/cards/DecoratedCardBack'
 import { SettingsSection } from '@/components/SettingsSection'
 import { useTableColors } from '@/components/theme'
 import { release } from '@/constants/release'
@@ -25,13 +23,19 @@ const BACK_STYLE_OPTIONS: { value: Settings['cardBackStyle']; label: string }[] 
 
 const FACE_STYLE_OPTIONS: { value: Settings['cardStyle']; label: string }[] = [
   { value: 'compact', label: 'Compact' },
+  { value: 'numeric', label: 'Numeric' },
   { value: 'decorated', label: 'Decorated' },
   { value: 'tarot', label: 'Tarot' }
 ]
 
-// King of Hearts - a court card shows compact-vs-decorated's difference most clearly (a plain
-// silhouette vs. a fully illustrated figure), more than a number card would.
-const PREVIEW_CARD = { id: 'preview', suit: 'hearts' as const, rank: 13 as const, faceUp: true }
+// Ace of Hearts, not a court card - decorated's full illustration vs. compact/numeric/tarot's
+// corner-index-plus-big-center layout is visible either way, but a court card can't show
+// numeric's own distinguishing feature at all (its big center numeral vs. compact's big center
+// pip only differs on non-court ranks - see CardFace's own doc comment). Ace over some other
+// number: it's the more iconic/recognizable card of the two, and renders through 'numeric' with no
+// quirks of its own (a single glyph, 'A' - unlike '10', the one rank numeric renders at a
+// noticeably smaller scale - see CardFace's own bigRankFontScale).
+const PREVIEW_CARD = { id: 'preview', suit: 'hearts' as const, rank: 1 as const, faceUp: true }
 
 /** One selectable style swatch - an actual small render of that style, not a text label, so
  * picking one means seeing what it looks like rather than reading its name. */
@@ -82,6 +86,36 @@ export function SettingsDialog({ visible, onDismiss, children }: SettingsDialogP
     <BaseSettingsDialog visible={visible} onDismiss={onDismiss} version={release.otaVersion} onUpdateError={(message) => error('Update check failed', message)}>
       {children}
       <SettingsSection>
+        {/* Same bare-row shape as BaseSettingsDialog's own Sound/Haptics rows (an icon badge whose
+        color/glyph flips with state, plus a single-line label, no separate Switch) - that
+        component doesn't export its SettingIcon helper, so the small badge is replicated here
+        rather than imported. Global (not per-game), since it's one play-style preference that
+        applies identically to every foundation-building game rather than a rule variant any single
+        game owns - see stores/settings.tsx's own doc comment on autoMoveToFoundation. */}
+        <TouchableRipple onPress={() => updateSettings({ autoMoveToFoundation: !settings.autoMoveToFoundation })} style={styles.toggleButton} accessibilityLabel={`Auto-move to foundation ${settings.autoMoveToFoundation ? 'on' : 'off'}`}>
+          <View style={styles.toggleContent}>
+            <View style={[styles.iconBadge, { backgroundColor: settings.autoMoveToFoundation ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
+              <Icon source={settings.autoMoveToFoundation ? 'arrow-up-bold-circle' : 'arrow-up-bold-circle-outline'} size={18} color={settings.autoMoveToFoundation ? paperColors.tertiary : paperColors.onSurfaceVariant} />
+            </View>
+            <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
+              Auto-Move to Foundation
+            </Text>
+          </View>
+        </TouchableRipple>
+        {/* Same bare-row shape as the toggle above - a second gameplay-assist preference, not a
+        rule variant (see stores/settings.tsx's own doc comment on dimUnplayable). Only
+        FreeCell/Canfield/Golf/Spider ever have a face-up-but-unplayable card to dim in the first
+        place; a no-op everywhere else. */}
+        <TouchableRipple onPress={() => updateSettings({ dimUnplayable: !settings.dimUnplayable })} style={styles.toggleButton} accessibilityLabel={`Dim unplayable cards ${settings.dimUnplayable ? 'on' : 'off'}`}>
+          <View style={styles.toggleContent}>
+            <View style={[styles.iconBadge, { backgroundColor: settings.dimUnplayable ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
+              <Icon source={settings.dimUnplayable ? 'card-off-outline' : 'card-outline'} size={18} color={settings.dimUnplayable ? paperColors.tertiary : paperColors.onSurfaceVariant} />
+            </View>
+            <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
+              Dim Unplayable Cards
+            </Text>
+          </View>
+        </TouchableRipple>
         {/* Same bare-row shape as BaseSettingsDialog's own Sound/Haptics rows (an icon badge whose
         color/glyph flips with state, plus a single-line label, no separate Switch) - that
         component doesn't export its SettingIcon helper, so the small badge is replicated here

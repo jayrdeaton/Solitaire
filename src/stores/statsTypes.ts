@@ -3,12 +3,12 @@ import { AchievementDefinition as BaseAchievementDefinition, DayStreakState, Out
 export type { AchievementTier, UnlockedAchievementsState } from '@tastic/achievements'
 export type AchievementDefinition = BaseAchievementDefinition<StatsState>
 
-// The four games this app ships. Kept as a literal union (rather than a bare string, which is what
+// The games this app ships. Kept as a literal union (rather than a bare string, which is what
 // the legacy stores/stats.ts used) so a typo in a game id is a compile error, and so
 // Record<SolitaireGameId, T> is exhaustive everywhere stats are bucketed.
-export type SolitaireGameId = 'klondike' | 'spider' | 'freecell' | 'pyramid'
+export type SolitaireGameId = 'klondike' | 'spider' | 'freecell' | 'pyramid' | 'yukon' | 'golf' | 'tripeaks' | 'canfield' | 'scorpion' | 'fortythieves' | 'acesup'
 
-export const SOLITAIRE_GAME_IDS: SolitaireGameId[] = ['klondike', 'spider', 'freecell', 'pyramid']
+export const SOLITAIRE_GAME_IDS: SolitaireGameId[] = ['klondike', 'spider', 'freecell', 'pyramid', 'yukon', 'golf', 'tripeaks', 'canfield', 'scorpion', 'fortythieves', 'acesup']
 
 // One game variant's record.
 //
@@ -27,14 +27,23 @@ export interface VariantStats {
   // null-until-first-win convention as bestTimeSeconds.
   bestMoves: number | null
   bestScore: number | null
+  // Lifetime count of Hint-button presses in this variant — bumped the instant the button is
+  // pressed (see statsEngine.ts's applyHintUsed), independent of whether that deal is later won or
+  // abandoned.
+  hintsUsed: number
+  // Lifetime count of wins in this variant where no hint was used during that deal — see
+  // DealMetrics' own usedHint and statsEngine.ts's bumpVariant.
+  winsWithoutHint: number
 }
 
 // One resolved deal's metrics, bundled so applyDealWon/bumpVariant don't need a growing chain of
-// positional parameters. All null for an abandoned deal (see statsEngine.ts's applyDealAbandoned).
+// positional parameters. seconds/moves/score are all null for an abandoned deal (see
+// statsEngine.ts's applyDealAbandoned); usedHint is meaningful only on a win (see bumpVariant).
 export interface DealMetrics {
   seconds: number | null
   moves: number | null
   score: number | null
+  usedHint: boolean
 }
 
 export interface ProfileStats extends DayStreakState {

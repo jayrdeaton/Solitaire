@@ -1,21 +1,24 @@
 import { Pressable } from '@rific/feedback-press'
+import { CardBack, CardFace, DecoratedCardBack, type TableColors, useCardSize } from '@tastic/cards'
 import React from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
+import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
 
-import { Card, Suit } from '@/engine/types'
+import { Card, Rank, Suit } from '@/engine/types'
 import { useProfiles } from '@/stores/profiles'
 import { useSettings } from '@/stores/settings'
 
-import { CardBack } from './cards/CardBack'
-import { CardFace } from './cards/CardFace'
-import { DecoratedCardBack } from './cards/DecoratedCardBack'
-import { useCardSize } from './CardSizeContext'
-import { CARD_RADIUS, TableColors, useTableColors } from './theme'
+import { startHintPulse, stopHintPulse } from './hintAnimation'
+import { CARD_RADIUS, useTableColors } from './theme'
 
 interface PlayingCardProps {
   card: Card
   /** Highlight this card as part of the current selection. */
   selected?: boolean
+  /** Highlight this card as the Hint feature's suggested source/destination - a pulsing ring in
+   * `colors.hintGreen`, distinct from `selected`'s static gold ring since Pyramid already uses
+   * `selected` for its own real tap-to-pair-selection state. */
+  hinted?: boolean
   /** Disable pressing (e.g. cards buried under others). */
   disabled?: boolean
   /** Not yet playable (e.g. a buried Pyramid card) - draws a translucent scrim on top of the
@@ -27,17 +30,24 @@ interface PlayingCardProps {
 }
 
 // The border is drawn as an absolutely-positioned overlay rather than a Pressable borderWidth so
-// that toggling `selected` (a thicker, different-colored border) never changes the box's content
-// area - RN sizes borders inward from a fixed width/height, so swapping 1px for 3px would nudge
-// the card's own SVG content by a couple pixels every time it's (de)selected.
-export function PlayingCard({ card, selected, disabled, dimmed, onPress, style, testID }: PlayingCardProps) {
+// that toggling `selected`/`hinted` (a thicker, different-colored border) never changes the box's
+// content area - RN sizes borders inward from a fixed width/height, so swapping 1px for 3px would
+// nudge the card's own SVG content by a couple pixels every time it's (de)selected/(un)hinted.
+export function PlayingCard({ card, selected, hinted, disabled, dimmed, onPress, style, testID }: PlayingCardProps) {
   const colors = useTableColors()
   const { activeProfile } = useProfiles()
   const { settings } = useSettings()
   const { width, height } = useCardSize()
   const styles = React.useMemo(() => makeStyles(colors, settings.invertDarkModeColors), [colors, settings.invertDarkModeColors])
   const cardSize = { width, height }
-  const borderOverlay = <View pointerEvents='none' style={selected ? styles.selectedRing : styles.border} />
+  const hintOpacity = useSharedValue(1)
+  const hintAnimatedStyle = useAnimatedStyle(() => ({ opacity: hintOpacity.value }))
+  React.useEffect(() => {
+    if (hinted) startHintPulse(hintOpacity)
+    else stopHintPulse(hintOpacity)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hinted])
+  const borderOverlay = selected ? <View pointerEvents='none' style={styles.selectedRing} /> : hinted ? <Animated.View pointerEvents='none' style={[styles.hintRing, hintAnimatedStyle]} /> : <View pointerEvents='none' style={styles.border} />
   const dimOverlay = dimmed ? <View pointerEvents='none' style={styles.dim} /> : null
 
   if (!card.faceUp) {
@@ -73,12 +83,15 @@ export function PlayingCard({ card, selected, disabled, dimmed, onPress, style, 
   )
 }
 
-export function EmptySlot({ onPress, style, children, testID }: { onPress?: () => void; style?: StyleProp<ViewStyle>; children?: React.ReactNode; testID?: string }) {
+export function EmptySlot({ onPress, hinted, style, children, testID }: { onPress?: () => void; hinted?: boolean; style?: StyleProp<ViewStyle>; children?: React.ReactNode; testID?: string }) {
   const colors = useTableColors()
   const { width, height } = useCardSize()
   const styles = React.useMemo(() => makeStyles(colors), [colors])
   return (
-    <Pressable testID={testID} onPress={onPress} soundDisabled style={[styles.card, { width, height }, styles.empty, style]}>
+    // disabled when there's nothing to press - otherwise this Pressable still claims the tap (just
+    // does nothing with it), silently blocking taps meant for whatever's behind it (e.g. GameChrome's
+    // table-tap-to-hide-footer catcher) from ever reaching them.
+    <Pressable testID={testID} onPress={onPress} disabled={!onPress} soundDisabled style={[styles.card, { width, height }, hinted ? styles.emptyHinted : styles.empty, style]}>
       {children}
     </Pressable>
   )
@@ -90,13 +103,26 @@ export function EmptySlot({ onPress, style, children, testID }: { onPress?: () =
  * EmptySlot's own plain transparent/dashed styling unmodified - CardFace's `muted` rendering is
  * already just faint linework (see its own MUTED_OPACITY), so a tinted backdrop here would put a
  * card-shaped block back behind it, which is exactly what muted is meant to avoid. */
-export function FoundationSlot({ suit, onPress, style }: { suit: Suit; onPress?: () => void; style?: StyleProp<ViewStyle> }) {
+interface FoundationSlotProps {
+  suit: Suit
+  /** The rank an empty foundation actually needs first - defaults to Ace, true for every game
+   * except Canfield, whose foundations start at a variable "Canfield rank" instead (see
+   * CanfieldScreen.tsx, the only caller that ever passes something other than the default). */
+  rank?: Rank
+  onPress?: () => void
+  /** Highlight this empty slot as the Hint feature's suggested destination - see PlayingCard's own
+   * `hinted` prop. */
+  hinted?: boolean
+  style?: StyleProp<ViewStyle>
+}
+
+export function FoundationSlot({ suit, rank = 1, onPress, hinted, style }: FoundationSlotProps) {
   const colors = useTableColors()
   const { settings } = useSettings()
   const { width, height } = useCardSize()
   return (
-    <EmptySlot onPress={onPress} style={style}>
-      <CardFace card={{ id: 'foundation-hint', suit, rank: 1, faceUp: true }} colors={colors} width={width} height={height} muted cardStyle={settings.cardStyle} invertDarkModeColors={settings.invertDarkModeColors} />
+    <EmptySlot onPress={onPress} hinted={hinted} style={style}>
+      <CardFace card={{ id: 'foundation-hint', suit, rank, faceUp: true }} colors={colors} width={width} height={height} muted cardStyle={settings.cardStyle} invertDarkModeColors={settings.invertDarkModeColors} />
     </EmptySlot>
   )
 }
@@ -145,8 +171,26 @@ function makeStyles(colors: TableColors, invertDarkModeColors?: boolean) {
       borderWidth: 2,
       justifyContent: 'center'
     },
+    emptyHinted: {
+      alignItems: 'center',
+      backgroundColor: 'transparent',
+      borderColor: colors.hintGreen,
+      borderStyle: 'dashed',
+      borderWidth: 2,
+      justifyContent: 'center'
+    },
     face: {
       backgroundColor: colors.cardFace
+    },
+    hintRing: {
+      borderColor: colors.hintGreen,
+      borderRadius: CARD_RADIUS,
+      borderWidth: 3,
+      bottom: 0,
+      left: 0,
+      position: 'absolute',
+      right: 0,
+      top: 0
     },
     selectedRing: {
       borderColor: colors.selectedGlow,

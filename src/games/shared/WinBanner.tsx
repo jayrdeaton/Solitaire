@@ -1,9 +1,9 @@
 import { Pressable } from '@rific/feedback-press'
+import { type TableColors } from '@tastic/cards'
 import { useMemo } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 
 import { formatTime } from '@/components/GameChrome'
-import { TableColors } from '@/components/theme'
 import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 
 export interface WinBannerProps {

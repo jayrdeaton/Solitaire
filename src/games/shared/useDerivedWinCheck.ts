@@ -27,7 +27,18 @@ export interface DerivedWinCheck {
  * called during render, and the consumer effect only sees a same-commit payload if the producer
  * (this hook's own internal effect) ran first.
  */
-export function useDerivedWinCheck<TState>(controller: Pick<GameController<TState>, 'isWon'>, state: TState | null, gameId: SolitaireGameId, session: GameSession, dealTokenRef: MutableRefObject<number>, recordDealWon: (gameId: SolitaireGameId, metrics: DealMetrics) => unknown): DerivedWinCheck {
+export function useDerivedWinCheck<TState>(
+  controller: Pick<GameController<TState>, 'isWon'>,
+  state: TState | null,
+  gameId: SolitaireGameId,
+  session: GameSession,
+  dealTokenRef: MutableRefObject<number>,
+  recordDealWon: (gameId: SolitaireGameId, metrics: DealMetrics) => unknown,
+  // Whether the Hint button was pressed (and actually produced a hint) at any point during this
+  // deal - read at the exact instant a win is recorded, since a screen's own ref value can't be
+  // passed as a snapshot (see each screen's hintUsedThisDealRef).
+  hintsUsedRef: MutableRefObject<boolean>
+): DerivedWinCheck {
   const won = state ? controller.isWon(state) : false
   const recordedRef = useRef(false)
   const pendingWinCascadeRef = useRef<{ gen: number } | null>(null)
@@ -37,7 +48,7 @@ export function useDerivedWinCheck<TState>(controller: Pick<GameController<TStat
     if (controller.isWon(state) && !recordedRef.current) {
       recordedRef.current = true
       session.stopClock()
-      recordDealWon(gameId, { seconds: session.elapsed, moves: session.moves, score: computeScore(session.moves, session.elapsed) })
+      recordDealWon(gameId, { seconds: session.elapsed, moves: session.moves, score: computeScore(session.moves, session.elapsed), usedHint: hintsUsedRef.current })
       clearGameInProgress(gameId)
       pendingWinCascadeRef.current = { gen: dealTokenRef.current }
     }

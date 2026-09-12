@@ -35,6 +35,23 @@ function canPlaceOnTableau(dest: Card[], movingTop: Card): boolean {
   return movingTop.rank === destTop.rank - 1 && cardColor(movingTop.suit) !== cardColor(destTop.suit)
 }
 
+/** Length of the maximal alternating-color, consecutive-descending run currently sitting at the
+ * top of a tableau column - the "coherent asset" a player already holds there and could move as
+ * one unit. 0 for an empty column. Unlike Klondike/Spider, FreeCell deals every card face-up and
+ * never turns one back over (see FreeCellState's own doc comment), so there is no face-down check
+ * here at all. Same pairwise relation canPlaceOnTableau/isDescendingAltColor already check. */
+function runLengthAtTop(column: Card[]): number {
+  if (column.length === 0) return 0
+  let len = 1
+  for (let i = column.length - 2; i >= 0; i--) {
+    const cur = column[i]
+    const next = column[i + 1]
+    if (next.rank !== cur.rank - 1 || cardColor(next.suit) === cardColor(cur.suit)) break
+    len++
+  }
+  return len
+}
+
 function countEmptyFreecells(state: FreeCellState): number {
   return state.freecells.filter((c) => c === null).length
 }
@@ -167,10 +184,19 @@ function legalMoves(state: FreeCellState): Move[] {
     }
     const maxRun = pile.length - runStart
     for (let count = 1; count <= maxRun; count++) {
-      for (let t = 0; t < NUM_TABLEAU; t++) {
-        if (t === col) continue
-        tryAdd(from, { zone: 'tableau', index: t }, count)
-      }
+      // Collapse straight to the single destination autoMoveHint would also pick for this same
+      // (from, count) - same candidate filter (including the supermove-size limit), same
+      // pickBestTableauTarget call - so a move surfaced here (e.g. for the Hint button) always
+      // matches where tapping that card actually sends it.
+      const movingCards = pile.slice(pile.length - count)
+      const movingTop = movingCards[0]
+      const candidates = state.tableau
+        .map((destPile, index) => ({ index, pile: destPile }))
+        .filter((c) => c.index !== col)
+        .filter((c) => canPlaceOnTableau(c.pile, movingTop))
+        .filter((c) => count === 1 || count <= maxSupermoveCount(state, c.index))
+      const best = pickBestTableauTarget(candidates, isDescendingAltColor)
+      if (best) tryAdd(from, { zone: 'tableau', index: best.index }, count)
     }
   }
 
@@ -229,6 +255,76 @@ function autoMoveHint(state: FreeCellState, from: PileRef, cardId: string): Move
   return null
 }
 
+/**
+ * Ranks a legal non-foundation move for the Hint button (see engine/hint.ts's findHint) -
+ * foundation-bound moves already sort first there, unconditionally, so this only ever ranks the
+ * rest: tableau->tableau (single card or a supermove-eligible run), tableau->freecell, and
+ * freecell->tableau (legalMoves() never offers freecell->freecell, so that shape can't reach here
+ * in practice; the fallback below scores it defensively rather than assuming it can't happen).
+ *
+ * Same "opportunity-cost run valuation" shape Spider/Klondike/Canfield/FortyThieves all use: `R` is
+ * the length of the coherent alternating-color-descending run (isDescendingAltColor - Klondike's
+ * own rule, not Spider's same-suit one) already sitting at this move's source, and the move is
+ * scored by comparing the best group left standing anywhere afterward (the destination's newly
+ * extended run, or the leftover remainder back at a tableau source) against `R` - zero if the whole
+ * group relocated intact, positive if it built something longer, negative if it tore `R` apart for
+ * no compensating gain. As with Klondike, canPlaceOnTableau already enforces the alt-color-
+ * descending relation as part of legality, so a legal move onto a non-empty column is, by
+ * construction, always a coherent extension of whatever run sits there - no extra suit/color check
+ * needed before crediting `newRunLenAtDest`. No reveal-a-hidden-card bonus exists here (unlike
+ * Klondike/Spider): every FreeCell card is face-up from the very first deal and stays that way, so
+ * there is never a face-down card to expose.
+ *
+ * A freecell is treated as a trivially maximal "run of length equal to what's in/going into it"
+ * on BOTH ends of this formula, the same way Canfield's scoreHintMove treats its single-card
+ * waste/reserve sources (`runLen = move.count`, always 1 for them) - it's "the coherent thing
+ * already sitting at this move's source/destination," so the same comparison falls out correctly
+ * without a per-shape special case: moving a freecell's card onto an existing tableau run scores
+ * exactly like extending that run from a tableau source would (`destRunLenBefore` credited in
+ * full), and moving a lone/whole-run card INTO a freecell nets to 0 (relocated intact, same as any
+ * other whole-run relocation) rather than being scored as if the destination held nothing at all -
+ * that asymmetry would otherwise treat routine, non-fragmenting freecell storage (an extremely
+ * common move - a source column's own top run is very often just 1 card, since the tableau's
+ * initial deal has no internal alternating-color-descending guarantee below it) as if it fragmented
+ * a run down to zero.
+ *
+ * FreeCell has two independent scarce resources instead of every sibling's one: empty tableau
+ * columns AND empty freecells (both are the classic FreeCell "workspace"). They are NOT weighted
+ * equally: freeing a column is worth roughly twice as much per unit as freeing a freecell, because
+ * of a real asymmetry already baked into this file's own supermove math (see maxSupermoveCount
+ * above) - an extra empty freecell only adds +1 to the `(emptyFreecells + 1)` factor, while an extra
+ * empty column DOUBLES the whole result via `2 ** emptyCols`. A move can free (or spend) at most one
+ * of each kind at once, so the two deltas never double-count against each other; they're just added.
+ */
+function scoreHintMove(state: FreeCellState, move: Move): number {
+  if (move.to.zone === 'foundation') return 0 // already sorted first by findHint - not scored here
+
+  const fromCol = move.from.zone === 'tableau' ? state.tableau[move.from.index] : undefined
+  const toCol = move.to.zone === 'tableau' ? state.tableau[move.to.index] : undefined
+  if (move.from.zone === 'tableau' && !fromCol) return 0
+  if (move.to.zone === 'tableau' && !toCol) return 0
+
+  const runLen = fromCol ? runLengthAtTop(fromCol) : 1
+  const destRunLenBefore = toCol && toCol.length > 0 ? runLengthAtTop(toCol) : 0
+  const newRunLenAtDest = toCol ? move.count + (toCol.length > 0 ? destRunLenBefore : 0) : move.count
+  const remainderRunLen = move.count < runLen ? runLen - move.count : 0
+  const netRunStructureChange = Math.max(newRunLenAtDest, remainderRunLen) - runLen
+
+  const fromBecomesEmpty = fromCol !== undefined && move.count === fromCol.length
+  const toWasEmpty = toCol !== undefined && toCol.length === 0
+  const netEmptyColumnDelta = (fromBecomesEmpty ? 1 : 0) - (toWasEmpty ? 1 : 0)
+
+  const freesFreecell = move.from.zone === 'freecell' ? 1 : 0
+  const consumesFreecell = move.to.zone === 'freecell' ? 1 : 0
+  const netFreecellDelta = freesFreecell - consumesFreecell
+
+  let score = netRunStructureChange * 30
+  score += netEmptyColumnDelta * 50
+  score += netFreecellDelta * 25
+  score += move.count * 2
+  return score
+}
+
 /** Every card currently reachable - every freecell's contents plus each tableau column's top card
  * (FreeCell has no stock/waste) - for the auto-play-to-foundation feature (see
  * engine/autoFoundation.ts). */
@@ -252,5 +348,6 @@ export const FreeCellController: GameController<FreeCellState> = {
   tryMove,
   isWon,
   autoMoveHint,
+  scoreHintMove,
   accessibleCards
 }

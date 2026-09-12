@@ -1,20 +1,23 @@
+import { faceUpFanOffset, type TableColors, useCardSize } from '@tastic/cards'
 import React, { RefObject } from 'react'
 import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
 
 import { Card } from '@/engine/types'
 
-import { faceUpFanOffset } from './cards/CardFace'
-import { useCardSize } from './CardSizeContext'
 import { DraggableCard } from './dragdrop/DraggableCard'
 import { DropZone } from './dragdrop/DropZone'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
 import { EmptySlot, PlayingCard } from './PlayingCard'
-import { TableColors, useTableColors } from './theme'
+import { useTableColors } from './theme'
 import { useFrozenWhileHidden } from './useFrozenWhileHidden'
 
 // Stable empty-array default for wasteBehind, so callers that never pass it (Pyramid, draw-1) get
 // a consistent, referentially-stable [] rather than a fresh literal on every render.
 const EMPTY_WASTE_BEHIND: Card[] = []
+
+// Plain (theme-independent) style, same idiom as FoundationCell's HIDDEN_CARD_STYLE - StockWaste is
+// a module-level component too, so it can't reach a caller's own theme-derived `styles`.
+const HIDDEN_STOCK_STYLE = { opacity: 0 }
 
 interface StockWasteProps {
   dropZones: DropZoneRegistry
@@ -35,6 +38,11 @@ interface StockWasteProps {
   onWastePress: (measure: () => Promise<{ x: number; y: number }>) => void
   onWasteDrop: (absoluteX: number, absoluteY: number) => Promise<boolean> | boolean
   wasteSelected?: boolean
+  /** Highlight the waste top / stock pile as the Hint feature's suggested source/destination - see
+   * PlayingCard's own `hinted` prop. `stockHinted` covers both the stock pile card itself and its
+   * empty/recycle slot. */
+  wasteHinted?: boolean
+  stockHinted?: boolean
   /** How many of the frontmost fan slots - 0 = wasteTop, 1 = wasteBehind[0], 2 = wasteBehind[1] -
    * are currently mid-flight in a screen-level ghost/deal layer: that slot's real card stays
    * registered (so the flight can measure exactly where it landed) but invisible, showing
@@ -53,13 +61,27 @@ interface StockWasteProps {
    * animation's flight origin (see components/dealing/DealLayer.tsx) - the stock card itself isn't
    * registered in CardRegistry the way draggable cards are. */
   stockRef?: RefObject<View | null>
+  /** Ref to the waste slot's wrapping View, for measuring its screen position as a deal-style
+   * flight's shared origin/destination (e.g. a stock recycle, which moves the whole waste pile back
+   * to stock at once) - the waste area itself isn't a single registrable card the way wasteTop is,
+   * since a recycle can move more cards than are ever individually rendered (see wasteBehind's
+   * "only 2 decorative slots" cap above). */
+  wasteRef?: RefObject<View | null>
+  /** True while the stock slot's own real content (card or empty/recycle placeholder) is mid-flight
+   * elsewhere and should stay invisible, showing whatever it displayed a moment before instead - the
+   * same "freeze the outgoing look, don't reveal the incoming one early" treatment wasteTop already
+   * gets via topHidden/frozenWasteTop above. Needed for e.g. undoing a stock draw that had just
+   * emptied the stock (recycle-hint placeholder) back to a real card: without this, the placeholder
+   * would flip to a solid card the instant state reverts, a beat before the undo ghost actually
+   * lands there. */
+  stockHidden?: boolean
 }
 
 /** Stock (face-down, draw) + waste (face-up, top card) pair, shared by every game that deals from
  * a stock pile. Waste sits first so the card players are about to act on lands next to the tableau,
  * with the draw pile as the secondary action beside it. When the stock runs out but the waste still
  * has cards, an empty stock slot shows a recycle hint - every game here allows unlimited recycling. */
-export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EMPTY_WASTE_BEHIND, onDrawStock, onWastePress, onWasteDrop, wasteSelected, wasteHiddenCount = 0, wasteShakeToken, cardWidth, style, stockRef }: StockWasteProps) {
+export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EMPTY_WASTE_BEHIND, onDrawStock, onWastePress, onWasteDrop, wasteSelected, wasteHinted, stockHinted, wasteHiddenCount = 0, wasteShakeToken, cardWidth, style, stockRef, wasteRef, stockHidden = false }: StockWasteProps) {
   const colors = useTableColors()
   const styles = React.useMemo(() => makeStyles(colors), [colors])
   const wasteHasCards = !!wasteTop
@@ -81,6 +103,7 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
   const frozenWasteTop = useFrozenWhileHidden(wasteTop, topHidden)
   const frozenBehind1 = useFrozenWhileHidden(behind1, behind1Hidden)
   const frozenBehind2 = useFrozenWhileHidden(behind2, behind2Hidden)
+  const frozenStockTopCard = useFrozenWhileHidden(stockTopCard, stockHidden)
   // Reuses faceUpFanOffset's fraction, tuned to clear PileView's vertical corner-row content -
   // this deck's corner row (rank left, suit pip right - see CardFace's cornerRow) spans nearly the
   // full card width, so the same fraction leaves enough horizontal peek to read a covered card's
@@ -90,7 +113,7 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
 
   return (
     <View style={[styles.group, style]}>
-      <View style={styles.wasteArea}>
+      <View ref={wasteRef} collapsable={false} style={styles.wasteArea}>
         {frozenBehind2 && (
           <View style={[styles.wasteBehindCard, styles.wasteBehindFar, { left: -fanOffset * 2 }]} pointerEvents='none'>
             <PlayingCard card={frozenBehind2} />
@@ -102,7 +125,7 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
           </View>
         )}
         <DropZone registry={dropZones} pileRef={{ zone: 'waste', index: 0 }} style={[cardWidth ? { width: cardWidth } : undefined, styles.wasteTopZone]}>
-          {wasteTop ? <DraggableCard card={wasteTop} selected={wasteSelected} hidden={topHidden} shakeToken={wasteShakeToken} emptyFallback={<EmptySlot />} onPress={onWastePress} onDrop={onWasteDrop} testID='waste-top' /> : <EmptySlot />}
+          {wasteTop ? <DraggableCard card={wasteTop} selected={wasteSelected} hinted={wasteHinted} hidden={topHidden} shakeToken={wasteShakeToken} emptyFallback={<EmptySlot />} onPress={onWastePress} onDrop={onWasteDrop} testID='waste-top' /> : <EmptySlot hinted={wasteHinted} />}
           {topHidden && (
             <View style={StyleSheet.absoluteFill} pointerEvents='none'>
               {frozenWasteTop ? <PlayingCard card={frozenWasteTop} /> : <EmptySlot />}
@@ -111,12 +134,19 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
         </DropZone>
       </View>
       <View ref={stockRef} collapsable={false}>
-        {stockTopCard ? (
-          <PlayingCard card={{ ...stockTopCard, faceUp: false }} onPress={onDrawStock} testID='stock-pile' />
-        ) : (
-          <EmptySlot onPress={onDrawStock} testID='stock-pile'>
-            {wasteHasCards ? <Text style={styles.recycleIcon}>↺</Text> : null}
-          </EmptySlot>
+        <View style={stockHidden ? HIDDEN_STOCK_STYLE : undefined}>
+          {stockTopCard ? (
+            <PlayingCard card={{ ...stockTopCard, faceUp: false }} hinted={stockHinted} onPress={onDrawStock} testID='stock-pile' />
+          ) : (
+            <EmptySlot onPress={onDrawStock} hinted={stockHinted} testID='stock-pile'>
+              {wasteHasCards ? <Text style={styles.recycleIcon}>↺</Text> : null}
+            </EmptySlot>
+          )}
+        </View>
+        {stockHidden && (
+          <View style={StyleSheet.absoluteFill} pointerEvents='none'>
+            {frozenStockTopCard ? <PlayingCard card={{ ...frozenStockTopCard, faceUp: false }} /> : <EmptySlot>{wasteHasCards ? <Text style={styles.recycleIcon}>↺</Text> : null}</EmptySlot>}
+          </View>
         )}
       </View>
     </View>

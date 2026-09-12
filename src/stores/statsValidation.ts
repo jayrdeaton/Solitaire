@@ -2,12 +2,14 @@ import { DEFAULT_DAY_STREAK, DEFAULT_OUTCOME_RECORD, DEFAULT_WIN_STREAK } from '
 
 import { ProfileStats, SOLITAIRE_GAME_IDS, SolitaireGameId, StatsState, VariantStats } from './statsTypes'
 
-const DEFAULT_VARIANT: VariantStats = {
+export const DEFAULT_VARIANT: VariantStats = {
   record: DEFAULT_OUTCOME_RECORD,
   streak: DEFAULT_WIN_STREAK,
   bestTimeSeconds: null,
   bestMoves: null,
-  bestScore: null
+  bestScore: null,
+  hintsUsed: 0,
+  winsWithoutHint: 0
 }
 
 function emptyVariants(): Record<SolitaireGameId, VariantStats> {
@@ -44,18 +46,28 @@ function isValidVariant(value: unknown): value is VariantStats {
   // this check).
   const movesOk = value.bestMoves === undefined || value.bestMoves === null || typeof value.bestMoves === 'number'
   const scoreOk = value.bestScore === undefined || value.bestScore === null || typeof value.bestScore === 'number'
-  return countsOk && streakOk && timeOk && movesOk && scoreOk
+  // hintsUsed/winsWithoutHint are newer still — same undefined-tolerant treatment as bestMoves/
+  // bestScore above, backfilled to 0 by gameStats.tsx's migrateStats.
+  const hintsUsedOk = value.hintsUsed === undefined || typeof value.hintsUsed === 'number'
+  const winsWithoutHintOk = value.winsWithoutHint === undefined || typeof value.winsWithoutHint === 'number'
+  return countsOk && streakOk && timeOk && movesOk && scoreOk && hintsUsedOk && winsWithoutHintOk
 }
 
-// Requires every known game id to be present — unlike the free-form bucket maps in the versus
-// games, this one is a fixed, exhaustive set, so a missing variant is a genuinely broken blob
-// rather than an inert gap. Extra unrecognized ids are tolerated (an inert leftover from a game
-// that was removed).
+// A present variant must be individually valid, but a known game id is allowed to be missing
+// entirely — a blob written before a new game (e.g. Yukon) was added predates that id and legitimately
+// lacks the key, same reasoning as isValidVariant's own tolerance for a missing bestMoves/bestScore
+// above. useAchievements (see node_modules/@tastic/achievements/src/useAchievements.ts) runs this
+// check on the RAW stored blob BEFORE gameStats.tsx's migrateStats ever gets a chance to backfill
+// anything - requiring every id up front would reject (and silently reset to defaults) every
+// existing install's ENTIRE stats history, across every game, the instant a new game ships, not just
+// crash on it. Confirmed live: seeding a blob with variants missing a game id and reloading reset
+// every game's stats to zero before this fix. Extra unrecognized ids are tolerated (an inert
+// leftover from a game that was removed).
 function isValidProfileStats(value: unknown): value is ProfileStats {
   if (!isRecord(value)) return false
   const variants = value.variants
   if (!isRecord(variants)) return false
-  if (!SOLITAIRE_GAME_IDS.every((id) => isValidVariant(variants[id]))) return false
+  if (!SOLITAIRE_GAME_IDS.every((id) => variants[id] === undefined || isValidVariant(variants[id]))) return false
   return typeof value.distinctDaysPlayed === 'number' && typeof value.currentDayStreak === 'number' && typeof value.bestDayStreak === 'number' && (value.lastPlayedDate === null || typeof value.lastPlayedDate === 'string')
 }
 

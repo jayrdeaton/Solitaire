@@ -1,3 +1,4 @@
+import { useCardSize } from '@tastic/cards'
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
@@ -5,7 +6,6 @@ import Animated, { measure, runOnJS, useAnimatedRef, useAnimatedStyle, useShared
 
 import { Card } from '@/engine/types'
 
-import { useCardSize } from '../CardSizeContext'
 import { PlayingCard } from '../PlayingCard'
 import { playShake } from '../shakeAnimation'
 import { useCardSoundEffects } from '../useCardSounds'
@@ -14,6 +14,9 @@ import { useDragGhost } from './DragGhostLayer'
 interface DraggableCardProps {
   card: Card
   selected?: boolean
+  /** Highlight this card as the Hint feature's suggested source/destination - see PlayingCard's
+   * own `hinted` prop. */
+  hinted?: boolean
   disabled?: boolean
   /** Called with a lazy measure function - only call it if a move actually applies, to kick off a
    * tap-to-move fly animation from exactly where the card was. Lazy rather than an already-
@@ -65,7 +68,7 @@ interface DraggableCardProps {
  * underlying native handler, which can orphan a drag that's still in progress mid-gesture and
  * leave the card frozen wherever it was when that happened, since onEnd would never fire.
  */
-export function DraggableCard({ card, selected, disabled, onPress, onDrop, hidden, emptyFallback, shakeToken, style, testID }: DraggableCardProps) {
+export function DraggableCard({ card, selected, hinted, disabled, onPress, onDrop, hidden, emptyFallback, shakeToken, style, testID }: DraggableCardProps) {
   const viewRef = useAnimatedRef<Animated.View>()
   const ghost = useDragGhost()
   const { playCardSound } = useCardSoundEffects()
@@ -202,7 +205,7 @@ export function DraggableCard({ card, selected, disabled, onPress, onDrop, hidde
     <View style={style}>
       <GestureDetector gesture={pan}>
         <Animated.View ref={viewRef} style={[(dragging || hidden) && styles.hiddenWhileFlying, shakeStyle]}>
-          <PlayingCard card={card} selected={selected} disabled={disabled} onPress={onPress ? handlePress : undefined} testID={testID} />
+          <PlayingCard card={card} selected={selected} hinted={hinted} disabled={disabled} onPress={onPress ? handlePress : undefined} testID={testID} />
         </Animated.View>
       </GestureDetector>
       {/* Only for `dragging` (this card's own gesture), not the caller-supplied `hidden` - a caller

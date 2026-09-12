@@ -11,7 +11,7 @@ import { CHROME_FG, CHROME_FG_MUTED, CHROME_SECTION_BG, useTableColors } from '@
 import { ACHIEVEMENT_CATALOG } from '@/stores/achievementCatalog'
 import { useGameStats } from '@/stores/gameStats'
 import { useProfiles } from '@/stores/profiles'
-import { getBestMoves, getBestScore, getBestStreak, getBestTimeSeconds, getProfileStatsView, getTotalPlayed, getTotalWins, getVariantsWon } from '@/stores/statsEngine'
+import { getBestMoves, getBestScore, getBestStreak, getBestTimeSeconds, getProfileStatsView, getTotalHintsUsed, getTotalPlayed, getTotalWins, getVariantsWon } from '@/stores/statsEngine'
 import { SOLITAIRE_GAME_IDS, SolitaireGameId } from '@/stores/statsTypes'
 import { DEFAULT_PROFILE_STATS } from '@/stores/statsValidation'
 
@@ -21,7 +21,14 @@ const GAME_TITLES: Record<SolitaireGameId, string> = {
   klondike: 'Klondike',
   spider: 'Spider',
   freecell: 'FreeCell',
-  pyramid: 'Pyramid'
+  pyramid: 'Pyramid',
+  yukon: 'Yukon',
+  golf: 'Golf',
+  tripeaks: 'TriPeaks',
+  canfield: 'Canfield',
+  scorpion: 'Scorpion',
+  fortythieves: 'Forty Thieves',
+  acesup: 'Aces Up'
 }
 
 function startOfDay(date: Date): number {
@@ -70,7 +77,14 @@ export default function AchievementsScreen() {
   const bestScore = getBestScore(statsView)
 
   return (
-    <BaseStatsScreen onBack={() => router.back()} insets={insets} onReset={resetAll} fg={CHROME_FG} bg={tableColors.tableFelt} cardBg={tableColors.tableFeltDark} accentColor={CHROME_FG}>
+    // No accentColor/cardBg overrides (there used to be both, pinned to CHROME_FG/white and
+    // tableFeltDark respectively) - BaseStatsScreen's reset-confirm step now renders a real
+    // ConfirmDialog instance instead of its own hand-styled lookalike, so it always looks exactly
+    // like every other confirm prompt in the app (including this game's own "Start a new game?"
+    // dialogs) - same danger-red icon/title, same outlined Cancel + filled Reset button layout,
+    // same neutral black/white card - rather than this screen's own tinted felt bleeding into just
+    // this one dialog and making it look like a different component (see this app's CLAUDE.md).
+    <BaseStatsScreen onBack={() => router.back()} insets={insets} onReset={resetAll} fg={CHROME_FG} bg={tableColors.tableFelt}>
       {!loaded ? (
         // Stats load asynchronously from AsyncStorage (see useGameStats' own `loaded` doc comment) -
         // without this guard, this screen would render a full flash of zeroed-out "0 games played"
@@ -91,6 +105,7 @@ export default function AchievementsScreen() {
             <StatRow label='Fastest Win' value={bestTime === null ? '—' : formatTime(bestTime)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
             <StatRow label='Fewest Moves' value={bestMoves === null ? '—' : String(bestMoves)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
             <StatRow label='Lowest Score' value={bestScore === null ? '—' : String(bestScore)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+            <StatRow label='Hints Used' value={String(getTotalHintsUsed(statsView))} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
           </StatSection>
 
           {/* Per game. "Abandoned" rather than "lost": a solitaire deal is won or walked away from,

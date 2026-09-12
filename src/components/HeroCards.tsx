@@ -1,3 +1,4 @@
+import { CardBack, DecoratedCardBack, type TableColors } from '@tastic/cards'
 import { useEffect } from 'react'
 import { AppState, StyleSheet, View } from 'react-native'
 import Animated, { Easing, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withRepeat, withSequence, withSpring, WithSpringConfig, withTiming } from 'react-native-reanimated'
@@ -5,9 +6,7 @@ import Animated, { Easing, SharedValue, useAnimatedStyle, useSharedValue, withDe
 import { useProfiles } from '@/stores/profiles'
 import { useSettings } from '@/stores/settings'
 
-import { CardBack } from './cards/CardBack'
-import { DecoratedCardBack } from './cards/DecoratedCardBack'
-import { CARD_HEIGHT, CARD_RADIUS, CARD_WIDTH, TableColors, useTableColors } from './theme'
+import { CARD_HEIGHT, CARD_RADIUS, CARD_WIDTH, useTableColors } from './theme'
 
 // marginHorizontal on each card - about 37% of CARD_WIDTH overlap per adjacent pair.
 const HERO_FAN_OVERLAP = -12

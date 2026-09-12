@@ -43,9 +43,16 @@ export function isSafeAutoPlay(foundation: Card[][], card: Card): boolean {
 
 /** The next single card to safely auto-play to its foundation, if any - legal on its own suit's
  * foundation right now AND passing isSafeAutoPlay. Call again after each resulting move; a move
- * can make the next card both accessible and safe. */
+ * can make the next card both accessible and safe.
+ *
+ * Aces sitting on the waste are skipped even though isSafeAutoPlay trivially always says yes for
+ * them (rank 1 needs nothing from the opposite color) - an ace only ever reaches the waste via a
+ * stock draw, and having it vanish straight to the foundation the instant it's drawn, before the
+ * player even sees it, is the one case this heuristic gets annoyingly eager about. Aces already
+ * exposed in the tableau/freecell still auto-play normally. */
 export function findSafeAutoPlay(accessible: AccessibleCard[], foundation: Card[][]): AccessibleCard | null {
   for (const entry of accessible) {
+    if (entry.ref.zone === 'waste' && entry.card.rank === 1) continue
     if (canPlaceOnFoundation(foundation[suitIndex(entry.card.suit)], entry.card) && isSafeAutoPlay(foundation, entry.card)) {
       return entry
     }

@@ -49,10 +49,31 @@ describe('findSafeAutoPlay', () => {
     const foundation = foundationAt({})
     const accessible: AccessibleCard[] = [
       { ref: { zone: 'tableau', index: 0 }, card: card('clubs-5-0', 'clubs', 5) }, // not legal - clubs needs an ace first
-      { ref: { zone: 'waste', index: 0 }, card: card('hearts-1-0', 'hearts', 1) }, // legal and safe
-      { ref: { zone: 'tableau', index: 1 }, card: card('spades-1-0', 'spades', 1) } // also legal and safe, but comes second
+      { ref: { zone: 'tableau', index: 1 }, card: card('hearts-1-0', 'hearts', 1) }, // legal and safe
+      { ref: { zone: 'tableau', index: 2 }, card: card('spades-1-0', 'spades', 1) } // also legal and safe, but comes second
     ]
     expect(findSafeAutoPlay(accessible, foundation)?.card.id).toBe('hearts-1-0')
+  })
+
+  it('skips an ace sitting on the waste (just drawn from stock) even though it would otherwise be safe', () => {
+    const foundation = foundationAt({})
+    const accessible: AccessibleCard[] = [{ ref: { zone: 'waste', index: 0 }, card: card('hearts-1-0', 'hearts', 1) }]
+    expect(findSafeAutoPlay(accessible, foundation)).toBeNull()
+  })
+
+  it('still auto-plays a waste ace-position skip past to reach a legal, safe entry further down the list', () => {
+    const foundation = foundationAt({})
+    const accessible: AccessibleCard[] = [
+      { ref: { zone: 'waste', index: 0 }, card: card('hearts-1-0', 'hearts', 1) }, // skipped - waste ace
+      { ref: { zone: 'tableau', index: 0 }, card: card('spades-1-0', 'spades', 1) } // legal and safe
+    ]
+    expect(findSafeAutoPlay(accessible, foundation)?.card.id).toBe('spades-1-0')
+  })
+
+  it('does not skip a non-ace card on the waste', () => {
+    const foundation = foundationAt({ clubs: 4, hearts: 4, diamonds: 4 })
+    const accessible: AccessibleCard[] = [{ ref: { zone: 'waste', index: 0 }, card: card('clubs-5-0', 'clubs', 5) }]
+    expect(findSafeAutoPlay(accessible, foundation)?.card.id).toBe('clubs-5-0')
   })
 })
 

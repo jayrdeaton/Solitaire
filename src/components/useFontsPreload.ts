@@ -1,12 +1,13 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons'
+import { CARD_FONT_FAMILY } from '@tastic/cards'
 import { useFonts } from 'expo-font'
 
 import { useSplashReady } from '@/utils/splashGate'
 
-// The card artwork's own font (see artwork/NOTICE.md) - also used theme-wide (see _layout.tsx's
-// ThemeProvider fontFamily prop) so the rest of the app's UI reads as the same "card" typeface
-// instead of clashing with a plain system sans everywhere else.
-export const CARD_FONT_FAMILY = 'DejaVu Serif'
+// The card artwork's own font (see @tastic/cards' artwork/NOTICE.md) - re-exported from here since
+// it's also used theme-wide (see _layout.tsx's ThemeProvider fontFamily prop) so the rest of the
+// app's UI reads as the same "card" typeface instead of clashing with a plain system sans elsewhere.
+export { CARD_FONT_FAMILY }
 
 // Holds the splash screen up (see utils/splashGate.ts's 'fonts' gate) until every preloaded font
 // has actually loaded - otherwise every react-native-paper IconButton on the very first screens

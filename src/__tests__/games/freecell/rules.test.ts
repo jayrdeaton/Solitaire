@@ -1,3 +1,4 @@
+import { PileRef } from '@/engine/gameTypes'
 import { Card } from '@/engine/types'
 import { FreeCellController, FreeCellState } from '@/games/freecell/rules'
 
@@ -336,5 +337,172 @@ describe('FreeCell autoMoveHint', () => {
     }
     const hint = FreeCellController.autoMoveHint!(state, { zone: 'freecell', index: 0 }, 'hearts-5-0')
     expect(hint).toBeNull()
+  })
+})
+
+describe('FreeCell scoreHintMove', () => {
+  function moveTo(state: FreeCellState, from: PileRef, count: number, to: PileRef) {
+    const move = FreeCellController.legalMoves(state).find((m) => m.from.zone === from.zone && m.from.index === from.index && m.count === count && m.to.zone === to.zone && m.to.index === to.index)
+    if (!move) throw new Error(`expected a legal move from=${JSON.stringify(from)} count=${count} to=${JSON.stringify(to)}`)
+    return move
+  }
+
+  function scoreOf(state: FreeCellState, from: PileRef, count: number, to: PileRef): number {
+    return FreeCellController.scoreHintMove!(state, moveTo(state, from, count, to))
+  }
+
+  // Regression-shaped test for the same class of bug Spider's/Klondike's own scoreHintMove was
+  // built to catch: tearing a card off a nice coherent alt-color run to park it on some unrelated
+  // matching card, when the whole run could have relocated intact elsewhere instead.
+  it('never prefers fragmenting a coherent run over relocating it intact', () => {
+    const state: FreeCellState = {
+      tableau: [
+        [card('spades-2-0', 'spades', 2)],
+        [card('clubs-9-0', 'clubs', 9), card('hearts-8-0', 'hearts', 8), card('clubs-7-0', 'clubs', 7)], // a coherent 3-run: 9(black)-8(red)-7(black)
+        [card('diamonds-8-0', 'diamonds', 8)], // only the lone 7 fits here
+        [], // the whole 3-run fits here (empty column)
+        [card('spades-3-0', 'spades', 3)],
+        [card('spades-4-0', 'spades', 4)],
+        [card('spades-5-0', 'spades', 5)],
+        [card('spades-6-0', 'spades', 6)]
+      ],
+      freecells: [null, null, null, null],
+      foundation: [[], [], [], []]
+    }
+
+    const fragmentPartial = scoreOf(state, { zone: 'tableau', index: 1 }, 1, { zone: 'tableau', index: 2 }) // rips the 7 off, onto the lone 8
+    const intactRelocation = scoreOf(state, { zone: 'tableau', index: 1 }, 3, { zone: 'tableau', index: 3 }) // the whole run, kept together
+
+    expect(intactRelocation).toBeGreaterThan(fragmentPartial)
+    // A whole run relocated intact has zero net run-structure change - freeing the source column
+    // and filling the (previously empty) destination column also cancel out, leaving only the tiny
+    // move.count tiebreak term, so the total stays small and non-negative.
+    expect(intactRelocation).toBeGreaterThanOrEqual(0)
+    expect(fragmentPartial).toBeLessThan(0)
+  })
+
+  // Empty tableau columns are scarce workspace - actually freeing one (the source column empties
+  // and the destination wasn't already empty) should score higher than an otherwise-identical
+  // single-card move that leaves the empty-column count unchanged.
+  it('rewards a move that actually frees a tableau column over an otherwise-equivalent lateral one', () => {
+    const state: FreeCellState = {
+      tableau: [
+        [card('spades-2-0', 'spades', 2), card('clubs-8-0', 'clubs', 8)], // moving the top card alone does not empty this column
+        [card('clubs-6-0', 'clubs', 6)], // a lone card - moving it empties this column
+        [card('diamonds-9-0', 'diamonds', 9)], // accepts the black 8
+        [card('hearts-7-0', 'hearts', 7)], // accepts the black 6
+        [card('spades-3-0', 'spades', 3)],
+        [card('spades-4-0', 'spades', 4)],
+        [card('spades-5-0', 'spades', 5)],
+        [card('spades-9-0', 'spades', 9)]
+      ],
+      freecells: [null, null, null, null],
+      foundation: [[], [], [], []]
+    }
+
+    const lateral = scoreOf(state, { zone: 'tableau', index: 0 }, 1, { zone: 'tableau', index: 2 }) // column 0 stays non-empty
+    const freesColumn = scoreOf(state, { zone: 'tableau', index: 1 }, 1, { zone: 'tableau', index: 3 }) // column 1 becomes empty
+
+    // Both moves build the same amount of run structure (a lone card onto a lone card) and move the
+    // same card count, isolating the empty-column delta as the only real difference between them.
+    expect(freesColumn).toBeGreaterThan(lateral)
+  })
+
+  // FreeCell's two scarce resources - empty tableau columns and empty freecells - are deliberately
+  // NOT weighted equally (see scoreHintMove's own doc comment): freeing a column is worth more
+  // because it doubles the supermove ceiling (maxSupermoveCount's 2**emptyCols term) rather than
+  // just adding one to it. Spending a freecell to free a column should therefore score noticeably
+  // better than spending the board's only empty column to free a freecell.
+  it('values freeing a column (by spending a freecell) over freeing a freecell (by spending the only empty column)', () => {
+    const state: FreeCellState = {
+      tableau: [
+        [card('diamonds-5-0', 'diamonds', 5)], // frees this column when parked in a freecell
+        [], // the board's only empty column
+        [card('spades-2-0', 'spades', 2)],
+        [card('spades-3-0', 'spades', 3)],
+        [card('spades-4-0', 'spades', 4)],
+        [card('spades-6-0', 'spades', 6)],
+        [card('spades-7-0', 'spades', 7)],
+        [card('spades-9-0', 'spades', 9)]
+      ],
+      freecells: [card('clubs-10-0', 'clubs', 10), null, null, null],
+      foundation: [[], [], [], []]
+    }
+
+    const freeColumnSpendFreecell = scoreOf(state, { zone: 'tableau', index: 0 }, 1, { zone: 'freecell', index: 1 })
+    const freeFreecellSpendColumn = scoreOf(state, { zone: 'freecell', index: 0 }, 1, { zone: 'tableau', index: 1 })
+
+    expect(freeColumnSpendFreecell).toBeGreaterThan(freeFreecellSpendColumn)
+  })
+
+  // Moving a freecell card onto an existing tableau run should credit the full extension - the
+  // longer the run it lands on, the higher the score - since a freecell's occupant is treated as a
+  // trivially maximal "run of length 1" by the same formula a tableau source uses.
+  it('credits extending a longer existing run more than a shorter one when placing a freecell card', () => {
+    const state: FreeCellState = {
+      tableau: [
+        [card('hearts-8-0', 'hearts', 8), card('clubs-7-0', 'clubs', 7), card('diamonds-6-0', 'diamonds', 6)], // a coherent 3-run
+        [card('diamonds-10-0', 'diamonds', 10)], // a lone card - a 1-run
+        [card('spades-2-0', 'spades', 2)],
+        [card('spades-3-0', 'spades', 3)],
+        [card('spades-4-0', 'spades', 4)],
+        [card('spades-5-0', 'spades', 5)],
+        [card('spades-6-0', 'spades', 6)],
+        [card('spades-7-0', 'spades', 7)]
+      ],
+      freecells: [card('clubs-5-0', 'clubs', 5), card('clubs-9-0', 'clubs', 9), null, null],
+      foundation: [[], [], [], []]
+    }
+
+    const ontoLongRun = scoreOf(state, { zone: 'freecell', index: 0 }, 1, { zone: 'tableau', index: 0 }) // black 5 onto red 6, extending a 3-run
+    const ontoShortRun = scoreOf(state, { zone: 'freecell', index: 1 }, 1, { zone: 'tableau', index: 1 }) // black 9 onto red 10, extending a 1-run
+
+    expect(ontoLongRun).toBeGreaterThan(ontoShortRun)
+  })
+
+  it('is not asked to score foundation-bound moves (already sorted first by findHint), and returns 0 defensively if it is', () => {
+    const state: FreeCellState = {
+      tableau: [[card('clubs-1-0', 'clubs', 1)], [], [], [], [], [], [], []],
+      freecells: [null, null, null, null],
+      foundation: [[], [], [], []]
+    }
+    const move = { from: { zone: 'tableau', index: 0 }, to: { zone: 'foundation', index: 0 }, count: 1 }
+    expect(FreeCellController.scoreHintMove!(state, move)).toBe(0)
+  })
+
+  // Regression test: a freecell destination was scored as if it held a "run of length 0", so even
+  // a routine, non-fragmenting park (moving a column's own lone top run, however short, into a
+  // freecell) was wrongly scored as if it fragmented that run down to nothing. A freecell should
+  // score symmetrically to its treatment as a SOURCE (a trivially maximal run of whatever's in it),
+  // so storing a card that wasn't extending or building anything anyway should net to a small
+  // positive/neutral score (dominated by the empty-column-freed bonus here), never a steep penalty
+  // matching genuine fragmentation.
+  it('does not penalize parking a column-emptying single card in a freecell as if it fragmented a run', () => {
+    const state: FreeCellState = {
+      tableau: [
+        [card('diamonds-5-0', 'diamonds', 5)], // a lone card - its own top "run" is just itself
+        [card('spades-2-0', 'spades', 2)],
+        [card('spades-3-0', 'spades', 3)],
+        [card('spades-4-0', 'spades', 4)],
+        [card('spades-6-0', 'spades', 6)],
+        [card('spades-7-0', 'spades', 7)],
+        [card('spades-8-0', 'spades', 8)],
+        [card('spades-9-0', 'spades', 9)]
+      ],
+      freecells: [null, null, null, null],
+      foundation: [[], [], [], []]
+    }
+
+    const parkInFreecell = scoreOf(state, { zone: 'tableau', index: 0 }, 1, { zone: 'freecell', index: 0 })
+    // Genuine fragmentation, for contrast: ripping the same-length (1-card) piece off a real
+    // 3-card run and parking THAT in a freecell should still score clearly worse.
+    const fragmentingState: FreeCellState = {
+      ...state,
+      tableau: [[card('clubs-9-0', 'clubs', 9), card('hearts-8-0', 'hearts', 8), card('clubs-7-0', 'clubs', 7)], ...state.tableau.slice(1)]
+    }
+    const fragmentIntoFreecell = scoreOf(fragmentingState, { zone: 'tableau', index: 0 }, 1, { zone: 'freecell', index: 0 })
+
+    expect(parkInFreecell).toBeGreaterThanOrEqual(0)
+    expect(parkInFreecell).toBeGreaterThan(fragmentIntoFreecell)
   })
 })

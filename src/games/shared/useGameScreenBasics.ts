@@ -1,8 +1,9 @@
+import { type TableColors } from '@tastic/cards'
 import { useMemo } from 'react'
 import { useTheme } from 'react-native-paper'
 
 import { useDropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
-import { TableColors, useTableColors } from '@/components/theme'
+import { useTableColors } from '@/components/theme'
 import { useGameStats } from '@/stores/gameStats'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
 
@@ -15,9 +16,9 @@ import { useLastActiveGame } from '@/stores/lastActiveGame'
 export function useGameScreenBasics<S>(makeStyles: (colors: TableColors) => S) {
   const colors = useTableColors()
   const { dark } = useTheme()
-  const { recordDealWon, recordDealAbandoned } = useGameStats()
+  const { recordDealWon, recordDealAbandoned, recordHintUsed } = useGameStats()
   const { setLastActiveGame, clearLastActiveGame } = useLastActiveGame()
   const styles = useMemo(() => makeStyles(colors), [colors, makeStyles])
   const dropZones = useDropZoneRegistry()
-  return { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, setLastActiveGame, clearLastActiveGame }
+  return { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame }
 }

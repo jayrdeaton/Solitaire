@@ -25,7 +25,17 @@ export interface FoundationWinCheck<TState> {
  * shape. The two are genuinely different timing strategies, not just a naming difference, so they
  * stay two separate hooks rather than being forced into one.
  */
-export function useFoundationWinCheck<TState>(controller: Pick<GameController<TState>, 'isWon'>, gameId: SolitaireGameId, session: GameSession, dealTokenRef: MutableRefObject<number>, recordDealWon: (gameId: SolitaireGameId, metrics: DealMetrics) => unknown): FoundationWinCheck<TState> {
+export function useFoundationWinCheck<TState>(
+  controller: Pick<GameController<TState>, 'isWon'>,
+  gameId: SolitaireGameId,
+  session: GameSession,
+  dealTokenRef: MutableRefObject<number>,
+  recordDealWon: (gameId: SolitaireGameId, metrics: DealMetrics) => unknown,
+  // Whether the Hint button was pressed (and actually produced a hint) at any point during this
+  // deal - read at the exact instant a win is recorded, since a screen's own ref value can't be
+  // passed as a snapshot (see each screen's hintUsedThisDealRef).
+  hintsUsedRef: MutableRefObject<boolean>
+): FoundationWinCheck<TState> {
   const [won, setWon] = useState(false)
   const recordedWinRef = useRef(false)
   const pendingWinCascadeRef = useRef<{ gen: number } | null>(null)
@@ -35,7 +45,7 @@ export function useFoundationWinCheck<TState>(controller: Pick<GameController<TS
       recordedWinRef.current = true
       session.stopClock()
       setWon(true)
-      recordDealWon(gameId, { seconds: session.elapsed, moves: movesSoFar, score: computeScore(movesSoFar, session.elapsed) })
+      recordDealWon(gameId, { seconds: session.elapsed, moves: movesSoFar, score: computeScore(movesSoFar, session.elapsed), usedHint: hintsUsedRef.current })
       clearGameInProgress(gameId)
       pendingWinCascadeRef.current = { gen: dealTokenRef.current }
     }

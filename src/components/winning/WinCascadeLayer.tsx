@@ -1,10 +1,10 @@
+import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
 import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, useWindowDimensions, View } from 'react-native'
 import Animated, { Easing, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withRepeat, withSequence, withTiming } from 'react-native-reanimated'
 
 import { Card } from '@/engine/types'
 
-import { CARD_ASPECT, CardSizeProvider } from '../CardSizeContext'
 import { ScreenPoint } from '../dealing/measureView'
 import { PlayingCard } from '../PlayingCard'
 import { BOUNCE_FLOOR_MARGIN_PX, BOUNCE_H_HALF_PERIOD_MAX_MS, BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_H_MARGIN_PX, BOUNCE_MIN_SPAN_PX, BOUNCE_TOP_MARGIN_PX, BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, CHAIN_SEGMENT_DELAY_MS } from './winCascadeMotion'

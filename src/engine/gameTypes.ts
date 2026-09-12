@@ -52,6 +52,14 @@ export interface GameController<TState> {
    */
   autoMoveHint?(state: TState, from: PileRef, cardId: string): Move | null
   /**
+   * Optional: scores a legal move for Hint-ordering purposes - higher means more worth
+   * suggesting. A non-positive score on every legal move (see engine/hint.ts's findHint) means
+   * "nothing productive available," which prefers a stock-draw suggestion over the best of a bad
+   * lot, where one's legal. Games without this keep legalMoves()'s own raw order (foundation-bound
+   * moves first, otherwise whatever order legalMoves() returned them).
+   */
+  scoreHintMove?(state: TState, move: Move): number
+  /**
    * Optional: every card currently sitting at a legally-reachable position - tableau tops,
    * freecell contents, a waste top - for the auto-play-to-foundation feature (see
    * engine/autoFoundation.ts) to scan. Never includes stock or anything else that would need an

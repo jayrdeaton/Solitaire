@@ -16,7 +16,9 @@ describe('toVariantStats', () => {
       streak: { currentWinStreak: 3, bestWinStreak: 5 },
       bestTimeSeconds: 240,
       bestMoves: null,
-      bestScore: null
+      bestScore: null,
+      hintsUsed: 0,
+      winsWithoutHint: 0
     })
   })
 

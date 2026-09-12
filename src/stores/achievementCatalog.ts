@@ -1,6 +1,6 @@
 import { tieredFamily } from '@tastic/achievements'
 
-import { getBestMoves, getBestScore, getBestStreak, getBestTimeSeconds, getTotalPlayed, getTotalWins, getVariantsWon } from './statsEngine'
+import { getBestMoves, getBestScore, getBestStreak, getBestTimeSeconds, getTotalPlayed, getTotalWins, getTotalWinsWithoutHint, getVariantsWon } from './statsEngine'
 import { AchievementDefinition, SOLITAIRE_GAME_IDS, SolitaireGameId, StatsState } from './statsTypes'
 
 export { ACHIEVEMENT_TIER_COLORS } from '@tastic/achievements'
@@ -9,7 +9,14 @@ const GAME_TITLES: Record<SolitaireGameId, string> = {
   klondike: 'Klondike',
   spider: 'Spider',
   freecell: 'FreeCell',
-  pyramid: 'Pyramid'
+  pyramid: 'Pyramid',
+  yukon: 'Yukon',
+  golf: 'Golf',
+  tripeaks: 'TriPeaks',
+  canfield: 'Canfield',
+  scorpion: 'Scorpion',
+  fortythieves: 'Forty Thieves',
+  acesup: 'Aces Up'
 }
 
 // One per game — four different predicates, not one value against three thresholds, so these are
@@ -137,5 +144,13 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
     icon: 'calendar-check',
     thresholds: { bronze: 3, silver: 14, gold: 30 },
     value: (stats) => stats.bestDayStreak
+  }),
+  ...tieredFamily<StatsState>({
+    id: 'no_hints_needed',
+    titles: { bronze: 'Self-Reliant', silver: 'No Help Needed', gold: 'True Solitaire' },
+    description: (n) => `Win ${n} games without using a hint.`,
+    icon: 'lightbulb-off-outline',
+    thresholds: { bronze: 5, silver: 25, gold: 100 },
+    value: getTotalWinsWithoutHint
   })
 ]

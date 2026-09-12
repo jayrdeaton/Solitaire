@@ -240,6 +240,42 @@ function legalMoves(state: PyramidState): Move[] {
   return moves
 }
 
+/**
+ * Ranks legal moves by how many NEW pyramid cards they expose - cards that were still covered
+ * before the move (one or both of their two covering children in the row below still present)
+ * but become exposed once this move's pyramid-side card(s) are gone. Pyramid has no
+ * run/reveal/empty-pile concept like the tableau games (see the Spider/Klondike/FreeCell
+ * scorers) - unlocking more of the triangle for future pairing is the only lever available here,
+ * so it's the entire signal. A pair's waste-side card (if any) never contributes: consuming the
+ * waste can never change any pyramid card's exposure.
+ *
+ * Concretely, this matters because two cards can be simultaneously legal to remove (both already
+ * exposed) while only one of them is also the LAST card blocking some card further up the
+ * triangle - e.g. two siblings that are both children of the same still-covered parent, where
+ * pairing them together instantly exposes that parent, versus some other equally-legal pair
+ * elsewhere on the board that exposes nothing. Both are "fine" moves (removing any legal pair is
+ * always genuine progress in Pyramid - unlike Spider, there's no way a legal removal here can be
+ * actively counterproductive), so every move keeps a positive +1 baseline regardless of exposure;
+ * this must never trigger findHint's "prefer a stock draw over every available move" fallback,
+ * which is reserved for games where a legal move can be a worse-than-nothing choice.
+ */
+function scoreHintMove(state: PyramidState, move: Move): number {
+  const refs = move.from.zone === move.to.zone && move.from.index === move.to.index ? [move.from] : [move.from, move.to]
+  const removedPyramidIndices = refs.filter((r) => r.zone === 'pyramid').map((r) => r.index)
+  if (removedPyramidIndices.length === 0) return 1
+
+  const nextPyramid = state.pyramid.slice()
+  for (const idx of removedPyramidIndices) nextPyramid[idx] = null
+
+  let newlyExposed = 0
+  for (let i = 0; i < TOTAL; i++) {
+    if (state.pyramid[i] && !isExposedAt(state.pyramid, i) && isExposedAt(nextPyramid, i)) {
+      newlyExposed++
+    }
+  }
+  return 1 + newlyExposed * 10
+}
+
 export const PyramidController: GameController<PyramidState> = {
   id: 'pyramid',
   title: 'Pyramid',
@@ -247,5 +283,6 @@ export const PyramidController: GameController<PyramidState> = {
   legalMoves,
   tryMove,
   drawStock,
-  isWon
+  isWon,
+  scoreHintMove
 }

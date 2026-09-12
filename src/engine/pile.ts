@@ -40,6 +40,14 @@ export function isDescendingAnySuit(cards: Card[]): boolean {
   return true
 }
 
+/** Always true - the `isValidRun` predicate Yukon passes to buriedCount/runCountFrom/
+ * pickBestTableauTarget. Unlike Klondike/FreeCell (isDescendingAltColor) or Spider
+ * (isDescendingSameSuit), Yukon has no run-validity requirement at all: any face-up card, plus
+ * everything stacked above it, is always a legal group to move together. */
+export function alwaysValidRun(): boolean {
+  return true
+}
+
 /**
  * How many cards in `pile` sit below its current movable top run - i.e. aren't reachable as a
  * single unit right now, whether because they're face-down (Klondike/Spider) or face-up but not

@@ -58,6 +58,80 @@ function canPlaceOnTableau(dest: Card[], moving: Card[]): boolean {
   return movingTop.rank === destTop.rank - 1 && destColor !== movingColor
 }
 
+/** Length of the maximal alternating-color, consecutive-descending, face-up run currently sitting
+ * at the top of a tableau column - the "coherent asset" a player already holds there and could
+ * move as one unit. 0 for an empty column or one whose top card is face-down. Klondike's own
+ * run-validity rule (isDescendingAltColor) walked pairwise, same relation legalMoves/canPlaceOnTableau
+ * already check when deciding what can move/land together. */
+function runLengthAtTop(column: Card[]): number {
+  if (column.length === 0) return 0
+  if (!column[column.length - 1].faceUp) return 0
+  let len = 1
+  for (let i = column.length - 2; i >= 0; i--) {
+    const cur = column[i]
+    const next = column[i + 1]
+    if (!cur.faceUp) break
+    if (next.rank !== cur.rank - 1 || cardColor(next.suit) === cardColor(cur.suit)) break
+    len++
+  }
+  return len
+}
+
+/**
+ * Ranks a legal tableau-to-tableau move for the Hint button (see engine/hint.ts's findHint).
+ * Klondike has a real foundation zone - a foundation-bound move (the actual "completion" mechanic
+ * here) already sorts first in findHint, unconditionally, so unlike Spider's synthetic 13-card
+ * completion check, there is no completion case to special-case here at all; this only ever ranks
+ * the remaining tableau moves (and, defensively, scores 0 for any move it wasn't designed for - a
+ * waste->tableau move, since waste has no "coherent run" of its own to preserve or fragment).
+ *
+ * Same opportunity-cost shape as Spider's scoreHintMove, adapted to Klondike's own run-validity
+ * rule (alternating-color descending, not same-suit descending) and to a real difference in what
+ * "legal" already guarantees: Spider's tableau-move legality only requires a matching rank at the
+ * destination (suit is irrelevant to legality, only to whether it forms a genuine same-suit run),
+ * so Spider had to separately check `sameSuitExtension` before crediting a destination-side
+ * extension. Klondike's own canPlaceOnTableau already enforces the alternating-color-descending
+ * relation as part of legality - so any legal move onto a non-empty column is, by construction,
+ * already a coherent extension of whatever run sits there; no extra suit/color check is needed
+ * before crediting `newRunLenAtDest`.
+ *
+ * `R` = the coherent run already at the top of the source column. A move scores 0 if it relocates
+ * that whole run intact, positive if it builds something longer (extending the destination's run,
+ * or leaving a longer remainder behind than expected), negative if it fragments R for no
+ * compensating gain. `netEmptyDelta` is the actual before/after change in empty tableau columns
+ * (freeing one is a real gain; a lateral shuffle into the one empty column nets to zero).
+ * `revealsHiddenCard` is a flat bonus, only reachable when count === R (going past the source's own
+ * run boundary is the only way to expose a face-down card underneath).
+ */
+function scoreHintMove(state: KlondikeState, move: Move): number {
+  if (move.from.zone !== 'tableau' || move.to.zone !== 'tableau') return 0
+  const fromCol = state.tableau[move.from.index]
+  const toCol = state.tableau[move.to.index]
+  if (!fromCol || !toCol) return 0
+
+  const runLen = runLengthAtTop(fromCol)
+  const destRunLenBefore = runLengthAtTop(toCol)
+  // A legal move onto a non-empty column is already a coherent alt-color-descending extension of
+  // whatever run sits there (canPlaceOnTableau enforced that to make the move legal at all) - unlike
+  // Spider, no extra same-suit check is needed to credit the extension.
+  const newRunLenAtDest = move.count + (toCol.length > 0 ? destRunLenBefore : 0)
+  const remainderRunLen = move.count < runLen ? runLen - move.count : 0
+  const netRunStructureChange = Math.max(newRunLenAtDest, remainderRunLen) - runLen
+
+  const fromBecomesEmpty = move.count === fromCol.length
+  const toWasEmpty = toCol.length === 0
+  const netEmptyDelta = (fromBecomesEmpty ? 1 : 0) - (toWasEmpty ? 1 : 0)
+
+  const newFromTop = fromCol[fromCol.length - move.count - 1]
+  const revealsHiddenCard = newFromTop !== undefined && !newFromTop.faceUp
+
+  let score = revealsHiddenCard ? 500 : 0
+  score += netRunStructureChange * 30
+  score += netEmptyDelta * 40
+  score += move.count * 2
+  return score
+}
+
 export function createKlondikeController(drawCount: 1 | 3): GameController<KlondikeState> {
   function newGame(seed: number): KlondikeState {
     const deck = shuffledDeck(seed, 1)
@@ -197,11 +271,20 @@ export function createKlondikeController(drawCount: 1 | 3): GameController<Klond
       const from: PileRef = { zone: 'tableau', index: col }
       // single top card -> foundation
       for (let f = 0; f < 4; f++) tryAdd(from, { zone: 'foundation', index: f }, 1)
-      // various run lengths -> other tableau columns
+      // various run lengths -> other tableau columns. Collapse straight to the single destination
+      // autoMoveHint would also pick for this same (from, count) - same candidate filter, same
+      // pickBestTableauTarget call - so a move surfaced here (e.g. for the Hint button) always
+      // matches where tapping that card actually sends it. See autoMoveHint below for the identical
+      // candidate-building logic.
       for (let count = 1; count <= pile.length - runStart; count++) {
-        for (let t = 0; t < 7; t++) {
-          if (t === col) continue
-          tryAdd(from, { zone: 'tableau', index: t }, count)
+        const movingCards = pile.slice(pile.length - count)
+        const candidates = state.tableau
+          .map((destPile, index) => ({ index, pile: destPile }))
+          .filter((c) => c.index !== col)
+          .filter((c) => canPlaceOnTableau(c.pile, movingCards))
+        const best = pickBestTableauTarget(candidates, isDescendingAltColor)
+        if (best) {
+          moves.push({ from, to: { zone: 'tableau', index: best.index }, count })
         }
       }
     }
@@ -258,6 +341,7 @@ export function createKlondikeController(drawCount: 1 | 3): GameController<Klond
     drawStock,
     isWon,
     autoMoveHint,
-    accessibleCards
+    accessibleCards,
+    scoreHintMove
   }
 }

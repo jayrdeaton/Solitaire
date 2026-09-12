@@ -5,10 +5,10 @@ import { createContext, ReactNode, useCallback, useContext, useMemo } from 'reac
 import { ACHIEVEMENT_CATALOG } from './achievementCatalog'
 import { clearGameInProgress } from './gameInProgress'
 import { useProfiles } from './profiles'
-import { applyDealAbandoned, applyDealWon, getProfileStatsView } from './statsEngine'
+import { applyDealAbandoned, applyDealWon, applyHintUsed, getProfileStatsView } from './statsEngine'
 import { legacyKeyFor, toVariantStats } from './statsLegacy'
 import { AchievementDefinition, DealMetrics, SOLITAIRE_GAME_IDS, SolitaireGameId, StatsState, UnlockedAchievementsState, VariantStats } from './statsTypes'
-import { DEFAULT_STATS, isValidStats } from './statsValidation'
+import { DEFAULT_STATS, DEFAULT_VARIANT, isValidStats } from './statsValidation'
 
 // Produces 'solitaire.stats' and 'solitaire.achievements'.
 const STORAGE_NAMESPACE = 'solitaire'
@@ -54,14 +54,20 @@ interface GameStatsContextValue {
   // Called the instant the player confirms the "start a new game" warning dialog over a deal that
   // was still in progress (see components/GameChrome.tsx).
   recordDealAbandoned: (variant: SolitaireGameId) => void
+  // Called the instant the Hint button actually produces a hint (not on a press that finds
+  // nothing to suggest) - see engine/hint.ts's findHint.
+  recordHintUsed: (variant: SolitaireGameId) => void
   resetAll: () => void
   removeProfileStats: (profileId: string) => void
 }
 
 const GameStatsContext = createContext<GameStatsContextValue | null>(null)
 
+// A stored blob may predate a game id that has since been added (e.g. Yukon) - `variants[id]` is
+// then `undefined` entirely, not just missing bestMoves/bestScore, so DEFAULT_VARIANT is spread in
+// first as the base for a genuinely missing entry, same as emptyVariants() does for a fresh profile.
 function backfillVariants(variants: Record<SolitaireGameId, VariantStats>): Record<SolitaireGameId, VariantStats> {
-  return Object.fromEntries(SOLITAIRE_GAME_IDS.map((id) => [id, { ...variants[id], bestMoves: variants[id].bestMoves ?? null, bestScore: variants[id].bestScore ?? null }])) as Record<SolitaireGameId, VariantStats>
+  return Object.fromEntries(SOLITAIRE_GAME_IDS.map((id) => [id, { ...DEFAULT_VARIANT, ...variants[id], bestMoves: variants[id]?.bestMoves ?? null, bestScore: variants[id]?.bestScore ?? null, hintsUsed: variants[id]?.hintsUsed ?? 0, winsWithoutHint: variants[id]?.winsWithoutHint ?? 0 }])) as Record<SolitaireGameId, VariantStats>
 }
 
 function profileViews(stats: StatsState): Record<string, StatsState> {
@@ -109,6 +115,13 @@ export function GameStatsProvider({ children }: { children: ReactNode }) {
     [recordOutcome, activeProfileId]
   )
 
+  const recordHintUsed = useCallback(
+    (variant: SolitaireGameId) => {
+      recordOutcome((prev) => applyHintUsed(prev, variant, activeProfileId))
+    },
+    [recordOutcome, activeProfileId]
+  )
+
   const removeProfileStats = useCallback(
     (profileId: string) => {
       removeProfile(profileId, (prev) => {
@@ -135,10 +148,11 @@ export function GameStatsProvider({ children }: { children: ReactNode }) {
       loaded,
       recordDealWon,
       recordDealAbandoned,
+      recordHintUsed,
       resetAll: resetAllAndProgress,
       removeProfileStats
     }),
-    [stats, unlockedAchievements, loaded, recordDealWon, recordDealAbandoned, resetAllAndProgress, removeProfileStats]
+    [stats, unlockedAchievements, loaded, recordDealWon, recordDealAbandoned, recordHintUsed, resetAllAndProgress, removeProfileStats]
   )
 
   return <GameStatsContext.Provider value={value}>{children}</GameStatsContext.Provider>

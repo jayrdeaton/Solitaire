@@ -89,8 +89,11 @@ src/
                   forced face-down flight), matching how FreeCell actually deals in real life.
   engine/       - shared card/deck/pile primitives, RNG, auto-move
   games/        - one subfolder per game (freecell, klondike, pyramid, spider), each with its own
-                  rules.ts + <Game>Screen.tsx; games/shared/ exists but is currently empty. Every
-                  game also has its own dealSequence.ts, layered on top of rules.ts's unrelated
+                  rules.ts + <Game>Screen.tsx; games/shared/ holds hooks/components extracted once
+                  2+ games needed them (useGameScreenBasics, undoTypes, withGameProviders,
+                  useDeferredDeal, useFoundationWinCheck, useDerivedWinCheck, FoundationCell,
+                  WinBanner). Every game also has its own dealSequence.ts, layered on top of
+                  rules.ts's unrelated
                   internal deal-slicing order - kept as separate per-game copies rather than a
                   shared import (see Spider's own dealSequence.ts for the explicit rationale), to
                   keep each game's logic self-contained. Klondike/Spider/FreeCell's actually

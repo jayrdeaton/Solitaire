@@ -4,7 +4,7 @@ import { DealMetrics, ProfileStats, SOLITAIRE_GAME_IDS, SolitaireGameId, StatsSt
 import { DEFAULT_PROFILE_STATS } from './statsValidation'
 
 // An abandoned deal (see statsTypes.ts) has no win metrics to record.
-const NO_METRICS: DealMetrics = { seconds: null, moves: null, score: null }
+const NO_METRICS: DealMetrics = { seconds: null, moves: null, score: null, usedHint: false }
 
 // Applies one resolved deal to a single variant bucket. 'win' extends the streak and may set new
 // bests (time/moves/score — lower is better for all three); 'loss' (an abandoned deal) breaks it.
@@ -13,12 +13,15 @@ function bumpVariant(prev: VariantStats, result: 'win' | 'loss', metrics: DealMe
   const bestTimeSeconds = isWin && metrics.seconds !== null && (prev.bestTimeSeconds === null || metrics.seconds < prev.bestTimeSeconds) ? metrics.seconds : prev.bestTimeSeconds
   const bestMoves = isWin && metrics.moves !== null && (prev.bestMoves === null || metrics.moves < prev.bestMoves) ? metrics.moves : prev.bestMoves
   const bestScore = isWin && metrics.score !== null && (prev.bestScore === null || metrics.score < prev.bestScore) ? metrics.score : prev.bestScore
+  const winsWithoutHint = isWin && !metrics.usedHint ? prev.winsWithoutHint + 1 : prev.winsWithoutHint
   return {
     record: applyResult(prev.record, result),
     streak: applyWinStreak(prev.streak, result),
     bestTimeSeconds,
     bestMoves,
-    bestScore
+    bestScore,
+    hintsUsed: prev.hintsUsed,
+    winsWithoutHint
   }
 }
 
@@ -27,6 +30,18 @@ function bumpBucket(prev: ProfileStats, variant: SolitaireGameId, result: 'win' 
     variants: { ...prev.variants, [variant]: bumpVariant(prev.variants[variant], result, metrics) },
     ...applyDayPlayed(prev, now)
   }
+}
+
+// Bumps a variant's lifetime hint counter only - no record/streak/day-streak change, unlike
+// bumpVariant above. Kept as its own tiny function rather than folded into bumpVariant since it
+// fires on every Hint press, not just at deal-resolution time (see gameStats.tsx's
+// recordHintUsed).
+function bumpVariantHintUsed(prev: VariantStats): VariantStats {
+  return { ...prev, hintsUsed: prev.hintsUsed + 1 }
+}
+
+function bumpBucketHintUsed(prev: ProfileStats, variant: SolitaireGameId): ProfileStats {
+  return { ...prev, variants: { ...prev.variants, [variant]: bumpVariantHintUsed(prev.variants[variant]) } }
 }
 
 // Resolves one deal, device-wide and (if a profile is active) into that profile's own bucket.
@@ -60,12 +75,29 @@ export function applyDealAbandoned(prev: StatsState, variant: SolitaireGameId, a
   return resolve(prev, variant, 'loss', NO_METRICS, activeProfileId, now)
 }
 
+// Called the instant the Hint button actually produces a hint (not on a press that finds nothing
+// to suggest) - device-wide and, if a profile is active, into that profile's own bucket too, same
+// shape as resolve() above but with no record/streak/day-streak/firstGameResult change.
+export function applyHintUsed(prev: StatsState, variant: SolitaireGameId, activeProfileId: string | null): StatsState {
+  const base = bumpBucketHintUsed(prev, variant)
+  const profiles = activeProfileId === null ? prev.profiles : { ...prev.profiles, [activeProfileId]: bumpBucketHintUsed(prev.profiles[activeProfileId] ?? DEFAULT_PROFILE_STATS, variant) }
+  return { ...prev, ...base, profiles }
+}
+
 export function getTotalPlayed(stats: ProfileStats): number {
   return SOLITAIRE_GAME_IDS.reduce((sum, id) => sum + stats.variants[id].record.played, 0)
 }
 
 export function getTotalWins(stats: ProfileStats): number {
   return SOLITAIRE_GAME_IDS.reduce((sum, id) => sum + stats.variants[id].record.wins, 0)
+}
+
+export function getTotalHintsUsed(stats: ProfileStats): number {
+  return SOLITAIRE_GAME_IDS.reduce((sum, id) => sum + stats.variants[id].hintsUsed, 0)
+}
+
+export function getTotalWinsWithoutHint(stats: ProfileStats): number {
+  return SOLITAIRE_GAME_IDS.reduce((sum, id) => sum + stats.variants[id].winsWithoutHint, 0)
 }
 
 // The longest win streak achieved in any single variant — streaks are per-variant, so "best

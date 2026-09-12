@@ -12,7 +12,7 @@ import { useProfiles } from '@/stores/profiles'
 // there's no second seat to conflict with here).
 export function ProfilePanel() {
   const router = useRouter()
-  const { dark } = useTheme()
+  const { dark, colors: paperColors } = useTheme()
   const { profiles, activeProfileId, selectProfile, tableColorOverride, setTableColorOverride } = useProfiles()
   const host = usePopoverHost()
 
@@ -23,7 +23,12 @@ export function ProfilePanel() {
   const liveColor = tableColorOverride ?? DEFAULT_SEED_COLOR
 
   return (
-    <View style={styles.row}>
+    // backgroundColor genuinely can't live in the static StyleSheet below - it's a function of
+    // both `dark` and the live Paper theme's surface color, neither of which a module-level
+    // StyleSheet.create can see (same reasoning SettingsDialog.tsx's PreviewOption borderColor
+    // documents for the identical situation).
+    // eslint-disable-next-line react-native/no-inline-styles
+    <View style={[styles.row, { backgroundColor: dark ? paperColors.surface : '#ffffffee' }]}>
       <InlineColorPicker id='home-player-color' host={host} value={liveColor} onChange={setTableColorOverride} previewValue={(hex) => previewCardBack(hex, dark)} dark={dark} tag={activeProfile?.tag} />
       <ProfilePicker idPrefix='home-player' host={host} profiles={profiles} selectedId={activeProfileId} color={previewCardBack(liveColor, dark)} dark={dark} guestLabel='GUEST' nullLabel='Guest' onSelect={(profile) => selectProfile(profile?.id ?? null)} onManage={() => router.push('/profiles')} />
     </View>
@@ -33,10 +38,10 @@ export function ProfilePanel() {
 const styles = StyleSheet.create({
   row: {
     alignItems: 'center',
-    // Neutral surface behind the trigger/swatch pair - same translucent-white pill the game cards
-    // below already use, since both the picker's label text and (once a color is chosen) the felt
-    // itself can otherwise wash the row out against the table.
-    backgroundColor: '#ffffffee',
+    // Neutral surface behind the trigger/swatch pair - same idea as the game cards below (light
+    // mode: an opaque near-white pill; dark mode: Paper's own surface color, set inline above
+    // since it depends on the live theme) - both the picker's label text and (once a color is
+    // chosen) the felt itself can otherwise wash the row out against the table.
     borderRadius: 999,
     flexDirection: 'row',
     gap: 12,

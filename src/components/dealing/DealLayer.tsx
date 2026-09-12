@@ -1,10 +1,10 @@
+import { CardSizeProvider } from '@tastic/cards'
 import { createContext, ReactNode, Ref, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native'
 import Animated, { cancelAnimation, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
 
 import { Card } from '@/engine/types'
 
-import { CardSizeProvider } from '../CardSizeContext'
 import { PlayingCard } from '../PlayingCard'
 import { useCardSoundEffects } from '../useCardSounds'
 import { DEAL_SPRING } from './dealSpring'

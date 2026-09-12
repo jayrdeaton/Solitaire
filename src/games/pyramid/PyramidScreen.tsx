@@ -1,13 +1,15 @@
 // Pyramid solitaire screen: triangle tap-to-select board + stock/waste row.
 
 import { Pressable, useVibration } from '@rific/feedback-press'
+import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
+import { CARD_ASPECT, CardSizeProvider, cardWidthForRow, type TableColors } from '@tastic/cards'
 import { computeContentBounds } from '@tastic/core'
-import { RefObject, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 import Animated, { SharedValue, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
 
-import { CARD_ASPECT, CardSizeProvider, cardWidthForRow, FACE_UP_OFFSET_RATIO } from '@/components/CardSizeContext'
+import { FACE_UP_OFFSET_RATIO } from '@/components/CardSizeContext'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView, ScreenPoint } from '@/components/dealing/measureView'
@@ -16,19 +18,20 @@ import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { autoMoveSpringFor } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { formatTime, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
-import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
+import { PlayingCard } from '@/components/PlayingCard'
 import { StockWaste } from '@/components/StockWaste'
-import { fireworksColors, TableColors } from '@/components/theme'
+import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
-import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
 import { useGameSession } from '@/components/useGameSession'
 import { useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
+import { PYRAMID_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
+import { findHint, hintCountFor, HintResult } from '@/engine/hint'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
-import { HIDDEN_CARD_STYLE } from '@/games/shared/FoundationCell'
+import { DiscardCell } from '@/games/shared/DiscardCell'
 import { MoveInfo } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
@@ -61,28 +64,6 @@ interface UndoEntry {
   removedCards: RemovedCardRef[] | null
 }
 
-/** The discard pile's own display - cards removed via a pair or solo King land here (see
- * rules.ts's `discard` field). Always face-up and non-interactive (`disabled`, no DropZone/onPress
- * - tryMove already rejects any `to.zone` other than 'pyramid'/'waste', so it could never be a
- * legal drop target anyway). While `isFlyingHere`, the real (already-updated) top card is hidden
- * and a frozen copy of whatever was on top before is shown instead - same reasoning as Klondike's
- * FoundationCell - so the pile doesn't flash to its new top card before the ghost visually lands.
- * Unlike FoundationCell, this measures its position via a plain view ref (viewRef, passed a stable
- * discardViewRef from the caller), not per-card CardRegistry registration - there's only ever one
- * discard pile, not a slot whose occupant identity keeps changing. */
-function DiscardCell({ card, isFlyingHere, viewRef }: { card: Card | undefined; isFlyingHere: boolean; viewRef: RefObject<View | null> }) {
-  const frozen = useFrozenWhileHidden(card, isFlyingHere)
-  return (
-    <View ref={viewRef} collapsable={false}>
-      {card ? <PlayingCard card={card} disabled style={isFlyingHere && HIDDEN_CARD_STYLE} testID='discard-top' /> : <EmptySlot testID='discard-empty' />}
-      {isFlyingHere && (
-        <View style={StyleSheet.absoluteFill} pointerEvents='none'>
-          {frozen ? <PlayingCard card={frozen} disabled /> : <EmptySlot />}
-        </View>
-      )}
-    </View>
-  )
-}
 /** Each card's own leg gets its own origin AND destination - unlike the forward (removal) flight,
  * where every card shares one destination (the discard pile), an undo-of-removal flight has every
  * card share one ORIGIN (the discard pile) but fly to its own distinct destination instead. Both
@@ -203,7 +184,8 @@ function cardPosition(row: number, col: number, cardWidth: number, cardHeight: n
 export default withGameProviders(PyramidScreenInner)
 
 function PyramidScreenInner() {
-  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { info: infoToast } = useToast()
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
   const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, TRIANGLE_WIDTH_UNITS, COL_GAP)
@@ -211,6 +193,17 @@ function PyramidScreenInner() {
   const [state, setState] = useState<PyramidState | null>(null)
   const [selected, setSelected] = useState<PileRef | null>(null)
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([])
+  // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
+  // - state is always replaced wholesale on every real change (never mutated in place - see
+  // tryMove), so comparing references during render is enough to auto-dismiss a stale hint the
+  // instant the board actually changes, with no separate effect/setState needed.
+  const [hint, setHint] = useState<{ result: HintResult; forState: PyramidState; skip: number } | null>(null)
+  const activeHint = hint && hint.forState === state ? hint.result : null
+  // Whether the Hint button has produced a hint at any point during the CURRENT deal - read once,
+  // at the exact instant a win is recorded (see useDerivedWinCheck's own hintsUsedRef param), to
+  // decide whether this win counts toward the "wins without hint" stat/achievement. Reset on every
+  // fresh deal (startNewGame) and resume (restoreGame).
+  const hintsUsedRef = useRef(false)
   const session = useGameSession()
   // Which card (if any) should play its "that pairing didn't work" shake right now - bumped
   // (not toggled) so tapping into the same failed pairing twice in a row re-triggers it both
@@ -222,6 +215,7 @@ function PyramidScreenInner() {
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
+  const wasteViewRef = useRef<View>(null)
   const triangleViewRef = useRef<View>(null)
   const discardViewRef = useRef<View>(null)
   const [pyramidHiddenIds, setPyramidHiddenIds] = useState<Set<string>>(new Set())
@@ -229,17 +223,26 @@ function PyramidScreenInner() {
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const ghost = useDragGhost()
   const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
+  // True while the stock slot's real content is mid-flight elsewhere (a stock recycle, either
+  // direction - see handleDrawStock's recycle branch / undoRecycle) and should stay frozen on its
+  // pre-flight appearance instead of instantly revealing the new one - see StockWaste's own
+  // `stockHidden` doc comment.
+  const [stockHidden, setStockHidden] = useState(false)
   /** A flight awaiting its post-commit measurement + ghost.flyTo (see the effect below) - set by
    * handleDrawStock once the drawn card's own render has been committed, or by handleUndo when
    * reversing a draw. `viaStock` measures via stockViewRef (a plain View, not per-card) instead of
    * CardRegistry - only undoing a draw flies back toward the stock; drawing itself flies to the
-   * real per-card-registered waste slot. */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean } | null>(null)
+   * real per-card-registered waste slot. `gen` is the dealTokenRef value captured at the moment
+   * this flight was queued - re-checked once the async measurement below resolves, so a flight
+   * queued against a game that's since been replaced by "New Game" doesn't measure/land against
+   * the new deal's DOM (card ids are shuffle-independent and reused across deals - see deck.ts).
+   * Mirrors Klondike's own pendingFlightRef exactly. */
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; gen: number } | null>(null)
   const winCascade = useWinCascade()
   // Derived from `state` every render (see useDerivedWinCheck) rather than mirrored into its own
   // useState: it's a pure function of state, so Undo-ing out of a won position correctly drops the
   // win banner immediately, rather than leaving it stuck showing.
-  const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(PyramidController, state, 'pyramid', session, dealTokenRef, recordDealWon)
+  const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(PyramidController, state, 'pyramid', session, dealTokenRef, recordDealWon, hintsUsedRef)
   /** Pyramid's pair-removal flight - both cards travel to the discard pile independently, each
    * from its own real position (see flyPairIndependently/PairFlightGhosts below), rather than
    * through the single shared `ghost` above, which can only ever animate one origin/delta for its
@@ -254,7 +257,7 @@ function PyramidScreenInner() {
    * pure math not dependent on the commit - a card that came from the waste genuinely needs it
    * (CardRegistry can only measure a card once it's actually mounted there), and keeping both
    * kinds on one path is simpler than splitting an immediate case out from a deferred one. */
-  const pendingRemovalUndoRef = useRef<{ removed: RemovedCardRef[]; discardOrigin: ScreenPoint } | null>(null)
+  const pendingRemovalUndoRef = useRef<{ removed: RemovedCardRef[]; discardOrigin: ScreenPoint; gen: number } | null>(null)
   // Guards handleUndo against being called again before its own previous invocation has fully
   // settled (visually, not just in state) - see handleUndo/undoRemoval below for why an overlapping
   // call would otherwise desync the undo stack or clobber the shared single-flight ghost/pair-flight
@@ -272,16 +275,20 @@ function PyramidScreenInner() {
     pendingFlightRef.current = null
     ;(async () => {
       const landed = pending.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(pending.cardId)
-      if (landed) {
-        ghost.flyTo(landed.x, landed.y, () => {
-          setFlying(null)
-          undoBusyRef.current = false
-        })
-      } else {
+      // A new game can start while the measurement above is in flight - `landed`, if it resolved
+      // at all, would then be measuring an unrelated card in the NEW deal (ids are
+      // shuffle-independent and reused across deals - see deck.ts), so drop this flight instead of
+      // landing on a nonsensical position.
+      if (dealTokenRef.current !== pending.gen || !landed) {
         ghost.hide()
         setFlying(null)
         undoBusyRef.current = false
+        return
       }
+      ghost.flyTo(landed.x, landed.y, () => {
+        setFlying(null)
+        undoBusyRef.current = false
+      })
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
@@ -295,6 +302,18 @@ function PyramidScreenInner() {
     const pending = pendingRemovalUndoRef.current
     if (!pending || !state) return
     pendingRemovalUndoRef.current = null
+    if (dealTokenRef.current !== pending.gen) {
+      // New Game was tapped before this undo's card destinations could be resolved - bail rather
+      // than fly stale ghosts onto the freshly-dealt board. Deliberately does NOT touch
+      // pyramidHiddenIds here (unlike the resolved path below) - these removed cards' ids are
+      // shuffle-independent (see deck.ts) and could collide with the NEW deal's own in-flight
+      // hidden set, so mutating it here risks un-hiding an unrelated card that just happens to
+      // share an id with one of these. startNewGame/restoreGame already reset flying/undoBusyRef
+      // for the new board; only clear them here too for the (rarer) case this fires first.
+      setFlying(null)
+      undoBusyRef.current = false
+      return
+    }
     ;(async () => {
       const needsTriangle = pending.removed.some((r) => r.ref.zone === 'pyramid')
       const triangleOrigin = needsTriangle ? await measureView(triangleViewRef.current) : null
@@ -361,7 +380,13 @@ function PyramidScreenInner() {
     const s = PyramidController.newGame(randomSeed())
     setSelected(null)
     setUndoStack([])
+    setHint(null)
+    hintsUsedRef.current = false
     undoBusyRef.current = false
+    pendingFlightRef.current = null
+    pendingRemovalUndoRef.current = null
+    setFlying(null)
+    setStockHidden(false)
     session.reset()
     recordedWinRef.current = false
     winCascade.clear()
@@ -374,12 +399,19 @@ function PyramidScreenInner() {
   }
 
   // Restores a previously saved board exactly as left - no deal-fly-in animation (this isn't a new
-  // deal), no fresh undo history.
-  function restoreGame(saved: SavedGame<PyramidState>) {
+  // deal). Also restores the saved undo stack (falling back to empty for an older save written
+  // before undo persistence existed - see SavedGame's own doc comment).
+  function restoreGame(saved: SavedGame<PyramidState, UndoEntry>) {
     ++dealTokenRef.current
     setSelected(null)
-    setUndoStack([])
+    setUndoStack(saved.undoStack ?? [])
+    setHint(null)
+    hintsUsedRef.current = false
     undoBusyRef.current = false
+    pendingFlightRef.current = null
+    pendingRemovalUndoRef.current = null
+    setFlying(null)
+    setStockHidden(false)
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
     setPyramidHiddenIds(new Set())
@@ -456,7 +488,7 @@ function PyramidScreenInner() {
   // the instant the player actually backs out (a Back tap, swipe-back, or hardware back all unmount
   // this the same way - unlike merely backgrounding the app, which leaves it mounted).
   useEffect(() => {
-    loadGameInProgress<PyramidState>('pyramid').then((saved) => {
+    loadGameInProgress<PyramidState, UndoEntry>('pyramid').then((saved) => {
       if (saved) restoreGame(saved)
       else startNewGame()
       setLastActiveGame('pyramid')
@@ -469,11 +501,15 @@ function PyramidScreenInner() {
   // a just-won deal doesn't get checkpointed as still in-progress (the win-check effect above
   // clears the save outright instead) - since `won` is derived fresh from `state` on every render,
   // undoing back out of a won position re-enables saving again on that same render, no separate
-  // reset needed.
+  // reset needed. `session.elapsed` is also a dependency, not just `state` - it ticks up once a
+  // second on its own timer (see useGameSession.ts), independent of any move, so a save made at
+  // the last real move goes stale the moment the player just sits looking at the board and then
+  // leaves; resuming would silently roll the clock back to whatever it read at that last move
+  // instead of how long they actually had the deal open.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('pyramid', { state, moves: session.moves, elapsedSeconds: session.elapsed })
+    if (state && !won) saveGameInProgress('pyramid', { state, undoStack, moves: session.moves, elapsedSeconds: session.elapsed })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won])
+  }, [state, won, session.elapsed, undoStack])
 
   // Mirrors handleDrawStock's forward flight, just in reverse: the drawn card is still sitting in
   // the waste (`move.to`) - measure its real current position before reverting (the
@@ -495,6 +531,14 @@ function PyramidScreenInner() {
 
     if (removedCards) {
       await undoRemoval(removedCards, prevState)
+      return
+    }
+
+    // A recycle move (see handleDrawStock's own recycle branch) - the whole waste became the new
+    // stock, so there's no single anchor card still sitting at state.waste's top to measure the
+    // usual way. Reverse it as its own group-ghost flight instead (see undoRecycle/PATTERN_RECYCLE).
+    if (move && move.from.zone === 'waste' && move.to.zone === 'stock') {
+      await undoRecycle(move, prevState)
       return
     }
 
@@ -522,11 +566,62 @@ function PyramidScreenInner() {
       ghost.show({ cards: [movingCard], offsetStep: 0, cardWidth })
       setFlying({ to: move.from, count: move.count })
       setState(prevState)
-      pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: true }
+      pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: true, gen: dealTokenRef.current }
     } else {
       setState(prevState)
       undoBusyRef.current = false
     }
+  }
+
+  // Reverses a stock recycle (see handleDrawStock's recycle branch): the recycled cards fly back
+  // from the stock slot to the waste slot as one group-ghost flight, the mirror image of the
+  // forward flight. Unlike undoRemoval, both endpoints here are plain container refs (stockViewRef/
+  // wasteViewRef), not per-card CardRegistry lookups, so - like the forward flight - no post-commit
+  // deferral is needed; both can be measured synchronously before prevState is even applied. Guards
+  // against a "New Game" tapped mid-measurement the same way runDeal/runWinCascade do elsewhere in
+  // this file.
+  async function undoRecycle(move: MoveInfo, prevState: PyramidState) {
+    const myGen = dealTokenRef.current
+    const [stockOrigin, wasteDest] = await Promise.all([measureView(stockViewRef.current), measureView(wasteViewRef.current)])
+
+    if (dealTokenRef.current !== myGen) {
+      // New Game was tapped mid-measurement - drop this stale undo-of-recycle entirely rather than
+      // overwrite whatever startNewGame already applied (same reasoning as pendingRemovalUndoRef's
+      // mismatch branch below). Deliberately skip setUndoStack/setSelected/setState here too -
+      // startNewGame already reset the undo stack, selection, and board for the new game; only
+      // undoBusyRef needs resetting here too, for the rarer case this fires first.
+      undoBusyRef.current = false
+      return
+    }
+
+    setUndoStack((stack) => stack.slice(0, -1))
+    setSelected(null)
+
+    if (!stockOrigin || !wasteDest) {
+      setState(prevState)
+      undoBusyRef.current = false
+      return
+    }
+
+    // prevState.waste is exactly the set of cards this undo restores, in their original
+    // (pre-recycle, face-up) order - the same cards currently sitting reversed/face-down in
+    // state.stock.
+    const cards = prevState.waste
+    ghost.originX.value = stockOrigin.x
+    ghost.originY.value = stockOrigin.y
+    ghost.dx.value = 0
+    ghost.dy.value = 0
+    playCardSound()
+    hapticCard()
+    ghost.show({ cards, offsetStep: 0, cardWidth })
+    setStockHidden(true)
+    setFlying({ to: { zone: 'waste', index: 0 }, count: move.count })
+    setState(prevState)
+    ghost.flyTo(wasteDest.x, wasteDest.y, () => {
+      setStockHidden(false)
+      setFlying(null)
+      undoBusyRef.current = false
+    })
   }
 
   // Undoing a pairing/King removal: each removed card flies independently from the discard pile
@@ -558,7 +653,7 @@ function PyramidScreenInner() {
     if (pyramidIds.length > 0) setPyramidHiddenIds((ids) => new Set([...ids, ...pyramidIds]))
     if (removed.some((r) => r.ref.zone === 'waste')) setFlying({ to: { zone: 'waste', index: 0 }, count: 1 })
 
-    pendingRemovalUndoRef.current = { removed, discardOrigin }
+    pendingRemovalUndoRef.current = { removed, discardOrigin, gen: dealTokenRef.current }
     setState(prevState)
   }
 
@@ -850,9 +945,49 @@ function PyramidScreenInner() {
 
     const drawnCard = result.waste[result.waste.length - 1]
     if (!drawnCard) {
-      pushUndo(state, null)
+      // Recycle: stock was empty, so PyramidController.drawStock! just flipped the whole waste
+      // back over into a new (reversed, face-down) stock - see rules.ts's drawStock. Animate it as
+      // one group-ghost flight from the waste slot to the stock slot (same idiom a dragged
+      // multi-card run uses: one shared origin/destination for the whole clump), not a per-card
+      // deal-style flight - see PATTERN_RECYCLE. Both endpoints are plain container refs, so no
+      // post-commit deferral is needed; guarded against a "New Game" tapped mid-measurement the
+      // same way runDeal/runWinCascade are elsewhere in this file.
+      const myGen = dealTokenRef.current
+      const recycledCards = state.waste.slice()
+      const [wasteOrigin, stockDest] = await Promise.all([measureView(wasteViewRef.current), measureView(stockViewRef.current)])
+      if (dealTokenRef.current !== myGen) {
+        // New Game was tapped mid-measurement - drop this stale recycle entirely rather than
+        // overwrite whatever startNewGame already applied (same reasoning as
+        // pendingRemovalUndoRef's mismatch branch above). Nothing here has touched
+        // flying/stockHidden/pushUndo/setState yet, so there's nothing to unwind - just bail.
+        return
+      }
+      if (!wasteOrigin || !stockDest || recycledCards.length === 0) {
+        pushUndo(state, null)
+        setState(result)
+        setSelected(null)
+        return
+      }
+
+      const recycleMove: MoveInfo = { from: { zone: 'waste', index: 0 }, to: { zone: 'stock', index: 0 }, count: recycledCards.length, anchorCardId: recycledCards[0].id }
+
+      ghost.originX.value = wasteOrigin.x
+      ghost.originY.value = wasteOrigin.y
+      ghost.dx.value = 0
+      ghost.dy.value = 0
+      playCardSound()
+      hapticCard()
+      ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth })
+      setStockHidden(true)
+      setFlying({ to: { zone: 'stock', index: 0 }, count: recycledCards.length })
+
+      pushUndo(state, recycleMove)
       setState(result)
       setSelected(null)
+      ghost.flyTo(stockDest.x, stockDest.y, () => {
+        setStockHidden(false)
+        setFlying(null)
+      })
       return
     }
     const move: MoveInfo = { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: 1, anchorCardId: drawnCard.id }
@@ -876,7 +1011,23 @@ function PyramidScreenInner() {
     pushUndo(state, move)
     setState(result)
     setSelected(null)
-    pendingFlightRef.current = { cardId: drawnCard.id }
+    pendingFlightRef.current = { cardId: drawnCard.id, gen: dealTokenRef.current }
+  }
+
+  // Finds one legal move (a pairing/solo King) or a stock-draw suggestion to highlight - see
+  // engine/hint.ts's findHint, which reuses this game's own legalMoves(). Only highlights; the
+  // player still taps/drags the suggested card(s) through the normal flow.
+  function handleHint() {
+    if (!state) return
+    const skip = hint && hint.forState === state ? hint.skip + 1 : 0
+    const result = findHint(PyramidController, state, skip)
+    if (result.kind === 'none') {
+      infoToast('No moves available right now.')
+      return
+    }
+    setHint({ result, forState: state, skip })
+    hintsUsedRef.current = true
+    recordHintUsed('pyramid')
   }
 
   if (!state) {
@@ -893,8 +1044,13 @@ function PyramidScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} hasProgress={session.moves > 0} elapsedSeconds={session.elapsed} movesCount={session.moves}>
+      <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} elapsedSeconds={session.elapsed} movesCount={session.moves} rules={PYRAMID_RULES}>
         <View style={styles.board}>
+          <View style={[styles.controlRow, { width }]}>
+            <DiscardCell card={won ? undefined : state.discard[state.discard.length - 1]} isFlyingHere={!!flying && flying.to.zone === 'discard'} viewRef={discardViewRef} />
+            <StockWaste style={styles.stockRow} dropZones={dropZones} stockTopCard={state.stock[state.stock.length - 1]} wasteTop={wasteTop} wasteSelected={!!selected && selected.zone === 'waste'} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} wasteHiddenCount={flying && flying.to.zone === 'waste' ? 1 : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} onDrawStock={handleDrawStock} onWastePress={handleSelectWaste} onWasteDrop={(x, y) => attemptDrop({ zone: 'waste', index: 0 }, x, y)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
+          </View>
+
           <View ref={triangleViewRef} collapsable={false} style={[styles.triangle, { width, height }]}>
             {state.pyramid.map((card, index) => {
               if (!card) return null
@@ -912,15 +1068,10 @@ function PyramidScreenInner() {
 
               return (
                 <DropZone key={card.id} registry={dropZones} pileRef={pileRef} style={cardStyle}>
-                  <DraggableCard card={card} selected={isSelected} hidden={isHidden} onPress={(measure) => handleSelectPyramid(index, measure)} onDrop={(x, y) => attemptDrop(pileRef, x, y)} shakeToken={shake?.cardId === card.id ? shake.token : undefined} testID={`pyramid-${index}`} />
+                  <DraggableCard card={card} selected={isSelected} hidden={isHidden} hinted={hintCountFor(activeHint, pileRef) > 0} onPress={(measure) => handleSelectPyramid(index, measure)} onDrop={(x, y) => attemptDrop(pileRef, x, y)} shakeToken={shake?.cardId === card.id ? shake.token : undefined} testID={`pyramid-${index}`} />
                 </DropZone>
               )
             })}
-          </View>
-
-          <View style={styles.controlRow}>
-            <DiscardCell card={won ? undefined : state.discard[state.discard.length - 1]} isFlyingHere={!!flying && flying.to.zone === 'discard'} viewRef={discardViewRef} />
-            <StockWaste style={styles.stockRow} dropZones={dropZones} stockTopCard={state.stock[state.stock.length - 1]} wasteTop={wasteTop} wasteSelected={!!selected && selected.zone === 'waste'} wasteHiddenCount={flying && flying.to.zone === 'waste' ? 1 : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} onDrawStock={handleDrawStock} onWastePress={handleSelectWaste} onWasteDrop={(x, y) => attemptDrop({ zone: 'waste', index: 0 }, x, y)} stockRef={stockViewRef} />
           </View>
         </View>
       </GameChrome>
@@ -986,8 +1137,13 @@ function makeStyles(colors: TableColors) {
       padding: 16
     },
     controlRow: {
+      // Spans the triangle's own full width (set inline via the `width` prop) and spaces its two
+      // children apart - discard on the left, waste+stock on the right, so stock still lands on
+      // the same right edge every other game's stock does (Klondike/Spider/Canfield's right edge,
+      // Golf's right-aligned topRow) while discard gets its own distinct spot on the left instead
+      // of sitting clustered right next to waste.
       flexDirection: 'row',
-      gap: 24,
+      justifyContent: 'space-between',
       marginBottom: 20
     },
     hiddenCard: {

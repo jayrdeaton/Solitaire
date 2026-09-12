@@ -38,7 +38,9 @@ export function toVariantStats(blob: string | null): VariantStats | null {
       streak: { currentWinStreak: parsed.currentStreak, bestWinStreak: parsed.bestStreak },
       bestTimeSeconds: parsed.bestTimeSeconds,
       bestMoves: null,
-      bestScore: null
+      bestScore: null,
+      hintsUsed: 0,
+      winsWithoutHint: 0
     }
   } catch {
     return null

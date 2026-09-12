@@ -272,3 +272,89 @@ describe('spider drawStock', () => {
     expect(state.tableau[0]).toHaveLength(1)
   })
 })
+
+describe('spider scoreHintMove', () => {
+  const controller = createSpiderController(1)
+
+  function moveTo(state: SpiderState, from: number, count: number, to: number) {
+    const move = controller.legalMoves(state).find((m) => m.from.index === from && m.count === count && m.to.index === to)
+    if (!move) throw new Error(`expected a legal move from=${from} count=${count} to=${to}`)
+    return move
+  }
+
+  function scoreOf(state: SpiderState, from: number, count: number, to: number) {
+    return controller.scoreHintMove!(state, moveTo(state, from, count, to))
+  }
+
+  // Regression test for a real bug: the previous scorer rated "peel the bottom card off a nice
+  // 4-card run to park it on some unrelated matching card" the same as any other harmless 1-card
+  // move, so Hint would suggest tearing apart a good run for no reason.
+  it('never prefers fragmenting a coherent run over relocating it intact, with nothing gained', () => {
+    const state: SpiderState = {
+      tableau: [[], [card('spades', 7)], [card('spades', 9), card('spades', 8), card('spades', 7, true, 1), card('spades', 6)], ...Array.from({ length: 7 }, (_, i) => [card('spades', 2, true, i)])],
+      stock: [],
+      completed: [],
+      completedRuns: []
+    }
+
+    const fragmentOnto7 = scoreOf(state, 2, 1, 1) // rips the 6 off the run, onto the lone 7
+    const partialFragment2 = scoreOf(state, 2, 2, 0) // rips 7,6 off, onto the empty column
+    const partialFragment3 = scoreOf(state, 2, 3, 0) // rips 8,7,6 off, onto the empty column
+    const intactRelocation = scoreOf(state, 2, 4, 0) // the whole run, kept together
+    const harmlessSingle = scoreOf(state, 1, 1, 0) // an unrelated lone-card move, for scale
+
+    expect(intactRelocation).toBeGreaterThan(harmlessSingle)
+    expect(fragmentOnto7).toBeLessThan(harmlessSingle)
+    expect(partialFragment2).toBeLessThan(harmlessSingle)
+    expect(partialFragment3).toBeLessThan(harmlessSingle)
+  })
+
+  it('ranks revealing a face-down card far above any move that reveals nothing', () => {
+    const state: SpiderState = {
+      tableau: [[card('spades', 9, false), card('spades', 5)], [card('spades', 6)], [card('spades', 3)], [card('spades', 4)], ...Array.from({ length: 6 }, (_, i) => [card('spades', 2, true, i)])],
+      stock: [],
+      completed: [],
+      completedRuns: []
+    }
+
+    const revealMove = scoreOf(state, 0, 1, 1) // 5 -> 6, exposes the face-down 9
+    const plainConsolidation = scoreOf(state, 2, 1, 3) // 3 -> 4, nothing revealed
+
+    expect(revealMove).toBeGreaterThan(plainConsolidation)
+    expect(revealMove).toBeGreaterThan(400) // comfortably clears the empty-column/structural range
+  })
+
+  it('scores completing a run at 1000, clearly above a large fragment of an unrelated run', () => {
+    const twelveRun = Array.from({ length: 12 }, (_, i) => card('spades', (13 - i) as Card['rank']))
+    const state: SpiderState = {
+      tableau: [twelveRun, [card('spades', 1)], ...Array.from({ length: 8 }, (_, i) => [card('spades', 10, true, i)])],
+      stock: [],
+      completed: [],
+      completedRuns: []
+    }
+
+    const completion = scoreOf(state, 1, 1, 0) // the Ace completes King..Ace
+    const bigFragment = scoreOf(state, 0, 8, 2) // 8-card fragment of the 12-run, onto a lone 10
+
+    expect(completion).toBe(1000)
+    expect(bigFragment).toBeLessThan(0) // unattractive on its own, not just "less than 1000"
+  })
+
+  it('treats empty columns as a resource whose net change matters, not a flat penalty', () => {
+    const state: SpiderState = {
+      tableau: [[card('spades', 5)], [card('spades', 9), card('spades', 8), card('spades', 7), card('spades', 6)], [card('spades', 7, true, 1)], [], ...Array.from({ length: 6 }, (_, i) => [card('spades', 10, true, i)])],
+      stock: [],
+      completed: [],
+      completedRuns: []
+    }
+
+    const extendsRunAndFreesColumn = scoreOf(state, 0, 1, 1) // 5 -> the 4-run, frees col0
+    const relocatesWholeRunAndFreesColumn = scoreOf(state, 1, 4, 4) // whole run -> a lone 10, frees col1
+    const lateralIntoEmptyColumn = scoreOf(state, 2, 1, 3) // lone 7 -> the empty column, net wash
+    const fragmentIntoEmptyColumn = scoreOf(state, 1, 2, 3) // rips 7,6 off the run, spends the empty column
+
+    expect(extendsRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
+    expect(relocatesWholeRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
+    expect(lateralIntoEmptyColumn).toBeGreaterThan(fragmentIntoEmptyColumn)
+  })
+})

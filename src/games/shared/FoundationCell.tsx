@@ -4,7 +4,7 @@ import { StyleSheet, View } from 'react-native'
 import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { FoundationSlot, PlayingCard } from '@/components/PlayingCard'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
-import { Card, Suit } from '@/engine/types'
+import { Card, Rank, Suit } from '@/engine/types'
 
 // Plain (theme-independent) style - FoundationCell is a module-level component, so it can't reach
 // its caller's own theme-derived `styles`.
@@ -21,7 +21,20 @@ export const HIDDEN_CARD_STYLE = { opacity: 0 }
  * is hidden - the win cascade (see runWinCascade) needs to measure this slot's position AFTER the
  * real King has already been hidden (won-gated, see the caller), by which point it's no longer
  * CardRegistry-registered at all. */
-export function FoundationCell({ card, isFlyingHere, suit, slotRef }: { card: Card | undefined; isFlyingHere: boolean; suit: Suit; slotRef?: (el: View | null) => void }) {
+interface FoundationCellProps {
+  card: Card | undefined
+  isFlyingHere: boolean
+  suit: Suit
+  /** Passed straight through to FoundationSlot's own empty-hint rank - see its doc comment
+   * (defaults to Ace; only Canfield ever passes something else). */
+  rank?: Rank
+  /** Highlight this cell as the Hint feature's suggested source/destination - see PlayingCard's
+   * own `hinted` prop. */
+  highlighted?: boolean
+  slotRef?: (el: View | null) => void
+}
+
+export function FoundationCell({ card, isFlyingHere, suit, rank, highlighted, slotRef }: FoundationCellProps) {
   const ghost = useDragGhost()
   const viewRef = useRef<View>(null)
   const frozen = useFrozenWhileHidden(card, isFlyingHere)
@@ -41,10 +54,10 @@ export function FoundationCell({ card, isFlyingHere, suit, slotRef }: { card: Ca
       }}
       collapsable={false}
     >
-      {card ? <PlayingCard card={card} style={isFlyingHere && HIDDEN_CARD_STYLE} /> : <FoundationSlot suit={suit} />}
+      {card ? <PlayingCard card={card} hinted={highlighted} style={isFlyingHere && HIDDEN_CARD_STYLE} /> : <FoundationSlot suit={suit} rank={rank} hinted={highlighted} />}
       {isFlyingHere && (
         <View style={StyleSheet.absoluteFill} pointerEvents='none'>
-          {frozen ? <PlayingCard card={frozen} /> : <FoundationSlot suit={suit} />}
+          {frozen ? <PlayingCard card={frozen} /> : <FoundationSlot suit={suit} rank={rank} />}
         </View>
       )}
     </View>

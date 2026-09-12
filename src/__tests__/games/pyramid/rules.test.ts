@@ -1,3 +1,5 @@
+import { Move } from '@/engine/gameTypes'
+import { findHint } from '@/engine/hint'
 import { Card } from '@/engine/types'
 import { flatIndex, isExposed, PyramidController, PyramidState } from '@/games/pyramid/rules'
 
@@ -358,5 +360,106 @@ describe('Pyramid isWon / win sweep', () => {
     expect(PyramidController.isWon(result!)).toBe(false)
     expect(result!.waste).toHaveLength(1)
     expect(result!.stock).toHaveLength(1)
+  })
+})
+
+describe('Pyramid scoreHintMove', () => {
+  function moveOf(state: PyramidState, fromKey: string, toKey: string): Move {
+    const move = PyramidController.legalMoves(state).find((m) => `${m.from.zone}:${m.from.index}` === fromKey && `${m.to.zone}:${m.to.index}` === toKey)
+    if (!move) throw new Error(`expected a legal move ${fromKey} -> ${toKey}`)
+    return move
+  }
+
+  function scoreOf(state: PyramidState, fromKey: string, toKey: string): number {
+    return PyramidController.scoreHintMove!(state, moveOf(state, fromKey, toKey))
+  }
+
+  // Regression scenario for a real hint-quality gap: two pairs are simultaneously legal, but only
+  // one of them removes both children of a still-covered card above it, instantly exposing that
+  // card. The other pair is equally "legal" but exposes nothing - its one pyramid-side card's
+  // only parent was already removed earlier. Before scoreHintMove existed, legalMoves' raw
+  // enumeration order (a nested scan over available refs) surfaced the exposing-nothing pair
+  // first, so a naive first-Hint press would suggest it over the strictly more useful move.
+  function boardWithOneExposingPairAndOneDeadEndPair(): PyramidState {
+    const king = makeCard('spades', 13) // (4,0) - the eventual payoff once (5,1) is also gone
+    const blockerBelowKing = makeCard('hearts', 5) // (5,1) - covers the King; becomes exposed once (6,1)+(6,2) are both gone
+    const pyramid = buildPyramid({
+      '4,0': king,
+      '5,0': null, // already removed earlier - (6,0)'s only parent, so removing (6,0) exposes nothing
+      '5,1': blockerBelowKing,
+      '6,0': makeCard('clubs', 6), // dead-end pair partner: pairs with waste, but exposes nothing
+      '6,1': makeCard('diamonds', 9), // exposing pair, part A: 9+4=13, both children of (5,1)
+      '6,2': makeCard('spades', 4), // exposing pair, part B
+      '6,3': makeCard('clubs', 2),
+      '6,4': makeCard('hearts', 2),
+      '6,5': makeCard('diamonds', 2),
+      '6,6': makeCard('spades', 2)
+    })
+    return baseState({ pyramid, waste: [makeCard('hearts', 7)] }) // 7 pairs with (6,0)'s 6
+  }
+
+  it('confirms the constructed board has exactly the two intended legal pairs, nothing else', () => {
+    const state = boardWithOneExposingPairAndOneDeadEndPair()
+    const moves = PyramidController.legalMoves(state)
+    expect(moves).toHaveLength(2)
+    expect(moves).toContainEqual({ from: { zone: 'pyramid', index: flatIndex(6, 0) }, to: { zone: 'waste', index: 0 }, count: 1 })
+    expect(moves).toContainEqual({ from: { zone: 'pyramid', index: flatIndex(6, 1) }, to: { zone: 'pyramid', index: flatIndex(6, 2) }, count: 1 })
+  })
+
+  it('scores the pair that exposes a new pyramid card above the dead-end pair that exposes nothing', () => {
+    const state = boardWithOneExposingPairAndOneDeadEndPair()
+
+    const deadEndPair = scoreOf(state, 'pyramid:21', 'waste:0') // (6,0) + waste - exposes nothing
+    const exposingPair = scoreOf(state, 'pyramid:22', 'pyramid:23') // (6,1)+(6,2) - exposes (5,1)
+
+    expect(exposingPair).toBeGreaterThan(deadEndPair)
+    expect(deadEndPair).toBeGreaterThan(0) // still a perfectly fine move, never non-positive
+  })
+
+  it('actually exposes (5,1) - and only (5,1), not the King two levels up - once the exposing pair is applied', () => {
+    const state = boardWithOneExposingPairAndOneDeadEndPair()
+    expect(isExposed(state.pyramid, 5, 1)).toBe(false)
+    expect(isExposed(state.pyramid, 4, 0)).toBe(false)
+
+    const move = moveOf(state, 'pyramid:22', 'pyramid:23')
+    const result = PyramidController.tryMove(state, move)
+
+    expect(result).not.toBeNull()
+    expect(isExposed(result!.pyramid, 5, 1)).toBe(true) // newly exposed by this move
+    expect(isExposed(result!.pyramid, 4, 0)).toBe(false) // King still needs (5,1) itself removed too
+  })
+
+  it('drives findHint to suggest the exposing pair over the dead-end pair on the first press', () => {
+    const state = boardWithOneExposingPairAndOneDeadEndPair()
+    const hint = findHint(PyramidController, state)
+    expect(hint.kind).toBe('move')
+    if (hint.kind === 'move') {
+      expect(hint.move).toEqual({ from: { zone: 'pyramid', index: flatIndex(6, 1) }, to: { zone: 'pyramid', index: flatIndex(6, 2) }, count: 1 })
+    }
+  })
+
+  it('scores a solo King removal by the same exposure signal - a King that unblocks another card outscores one that unblocks nothing', () => {
+    const revealed = makeCard('hearts', 6) // (4,0) - its other child (5,1) is already gone, so the King below is the last thing blocking it
+    const exposingKing = makeCard('spades', 13) // (5,0), covered only by (6,0)+(6,1) (both already gone) - so it's exposed and legal to remove right now
+    const deadEndKing = makeCard('diamonds', 13) // (6,4) - row 6, always exposed, but both its own parents keep their other child present, so removing it exposes nothing
+    const pyramid = buildPyramid({
+      '4,0': revealed,
+      '5,0': exposingKing,
+      '5,1': null, // (4,0)'s other child - already removed earlier
+      '6,0': null,
+      '6,1': null, // exposingKing's two children - both already removed earlier, so it's exposed now
+      '6,4': deadEndKing
+      // (6,4)'s parents are (5,3) and (5,4) - both left as ordinary present fillers, so removing (6,4) alone can't complete either parent's pair
+    })
+    const state = baseState({ pyramid })
+
+    expect(isExposed(pyramid, 4, 0)).toBe(false) // still needs (5,0) itself gone too
+    expect(isExposed(pyramid, 5, 0)).toBe(true) // exposingKing is legal right now
+
+    const exposingKingScore = PyramidController.scoreHintMove!(state, { from: { zone: 'pyramid', index: flatIndex(5, 0) }, to: { zone: 'pyramid', index: flatIndex(5, 0) }, count: 1 })
+    const deadEndKingScore = PyramidController.scoreHintMove!(state, { from: { zone: 'pyramid', index: flatIndex(6, 4) }, to: { zone: 'pyramid', index: flatIndex(6, 4) }, count: 1 })
+
+    expect(exposingKingScore).toBeGreaterThan(deadEndKingScore)
+    expect(deadEndKingScore).toBeGreaterThan(0)
   })
 })

@@ -1,35 +1,69 @@
 import { IconButton, Pressable } from '@rific/feedback-press'
+import { type TableColors } from '@tastic/cards'
 import { Link, Redirect, useRouter } from 'expo-router'
 import { useMemo, useState } from 'react'
 import { ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Icon, MD3Theme, useTheme } from 'react-native-paper'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
+import { GamePreview, type PreviewCardPlacement } from '@/components/GamePreview'
 import { HeroCards } from '@/components/HeroCards'
 import { ProfilePanel } from '@/components/ProfilePanel'
+import { RulesDialog } from '@/components/RulesDialog'
 import { SettingsDialog } from '@/components/SettingsDialog'
-import { CHROME_FG, TableColors, useTableColors } from '@/components/theme'
+import { CHROME_FG, useTableColors } from '@/components/theme'
 import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
+import { ACESUP_RULES, CANFIELD_RULES, FORTYTHIEVES_RULES, FREECELL_RULES, GOLF_RULES, KLONDIKE_RULES, PYRAMID_RULES, SCORPION_RULES, SPIDER_RULES, TRIPEAKS_RULES, YUKON_RULES } from '@/constants/gameRules'
+import { buildAcesUpPreview } from '@/games/acesup/previewLayout'
+import { buildCanfieldPreview } from '@/games/canfield/previewLayout'
+import { buildFortyThievesPreview } from '@/games/fortythieves/previewLayout'
+import { buildFreeCellPreview } from '@/games/freecell/previewLayout'
+import { buildGolfPreview } from '@/games/golf/previewLayout'
+import { buildKlondikePreview } from '@/games/klondike/previewLayout'
+import { buildPyramidPreview } from '@/games/pyramid/previewLayout'
+import { buildScorpionPreview } from '@/games/scorpion/previewLayout'
+import { buildSpiderPreview } from '@/games/spider/previewLayout'
+import { buildTriPeaksPreview } from '@/games/tripeaks/previewLayout'
+import { buildYukonPreview } from '@/games/yukon/previewLayout'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
 
 interface GameEntry {
-  href: '/klondike' | '/spider' | '/freecell' | '/pyramid'
+  href: '/klondike' | '/spider' | '/freecell' | '/pyramid' | '/yukon' | '/golf' | '/tripeaks' | '/canfield' | '/scorpion' | '/fortythieves' | '/acesup'
   title: string
   blurb: string
+  // Every game's starting deal is fully determined by its own fixed PREVIEW_SEED, so this is built
+  // once here at module load rather than recomputed on every Home render.
+  placements: PreviewCardPlacement[]
+  rules: string[]
 }
 
+// Grouped by mechanic rather than insertion order: build-down-to-foundations games first
+// (Klondike/FreeCell/Yukon/Canfield/Forty Thieves all end with ascending same-suit foundations),
+// then Spider/Scorpion (tableau sequence-building, but no foundations at all), then the
+// clear-the-tableau games (Pyramid/Golf/TriPeaks discard cards outright instead of building
+// anything up), then Aces Up last (its own odd-one-out shape - no tableau building at all).
 const GAMES: GameEntry[] = [
-  { href: '/klondike', title: 'Klondike', blurb: 'The classic. Draw 1 or draw 3.' },
-  { href: '/spider', title: 'Spider', blurb: '1, 2, or 4 suit difficulty.' },
-  { href: '/freecell', title: 'FreeCell', blurb: 'Nearly every deal is winnable.' },
-  { href: '/pyramid', title: 'Pyramid', blurb: 'Pair up cards that sum to 13.' }
+  { href: '/klondike', title: 'Klondike', blurb: 'The classic. Draw 1 or draw 3.', placements: buildKlondikePreview(), rules: KLONDIKE_RULES },
+  { href: '/freecell', title: 'FreeCell', blurb: 'Nearly every deal is winnable.', placements: buildFreeCellPreview(), rules: FREECELL_RULES },
+  { href: '/yukon', title: 'Yukon', blurb: 'No stock. Move any stack, anywhere.', placements: buildYukonPreview(), rules: YUKON_RULES },
+  { href: '/canfield', title: 'Canfield', blurb: 'Foundations start wherever the deck says.', placements: buildCanfieldPreview(), rules: CANFIELD_RULES },
+  { href: '/fortythieves', title: 'Forty Thieves', blurb: 'Two decks, eight foundations, no mercy.', placements: buildFortyThievesPreview(), rules: FORTYTHIEVES_RULES },
+  { href: '/spider', title: 'Spider', blurb: '1, 2, or 4 suit difficulty.', placements: buildSpiderPreview(), rules: SPIDER_RULES },
+  { href: '/scorpion', title: 'Scorpion', blurb: 'Build same-suit runs, any group moves.', placements: buildScorpionPreview(), rules: SCORPION_RULES },
+  { href: '/pyramid', title: 'Pyramid', blurb: 'Pair up cards that sum to 13.', placements: buildPyramidPreview(), rules: PYRAMID_RULES },
+  { href: '/golf', title: 'Golf', blurb: 'Clear the tableau, one rank up or down.', placements: buildGolfPreview(), rules: GOLF_RULES },
+  { href: '/tripeaks', title: 'TriPeaks', blurb: 'Clear three peaks, one rank up or down.', placements: buildTriPeaksPreview(), rules: TRIPEAKS_RULES },
+  { href: '/acesup', title: 'Aces Up', blurb: 'Discard down to just the 4 Aces.', placements: buildAcesUpPreview(), rules: ACESUP_RULES }
 ]
 
 export default function Home() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const colors = useTableColors()
-  const styles = useMemo(() => makeStyles(colors), [colors])
+  const { dark, colors: paperColors } = useTheme()
+  const styles = useMemo(() => makeStyles(colors, dark, paperColors), [colors, dark, paperColors])
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [rulesFor, setRulesFor] = useState<GameEntry | null>(null)
   const { lastActiveGame } = useLastActiveGame()
 
   // A cold launch/relaunch while a game was in progress drops the player straight back onto it,
@@ -56,8 +90,27 @@ export default function Home() {
           {GAMES.map((g) => (
             <Link key={g.href} href={g.href} asChild>
               <Pressable style={styles.card}>
-                <Text style={styles.cardTitle}>{g.title}</Text>
-                <Text style={styles.cardBlurb}>{g.blurb}</Text>
+                <GamePreview placements={g.placements} colors={colors} style={styles.preview} />
+                <View style={styles.cardText}>
+                  <Text style={styles.cardTitle}>{g.title}</Text>
+                  <Text style={styles.cardBlurb}>{g.blurb}</Text>
+                </View>
+                <Pressable
+                  onPress={(e) => {
+                    // Both calls are needed on web: Link asChild renders a real <a href>, so
+                    // stopPropagation alone leaves the anchor's own native navigation still
+                    // armed - only preventDefault actually stops that. Checking the rules is a
+                    // diversion from tapping the row to go play, not a step toward it.
+                    e.preventDefault()
+                    e.stopPropagation()
+                    setRulesFor(g)
+                  }}
+                  style={styles.infoButton}
+                  accessibilityLabel={`${g.title} rules`}
+                  hitSlop={12}
+                >
+                  <Icon source='information-outline' size={22} color={dark ? paperColors.onSurfaceVariant : '#888'} />
+                </Pressable>
               </Pressable>
             </Link>
           ))}
@@ -65,25 +118,37 @@ export default function Home() {
       </ScrollView>
 
       <SettingsDialog visible={settingsOpen} onDismiss={() => setSettingsOpen(false)} />
+
+      <RulesDialog visible={!!rulesFor} onDismiss={() => setRulesFor(null)} title={rulesFor?.title ?? ''} rules={rulesFor?.rules ?? []} />
     </View>
   )
 }
 
-function makeStyles(colors: TableColors) {
+function makeStyles(colors: TableColors, dark: boolean, paperColors: MD3Theme['colors']) {
   return StyleSheet.create({
     card: {
-      backgroundColor: '#ffffffee',
+      alignItems: 'center',
+      // The opaque near-white "index card" look is deliberate in light mode (bright, readable
+      // against the felt) - but the same fixed light color in dark mode read as a light-mode
+      // island stranded in an otherwise dark UI, so dark mode switches to Paper's own surface
+      // color instead (matching the achievements screen / settings dialog's dark surfaces).
+      backgroundColor: dark ? paperColors.surface : '#ffffffee',
       borderRadius: 12,
-      padding: 18
+      flexDirection: 'row',
+      gap: 14,
+      padding: 14
     },
     cardBlurb: {
-      color: '#444',
+      color: dark ? paperColors.onSurfaceVariant : '#444',
       fontFamily: CARD_FONT_FAMILY,
       fontSize: 13,
       marginTop: 4
     },
+    cardText: {
+      flex: 1
+    },
     cardTitle: {
-      color: colors.tableFeltDark,
+      color: dark ? paperColors.onSurface : colors.tableFeltDark,
       fontFamily: CARD_FONT_FAMILY,
       fontSize: 20,
       fontWeight: '700'
@@ -110,6 +175,14 @@ function makeStyles(colors: TableColors) {
       fontFamily: CARD_FONT_FAMILY,
       fontSize: 32,
       fontWeight: '800'
+    },
+    infoButton: {
+      padding: 4
+    },
+    preview: {
+      backgroundColor: colors.tableFelt,
+      borderRadius: 8,
+      width: 92
     },
     profilePanelWrap: {
       alignItems: 'center',

@@ -1,4 +1,6 @@
 import { makeDeck, shuffledDeck } from '@/engine/deck'
+import { Move } from '@/engine/gameTypes'
+import { findHint, hintCountFor } from '@/engine/hint'
 import { isDescendingAltColor, isDescendingSameSuit, runCountFrom } from '@/engine/pile'
 import { mulberry32, shuffle } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
@@ -107,6 +109,81 @@ describe('pile helpers', () => {
       const pile = [card('hearts', 5)]
       expect(runCountFrom(pile, 0, isDescendingSameSuit)).toBe(1)
     })
+  })
+})
+
+describe('findHint', () => {
+  const tableauMove: Move = { from: { zone: 'tableau', index: 0 }, to: { zone: 'tableau', index: 1 }, count: 1 }
+  const foundationMove: Move = { from: { zone: 'tableau', index: 2 }, to: { zone: 'foundation', index: 0 }, count: 1 }
+
+  it('prefers a foundation-bound move over an earlier non-foundation one', () => {
+    const controller = { legalMoves: () => [tableauMove, foundationMove] }
+    expect(findHint(controller, null)).toEqual({ kind: 'move', move: foundationMove })
+  })
+
+  it('falls back to the first legal move when none is foundation-bound', () => {
+    const controller = { legalMoves: () => [tableauMove] }
+    expect(findHint(controller, null)).toEqual({ kind: 'move', move: tableauMove })
+  })
+
+  it('suggests a stock draw when there are no legal moves but the stock can be drawn', () => {
+    const controller = { legalMoves: () => [], drawStock: () => ({}) }
+    expect(findHint(controller, null)).toEqual({ kind: 'drawStock' })
+  })
+
+  it('reports none when there are no legal moves and no stock to draw', () => {
+    const withNullDraw = { legalMoves: () => [], drawStock: () => null }
+    expect(findHint(withNullDraw, null)).toEqual({ kind: 'none' })
+
+    const withNoDrawStock = { legalMoves: () => [] }
+    expect(findHint(withNoDrawStock, null)).toEqual({ kind: 'none' })
+  })
+
+  describe('skip', () => {
+    const moveA: Move = { from: { zone: 'tableau', index: 0 }, to: { zone: 'tableau', index: 1 }, count: 1 }
+    const moveB: Move = { from: { zone: 'tableau', index: 2 }, to: { zone: 'tableau', index: 3 }, count: 1 }
+    const moveC: Move = { from: { zone: 'tableau', index: 4 }, to: { zone: 'tableau', index: 5 }, count: 1 }
+    const controller = { legalMoves: () => [moveA, moveB, moveC] }
+
+    it('cycles to a different move as skip increases', () => {
+      expect(findHint(controller, null, 0)).toEqual({ kind: 'move', move: moveA })
+      expect(findHint(controller, null, 1)).toEqual({ kind: 'move', move: moveB })
+      expect(findHint(controller, null, 2)).toEqual({ kind: 'move', move: moveC })
+    })
+
+    it('wraps back around once every move has been shown', () => {
+      expect(findHint(controller, null, 3)).toEqual({ kind: 'move', move: moveA })
+      expect(findHint(controller, null, 4)).toEqual({ kind: 'move', move: moveB })
+    })
+
+    it('keeps a foundation-bound move first in the cycle', () => {
+      const withFoundation = { legalMoves: () => [moveA, foundationMove, moveB] }
+      expect(findHint(withFoundation, null, 0)).toEqual({ kind: 'move', move: foundationMove })
+      expect(findHint(withFoundation, null, 1)).toEqual({ kind: 'move', move: moveA })
+      expect(findHint(withFoundation, null, 2)).toEqual({ kind: 'move', move: moveB })
+    })
+  })
+})
+
+describe('hintCountFor', () => {
+  const move: Move = { from: { zone: 'tableau', index: 0 }, to: { zone: 'tableau', index: 1 }, count: 3 }
+  const hint = { kind: 'move' as const, move }
+
+  it('returns the full run count for the source pile', () => {
+    expect(hintCountFor(hint, { zone: 'tableau', index: 0 })).toBe(3)
+  })
+
+  it('returns 1 for the destination pile, regardless of the source run length', () => {
+    expect(hintCountFor(hint, { zone: 'tableau', index: 1 })).toBe(1)
+  })
+
+  it('returns 0 for an unrelated pile', () => {
+    expect(hintCountFor(hint, { zone: 'tableau', index: 2 })).toBe(0)
+  })
+
+  it('returns 0 for a non-move hint or no hint at all', () => {
+    expect(hintCountFor({ kind: 'drawStock' }, { zone: 'tableau', index: 0 })).toBe(0)
+    expect(hintCountFor(null, { zone: 'tableau', index: 0 })).toBe(0)
   })
 })
 
