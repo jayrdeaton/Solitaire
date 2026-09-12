@@ -1111,7 +1111,7 @@ function KlondikeScreenInner() {
     <CardSizeProvider width={cardWidth}>
       <GameChrome title='Klondike' subtitle={`Draw ${klondikeDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<KlondikeSettingsSection />} rules={KLONDIKE_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
-          <View style={styles.foundationsGroup}>
+          <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)
               const isFlyingHere = !!flying && flying.to.zone === 'foundation' && flying.to.index === i
@@ -1187,8 +1187,7 @@ function makeStyles(colors: TableColors) {
     },
     foundationSlot: {},
     foundationsGroup: {
-      flexDirection: 'row',
-      gap: 10
+      flexDirection: 'row'
     },
     loadingText: {
       color: '#fff',

@@ -96,7 +96,17 @@ interface GamePreviewProps {
  * out of sync with how the game actually deals). */
 export function GamePreview({ placements, colors, style }: GamePreviewProps) {
   const { settings } = useSettings()
-  const [canvasWidth, setCanvasWidth] = React.useState(0)
+  // Home's one call site always passes a fixed pixel `width` (see index.tsx's `preview` style) -
+  // seeding from it lets card art render in this component's very first frame instead of always
+  // waiting on a native onLayout round-trip, which otherwise guarantees at least one empty/green
+  // frame before any cards can appear, no matter how fast the device is. Falls back to the old
+  // onLayout-measured 0 (and the loading gate below) if a future caller passes a percentage/flex
+  // width instead, where the pixel width genuinely isn't knowable up front.
+  const initialWidth = React.useMemo(() => {
+    const flat = StyleSheet.flatten(style)
+    return typeof flat?.width === 'number' ? flat.width : 0
+  }, [style])
+  const [canvasWidth, setCanvasWidth] = React.useState(initialWidth)
   const onLayout = React.useCallback((e: LayoutChangeEvent) => setCanvasWidth(e.nativeEvent.layout.width), [])
   // Card art needs real pixel width/height (it sizes an inner SVG viewBox, not a percentage) -
   // only known once the canvas itself has been laid out once, hence the empty first frame.

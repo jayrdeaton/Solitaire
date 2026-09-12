@@ -808,7 +808,7 @@ function YukonScreenInner() {
       {/* eslint-disable-next-line react-hooks/immutability */}
       <GameChrome title='Yukon' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={YUKON_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
-          <View style={styles.foundationsGroup}>
+          <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)
               const isFlyingHere = (!!flying && flying.to.zone === 'foundation' && flying.to.index === i) || cascadeFlyingFoundations.has(i)
@@ -872,8 +872,7 @@ function makeStyles(colors: TableColors) {
     dealOriginSlot: {},
     foundationSlot: {},
     foundationsGroup: {
-      flexDirection: 'row',
-      gap: 10
+      flexDirection: 'row'
     },
     loadingText: {
       color: '#fff',

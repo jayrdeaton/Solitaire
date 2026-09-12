@@ -1,7 +1,7 @@
 import { IconButton, Pressable } from '@rific/feedback-press'
 import { type TableColors } from '@tastic/cards'
 import { Link, Redirect, useRouter } from 'expo-router'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ScrollView, StyleSheet, Text, View } from 'react-native'
 import { Icon, MD3Theme, useTheme } from 'react-native-paper'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -42,6 +42,15 @@ interface GameEntry {
 // then Spider/Scorpion (tableau sequence-building, but no foundations at all), then the
 // clear-the-tableau games (Pyramid/Golf/TriPeaks discard cards outright instead of building
 // anything up), then Aces Up last (its own odd-one-out shape - no tableau building at all).
+// How many of the top game tiles render their preview cards immediately on mount, roughly
+// matching how many actually fit above the fold on a typical phone (the hero fan + heading +
+// profile panel already fill a good chunk of the screen before the grid starts). The rest defer
+// their cards by a frame (see Home's `previewsRevealed`) so the initial commit only has to mount
+// this many tiles' worth of card art (~100 SVG/View nodes) rather than all eleven's (~400+) -
+// otherwise every tile mounting its full starting deal in one synchronous burst is real,
+// noticeable work on mobile, most of it for tiles the player can't even see yet.
+const EAGER_PREVIEW_COUNT = 4
+
 const GAMES: GameEntry[] = [
   { href: '/klondike', title: 'Klondike', blurb: 'The classic. Draw 1 or draw 3.', placements: buildKlondikePreview(), rules: KLONDIKE_RULES },
   { href: '/freecell', title: 'FreeCell', blurb: 'Nearly every deal is winnable.', placements: buildFreeCellPreview(), rules: FREECELL_RULES },
@@ -65,6 +74,14 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [rulesFor, setRulesFor] = useState<GameEntry | null>(null)
   const { lastActiveGame } = useLastActiveGame()
+  // Deferred by one frame rather than rendered eagerly, so the below-the-fold tiles' full starting
+  // deals don't compete with the first-visible tiles for the same synchronous commit (see
+  // EAGER_PREVIEW_COUNT above).
+  const [previewsRevealed, setPreviewsRevealed] = useState(false)
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setPreviewsRevealed(true))
+    return () => cancelAnimationFrame(id)
+  }, [])
 
   // A cold launch/relaunch while a game was in progress drops the player straight back onto it,
   // skipping this menu entirely - it only reappears once they explicitly back out of that game
@@ -87,10 +104,10 @@ export default function Home() {
         </View>
 
         <View style={styles.grid}>
-          {GAMES.map((g) => (
+          {GAMES.map((g, i) => (
             <Link key={g.href} href={g.href} asChild>
               <Pressable style={styles.card}>
-                <GamePreview placements={g.placements} colors={colors} style={styles.preview} />
+                <GamePreview placements={i < EAGER_PREVIEW_COUNT || previewsRevealed ? g.placements : []} colors={colors} style={styles.preview} />
                 <View style={styles.cardText}>
                   <Text style={styles.cardTitle}>{g.title}</Text>
                   <Text style={styles.cardBlurb}>{g.blurb}</Text>

@@ -809,7 +809,7 @@ function FreeCellScreenInner() {
     <CardSizeProvider width={cardWidth}>
       <GameChrome title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={FREECELL_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
-          <View style={styles.foundationsGroup}>
+          <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)
               const isFlyingHere = !!flying && flying.to.zone === 'foundation' && flying.to.index === i
@@ -829,7 +829,7 @@ function FreeCellScreenInner() {
             })}
           </View>
 
-          <View style={styles.freecellsGroup}>
+          <View style={[styles.freecellsGroup, { gap }]}>
             {state.freecells.map((card, i) => {
               const ref: PileRef = { zone: 'freecell', index: i }
               // dealHiddenIds also covers a cascaded card returning HERE via handleUndo's own
@@ -897,13 +897,11 @@ function makeStyles(colors: TableColors) {
     },
     foundationSlot: {},
     foundationsGroup: {
-      flexDirection: 'row',
-      gap: 10
+      flexDirection: 'row'
     },
     freecellSlot: {},
     freecellsGroup: {
-      flexDirection: 'row',
-      gap: 10
+      flexDirection: 'row'
     },
     loadingText: {
       color: '#fff',

@@ -21,6 +21,18 @@ export const CARD_GAP_MIN = 6
  * below has one named constant to compare against instead of a second hardcoded 96 magic number. */
 export const CARD_WIDTH_MAX = 96
 
+/** Ceiling on how far cardLayoutForRow will grow the gap past CARD_GAP_MIN once cards are maxed
+ * out - without this, a low-column game (AcesUp's 4 piles, say) on a wide enough desktop/web window
+ * would keep stretching the gap to fill every last pixel of leftover width, reading as cards
+ * scattered across the table rather than a deliberately roomier layout. 4x CARD_GAP_MIN: clearly
+ * more breathing room than the floor once there's real space to spare, without approaching
+ * CARD_WIDTH_MAX itself (a gap as wide as the cards it separates would stop reading as one row).
+ * Once this caps out, the leftover width past `columns*CARD_WIDTH_MAX + (columns-1)*CARD_GAP_MAX`
+ * is simply left unused - every game's own top-level row is already centered within GameChrome's
+ * content area (see tableTapCatcher's own `alignItems: 'center'`), so that leftover just becomes
+ * symmetric margin on both sides rather than dead space on one. */
+export const CARD_GAP_MAX = 24
+
 /**
  * Sizes a row of `columns` cards to fill `availableWidth`, treating CARD_GAP_MIN as a FLOOR rather
  * than a fixed value: cards grow to fill the available width first (identical to a plain
@@ -32,6 +44,8 @@ export const CARD_WIDTH_MAX = 96
  * branch at all (cards there are nowhere near the 96px cap) - it only fires on a wide tablet/desktop
  * window, which is exactly where the old fixed-gap behavior looked worst: an already-maxed-out
  * card row just floating in a sea of dead space rather than the cards' own gaps breathing with it.
+ * The gap itself is further clamped at CARD_GAP_MAX, so that "breathing room" has its own ceiling
+ * instead of growing without bound on a very wide window with few columns.
  */
 export function cardLayoutForRow(availableWidth: number, columns: number): { cardWidth: number; gap: number } {
   const cardWidth = cardWidthForRow(availableWidth, columns, CARD_GAP_MIN)
@@ -39,5 +53,5 @@ export function cardLayoutForRow(availableWidth: number, columns: number): { car
     return { cardWidth, gap: CARD_GAP_MIN }
   }
   const gap = (availableWidth - CARD_WIDTH_MAX * columns) / (columns - 1)
-  return { cardWidth: CARD_WIDTH_MAX, gap: Math.max(CARD_GAP_MIN, gap) }
+  return { cardWidth: CARD_WIDTH_MAX, gap: Math.min(CARD_GAP_MAX, Math.max(CARD_GAP_MIN, gap)) }
 }

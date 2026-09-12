@@ -10,6 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { computeScore } from '@/engine/score'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
 
+import { CARD_GAP_MIN } from './cardLayout'
 import { RulesDialog } from './RulesDialog'
 import { SettingsDialog } from './SettingsDialog'
 import { CHROME_FG, useTableColors } from './theme'
@@ -22,20 +23,29 @@ export function formatTime(totalSeconds: number): string {
 }
 
 /** The horizontal padding GameChrome's own scroll content actually renders with (see `content`
- * below) - every game screen's own cardWidthForRow call must subtract this same value (not some
+ * below) - every game screen's own cardLayoutForRow call must subtract this same value (not some
  * separately-hardcoded, possibly-drifted number of its own), or its tableau/row math ends up
  * sized for a different available width than the one it actually renders into. Confirmed live:
  * Spider previously used its own SCREEN_PADDING (8) plus a now-redundant paddingHorizontal on its
  * own tableauRow (8 more), while this component was already contributing 12 - three
  * independently-chosen numbers for what has to be one true value, and the mismatch ran a 10-column
- * board off the right edge of the screen. */
-export const GAME_CONTENT_PADDING = 12
+ * board off the right edge of the screen.
+ *
+ * Deliberately equal to CARD_GAP_MIN, not just a separately-chosen round number: the whole point of
+ * a shared card-row gap is that a card grid reads as one consistent unit of spacing - the edge of
+ * the screen to the nearest card should feel like just another gap in that same grid, not a bigger
+ * or smaller margin of its own. This only tracks CARD_GAP_MIN's own floor value, not a per-game
+ * `gap` once it's grown past that floor (see cardLayoutForRow) - fully closing that gap would mean
+ * threading each game's own render-scoped `gap` into this shared, cross-game constant, which only
+ * matters on a wide enough window that a low-column game's cards have already maxed out, a case
+ * this app's real (mobile-first) usage rarely reaches. */
+export const GAME_CONTENT_PADDING = CARD_GAP_MIN
 
 /** Upper bound on the board's own content width on a wide desktop/web window - past this, the
  * leftover horizontal space becomes empty, symmetric gutters (see `ContentGutter` below) instead
  * of the board stretching or drifting off-center. Sized to Spider's own widest natural case: at
  * `cardWidthForRow`'s own 96px/card max, Spider's 10-column tableau renders at
- * 96*10 + CARD_GAP_MIN(6)*9 = 1014px, plus this same GAME_CONTENT_PADDING on both sides = 1038px of
+ * 96*10 + CARD_GAP_MIN(6)*9 = 1014px, plus this same GAME_CONTENT_PADDING(6) on both sides = 1026px of
  * content width before Spider's own cards stop growing regardless of how much wider the window
  * gets - past that point cardLayoutForRow's own gap-growing behavior (see cardLayout.ts) takes over
  * instead of leaving dead space, so 1040 doesn't need much margin past that exact saturation point
@@ -181,9 +191,17 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   // changes") re-renders immediately, before paint, instead of the extra committed-then-corrected
   // frame a same-effect setState would cost - see the interval effect below, which only manages
   // truly external state now (a timer subscription).
+  //
+  // Also resyncs on `won` flipping true->false: New Game from the WinBanner takes clockRunning
+  // false (frozen at the win) straight to false again (the fresh deal's clock hasn't started until
+  // the first move), so the clockRunning check alone never fires here and this row would reappear
+  // still showing the just-finished deal's frozen time/score for up to a second, or indefinitely if
+  // the player never moves. `won` genuinely toggles across exactly that transition.
   const [prevClockRunning, setPrevClockRunning] = useState(clockRunning)
-  if (clockRunning !== prevClockRunning) {
+  const [prevWon, setPrevWon] = useState(won)
+  if (clockRunning !== prevClockRunning || won !== prevWon) {
     setPrevClockRunning(clockRunning)
+    setPrevWon(won)
     setDisplayedElapsed(getElapsedSeconds())
   }
   useEffect(() => {

@@ -31,7 +31,7 @@ export function WinBanner({ colors, elapsedSeconds, moves, score, onNewGame }: W
       <View style={styles.winCard}>
         <Text style={styles.winTitle}>You Won!</Text>
         <Text style={styles.winSubtitle}>
-          Time: {formatTime(elapsedSeconds)} · Moves: {moves} · Score: {score}
+          Moves: {moves} · Score: {score} · Time: {formatTime(elapsedSeconds)}
         </Text>
         <Pressable style={styles.button} onPress={onNewGame}>
           <Text style={styles.buttonText}>New Game</Text>
