@@ -41,7 +41,7 @@
     "@tastic/achievements": "^0.1.1",
     "@tastic/animations": "^0.1.1",
     "@tastic/cards": "^0.2.0",
-    "@tastic/core": "^0.3.0",
+    "@tastic/core": "^0.4.1",
     "@tastic/hud": "^0.8.2",
     "@tastic/profile": "^0.3.8",
     "dejavu-fonts-ttf": "^2.37.3",

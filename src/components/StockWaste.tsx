@@ -4,6 +4,7 @@ import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
 
 import { Card } from '@/engine/types'
 
+import { CARD_GAP_MIN } from './cardLayout'
 import { DraggableCard } from './dragdrop/DraggableCard'
 import { DropZone } from './dragdrop/DropZone'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
@@ -56,6 +57,14 @@ interface StockWasteProps {
    * shakeAnimation.ts and each screen's handleCardTap. */
   wasteShakeToken?: number
   cardWidth?: number
+  /** Overrides the stock/waste pair's own internal gap (defaults to CARD_GAP_MIN when omitted) -
+   * pass a caller's own render-scoped `gap` (from cardLayoutForRow) so this pair's spacing keeps
+   * breathing with the rest of that screen's rows even once cards hit CARD_WIDTH_MAX and the gap
+   * grows past its floor. Canfield relies on this to keep its top-row width reservation pixel-exact
+   * (see CanfieldScreen.tsx's own doc comment on TOP_ROW_UNITS) - every other caller may pass it too
+   * for the same "whole screen breathes together" consistency, or omit it to keep the old fixed
+   * CARD_GAP_MIN behavior. */
+  gap?: number
   style?: StyleProp<ViewStyle>
   /** Ref to the stock pile's wrapping View, for measuring its screen position as the deal
    * animation's flight origin (see components/dealing/DealLayer.tsx) - the stock card itself isn't
@@ -81,7 +90,7 @@ interface StockWasteProps {
  * a stock pile. Waste sits first so the card players are about to act on lands next to the tableau,
  * with the draw pile as the secondary action beside it. When the stock runs out but the waste still
  * has cards, an empty stock slot shows a recycle hint - every game here allows unlimited recycling. */
-export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EMPTY_WASTE_BEHIND, onDrawStock, onWastePress, onWasteDrop, wasteSelected, wasteHinted, stockHinted, wasteHiddenCount = 0, wasteShakeToken, cardWidth, style, stockRef, wasteRef, stockHidden = false }: StockWasteProps) {
+export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EMPTY_WASTE_BEHIND, onDrawStock, onWastePress, onWasteDrop, wasteSelected, wasteHinted, stockHinted, wasteHiddenCount = 0, wasteShakeToken, cardWidth, gap, style, stockRef, wasteRef, stockHidden = false }: StockWasteProps) {
   const colors = useTableColors()
   const styles = React.useMemo(() => makeStyles(colors), [colors])
   const wasteHasCards = !!wasteTop
@@ -112,7 +121,7 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
   const fanOffset = faceUpFanOffset(cardWidth ?? contextCardWidth)
 
   return (
-    <View style={[styles.group, style]}>
+    <View style={[styles.group, gap != null && { gap }, style]}>
       <View ref={wasteRef} collapsable={false} style={styles.wasteArea}>
         {frozenBehind2 && (
           <View style={[styles.wasteBehindCard, styles.wasteBehindFar, { left: -fanOffset * 2 }]} pointerEvents='none'>
@@ -157,7 +166,7 @@ function makeStyles(colors: TableColors) {
   return StyleSheet.create({
     group: {
       flexDirection: 'row',
-      gap: 10
+      gap: CARD_GAP_MIN
     },
     recycleIcon: {
       color: colors.emptySlot,

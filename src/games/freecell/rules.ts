@@ -20,11 +20,21 @@ const NUM_TABLEAU = 8
 const NUM_FREECELLS = 4
 const NUM_FOUNDATIONS = 4
 
+// Shallow: fresh outer tableau/freecells/foundation arrays (so a caller can reassign
+// state.tableau[i] / state.foundation[i] / state.freecells[i] to a brand-new value without
+// touching the original state), but every pile - and every card inside it - starts out as the
+// exact SAME reference as `state`'s own. tryMove below only ever replaces a touched pile with a
+// freshly .slice()'d/.concat()'d array (never mutates one in place), so every untouched column,
+// freecell, and foundation pile keeps its exact pre-move array identity too, not just its cards.
+// Card-level cloning was never needed here in the first place, unlike Klondike/Spider: FreeCell
+// deals every card face-up and never flips one back over (see FreeCellState's own doc comment
+// and runLengthAtTop's), so there is no in-place `card.faceUp = ...` mutation anywhere in this
+// file for a shared card reference to leak through.
 function cloneState(state: FreeCellState): FreeCellState {
   return {
-    tableau: state.tableau.map((col) => col.slice()),
+    tableau: state.tableau.slice(),
     freecells: state.freecells.slice(),
-    foundation: state.foundation.map((f) => f.slice())
+    foundation: state.foundation.slice()
   }
 }
 
@@ -61,8 +71,12 @@ function countEmptyTableauColumns(state: FreeCellState, excludeIndex: number): n
   return state.tableau.filter((col, i) => i !== excludeIndex && col.length === 0).length
 }
 
-/** Max cards movable together in one tableau->tableau move (the "supermove" convention). */
-function maxSupermoveCount(state: FreeCellState, destIndex: number): number {
+/** Max cards movable together in one tableau->tableau move (the "supermove" convention). Pass a
+ * `destIndex` that matches no real column (e.g. -1) to get the best-case cap - the size achievable
+ * when the destination isn't itself one of the empty columns - for previews that don't yet know
+ * the destination (see FreeCellScreen.tsx's tableauRunCount, which dims a card whose own coherent
+ * run exceeds even this generous cap). */
+export function maxSupermoveCount(state: FreeCellState, destIndex: number): number {
   const emptyFreecells = countEmptyFreecells(state)
   const emptyCols = countEmptyTableauColumns(state, destIndex)
   return (emptyFreecells + 1) * 2 ** emptyCols

@@ -308,6 +308,27 @@ describe('FreeCell autoMoveHint', () => {
     expect(hint).toEqual({ from: { zone: 'tableau', index: 0 }, to: { zone: 'tableau', index: 1 }, count: 1 })
   })
 
+  it('prefers a non-empty column that buries a card over an empty column, even though the empty column is "cleaner"', () => {
+    const state: FreeCellState = {
+      tableau: [
+        [card('hearts-5-0', 'hearts', 5)],
+        [], // empty column - would otherwise win on buried-count alone (0 buried)
+        [card('clubs-9-0', 'clubs', 9), card('clubs-6-1', 'clubs', 6)], // legal (red 5 onto black 6), but buries the clubs-9
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      freecells: [null, null, null, null],
+      foundation: [[], [], [], []]
+    }
+    const hint = FreeCellController.autoMoveHint!(state, { zone: 'tableau', index: 0 }, 'hearts-5-0')
+    // Empty piles are now a strict last resort: any legal non-empty destination wins over them,
+    // regardless of buried count, so this lands on column 2 rather than an empty column.
+    expect(hint).toEqual({ from: { zone: 'tableau', index: 0 }, to: { zone: 'tableau', index: 2 }, count: 1 })
+  })
+
   it('falls back to an empty freecell when no foundation or tableau move exists', () => {
     const state: FreeCellState = {
       tableau: [[card('hearts-5-0', 'hearts', 5)], [card('clubs-2-0', 'clubs', 2)], [card('spades-2-0', 'spades', 2)], [card('clubs-3-0', 'clubs', 3)], [card('spades-3-0', 'spades', 3)], [card('clubs-4-0', 'clubs', 4)], [card('spades-4-0', 'spades', 4)], [card('clubs-9-0', 'clubs', 9)]],

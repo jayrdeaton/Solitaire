@@ -1,5 +1,5 @@
 import { CardSizeProvider } from '@tastic/cards'
-import { createContext, ReactNode, Ref, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { createContext, memo, ReactNode, Ref, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native'
 import Animated, { cancelAnimation, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
 
@@ -57,7 +57,14 @@ interface DealGhostCardProps {
   ref?: Ref<DealGhostHandle>
 }
 
-function DealGhostCard({ spec, onDealt, onLanded, containerOffsetX, containerOffsetY, ref }: DealGhostCardProps) {
+// Memoized: a full deal mounts up to 52 of these at once, and handleLanded below removes them from
+// `active` one at a time as each one's own flight settles - every still-flying ghost's props here
+// (spec, onDealt/onLanded, the two shared values) stay referentially stable across that churn
+// (spec survives setActive's .filter() by reference; handleLanded/handleDealt are stable
+// useCallbacks; shared values never change identity), so without this, every remaining ghost
+// re-rendered on every single sibling's landing - up to ~50 wasted re-renders per deal for the
+// last card alone.
+const DealGhostCard = memo(function DealGhostCard({ spec, onDealt, onLanded, containerOffsetX, containerOffsetY, ref }: DealGhostCardProps) {
   const tx = useSharedValue(spec.from.x)
   const ty = useSharedValue(spec.from.y)
   // Every ghost for the whole deal mounts at once (see DealProvider's single setActive(entries)
@@ -144,7 +151,7 @@ function DealGhostCard({ spec, onDealt, onLanded, containerOffsetX, containerOff
       <PlayingCard card={spec.card} />
     </Animated.View>
   )
-}
+})
 
 /** Wraps a game screen so its initial deal can fly N cards independently and simultaneously from
  * the stock pile to their starting positions. Deliberately a separate module from

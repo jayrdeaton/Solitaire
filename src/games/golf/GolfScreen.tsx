@@ -6,11 +6,12 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, cardWidthForRow, type TableColors } from '@tastic/cards'
+import { CardSizeProvider, type TableColors } from '@tastic/cards'
 import { computeContentBounds } from '@tastic/core'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 
+import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
@@ -34,6 +35,7 @@ import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -45,7 +47,6 @@ import { GolfSettingsSection } from './GolfSettingsSection'
 import { createGolfController, GolfState } from './rules'
 
 const TABLEAU_COLUMNS = 7
-const TABLEAU_GAP = 10
 // Every column starts at (and never exceeds) 5 cards, all dealt face up - Golf's tableau only ever
 // shrinks as cards leave for the waste pile, unlike Klondike/FreeCell/Spider, whose columns can grow
 // well past their dealt depth during play. At cardWidthForRow's own max (96px), 5 face-up cards
@@ -75,7 +76,7 @@ function GolfScreenInner() {
   const controller = useMemo(() => createGolfController(golfRankWrap), [golfRankWrap])
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, TABLEAU_GAP)
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const [state, setState] = useState<GolfState | null>(null)
   // Unlike Klondike (whose stock-draw undo entries carry move: null for a recycle - "nothing card-
@@ -316,15 +317,18 @@ function GolfScreenInner() {
   // Saves after every move/undo/fresh-deal (all flow through setState). Gated on !won so a just-won
   // deal doesn't get checkpointed as still in-progress - since `won` is derived fresh from `state`
   // on every render, undoing back out of a won position re-enables saving again on that same render.
-  // `session.elapsed` is also a dependency, not just `state` - it ticks up once a second on its own
-  // timer (see useGameSession.ts), independent of any move, so a save made at the last real move
-  // goes stale the moment the player just sits looking at the board and then leaves; resuming would
-  // silently roll the clock back to whatever it read at that last move instead of how long they
-  // actually had the deal open.
+  // Deliberately NOT also keyed on a ticking elapsed-seconds value the way an earlier version of
+  // this effect was: `session.getElapsed()` computes the true current elapsed from wall-clock time
+  // on demand (see useGameSession.ts), so a save made at the last real move is never stale even
+  // once the player just sits looking at the board afterward - resuming always recomputes the
+  // exact right value instead of depending on whenever this effect last happened to run.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('golf', { state, undoStack, moves: session.moves, elapsedSeconds: session.elapsed, config: golfRankWrap ? 1 : 0 })
+    if (state && !won) saveGameInProgress('golf', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: golfRankWrap ? 1 : 0 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, golfRankWrap, session.elapsed, undoStack])
+  }, [state, won, golfRankWrap, undoStack])
+  useSaveInProgressBackstop(!!state && !won, () => {
+    if (state && !won) saveGameInProgress('golf', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: golfRankWrap ? 1 : 0 })
+  })
 
   function pushUndo(prev: GolfState, move: MoveInfo) {
     setUndoStack((stack) => [...stack, { state: prev, move }])
@@ -525,7 +529,7 @@ function GolfScreenInner() {
       Reanimated SharedValue API (see handleUndo's own doc comment above). Same false-positive class
       as the disables inside handleUndo/handleDrawStock/handleCardTap above. */}
       {/* eslint-disable-next-line react-hooks/immutability */}
-      <GameChrome title='Golf' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} elapsedSeconds={session.elapsed} movesCount={session.moves} settingsContent={<GolfSettingsSection />} rules={GOLF_RULES}>
+      <GameChrome title='Golf' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<GolfSettingsSection />} rules={GOLF_RULES}>
         {/* No foundation row at all (unlike Klondike/FreeCell/Yukon) - Golf has no suit-based
         foundation, just the stock/waste pair. Narrower than the tableau below, so it's centered
         above it by GameChrome's own content styling rather than stretched/pinned to an edge. */}
@@ -538,6 +542,7 @@ function GolfScreenInner() {
             wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0}
             stockHinted={activeHint?.kind === 'drawStock'}
             cardWidth={cardWidth}
+            gap={gap}
             // Same react-hooks/immutability false positive as onUndo above - handleDrawStock also
             // assigns ghost.originX/Y.value etc.
             // eslint-disable-next-line react-hooks/immutability
@@ -554,7 +559,7 @@ function GolfScreenInner() {
           />
         </View>
 
-        <View style={styles.tableauRow}>
+        <View style={[styles.tableauRow, { gap }]}>
           {state.tableau.map((col, colIndex) => {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
@@ -589,7 +594,7 @@ function GolfScreenInner() {
       not buried under it. */}
       {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.elapsed} moves={session.moves} score={computeScore(session.moves, session.elapsed)} onNewGame={handleNewGame} />}
+      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
     </CardSizeProvider>
   )
 }
@@ -611,7 +616,6 @@ function makeStyles(colors: TableColors) {
     tableauColumn: {},
     tableauRow: {
       flexDirection: 'row',
-      gap: TABLEAU_GAP,
       paddingBottom: 20
     },
     topRow: {

@@ -12,7 +12,7 @@
 import { shuffledDeck } from '@/engine/deck'
 import { GameController, Move, PileRef } from '@/engine/gameTypes'
 import { top } from '@/engine/pile'
-import { Card, cloneCard } from '@/engine/types'
+import { Card } from '@/engine/types'
 
 export interface PyramidState {
   /** Flat 28-slot triangle; `null` once that card has been removed. */
@@ -65,12 +65,20 @@ function isExposedAt(pyramid: (Card | null)[], index: number): boolean {
   return isExposed(pyramid, row, col)
 }
 
+// Shallow: a fresh outer state object, but `pyramid`/`stock`/`waste`/`discard` all start out as
+// the exact SAME array references as `state`'s own (mirroring Klondike's/Spider's stock/waste
+// treatment - none of these four is an "array of piles" the way tableau/foundation are elsewhere,
+// each is already a single flat pile, so there's no outer container to eagerly .slice()).
+// consume/sweepRemainderOnWin/drawStock below each replace only the specific pile(s) they
+// actually touch with a fresh array before mutating, and clone an individual card only at the
+// spot its faceUp is actually flipped (or where it's genuinely moving into discard) - every
+// pyramid/stock/waste card NOT touched by a given move keeps its exact pre-move object identity.
 function cloneState(state: PyramidState): PyramidState {
   return {
-    pyramid: state.pyramid.map((c) => (c ? cloneCard(c) : null)),
-    stock: state.stock.map(cloneCard),
-    waste: state.waste.map(cloneCard),
-    discard: state.discard.map(cloneCard),
+    pyramid: state.pyramid,
+    stock: state.stock,
+    waste: state.waste,
+    discard: state.discard,
     removedCount: state.removedCount
   }
 }
@@ -106,15 +114,26 @@ function isAvailable(state: PyramidState, ref: PileRef): boolean {
   return false
 }
 
+/** Removes the card at `ref` (mutated onto `state`, which is always a fresh shallow-cloned state
+ * the caller owns) and appends a face-up copy of it to discard - the source pile gets a fresh
+ * array (so the pre-move state's pile, still sitting in the undo stack, is untouched), and only
+ * the one card actually relocating gets a new object (its faceUp may be flipping); every other
+ * card in every other pile keeps its exact pre-move reference. */
 function consume(state: PyramidState, ref: PileRef): void {
   const card = cardAt(state, ref)
   if (ref.zone === 'pyramid') {
-    state.pyramid[ref.index] = null
+    const pyramid = state.pyramid.slice()
+    pyramid[ref.index] = null
+    state.pyramid = pyramid
   } else if (ref.zone === 'waste') {
-    state.waste.pop()
+    const waste = state.waste.slice()
+    waste.pop()
+    state.waste = waste
   }
   if (card) {
-    state.discard.push({ ...card, faceUp: true })
+    const discard = state.discard.slice()
+    discard.push({ ...card, faceUp: true })
+    state.discard = discard
   }
 }
 
@@ -126,8 +145,14 @@ function consume(state: PyramidState, ref: PileRef): void {
  * pyramid slot. Does not touch removedCount - that still only reflects real pairing/King moves. */
 function sweepRemainderOnWin(state: PyramidState): void {
   if (!state.pyramid.every((c) => c === null)) return
-  for (const c of state.waste) state.discard.push({ ...c, faceUp: true })
-  for (const c of state.stock) state.discard.push({ ...c, faceUp: true })
+  if (state.waste.length === 0 && state.stock.length === 0) return
+  // Every card still in waste/stock genuinely relocates to discard here (a full transfer, not a
+  // touch-one-leave-the-rest move) - cloning all of them is correct, not the pattern being
+  // eliminated elsewhere in this file.
+  const discard = state.discard.slice()
+  for (const c of state.waste) discard.push({ ...c, faceUp: true })
+  for (const c of state.stock) discard.push({ ...c, faceUp: true })
+  state.discard = discard
   state.waste = []
   state.stock = []
 }
@@ -177,9 +202,12 @@ function tryMove(state: PyramidState, move: Move): PyramidState | null {
 function drawStock(state: PyramidState): PyramidState | null {
   if (state.stock.length > 0) {
     const next = cloneState(state)
-    const card = next.stock.pop()!
-    card.faceUp = true
-    next.waste.push(card)
+    const stock = next.stock.slice()
+    const card = stock.pop()!
+    const waste = next.waste.slice()
+    waste.push(card.faceUp ? card : { ...card, faceUp: true })
+    next.stock = stock
+    next.waste = waste
     return next
   }
   if (state.waste.length > 0) {
@@ -187,8 +215,10 @@ function drawStock(state: PyramidState): PyramidState | null {
     // (reversed, so re-drawing reproduces the same sequence). Real physical
     // Pyramid often limits redeals, but that can permanently strand a digital
     // game with no way to clear the pyramid, so we allow infinite recycling.
+    // Every recycled card's faceUp genuinely flips here - unlike the draw above, there's no
+    // untouched subset to preserve identity for; all of them really do change.
     const next = cloneState(state)
-    const recycled = next.waste
+    const recycled = state.waste
       .slice()
       .reverse()
       .map((c) => ({ ...c, faceUp: false }))

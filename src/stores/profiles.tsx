@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { isSharedProfileStoreAvailable, isValidProfile, loadSharedProfiles, type Profile, saveSharedProfiles } from '@tastic/profile'
-import { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { AppState } from 'react-native'
 
 const LOCAL_KEY = 'solitaire.profiles.v1'
@@ -169,7 +169,15 @@ export function ProfilesProvider({ initialState, children }: { initialState: Pro
     const sub = AppState.addEventListener('change', (next) => {
       if (next !== 'active') return
       loadSharedProfiles(SHARED_GROUP_ID).then((shared) => {
-        setProfiles(shared)
+        // loadSharedProfiles always returns a fresh array reference regardless of whether the
+        // shared store's actual content changed - an unconditional setProfiles() here would
+        // re-render every consumer of useProfiles() (every visible card, via theme.ts's
+        // useTableColors()) on every foreground resume - backgrounding briefly for a
+        // notification/call/Control Center mid-game, not just app cold start - even when nothing
+        // about the player's profile actually changed.
+        if (JSON.stringify(shared) !== JSON.stringify(profilesRef.current)) {
+          setProfiles(shared)
+        }
         const current = activeProfileIdRef.current
         const cleared = current && !shared.some((p) => p.id === current) ? null : current
         if (cleared !== current) {
@@ -213,23 +221,27 @@ export function ProfilesProvider({ initialState, children }: { initialState: Pro
 
   const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? null
 
-  return (
-    <ProfilesContext.Provider
-      value={{
-        profiles,
-        activeProfileId,
-        activeProfile,
-        createProfile,
-        updateProfile,
-        deleteProfile,
-        selectProfile: persistActiveProfileId,
-        tableColorOverride,
-        setTableColorOverride
-      }}
-    >
-      {children}
-    </ProfilesContext.Provider>
+  // Memoized so a ProfilesProvider re-render whose actual context content is unchanged (e.g. a
+  // parent re-rendering for an unrelated reason) doesn't force every useProfiles() consumer -
+  // every visible card, via theme.ts's useTableColors() - to re-render too. ProfilesProvider sits
+  // near the root of the app (see app/_layout.tsx), so this cascades widely if unmemoized, same
+  // reasoning GameStatsProvider's own context value already applies in this directory.
+  const value = useMemo<ProfilesContextValue>(
+    () => ({
+      profiles,
+      activeProfileId,
+      activeProfile,
+      createProfile,
+      updateProfile,
+      deleteProfile,
+      selectProfile: persistActiveProfileId,
+      tableColorOverride,
+      setTableColorOverride
+    }),
+    [profiles, activeProfileId, activeProfile, createProfile, updateProfile, deleteProfile, persistActiveProfileId, tableColorOverride, setTableColorOverride]
   )
+
+  return <ProfilesContext.Provider value={value}>{children}</ProfilesContext.Provider>
 }
 
 export function useProfiles(): ProfilesContextValue {

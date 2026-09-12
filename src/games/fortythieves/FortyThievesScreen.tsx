@@ -8,11 +8,12 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, cardWidthForRow, faceUpFanOffset, type TableColors } from '@tastic/cards'
+import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
 import { computeContentBounds } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 
+import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
@@ -39,6 +40,7 @@ import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -50,10 +52,8 @@ import { FortyThievesSettingsSection } from './FortyThievesSettingsSection'
 import { createFortyThievesController, findFoundationSlot, FortyThievesState, isFullyAutoCompletable, nextAutoCompleteMove } from './rules'
 
 const TABLEAU_COLUMNS = 10
-const TABLEAU_GAP = 6
 const TABLEAU_MIN_HEIGHT = 360
 const NUM_FOUNDATIONS = 8
-const TOP_ROW_GAP = 6
 
 function makeStyles(colors: TableColors) {
   return StyleSheet.create({
@@ -64,8 +64,7 @@ function makeStyles(colors: TableColors) {
     },
     foundationSlot: {},
     foundationsGroup: {
-      flexDirection: 'row',
-      gap: TOP_ROW_GAP
+      flexDirection: 'row'
     },
     loadingText: {
       color: '#fff',
@@ -77,7 +76,6 @@ function makeStyles(colors: TableColors) {
     tableauColumn: {},
     tableauRow: {
       flexDirection: 'row',
-      gap: TABLEAU_GAP,
       paddingBottom: 20
     },
     topRow: {
@@ -116,7 +114,7 @@ function FortyThievesScreenInner() {
   const session = useGameSession()
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, TABLEAU_GAP)
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
   const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
@@ -307,10 +305,18 @@ function FortyThievesScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Deliberately not keyed on a ticking elapsed-seconds value: `session.getElapsed()` computes the
+  // true current elapsed from wall-clock time on demand (see useGameSession.ts), so a save made at
+  // the last real move is never stale even once the player just sits looking at the board
+  // afterward - resuming always recomputes the exact right value instead of depending on whenever
+  // this effect last happened to run.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('fortythieves', { state, undoStack, moves: session.moves, elapsedSeconds: session.elapsed, config: runMoves ? 1 : 0 })
+    if (state && !won) saveGameInProgress('fortythieves', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: runMoves ? 1 : 0 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, runMoves, session.elapsed, undoStack])
+  }, [state, won, runMoves, undoStack])
+  useSaveInProgressBackstop(!!state && !won, () => {
+    if (state && !won) saveGameInProgress('fortythieves', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: runMoves ? 1 : 0 })
+  })
 
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
@@ -522,9 +528,9 @@ function FortyThievesScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} elapsedSeconds={session.elapsed} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
+      <GameChrome title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
         <View style={styles.topRow}>
-          <View style={styles.foundationsGroup}>
+          <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)
               const isFlyingHere = !!flying && flying.to.zone === 'foundation' && flying.to.index === i
@@ -544,10 +550,10 @@ function FortyThievesScreenInner() {
             })}
           </View>
 
-          <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteHiddenCount={flying && flying.to.zone === 'waste' ? flying.count : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id)} stockRef={stockViewRef} />
+          <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteHiddenCount={flying && flying.to.zone === 'waste' ? flying.count : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id)} stockRef={stockViewRef} />
         </View>
 
-        <View style={styles.tableauRow}>
+        <View style={[styles.tableauRow, { gap }]}>
           {state.tableau.map((col, colIndex) => {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
@@ -569,7 +575,7 @@ function FortyThievesScreenInner() {
       </GameChrome>
       {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.elapsed} moves={session.moves} score={computeScore(session.moves, session.elapsed)} onNewGame={startNewGame} />}
+      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }

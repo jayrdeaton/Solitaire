@@ -27,7 +27,7 @@ import { pickBestTableauTarget } from '@/engine/autoMove'
 import { shuffledDeck } from '@/engine/deck'
 import { GameController, Move, PileRef } from '@/engine/gameTypes'
 import { alwaysValidRun, isDescendingSameSuit, top } from '@/engine/pile'
-import { Card, cloneCard } from '@/engine/types'
+import { Card } from '@/engine/types'
 
 export interface ScorpionState {
   /** 7 tableau columns. Columns 0-3 start 3 face-down + 4 face-up; columns 4-6 start all face-up
@@ -42,11 +42,23 @@ const NUM_COLUMNS = 7
 const FRONT_COLUMNS = 4 // columns 0-3, each with a face-down base
 const FACE_DOWN_PER_FRONT_COLUMN = 3
 
+// Shallow: a fresh outer tableau array (so a caller can reassign state.tableau[i] to a
+// brand-new column without touching the original state) and the same top-level stock array
+// reference, but every column and every card inside starts out as the exact SAME reference as
+// `state`'s own. tryMove/drawStock below replace only the specific column(s) a move actually
+// touches (via setColumn) and clone an individual card only at the one spot its faceUp is
+// actually flipped (tryMove's reveal) or genuinely changes for every card in the pile (drawStock's
+// stock cards) - every untouched card elsewhere on the board keeps its exact pre-move identity.
 function cloneState(state: ScorpionState): ScorpionState {
   return {
-    tableau: state.tableau.map((col) => col.map(cloneCard)),
-    stock: state.stock.map(cloneCard)
+    tableau: state.tableau.slice(),
+    stock: state.stock
   }
+}
+
+/** Writes a (already-fresh, caller-owned) column back into `state.tableau` at `index`. */
+function setColumn(state: ScorpionState, index: number, column: Card[]): void {
+  state.tableau[index] = column
 }
 
 /** Same suit, exactly one rank higher than `moving`'s own bottom (deepest) card - the card that
@@ -219,13 +231,16 @@ export function createScorpionController(assistedStock: boolean): GameController
     if (!canPlaceOnTableau(toCol, group)) return null
 
     const next = cloneState(state)
-    const nextFrom = next.tableau[from.index]
-    const nextTo = next.tableau[to.index]
+    const nextFrom = fromCol.slice()
+    const nextTo = toCol.slice()
     const moved = nextFrom.splice(nextFrom.length - count, count)
     nextTo.push(...moved)
 
     const newTop = nextFrom[nextFrom.length - 1]
-    if (newTop && !newTop.faceUp) newTop.faceUp = true
+    if (newTop && !newTop.faceUp) nextFrom[nextFrom.length - 1] = { ...newTop, faceUp: true }
+
+    setColumn(next, from.index, nextFrom)
+    setColumn(next, to.index, nextTo)
 
     return next
   }
@@ -237,8 +252,13 @@ export function createScorpionController(assistedStock: boolean): GameController
   function drawStock(state: ScorpionState): ScorpionState | null {
     if (state.stock.length === 0) return null
     const next = cloneState(state)
+    // Every held-back stock card genuinely changes here (face-down -> face-up on arrival), so
+    // cloning each one is correct and necessary - there's no untouched subset to preserve
+    // identity for among them. Only the 3 destination columns they land on need a fresh array.
     for (let i = 0; i < next.stock.length; i++) {
-      next.tableau[FRONT_COLUMNS + i].push({ ...next.stock[i], faceUp: true })
+      const col = next.tableau[FRONT_COLUMNS + i].slice()
+      col.push({ ...next.stock[i], faceUp: true })
+      setColumn(next, FRONT_COLUMNS + i, col)
     }
     next.stock = []
     return next

@@ -31,7 +31,7 @@
 import { shuffledDeck } from '@/engine/deck'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { isDescendingSameSuit, top } from '@/engine/pile'
-import { Card, cloneCard } from '@/engine/types'
+import { Card } from '@/engine/types'
 
 export interface FortyThievesState {
   /** 10 tableau columns, 4 cards each at deal, all face up. */
@@ -47,12 +47,39 @@ export interface FortyThievesState {
 const NUM_COLUMNS = 10
 const NUM_FOUNDATIONS = 8
 
+// Shallow: fresh outer tableau/foundation arrays (so a caller can reassign state.tableau[i] /
+// state.foundation[i] to a brand-new pile without touching the original state), but every pile
+// and every card inside starts out as the exact SAME reference as `state`'s own. tryMove/
+// drawStock below replace only the specific pile(s) a move actually touches (via setPile), and
+// clone an individual card only at the one spot its faceUp is actually flipped in place (see
+// drawStock's popped card) - every other untouched card elsewhere on the board keeps its exact
+// pre-move object identity. Unlike Klondike, tryMove itself never needs to clone a card: this
+// game's tableau is dealt entirely face up and only ever receives already-face-up cards (see this
+// file's header comment), so there is no "reveal the newly-exposed card" flip to guard here.
 function cloneState(state: FortyThievesState): FortyThievesState {
   return {
-    tableau: state.tableau.map((col) => col.map(cloneCard)),
-    foundation: state.foundation.map((f) => f.map(cloneCard)),
-    stock: state.stock.map(cloneCard),
-    waste: state.waste.map(cloneCard)
+    tableau: state.tableau.slice(),
+    foundation: state.foundation.slice(),
+    stock: state.stock,
+    waste: state.waste
+  }
+}
+
+/** Writes a (already-fresh, caller-owned) pile back into `state` at `ref`. */
+function setPile(state: FortyThievesState, ref: PileRef, pile: Card[]): void {
+  switch (ref.zone) {
+    case 'tableau':
+      state.tableau[ref.index] = pile
+      break
+    case 'foundation':
+      state.foundation[ref.index] = pile
+      break
+    case 'stock':
+      state.stock = pile
+      break
+    case 'waste':
+      state.waste = pile
+      break
   }
 }
 
@@ -132,9 +159,12 @@ function newGame(seed: number): FortyThievesState {
 function drawStock(state: FortyThievesState): FortyThievesState | null {
   if (state.stock.length === 0) return null // no recycling - a real dealer's stock runs out for good
   const next = cloneState(state)
-  const card = next.stock.pop()!
-  card.faceUp = true
-  next.waste.push(card)
+  const nextStock = next.stock.slice()
+  const nextWaste = next.waste.slice()
+  const card = nextStock.pop()!
+  nextWaste.push(card.faceUp ? card : { ...card, faceUp: true })
+  setPile(next, { zone: 'stock', index: 0 }, nextStock)
+  setPile(next, { zone: 'waste', index: 0 }, nextWaste)
   return next
 }
 
@@ -190,8 +220,10 @@ export function createFortyThievesController(runMoves: boolean): GameController<
     }
 
     const next = cloneState(state)
-    const nextSourcePile = getPile(next, from)!
-    const nextDestPile = getPile(next, to)!
+    const nextSourcePile = getPile(next, from)!.slice()
+    const nextDestPile = getPile(next, to)!.slice()
+    setPile(next, from, nextSourcePile)
+    setPile(next, to, nextDestPile)
     const moved = nextSourcePile.splice(nextSourcePile.length - count, count)
     nextDestPile.push(...moved)
     return next

@@ -2,7 +2,7 @@ import { IconButton, Pressable, useHoldToRepeat } from '@rific/feedback-press'
 import { type TableColors } from '@tastic/cards'
 import { ConfirmDialog, ContentGutter, CornerActionButtons } from '@tastic/hud'
 import { useRouter } from 'expo-router'
-import { ReactNode, useMemo, useState } from 'react'
+import { ReactNode, useEffect, useMemo, useState } from 'react'
 import { Pressable as RNPressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -34,11 +34,12 @@ export const GAME_CONTENT_PADDING = 12
  * leftover horizontal space becomes empty, symmetric gutters (see `ContentGutter` below) instead
  * of the board stretching or drifting off-center. Sized to Spider's own widest natural case: at
  * `cardWidthForRow`'s own 96px/card max, Spider's 10-column tableau renders at
- * 96*10 + TABLEAU_GAP(4)*9 = 996px, plus this same GAME_CONTENT_PADDING on both sides = 1020px of
+ * 96*10 + CARD_GAP_MIN(6)*9 = 1014px, plus this same GAME_CONTENT_PADDING on both sides = 1038px of
  * content width before Spider's own cards stop growing regardless of how much wider the window
- * gets - 1040 leaves a small margin past that exact point so the cap never kicks in before
- * Spider's own natural saturation, while still meaningfully capping well short of an ultrawide
- * monitor. Every game screen's own `cardWidthForRow` call must run its raw window width through
+ * gets - past that point cardLayoutForRow's own gap-growing behavior (see cardLayout.ts) takes over
+ * instead of leaving dead space, so 1040 doesn't need much margin past that exact saturation point
+ * the way a hard cliff would have; it's still meaningfully capping well short of an ultrawide
+ * monitor. Every game screen's own `cardLayoutForRow` call must run its raw window width through
  * `computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)` first - same as GAME_CONTENT_PADDING
  * above, one true shared value, not a per-game guess. */
 export const GAME_CONTENT_MAX_WIDTH = 1040
@@ -95,7 +96,15 @@ interface GameChromeProps {
    * persisted) even though it may have real progress, so `undoDisabled` alone would wrongly skip
    * the warning - and wrongly skip recording the abandon - for any resumed, in-progress game. */
   hasProgress: boolean
-  elapsedSeconds: number
+  /** Live elapsed seconds, read on demand rather than passed as an ever-changing number - see
+   * useGameSession's getElapsed doc comment. GameChrome owns its own once-a-second re-render for
+   * the timer text below (while `clockRunning`) so re-rendering the rest of the screen - the whole
+   * board - once a second isn't the price of a ticking clock display anymore. */
+  getElapsedSeconds: () => number
+  /** Whether the clock is actively counting up (session.started && !won) - gates GameChrome's own
+   * internal once-a-second tick. Still re-reads getElapsedSeconds() whenever this flips even while
+   * false, so a not-yet-started (0:00) or just-frozen post-win value shows immediately. */
+  clockRunning: boolean
   movesCount: number
   /** Game-specific settings section (Klondike draw count, Spider suit count, ...), rendered above
    * the global Solitaire settings inside the shared dialog. Omitted by FreeCell/Pyramid, which
@@ -125,7 +134,7 @@ interface GameChromeProps {
  * Previously each of the four game screens hand-rolled its own version of this row (and Pyramid's
  * had drifted to a bottom button row entirely) - unifying it here means a layout tweak (like this
  * one, and the header/footer regrouping that followed it) only has to happen once. */
-export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, hintDisabled, hasProgress, elapsedSeconds, movesCount, settingsContent, rules, children }: GameChromeProps) {
+export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, hintDisabled, hasProgress, getElapsedSeconds, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const colors = useTableColors()
@@ -136,6 +145,28 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   const [footerVisible, setFooterVisible] = useState(true)
   const { clearLastActiveGame } = useLastActiveGame()
   const undoHold = useHoldToRepeat(onUndo, UNDO_HOLD_REPEAT_MS)
+
+  // The only thing in this whole screen that re-renders once a second while a deal is in progress
+  // - not the parent game screen (and therefore not the board it renders as `children`), which no
+  // longer has any per-second-ticking state of its own to force that (see useGameSession.ts).
+  const [displayedElapsed, setDisplayedElapsed] = useState(getElapsedSeconds)
+  // Resyncs displayedElapsed the instant clockRunning flips (deal starts/resumes/wins), rather than
+  // waiting up to a second for the interval below to get around to it - e.g. resuming an
+  // in-progress deal would otherwise flash "0:00" for up to a second before its first tick. Setting
+  // state directly during render (React's documented pattern for "adjust state when a prop
+  // changes") re-renders immediately, before paint, instead of the extra committed-then-corrected
+  // frame a same-effect setState would cost - see the interval effect below, which only manages
+  // truly external state now (a timer subscription).
+  const [prevClockRunning, setPrevClockRunning] = useState(clockRunning)
+  if (clockRunning !== prevClockRunning) {
+    setPrevClockRunning(clockRunning)
+    setDisplayedElapsed(getElapsedSeconds())
+  }
+  useEffect(() => {
+    if (!clockRunning) return
+    const id = setInterval(() => setDisplayedElapsed(getElapsedSeconds()), 1000)
+    return () => clearInterval(id)
+  }, [clockRunning, getElapsedSeconds])
 
   const footerOpacity = useSharedValue(1)
   const footerTranslateY = useSharedValue(0)
@@ -225,7 +256,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
       rather than sitting stranded above an empty gap. */}
       <Animated.View style={[styles.movesTimerWrap, { bottom: MOVES_TIMER_BOTTOM + insets.bottom }, movesTimerAnimatedStyle]} pointerEvents='none'>
         <Text style={styles.timerText} numberOfLines={1}>
-          {movesCount} · {formatTime(elapsedSeconds)}
+          {movesCount} · {formatTime(displayedElapsed)}
         </Text>
       </Animated.View>
 

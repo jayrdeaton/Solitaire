@@ -1,11 +1,12 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, cardWidthForRow, faceUpFanOffset, type TableColors } from '@tastic/cards'
+import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
 import { computeContentBounds } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 
+import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
@@ -35,6 +36,7 @@ import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -42,13 +44,12 @@ import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/game
 import { useSettings } from '@/stores/settings'
 
 import { buildFreeCellDealSequence } from './dealSequence'
-import { FreeCellController, FreeCellState } from './rules'
+import { FreeCellController, FreeCellState, maxSupermoveCount } from './rules'
 
 // Floor for useTableauMaxHeight below, not a fixed height anymore - a short screen never fans out
 // less generously than this, but a screen with real headroom to spare now gets more of it.
 const TABLEAU_MIN_HEIGHT = 460
 const TABLEAU_COLUMNS = 8
-const TABLEAU_GAP = 10
 // FreeCell has no stock pile of its own to visually deal from (rules.ts's newGame deals straight
 // into the tableau; freecells start, and stay, empty throughout the deal) - the far-right freecell
 // doubles as the deck the deal animation flies out of instead, showing this face-down placeholder
@@ -126,7 +127,7 @@ function FreeCellScreenInner() {
   const session = useGameSession()
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, TABLEAU_GAP)
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
   const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
@@ -202,15 +203,19 @@ function FreeCellScreenInner() {
   // Saves after every move/undo/autoplay/fresh-deal (all flow through setState). Gated on !won:
   // Undo is never disabled post-win (a pre-existing gap, out of scope here), so without this guard,
   // winning and then tapping the still-enabled Undo would resurrect a save for an already-resolved
-  // deal right after checkWin below just cleared it. `session.elapsed` is also a dependency, not
-  // just `state` - it ticks up once a second on its own timer (see useGameSession.ts), independent
-  // of any move, so a save made at the last real move goes stale the moment the player just sits
-  // looking at the board and then leaves; resuming would silently roll the clock back to whatever
-  // it read at that last move instead of how long they actually had the deal open.
+  // deal right after checkWin below just cleared it. Deliberately NOT also keyed on a ticking
+  // elapsed-seconds value the way an earlier version of this effect was: `session.getElapsed()`
+  // computes the true current elapsed from wall-clock time on demand (see useGameSession.ts), so a
+  // save made at the last real move is never stale even once the player just sits looking at the
+  // board afterward - resuming always recomputes the exact right value instead of depending on
+  // whenever this effect last happened to run.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('freecell', { state, undoStack, moves: session.moves, elapsedSeconds: session.elapsed })
+    if (state && !won) saveGameInProgress('freecell', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, session.elapsed, undoStack])
+  }, [state, won, undoStack])
+  useSaveInProgressBackstop(!!state && !won, () => {
+    if (state && !won) saveGameInProgress('freecell', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
+  })
 
   // dealTokenRef guards against a stray late measurement/landing from this deal delivering a
   // callback into a newer one - card ids are shuffle-independent (see deck.ts), so a fresh
@@ -758,9 +763,18 @@ function FreeCellScreenInner() {
     return completeMove(from, target, count, anchorCardId)
   }
 
+  // A card whose own coherent run (indexFromTop + 1 cards) is longer than what the current
+  // freecells/empty columns can actually carry is not draggable from here, even though the run
+  // itself is well-formed - grabbing it would always bounce back (see rules.ts's tryMove, which
+  // rejects any count over maxSupermoveCount). -1 as the destIndex asks for the best-case cap
+  // (not knowing the eventual destination yet), same as tryMove would apply for a non-empty
+  // destination column - the common case, and consistent with this dimming already being a
+  // coarse "would this always fail" check rather than a full destination-aware oracle.
   function tableauRunCount(colIndex: number, indexFromTop: number): number {
     if (!state) return 0
-    return runCountFrom(state.tableau[colIndex], indexFromTop, isDescendingAltColor)
+    const runLen = runCountFrom(state.tableau[colIndex], indexFromTop, isDescendingAltColor)
+    if (runLen > 1 && runLen > maxSupermoveCount(state, -1)) return 0
+    return runLen
   }
 
   if (!state) {
@@ -773,8 +787,8 @@ function FreeCellScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} elapsedSeconds={session.elapsed} movesCount={session.moves} rules={FREECELL_RULES}>
-        <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + TABLEAU_GAP * (TABLEAU_COLUMNS - 1) }]}>
+      <GameChrome title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={FREECELL_RULES}>
+        <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={styles.foundationsGroup}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)
@@ -827,7 +841,7 @@ function FreeCellScreenInner() {
           </View>
         </View>
 
-        <View style={styles.tableauRow}>
+        <View style={[styles.tableauRow, { gap }]}>
           {state.tableau.map((col, colIndex) => {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
@@ -849,7 +863,7 @@ function FreeCellScreenInner() {
     not buried under it. */}
       {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.elapsed} moves={session.moves} score={computeScore(session.moves, session.elapsed)} onNewGame={startNewGame} />}
+      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }
@@ -881,7 +895,6 @@ function makeStyles(colors: TableColors) {
     tableauColumn: {},
     tableauRow: {
       flexDirection: 'row',
-      gap: TABLEAU_GAP,
       paddingBottom: 20
     },
     topRow: {

@@ -10,7 +10,7 @@ import { shuffledDeck } from '@/engine/deck'
 import { canPlaceOnFoundation, suitIndex } from '@/engine/foundation'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { alwaysValidRun, top } from '@/engine/pile'
-import { Card, cardColor, cloneCard } from '@/engine/types'
+import { Card, cardColor } from '@/engine/types'
 
 export interface YukonState {
   /** 7 tableau columns. */
@@ -19,15 +19,16 @@ export interface YukonState {
   foundation: Card[][]
 }
 
+// Shallow: fresh outer tableau/foundation arrays (so a caller can reassign state.tableau[i] /
+// state.foundation[i] to a brand-new pile without touching the original state), but every pile
+// and every card inside starts out as the exact SAME reference as `state`'s own. tryMove below
+// replaces only the specific pile(s) a move actually touches (via setPile), and clones an
+// individual card only at the one spot its faceUp is actually flipped in place (see flipFaceUp) -
+// every untouched card elsewhere on the board keeps its exact pre-move object identity.
 function cloneState(state: YukonState): YukonState {
   return {
-    // Cards themselves are cloned too, not just the pile arrays - tryMove below flips a card's
-    // faceUp in place, and a shallow .slice() would leave that same card object shared with the
-    // pre-move state sitting in the undo stack, silently "flipping" it there too. Matches
-    // Klondike/Spider/Pyramid's cloneState, which already clone at the card level for the same
-    // reason.
-    tableau: state.tableau.map((col) => col.map(cloneCard)),
-    foundation: state.foundation.map((f) => f.map(cloneCard))
+    tableau: state.tableau.slice(),
+    foundation: state.foundation.slice()
   }
 }
 
@@ -40,6 +41,27 @@ function getPile(state: YukonState, ref: PileRef): Card[] | null {
     default:
       return null
   }
+}
+
+/** Writes a (already-fresh, caller-owned) pile back into `state` at `ref`. */
+function setPile(state: YukonState, ref: PileRef, pile: Card[]): void {
+  switch (ref.zone) {
+    case 'tableau':
+      state.tableau[ref.index] = pile
+      break
+    case 'foundation':
+      state.foundation[ref.index] = pile
+      break
+  }
+}
+
+/** Replaces the last card of `pile` (mutated in place, since `pile` is always already a fresh
+ * array the caller owns) with a face-up clone, if it isn't face-up already - never mutates the
+ * card object itself. */
+function flipFaceUp(pile: Card[]): void {
+  const i = pile.length - 1
+  const c = pile[i]
+  if (c && !c.faceUp) pile[i] = { ...c, faceUp: true }
 }
 
 function canPlaceOnTableau(dest: Card[], moving: Card[]): boolean {
@@ -208,16 +230,15 @@ export function createYukonController(): GameController<YukonState> {
     }
 
     const next = cloneState(state)
-    const nextSourcePile = getPile(next, from)!
-    const nextDestPile = getPile(next, to)!
+    const nextSourcePile = getPile(next, from)!.slice()
+    const nextDestPile = getPile(next, to)!.slice()
+    setPile(next, from, nextSourcePile)
+    setPile(next, to, nextDestPile)
     const moved = nextSourcePile.splice(nextSourcePile.length - count, count)
     nextDestPile.push(...moved)
 
     if (from.zone === 'tableau') {
-      const remaining = top(nextSourcePile)
-      if (remaining && !remaining.faceUp) {
-        remaining.faceUp = true
-      }
+      flipFaceUp(nextSourcePile)
     }
 
     return next

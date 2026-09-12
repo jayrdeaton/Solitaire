@@ -9,11 +9,12 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CARD_ASPECT, CardSizeProvider, cardWidthForRow, type TableColors } from '@tastic/cards'
+import { CARD_ASPECT, CardSizeProvider, type TableColors } from '@tastic/cards'
 import { computeContentBounds } from '@tastic/core'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 
+import { cardLayoutForRow } from '@/components/cardLayout'
 import { FACE_UP_OFFSET_RATIO } from '@/components/CardSizeContext'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
@@ -40,6 +41,7 @@ import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -52,10 +54,9 @@ import { TriPeaksSettingsSection } from './TriPeaksSettingsSection'
 // The base row (rules.ts's ROW_WIDTHS[3]) is the board's widest row and sets its overall width
 // unit - same idea as Pyramid's own TRIANGLE_WIDTH_UNITS = ROWS.
 const BASE_WIDTH = ROW_WIDTHS[3]
-const COL_GAP = 6 // horizontal gap between cards within the base row - no overlap, so corner pips stay visible
 
-function boardWidth(cardWidth: number): number {
-  return cardWidth * BASE_WIDTH + COL_GAP * (BASE_WIDTH - 1)
+function boardWidth(cardWidth: number, gap: number): number {
+  return cardWidth * BASE_WIDTH + gap * (BASE_WIDTH - 1)
 }
 
 function boardHeight(cardHeight: number): number {
@@ -76,10 +77,10 @@ function boardHeight(cardHeight: number): number {
  * Vertical offset cascades the same way Pyramid's own cardPosition does (row * cardHeight *
  * FACE_UP_OFFSET_RATIO), so each row peeks out from under the row above it.
  */
-function buildCardPositions(cardWidth: number, cardHeight: number): { left: number; top: number }[] {
+function buildCardPositions(cardWidth: number, cardHeight: number, gap: number): { left: number; top: number }[] {
   const positions: { left: number; top: number }[] = new Array(28)
   for (let col = 0; col < ROW_WIDTHS[3]; col++) {
-    positions[flatIndex(3, col)] = { left: col * (cardWidth + COL_GAP), top: 3 * cardHeight * FACE_UP_OFFSET_RATIO }
+    positions[flatIndex(3, col)] = { left: col * (cardWidth + gap), top: 3 * cardHeight * FACE_UP_OFFSET_RATIO }
   }
   for (let row = 2; row >= 0; row--) {
     for (let col = 0; col < ROW_WIDTHS[row]; col++) {
@@ -108,7 +109,7 @@ function TriPeaksScreenInner() {
   const controller = useMemo(() => createTriPeaksController(tripeaksRankWrap), [tripeaksRankWrap])
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, BASE_WIDTH, COL_GAP)
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, BASE_WIDTH)
   const cardHeight = cardWidth / CARD_ASPECT
   const [state, setState] = useState<TriPeaksState | null>(null)
   // Every TriPeaks move (a tableau card onto the waste, or a stock draw) always has a real
@@ -234,7 +235,7 @@ function TriPeaksScreenInner() {
       return
     }
 
-    const positions = buildCardPositions(cardWidth, cardHeight)
+    const positions = buildCardPositions(cardWidth, cardHeight, gap)
     const entries: DealCardSpec[] = []
     sequence.forEach((step) => {
       if (step.index === -1) {
@@ -344,16 +345,19 @@ function TriPeaksScreenInner() {
   }, [])
 
   // Saves after every move/undo/fresh-deal (all flow through setState). Gated on !won so a
-  // just-won deal doesn't get checkpointed as still in-progress. `session.elapsed` is also a
-  // dependency, not just `state` - it ticks up once a second on its own timer (see
-  // useGameSession.ts), independent of any move, so a save made at the last real move goes stale
-  // the moment the player just sits looking at the board and then leaves; resuming would silently
-  // roll the clock back to whatever it read at that last move instead of how long they actually
-  // had the deal open.
+  // just-won deal doesn't get checkpointed as still in-progress. Deliberately NOT also keyed on a
+  // ticking elapsed-seconds value the way an earlier version of this effect was:
+  // `session.getElapsed()` computes the true current elapsed from wall-clock time on demand (see
+  // useGameSession.ts), so a save made at the last real move is never stale even once the player
+  // just sits looking at the board afterward - resuming always recomputes the exact right value
+  // instead of depending on whenever this effect last happened to run.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('tripeaks', { state, undoStack, moves: session.moves, elapsedSeconds: session.elapsed, config: tripeaksRankWrap ? 1 : 0 })
+    if (state && !won) saveGameInProgress('tripeaks', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: tripeaksRankWrap ? 1 : 0 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, tripeaksRankWrap, session.elapsed, undoStack])
+  }, [state, won, tripeaksRankWrap, undoStack])
+  useSaveInProgressBackstop(!!state && !won, () => {
+    if (state && !won) saveGameInProgress('tripeaks', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: tripeaksRankWrap ? 1 : 0 })
+  })
 
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
@@ -520,9 +524,9 @@ function TriPeaksScreenInner() {
     )
   }
 
-  const width = boardWidth(cardWidth)
+  const width = boardWidth(cardWidth, gap)
   const height = boardHeight(cardHeight)
-  const positions = buildCardPositions(cardWidth, cardHeight)
+  const positions = buildCardPositions(cardWidth, cardHeight, gap)
   const wasteTopCard = won ? undefined : top(state.waste)
   const wasteHiddenByDeal = wasteTopCard && dealHiddenIds.has(wasteTopCard.id) ? 1 : 0
   const wasteHiddenByFlight = flying && flying.to.zone === 'waste' ? flying.count : 0
@@ -545,7 +549,7 @@ function TriPeaksScreenInner() {
       SharedValue API (see handleUndo's own doc comment above). Same false-positive class as the
       disables inside handleUndo/handleDrawStock/handleCardTap above. */}
       {/* eslint-disable-next-line react-hooks/immutability */}
-      <GameChrome title='TriPeaks' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} elapsedSeconds={session.elapsed} movesCount={session.moves} settingsContent={<TriPeaksSettingsSection />} rules={TRIPEAKS_RULES}>
+      <GameChrome title='TriPeaks' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<TriPeaksSettingsSection />} rules={TRIPEAKS_RULES}>
         <View style={styles.board}>
           <View ref={wasteViewRef} collapsable={false} style={styles.controlRow}>
             <StockWaste
@@ -556,6 +560,7 @@ function TriPeaksScreenInner() {
               wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0}
               stockHinted={activeHint?.kind === 'drawStock'}
               cardWidth={cardWidth}
+              gap={gap}
               // Same react-hooks/immutability false positive as onUndo above - handleDrawStock also
               // assigns ghost.originX/Y.value etc.
               // eslint-disable-next-line react-hooks/immutability
@@ -607,7 +612,7 @@ function TriPeaksScreenInner() {
       </GameChrome>
       {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.elapsed} moves={session.moves} score={computeScore(session.moves, session.elapsed)} onNewGame={handleNewGame} />}
+      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
     </CardSizeProvider>
   )
 }

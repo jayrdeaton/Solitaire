@@ -20,7 +20,7 @@
 import { shuffledDeck } from '@/engine/deck'
 import { GameController, Move, PileRef } from '@/engine/gameTypes'
 import { top } from '@/engine/pile'
-import { Card, cloneCard } from '@/engine/types'
+import { Card } from '@/engine/types'
 
 export interface AcesUpState {
   /** 4 piles; only the top card of each is ever in play - everything under it is permanently
@@ -43,11 +43,33 @@ function effectiveRank(card: Card): number {
   return card.rank === 1 ? 14 : card.rank
 }
 
+// Shallow: a fresh outer `piles` array (so a caller can reassign state.piles[i] to a brand-new
+// pile without touching the original state), but every pile and every card inside starts out as
+// the exact SAME reference as `state`'s own (`stock`/`discard` themselves are carried over
+// untouched too, for the same reason). tryMove/drawStock below replace only the specific pile(s) a
+// move actually touches (via setPile), and clone an individual card only at the one spot its
+// faceUp is actually flipped in place (see drawStock) - every card on a pile a given move doesn't
+// touch keeps its exact pre-move object identity.
 function cloneState(state: AcesUpState): AcesUpState {
   return {
-    piles: state.piles.map((p) => p.map(cloneCard)),
-    stock: state.stock.map(cloneCard),
-    discard: state.discard.map(cloneCard)
+    piles: state.piles.slice(),
+    stock: state.stock,
+    discard: state.discard
+  }
+}
+
+/** Writes a (already-fresh, caller-owned) pile back into `state` at `ref`. */
+function setPile(state: AcesUpState, ref: PileRef, pile: Card[]): void {
+  switch (ref.zone) {
+    case 'tableau':
+      state.piles[ref.index] = pile
+      break
+    case 'stock':
+      state.stock = pile
+      break
+    case 'discard':
+      state.discard = pile
+      break
   }
 }
 
@@ -90,16 +112,24 @@ function tryMove(state: AcesUpState, move: Move): AcesUpState | null {
   if (to.zone === 'discard') {
     if (!canDiscard(state.piles, from.index)) return null
     const next = cloneState(state)
-    const card = next.piles[from.index].pop()!
-    next.discard.push(card)
+    const nextSourcePile = state.piles[from.index].slice()
+    const nextDiscard = state.discard.slice()
+    const card = nextSourcePile.pop()!
+    nextDiscard.push(card)
+    setPile(next, from, nextSourcePile)
+    setPile(next, to, nextDiscard)
     return next
   }
 
   if (to.zone === 'tableau') {
     if (!canMoveToEmpty(state.piles, from.index, to.index)) return null
     const next = cloneState(state)
-    const card = next.piles[from.index].pop()!
-    next.piles[to.index].push(card)
+    const nextSourcePile = state.piles[from.index].slice()
+    const nextDestPile = state.piles[to.index].slice()
+    const card = nextSourcePile.pop()!
+    nextDestPile.push(card)
+    setPile(next, from, nextSourcePile)
+    setPile(next, to, nextDestPile)
     return next
   }
 
@@ -111,12 +141,15 @@ function tryMove(state: AcesUpState, move: Move): AcesUpState | null {
 function drawStock(state: AcesUpState): AcesUpState | null {
   if (state.stock.length === 0) return null
   const next = cloneState(state)
+  const nextStock = state.stock.slice()
   for (let i = 0; i < NUM_PILES; i++) {
-    const card = next.stock.shift()
+    const card = nextStock.shift()
     if (!card) break // 48 is exactly divisible by 4, so this never actually happens in real play
-    card.faceUp = true
-    next.piles[i].push(card)
+    const nextPile = state.piles[i].slice()
+    nextPile.push(card.faceUp ? card : { ...card, faceUp: true })
+    setPile(next, { zone: 'tableau', index: i }, nextPile)
   }
+  setPile(next, { zone: 'stock', index: 0 }, nextStock)
   return next
 }
 

@@ -11,11 +11,12 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, cardWidthForRow, faceUpFanOffset, type TableColors } from '@tastic/cards'
+import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
 import { computeContentBounds } from '@tastic/core'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 
+import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
@@ -41,6 +42,7 @@ import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -52,7 +54,6 @@ import { createScorpionController, ScorpionState } from './rules'
 import { ScorpionSettingsSection } from './ScorpionSettingsSection'
 
 const TABLEAU_COLUMNS = 7
-const TABLEAU_GAP = 8
 const FRONT_COLUMNS = 4
 // Deepest column at deal is 8 cards (classic variant's columns 4-6); a completed run stacks a full
 // 13 - matching Klondike/FreeCell's own generous floor for a similarly deep tableau.
@@ -106,7 +107,7 @@ function ScorpionScreenInner() {
   const controller = useMemo(() => createScorpionController(assistedStock), [assistedStock])
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, TABLEAU_GAP)
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const [state, setState] = useState<ScorpionState | null>(null)
   // Nullable move (Spider's default): an ordinary tableau move always has one, but the assisted
@@ -421,15 +422,19 @@ function ScorpionScreenInner() {
   }, [])
 
   // Saves after every move/undo/fresh-deal (all flow through setState). Gated on !won so a
-  // just-won deal doesn't get checkpointed as still in-progress. `session.elapsed` is also a
-  // dependency, not just `state` - it ticks up once a second on its own timer, independent of any
-  // move, so a save made at the last real move goes stale the moment the player just sits looking
-  // at the board and then leaves; resuming would silently roll the clock back to whatever it read
-  // at that last move instead of how long they actually had the deal open.
+  // just-won deal doesn't get checkpointed as still in-progress. Deliberately NOT also keyed on a
+  // ticking elapsed-seconds value the way an earlier version of this effect was:
+  // `session.getElapsed()` computes the true current elapsed from wall-clock time on demand (see
+  // useGameSession.ts), so a save made at the last real move is never stale even once the player
+  // just sits looking at the board afterward - resuming always recomputes the exact right value
+  // instead of depending on whenever this effect last happened to run.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('scorpion', { state, undoStack, moves: session.moves, elapsedSeconds: session.elapsed, config: assistedStock ? 1 : 0 })
+    if (state && !won) saveGameInProgress('scorpion', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: assistedStock ? 1 : 0 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, assistedStock, session.elapsed, undoStack])
+  }, [state, won, assistedStock, undoStack])
+  useSaveInProgressBackstop(!!state && !won, () => {
+    if (state && !won) saveGameInProgress('scorpion', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: assistedStock ? 1 : 0 })
+  })
 
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
@@ -600,10 +605,10 @@ function ScorpionScreenInner() {
   return (
     <CardSizeProvider width={cardWidth}>
       {/* eslint-disable-next-line react-hooks/immutability */}
-      <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} elapsedSeconds={session.elapsed} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
+      <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
         <View style={styles.topRow}>{state.stock.length > 0 && <StockPacket onPress={handleDrawStock} highlighted={activeHint?.kind === 'drawStock'} />}</View>
 
-        <View style={styles.tableauRow}>
+        <View style={[styles.tableauRow, { gap }]}>
           {state.tableau.map((col, colIndex) => {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
@@ -633,7 +638,7 @@ function ScorpionScreenInner() {
       </GameChrome>
       {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.elapsed} moves={session.moves} score={computeScore(session.moves, session.elapsed)} onNewGame={handleNewGame} />}
+      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
     </CardSizeProvider>
   )
 }
@@ -655,7 +660,6 @@ function makeStyles(colors: TableColors) {
     tableauColumn: {},
     tableauRow: {
       flexDirection: 'row',
-      gap: TABLEAU_GAP,
       paddingBottom: 20
     },
     topRow: {

@@ -45,7 +45,7 @@ export function useFoundationWinCheck<TState>(
       recordedWinRef.current = true
       session.stopClock()
       setWon(true)
-      recordDealWon(gameId, { seconds: session.elapsed, moves: movesSoFar, score: computeScore(movesSoFar, session.elapsed), usedHint: hintsUsedRef.current })
+      recordDealWon(gameId, { seconds: session.getElapsed(), moves: movesSoFar, score: computeScore(movesSoFar, session.getElapsed()), usedHint: hintsUsedRef.current })
       clearGameInProgress(gameId)
       pendingWinCascadeRef.current = { gen: dealTokenRef.current }
     }

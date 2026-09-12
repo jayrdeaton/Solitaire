@@ -5,7 +5,7 @@ import { shuffledDeck } from '@/engine/deck'
 import { canPlaceOnFoundation, suitIndex } from '@/engine/foundation'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { isDescendingAltColor, top } from '@/engine/pile'
-import { Card, cardColor, cloneCard } from '@/engine/types'
+import { Card, cardColor } from '@/engine/types'
 
 export interface KlondikeState {
   /** 7 tableau columns. */
@@ -16,17 +16,24 @@ export interface KlondikeState {
   waste: Card[]
 }
 
+// Shallow: fresh outer tableau/foundation arrays (so a caller can reassign state.tableau[i] /
+// state.foundation[i] to a brand-new pile without touching the original state), but every pile
+// and every card inside starts out as the exact SAME reference as `state`'s own. tryMove/
+// drawStock below replace only the specific pile(s) a move actually touches (via setPile), and
+// clone an individual card only at the one spot its faceUp is actually flipped in place (see
+// flipFaceUp) - every one of the ~45+ untouched cards elsewhere on the board keeps its exact
+// pre-move object identity. This used to be a full deep clone (every pile AND every card, on
+// every move) - simpler, but it meant @tastic/cards' own React.memo on CardFace/CardBack (whose
+// whole point is skipping re-renders for a card that hasn't actually changed) could never
+// actually help during real gameplay, since literally every card's `card` prop was a fresh object
+// on every single move, foundation play, undo, or auto-play step - confirmed as a real,
+// measurable perf cost via a dedicated audit, not just a theoretical one.
 function cloneState(state: KlondikeState): KlondikeState {
   return {
-    // Cards themselves are cloned too, not just the pile arrays - tryMove/drawStock below flip a
-    // card's faceUp in place (rather than replacing it with a new object), and a shallow .slice()
-    // would leave that same card object shared with the pre-move state sitting in the undo stack,
-    // silently "flipping" it there too. Matches Spider's/Pyramid's cloneState, which already clone
-    // at the card level for the same reason.
-    tableau: state.tableau.map((col) => col.map(cloneCard)),
-    foundation: state.foundation.map((f) => f.map(cloneCard)),
-    stock: state.stock.map(cloneCard),
-    waste: state.waste.map(cloneCard)
+    tableau: state.tableau.slice(),
+    foundation: state.foundation.slice(),
+    stock: state.stock,
+    waste: state.waste
   }
 }
 
@@ -43,6 +50,36 @@ function getPile(state: KlondikeState, ref: PileRef): Card[] | null {
     default:
       return null
   }
+}
+
+/** Writes a (already-fresh, caller-owned) pile back into `state` at `ref` - state's own top-level
+ * tableau/foundation arrays are always fresh per cloneState above, so this is a safe in-place
+ * assignment on `state` itself, never on the original pre-move state. */
+function setPile(state: KlondikeState, ref: PileRef, pile: Card[]): void {
+  switch (ref.zone) {
+    case 'tableau':
+      state.tableau[ref.index] = pile
+      break
+    case 'foundation':
+      state.foundation[ref.index] = pile
+      break
+    case 'stock':
+      state.stock = pile
+      break
+    case 'waste':
+      state.waste = pile
+      break
+  }
+}
+
+/** Replaces the last card of `pile` (mutated in place, since `pile` is always already a fresh
+ * array the caller owns) with a face-up clone, if it isn't face-up already - never mutates the
+ * card object itself, so a still-face-down copy of the same card sitting in an undo entry (or in
+ * the pre-move state) is never affected. */
+function flipFaceUp(pile: Card[]): void {
+  const i = pile.length - 1
+  const c = pile[i]
+  if (c && !c.faceUp) pile[i] = { ...c, faceUp: true }
 }
 
 function canPlaceOnTableau(dest: Card[], moving: Card[]): boolean {
@@ -190,16 +227,15 @@ export function createKlondikeController(drawCount: 1 | 3): GameController<Klond
     }
 
     const next = cloneState(state)
-    const nextSourcePile = getPile(next, from)!
-    const nextDestPile = getPile(next, to)!
+    const nextSourcePile = getPile(next, from)!.slice()
+    const nextDestPile = getPile(next, to)!.slice()
+    setPile(next, from, nextSourcePile)
+    setPile(next, to, nextDestPile)
     const moved = nextSourcePile.splice(nextSourcePile.length - count, count)
     nextDestPile.push(...moved)
 
     if (from.zone === 'tableau') {
-      const remaining = top(nextSourcePile)
-      if (remaining && !remaining.faceUp) {
-        remaining.faceUp = true
-      }
+      flipFaceUp(nextSourcePile)
     } else if (from.zone === 'waste') {
       // nothing extra needed; top of waste is simply whatever remains
     }
@@ -210,22 +246,28 @@ export function createKlondikeController(drawCount: 1 | 3): GameController<Klond
   function drawStock(state: KlondikeState): KlondikeState | null {
     if (state.stock.length > 0) {
       const next = cloneState(state)
-      const n = Math.min(drawCount, next.stock.length)
-      const drawn = next.stock.splice(next.stock.length - n, n)
+      const nextStock = next.stock.slice()
+      const nextWaste = next.waste.slice()
+      const n = Math.min(drawCount, nextStock.length)
+      const drawn = nextStock.splice(nextStock.length - n, n)
       for (const c of drawn) {
-        c.faceUp = true
-        next.waste.push(c)
+        nextWaste.push(c.faceUp ? c : { ...c, faceUp: true })
       }
+      setPile(next, { zone: 'stock', index: 0 }, nextStock)
+      setPile(next, { zone: 'waste', index: 0 }, nextWaste)
       return next
     }
     if (state.waste.length > 0) {
       const next = cloneState(state)
-      const recycled = next.waste
+      // Every recycled card's faceUp genuinely flips here (waste -> face-down stock) - unlike the
+      // draw above, there's no untouched subset to preserve identity for; all of them really do
+      // change.
+      const recycled = state.waste
         .slice()
         .reverse()
         .map((c) => ({ ...c, faceUp: false }))
-      next.stock = recycled
-      next.waste = []
+      setPile(next, { zone: 'stock', index: 0 }, recycled)
+      setPile(next, { zone: 'waste', index: 0 }, [])
       return next
     }
     return null

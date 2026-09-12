@@ -230,6 +230,34 @@ describe('spider isWon', () => {
   })
 })
 
+describe('spider autoMoveHint', () => {
+  const controller = createSpiderController(4)
+
+  it('prefers a rank-matching non-empty column over an empty column, even when placing there would bury a card', () => {
+    const state: SpiderState = {
+      tableau: [
+        [card('hearts', 6)], // source - moves onto any black/other-suit 7
+        [], // empty column - would otherwise win on buried-count alone (0 buried)
+        [card('clubs', 9), card('spades', 7)], // legal (6 onto 7), but buries the clubs-9 underneath
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        []
+      ],
+      stock: [],
+      completed: [],
+      completedRuns: []
+    }
+    const hint = controller.autoMoveHint!(state, { zone: 'tableau', index: 0 }, 'hearts-6-0')
+    // Empty columns are a strict last resort: any legal non-empty destination wins over them,
+    // regardless of buried count, so this lands on column 2 rather than the empty column 1.
+    expect(hint).toEqual({ from: { zone: 'tableau', index: 0 }, to: { zone: 'tableau', index: 2 }, count: 1 })
+  })
+})
+
 describe('spider drawStock', () => {
   const controller = createSpiderController(1)
 

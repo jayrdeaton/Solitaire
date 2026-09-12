@@ -48,7 +48,7 @@ export function useDerivedWinCheck<TState>(
     if (controller.isWon(state) && !recordedRef.current) {
       recordedRef.current = true
       session.stopClock()
-      recordDealWon(gameId, { seconds: session.elapsed, moves: session.moves, score: computeScore(session.moves, session.elapsed), usedHint: hintsUsedRef.current })
+      recordDealWon(gameId, { seconds: session.getElapsed(), moves: session.moves, score: computeScore(session.moves, session.getElapsed()), usedHint: hintsUsedRef.current })
       clearGameInProgress(gameId)
       pendingWinCascadeRef.current = { gen: dealTokenRef.current }
     }

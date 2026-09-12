@@ -12,11 +12,20 @@ export interface TableauCandidate {
  * the largest pile, then leftmost (lowest index) to break any remaining tie. `candidates` must be
  * given in ascending index order - on an exact tie we keep whichever was found first, which is
  * how "leftmost" falls out without a separate comparison.
+ *
+ * An empty pile is a strict last resort: it always scores 0 buried (there's nothing there to
+ * bury), which would otherwise let it beat a non-empty pile that legally accepts the card but
+ * buries one - even though building onto an existing, visible stack is usually what a player
+ * actually wants. So non-empty candidates are considered first, and an empty pile is only picked
+ * when no non-empty candidate is legal at all.
  */
 export function pickBestTableauTarget<T extends TableauCandidate>(candidates: T[], isValidRun: (cards: Card[]) => boolean): T | null {
+  const nonEmpty = candidates.filter((c) => c.pile.length > 0)
+  const pool = nonEmpty.length > 0 ? nonEmpty : candidates
+
   let best: T | null = null
   let bestBuried = Infinity
-  for (const c of candidates) {
+  for (const c of pool) {
     const buried = buriedCount(c.pile, isValidRun)
     if (best === null || buried < bestBuried || (buried === bestBuried && c.pile.length > best.pile.length)) {
       best = c

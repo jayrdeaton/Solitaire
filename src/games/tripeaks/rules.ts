@@ -21,7 +21,7 @@
 import { shuffledDeck } from '@/engine/deck'
 import { GameController, Move, PileRef } from '@/engine/gameTypes'
 import { top } from '@/engine/pile'
-import { Card, cloneCard } from '@/engine/types'
+import { Card } from '@/engine/types'
 
 export interface TriPeaksState {
   /** Flat 28-slot board across 4 rows (widths 3,6,9,10 - see ROW_STARTS); `null` once removed. */
@@ -143,11 +143,17 @@ function isAdjacentRank(a: Card, b: Card, wrapAceKing: boolean): boolean {
   return wrapAceKing && ((a.rank === 1 && b.rank === 13) || (a.rank === 13 && b.rank === 1))
 }
 
+// Shallow: `state` itself is never mutated by the functions below, so a fresh top-level object
+// (sharing the exact same tableau/waste/stock array references) is enough on its own - drawStock/
+// tryMove each replace only the one or two pile arrays they actually touch (via fresh .slice()s),
+// and clone an individual card only at the one spot its faceUp is actually flipped in place (see
+// drawStock). Every untouched card - the other 22-27 tableau cards on a tableau move, the rest of
+// the waste/stock piles either way - keeps its exact pre-move object identity.
 function cloneState(state: TriPeaksState): TriPeaksState {
   return {
-    tableau: state.tableau.map((c) => (c ? cloneCard(c) : null)),
-    waste: state.waste.map(cloneCard),
-    stock: state.stock.map(cloneCard)
+    tableau: state.tableau,
+    waste: state.waste,
+    stock: state.stock
   }
 }
 
@@ -169,9 +175,15 @@ export function cardAt(state: TriPeaksState, ref: PileRef): Card | null {
 function drawStock(state: TriPeaksState): TriPeaksState | null {
   if (state.stock.length === 0) return null // no recycling, same as Golf
   const next = cloneState(state)
-  const card = next.stock.pop()!
-  card.faceUp = true
-  next.waste.push(card)
+  const nextStock = next.stock.slice()
+  const nextWaste = next.waste.slice()
+  const card = nextStock.pop()!
+  // Stock cards are always dealt faceUp:false (see newGame) and only ever flip here, so this
+  // always clones - the `faceUp` check just mirrors the defensive pattern used elsewhere rather
+  // than assuming that invariant holds forever.
+  nextWaste.push(card.faceUp ? card : { ...card, faceUp: true })
+  next.stock = nextStock
+  next.waste = nextWaste
   return next
 }
 
@@ -197,8 +209,14 @@ export function createTriPeaksController(wrapAceKing: boolean): GameController<T
     if (!isAdjacentRank(card, wasteTop, wrapAceKing)) return null
 
     const next = cloneState(state)
-    next.tableau[from.index] = null
-    next.waste.push({ ...card })
+    const nextTableau = next.tableau.slice()
+    const nextWaste = next.waste.slice()
+    nextTableau[from.index] = null
+    // `card` is relocated, not changed (tableau cards are always faceUp:true already - see the
+    // module doc comment) - keep its exact object reference rather than cloning it.
+    nextWaste.push(card)
+    next.tableau = nextTableau
+    next.waste = nextWaste
     return next
   }
 

@@ -3,12 +3,13 @@
 import { Pressable, useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CARD_ASPECT, CardSizeProvider, cardWidthForRow, type TableColors } from '@tastic/cards'
+import { CARD_ASPECT, CardSizeProvider, type TableColors } from '@tastic/cards'
 import { computeContentBounds } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 import Animated, { SharedValue, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
 
+import { cardLayoutForRow } from '@/components/cardLayout'
 import { FACE_UP_OFFSET_RATIO } from '@/components/CardSizeContext'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
@@ -36,6 +37,7 @@ import { MoveInfo } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 
@@ -43,7 +45,6 @@ import { buildPyramidDealSequence } from './dealSequence'
 import { cardAt, isExposed, PyramidController, PyramidState, rowColOf } from './rules'
 
 const ROWS = 7
-const COL_GAP = 6 // horizontal gap between cards within a row - no overlap, so corner pips stay visible
 
 /** One card's original spot, recorded so undoing a pairing/King removal can fly it back there
  * (see handleUndo's undoRemoval branch) instead of just reappearing there instantly. ref.zone is
@@ -166,15 +167,18 @@ function PairFlightGhosts({ flight, onCardLanded }: { flight: PairFlightState | 
 // cardWidthForRow's clamping/fit math as a plain "row of ROWS columns" with a real gap.
 const TRIANGLE_WIDTH_UNITS = ROWS
 
-function triangleWidth(cardWidth: number): number {
-  return cardWidth * ROWS + COL_GAP * (ROWS - 1)
+function triangleWidth(cardWidth: number, gap: number): number {
+  return cardWidth * ROWS + gap * (ROWS - 1)
 }
 
-function cardPosition(row: number, col: number, cardWidth: number, cardHeight: number): { left: number; top: number } {
-  const width = triangleWidth(cardWidth)
-  const rowWidth = cardWidth * (row + 1) + COL_GAP * row
+// gap: the render-scoped value from this file's own cardLayoutForRow call - horizontal gap between
+// cards within a row (no overlap, so corner pips stay visible), same floor as every other game's
+// tableau/pile row (see components/cardLayout.ts).
+function cardPosition(row: number, col: number, cardWidth: number, cardHeight: number, gap: number): { left: number; top: number } {
+  const width = triangleWidth(cardWidth, gap)
+  const rowWidth = cardWidth * (row + 1) + gap * row
   const rowLeftStart = (width - rowWidth) / 2
-  const left = rowLeftStart + col * (cardWidth + COL_GAP)
+  const left = rowLeftStart + col * (cardWidth + gap)
   // Rows cascade vertically like a FreeCell cascade - same offset ratio, so only the row below
   // (drawn on top, per its higher zIndex) overlaps the bottom of the row above.
   const top = row * (cardHeight * FACE_UP_OFFSET_RATIO)
@@ -188,7 +192,7 @@ function PyramidScreenInner() {
   const { info: infoToast } = useToast()
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, TRIANGLE_WIDTH_UNITS, COL_GAP)
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TRIANGLE_WIDTH_UNITS)
   const cardHeight = cardWidth / CARD_ASPECT
   const [state, setState] = useState<PyramidState | null>(null)
   const [selected, setSelected] = useState<PileRef | null>(null)
@@ -345,7 +349,7 @@ function PyramidScreenInner() {
     if (ref.zone === 'pyramid') {
       if (!triangleOrigin) return Promise.resolve(null)
       const { row, col } = rowColOf(ref.index)
-      const { left, top } = cardPosition(row, col, cardWidth, cardHeight)
+      const { left, top } = cardPosition(row, col, cardWidth, cardHeight, gap)
       return Promise.resolve({ x: triangleOrigin.x + left, y: triangleOrigin.y + top })
     }
     return ghost.cardRegistry.measure(cardId)
@@ -453,7 +457,7 @@ function PyramidScreenInner() {
     const sequence = buildPyramidDealSequence(s.pyramid)
     const entries: DealCardSpec[] = sequence.map((step) => {
       const { row, col } = rowColOf(step.index)
-      const { left, top } = cardPosition(row, col, cardWidth, cardHeight)
+      const { left, top } = cardPosition(row, col, cardWidth, cardHeight, gap)
       return {
         cardId: step.cardId,
         card: step.card,
@@ -501,15 +505,19 @@ function PyramidScreenInner() {
   // a just-won deal doesn't get checkpointed as still in-progress (the win-check effect above
   // clears the save outright instead) - since `won` is derived fresh from `state` on every render,
   // undoing back out of a won position re-enables saving again on that same render, no separate
-  // reset needed. `session.elapsed` is also a dependency, not just `state` - it ticks up once a
-  // second on its own timer (see useGameSession.ts), independent of any move, so a save made at
-  // the last real move goes stale the moment the player just sits looking at the board and then
-  // leaves; resuming would silently roll the clock back to whatever it read at that last move
-  // instead of how long they actually had the deal open.
+  // reset needed. Deliberately NOT also keyed on a ticking elapsed-seconds value the way an
+  // earlier version of this effect was: `session.getElapsed()` computes the true current elapsed
+  // from wall-clock time on demand (see useGameSession.ts), so a save made at the last real move is
+  // never stale even once the player just sits looking at the board afterward - resuming always
+  // recomputes the exact right value instead of depending on whenever this effect last happened to
+  // run.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('pyramid', { state, undoStack, moves: session.moves, elapsedSeconds: session.elapsed })
+    if (state && !won) saveGameInProgress('pyramid', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, session.elapsed, undoStack])
+  }, [state, won, undoStack])
+  useSaveInProgressBackstop(!!state && !won, () => {
+    if (state && !won) saveGameInProgress('pyramid', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
+  })
 
   // Mirrors handleDrawStock's forward flight, just in reverse: the drawn card is still sitting in
   // the waste (`move.to`) - measure its real current position before reverting (the
@@ -1038,24 +1046,24 @@ function PyramidScreenInner() {
     )
   }
 
-  const width = triangleWidth(cardWidth)
+  const width = triangleWidth(cardWidth, gap)
   const height = (ROWS - 1) * cardHeight * FACE_UP_OFFSET_RATIO + cardHeight
   const wasteTop = state.waste[state.waste.length - 1]
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} elapsedSeconds={session.elapsed} movesCount={session.moves} rules={PYRAMID_RULES}>
+      <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={PYRAMID_RULES}>
         <View style={styles.board}>
           <View style={[styles.controlRow, { width }]}>
             <DiscardCell card={won ? undefined : state.discard[state.discard.length - 1]} isFlyingHere={!!flying && flying.to.zone === 'discard'} viewRef={discardViewRef} />
-            <StockWaste style={styles.stockRow} dropZones={dropZones} stockTopCard={state.stock[state.stock.length - 1]} wasteTop={wasteTop} wasteSelected={!!selected && selected.zone === 'waste'} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} wasteHiddenCount={flying && flying.to.zone === 'waste' ? 1 : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} onDrawStock={handleDrawStock} onWastePress={handleSelectWaste} onWasteDrop={(x, y) => attemptDrop({ zone: 'waste', index: 0 }, x, y)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
+            <StockWaste style={styles.stockRow} gap={gap} dropZones={dropZones} stockTopCard={state.stock[state.stock.length - 1]} wasteTop={wasteTop} wasteSelected={!!selected && selected.zone === 'waste'} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} wasteHiddenCount={flying && flying.to.zone === 'waste' ? 1 : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} onDrawStock={handleDrawStock} onWastePress={handleSelectWaste} onWasteDrop={(x, y) => attemptDrop({ zone: 'waste', index: 0 }, x, y)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
           </View>
 
           <View ref={triangleViewRef} collapsable={false} style={[styles.triangle, { width, height }]}>
             {state.pyramid.map((card, index) => {
               if (!card) return null
               const { row, col } = rowColOf(index)
-              const { left, top } = cardPosition(row, col, cardWidth, cardHeight)
+              const { left, top } = cardPosition(row, col, cardWidth, cardHeight, gap)
               const exposed = isExposed(state.pyramid, row, col)
               const isHidden = pyramidHiddenIds.has(card.id)
               const isSelected = !!selected && selected.zone === 'pyramid' && selected.index === index
@@ -1096,7 +1104,7 @@ function PyramidScreenInner() {
         <View style={styles.winOverlay} pointerEvents='box-none'>
           <View style={styles.winBanner}>
             <Text style={styles.winText}>
-              Pyramid cleared! {formatTime(session.elapsed)} · {session.moves} moves · Score {computeScore(session.moves, session.elapsed)}
+              Pyramid cleared! {formatTime(session.getElapsed())} · {session.moves} moves · Score {computeScore(session.moves, session.getElapsed())}
             </Text>
             <Pressable style={styles.button} onPress={startNewGame}>
               <Text style={styles.buttonText}>New Game</Text>

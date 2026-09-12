@@ -1,5 +1,6 @@
 import { getBlendedColor, getTonalColor, getTriadicPalette } from '@rific/auto-paper'
 import type { TableColors } from '@tastic/cards'
+import { useMemo } from 'react'
 import { useTheme } from 'react-native-paper'
 
 import { useProfiles } from '@/stores/profiles'
@@ -155,12 +156,25 @@ function derivePlayerTableColors(profileColor: string, dark: boolean, base: Tabl
 /** Read the OS/user-selected appearance and active player profile, returning the matching
  * palette - always derived (see derivePlayerTableColors), from the active profile/guest's own
  * color where one's been picked, or DEFAULT_SEED_COLOR otherwise. Must be called from inside both
- * auto-paper's <Provider> and <ProfilesProvider> (both mounted in src/app/_layout.tsx). */
+ * auto-paper's <Provider> and <ProfilesProvider> (both mounted in src/app/_layout.tsx).
+ *
+ * Memoized on [dark, tableColorOverride] - derivePlayerTableColors runs a real RGB/HSL color-blend
+ * pipeline (several getBlendedColor/getTonalColor/getTriadicPalette calls, each doing regex-backed
+ * hex/rgb string parsing), and this hook is called directly by every PlayingCard/EmptySlot/
+ * FoundationSlot instance (not just once per screen) - unmemoized, a single move/tap/drag-drop
+ * redid that full derivation independently for every one of the ~40-52+ visible cards on the
+ * board, every time, and returned a brand-new TableColors object each time even when nothing about
+ * the theme/profile actually changed. That defeated every downstream useMemo/React.memo keyed on
+ * `colors` too - including @tastic/cards' own CardFace/CardBack memoization, whose whole premise is
+ * a stable `colors` reference across unrelated re-renders. Confirmed as a real, live perf cost via
+ * a dedicated audit, not just a theoretical one. */
 export function useTableColors(): TableColors {
   const { dark } = useTheme()
-  const base = dark ? darkColors : lightColors
   const { tableColorOverride } = useProfiles()
-  return derivePlayerTableColors(tableColorOverride ?? DEFAULT_SEED_COLOR, dark, base)
+  return useMemo(() => {
+    const base = dark ? darkColors : lightColors
+    return derivePlayerTableColors(tableColorOverride ?? DEFAULT_SEED_COLOR, dark, base)
+  }, [dark, tableColorOverride])
 }
 
 /** A representative slice of the active palette for @tastic/animations' Fireworks background -

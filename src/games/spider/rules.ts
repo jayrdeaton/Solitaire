@@ -2,7 +2,7 @@ import { pickBestTableauTarget } from '@/engine/autoMove'
 import { shuffledDeck } from '@/engine/deck'
 import { GameController, Move, PileRef } from '@/engine/gameTypes'
 import { isDescendingSameSuit, top } from '@/engine/pile'
-import { Card, cloneCard, SUITS } from '@/engine/types'
+import { Card, SUITS } from '@/engine/types'
 
 export interface SpiderState {
   tableau: Card[][]
@@ -20,18 +20,28 @@ export interface SpiderState {
 const NUM_COLUMNS = 10
 const DEAL_COUNTS = [6, 6, 6, 6, 5, 5, 5, 5, 5, 5] // 4 columns of 6, 6 columns of 5 = 54 cards
 
+// Shallow: a fresh outer `tableau` array (so a caller can reassign state.tableau[i] to a
+// brand-new column without touching the original state's array), but every column and every
+// card inside starts out as the exact SAME reference as `state`'s own - `stock`/`completed`/
+// `completedRuns` start out as the exact same array references too. tryMove/drawStock below
+// replace only the specific column(s)/list(s) a move actually touches, and clone an individual
+// card only at the one spot its faceUp is actually flipped in place (see resolveCompletedSequence
+// and the flip sites in tryMove/drawStock) - every untouched card elsewhere on the board keeps
+// its exact pre-move object identity.
 function cloneState(state: SpiderState): SpiderState {
   return {
-    tableau: state.tableau.map((col) => col.map(cloneCard)),
-    stock: state.stock.map(cloneCard),
-    completed: state.completed.map(cloneCard),
-    completedRuns: state.completedRuns.map((run) => run.map(cloneCard))
+    tableau: state.tableau.slice(),
+    stock: state.stock,
+    completed: state.completed,
+    completedRuns: state.completedRuns
   }
 }
 
 /** Check the top run of a column for a completed King->Ace same-suit sequence; if found, remove
  * it and return its King (the card the screen displays in that sequence's "foundation" slot)
- * along with the full run, King first through Ace last. */
+ * along with the full run, King first through Ace last. `tableau` must already be an array the
+ * caller owns (never shared with a pre-move state) - this only ever replaces `tableau[colIndex]`
+ * wholesale with a fresh slice, it never mutates the column array that was there before. */
 function resolveCompletedSequence(tableau: Card[][], colIndex: number): { king: Card; run: Card[] } | null {
   const col = tableau[colIndex]
   if (col.length < 13) return null
@@ -40,10 +50,14 @@ function resolveCompletedSequence(tableau: Card[][], colIndex: number): { king: 
   if (topRun[0].rank !== 13) return null
   if (!topRun.every((c) => c.faceUp)) return null
   if (!isDescendingSameSuit(topRun)) return null
-  // It's a complete run - remove it.
-  tableau[colIndex] = col.slice(0, col.length - 13)
-  const newTop = tableau[colIndex][tableau[colIndex].length - 1]
-  if (newTop) newTop.faceUp = true
+  // It's a complete run - remove it. The cards left behind keep their exact identity except the
+  // new top card, which is replaced with a face-up clone (never mutated in place) if it wasn't
+  // face-up already.
+  const remaining = col.slice(0, col.length - 13)
+  const i = remaining.length - 1
+  const c = remaining[i]
+  if (c && !c.faceUp) remaining[i] = { ...c, faceUp: true }
+  tableau[colIndex] = remaining
   return { king: topRun[0], run: topRun }
 }
 
@@ -219,18 +233,23 @@ export function createSpiderController(numSuits: 1 | 2 | 4): GameController<Spid
       }
 
       const next = cloneState(state)
-      const nextFrom = next.tableau[from.index]
-      const nextTo = next.tableau[to.index]
+      const nextFrom = next.tableau[from.index].slice()
+      const nextTo = next.tableau[to.index].slice()
       const moved = nextFrom.splice(nextFrom.length - count, count)
       nextTo.push(...moved)
+      next.tableau[from.index] = nextFrom
+      next.tableau[to.index] = nextTo
 
-      const newTop = nextFrom[nextFrom.length - 1]
-      if (newTop) newTop.faceUp = true
+      // Replace (never mutate) the newly-exposed source-column top card, if it wasn't face-up
+      // already - every other card in nextFrom/nextTo keeps its exact pre-move identity.
+      const topIndex = nextFrom.length - 1
+      const newTop = nextFrom[topIndex]
+      if (newTop && !newTop.faceUp) nextFrom[topIndex] = { ...newTop, faceUp: true }
 
       const completedSequence = resolveCompletedSequence(next.tableau, to.index)
       if (completedSequence) {
-        next.completed.push(completedSequence.king)
-        next.completedRuns.push(completedSequence.run)
+        next.completed = next.completed.concat(completedSequence.king)
+        next.completedRuns = next.completedRuns.concat([completedSequence.run])
       }
 
       return next
@@ -241,16 +260,22 @@ export function createSpiderController(numSuits: 1 | 2 | 4): GameController<Spid
       if (state.tableau.some((col) => col.length === 0)) return null
 
       const next = cloneState(state)
+      const nextStock = next.stock.slice()
       for (let col = 0; col < NUM_COLUMNS; col++) {
-        const card = next.stock.shift()!
-        card.faceUp = true
-        next.tableau[col].push(card)
+        const card = nextStock.shift()!
+        // Every dealt card genuinely flips face-up here (unlike the reveal above, there's no
+        // untouched-vs-touched distinction for the drawn card itself) - but the rest of the
+        // column it lands on is untouched, so build the new column via concat rather than a
+        // deep clone, keeping every existing card's identity intact.
+        const flipped = card.faceUp ? card : { ...card, faceUp: true }
+        next.tableau[col] = next.tableau[col].concat(flipped)
       }
+      next.stock = nextStock
       for (let col = 0; col < NUM_COLUMNS; col++) {
         const completedSequence = resolveCompletedSequence(next.tableau, col)
         if (completedSequence) {
-          next.completed.push(completedSequence.king)
-          next.completedRuns.push(completedSequence.run)
+          next.completed = next.completed.concat(completedSequence.king)
+          next.completedRuns = next.completedRuns.concat([completedSequence.run])
         }
       }
       return next

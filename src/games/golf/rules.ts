@@ -14,7 +14,7 @@
 import { shuffledDeck } from '@/engine/deck'
 import { GameController, Move, PileRef } from '@/engine/gameTypes'
 import { top } from '@/engine/pile'
-import { Card, cloneCard } from '@/engine/types'
+import { Card } from '@/engine/types'
 
 export interface GolfState {
   /** 7 tableau columns, 5 cards each at deal, all face up. */
@@ -25,11 +25,33 @@ export interface GolfState {
   stock: Card[]
 }
 
+// Shallow: a fresh outer tableau array (so a caller can reassign state.tableau[i] to a brand-new
+// column without touching the original state), but every column/card starts out as the exact SAME
+// reference as `state`'s own; waste/stock likewise start out as state's own array references.
+// tryMove/drawStock below replace only the specific pile(s) a move actually touches (via setPile),
+// and clone an individual card only at the one spot its faceUp is actually flipped ({ ...card,
+// faceUp: true } in drawStock) - every untouched card elsewhere on the board keeps its exact
+// pre-move object identity.
 function cloneState(state: GolfState): GolfState {
   return {
-    tableau: state.tableau.map((col) => col.map(cloneCard)),
-    waste: state.waste.map(cloneCard),
-    stock: state.stock.map(cloneCard)
+    tableau: state.tableau.slice(),
+    waste: state.waste,
+    stock: state.stock
+  }
+}
+
+/** Writes a (already-fresh, caller-owned) pile back into `state` at `ref`. */
+function setPile(state: GolfState, ref: PileRef, pile: Card[]): void {
+  switch (ref.zone) {
+    case 'tableau':
+      state.tableau[ref.index] = pile
+      break
+    case 'waste':
+      state.waste = pile
+      break
+    case 'stock':
+      state.stock = pile
+      break
   }
 }
 
@@ -62,9 +84,15 @@ function isAdjacentRank(a: Card, b: Card, wrapAceKing: boolean): boolean {
 function drawStock(state: GolfState): GolfState | null {
   if (state.stock.length === 0) return null // no recycling - a real dealer's stock runs out for good
   const next = cloneState(state)
-  const card = next.stock.pop()!
-  card.faceUp = true
-  next.waste.push(card)
+  const nextStock = next.stock.slice()
+  const nextWaste = next.waste.slice()
+  const card = nextStock.pop()!
+  // Stock cards are always dealt face-down, so this always clones - never mutate a card that may
+  // still be shared with the pre-move state (sitting in the undo stack) by assigning its field
+  // in place.
+  nextWaste.push(card.faceUp ? card : { ...card, faceUp: true })
+  setPile(next, { zone: 'stock', index: 0 }, nextStock)
+  setPile(next, { zone: 'waste', index: 0 }, nextWaste)
   return next
 }
 
@@ -90,8 +118,12 @@ export function createGolfController(wrapAceKing: boolean): GameController<GolfS
     if (!isAdjacentRank(movingCard, wasteTop, wrapAceKing)) return null
 
     const next = cloneState(state)
-    next.tableau[from.index].pop()
-    next.waste.push({ ...movingCard })
+    const nextCol = next.tableau[from.index].slice()
+    const moved = nextCol.pop()! // same card reference - it's relocated, not changed, so no clone
+    setPile(next, from, nextCol)
+    const nextWaste = next.waste.slice()
+    nextWaste.push(moved)
+    setPile(next, to, nextWaste)
     return next
   }
 

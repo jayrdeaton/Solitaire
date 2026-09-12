@@ -21,11 +21,12 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, cardWidthForRow, type TableColors } from '@tastic/cards'
+import { CardSizeProvider, type TableColors } from '@tastic/cards'
 import { computeContentBounds } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 
+import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
@@ -52,6 +53,7 @@ import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -61,7 +63,6 @@ import { buildAcesUpDealSequence } from './dealSequence'
 import { AcesUpController, AcesUpState } from './rules'
 
 const NUM_PILES = 4
-const PILE_GAP = 16
 const PILE_MAX_HEIGHT = 320
 
 // A plain face-down placeholder for the stock pile display - id/suit/rank are never shown
@@ -75,10 +76,10 @@ function AcesUpScreenInner() {
   const { info: infoToast } = useToast()
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, NUM_PILES, PILE_GAP)
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, NUM_PILES)
   // Spans the same width as pilesRow below (4 piles + 3 gaps) so topRow's own space-between can
   // put the discard pile and stock at its two ends, mirroring Pyramid's controlRow/triangle.
-  const pilesWidth = cardWidth * NUM_PILES + PILE_GAP * (NUM_PILES - 1)
+  const pilesWidth = cardWidth * NUM_PILES + gap * (NUM_PILES - 1)
   const [state, setState] = useState<AcesUpState | null>(null)
   const [undoStack, setUndoStack] = useState<UndoEntry<AcesUpState>[]>([])
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
@@ -344,10 +345,18 @@ function AcesUpScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Deliberately not keyed on a ticking elapsed-seconds value the way an earlier version of this
+  // effect was: `session.getElapsed()` computes the true current elapsed from wall-clock time on
+  // demand (see useGameSession.ts), so a save made at the last real move is never stale even once
+  // the player just sits looking at the board afterward - resuming always recomputes the exact
+  // right value instead of depending on whenever this effect last happened to run.
   useEffect(() => {
-    if (state && !won && !stuck) saveGameInProgress('acesup', { state, undoStack, moves: session.moves, elapsedSeconds: session.elapsed })
+    if (state && !won && !stuck) saveGameInProgress('acesup', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, stuck, session.elapsed, undoStack])
+  }, [state, won, stuck, undoStack])
+  useSaveInProgressBackstop(!!state && !won && !stuck, () => {
+    if (state && !won && !stuck) saveGameInProgress('acesup', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
+  })
 
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() rules.ts already implements. Only highlights;
@@ -539,7 +548,7 @@ function AcesUpScreenInner() {
   return (
     <CardSizeProvider width={cardWidth}>
       {/* eslint-disable-next-line react-hooks/immutability */}
-      <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} hasProgress={session.moves > 0} elapsedSeconds={session.elapsed} movesCount={session.moves} rules={ACESUP_RULES}>
+      <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={ACESUP_RULES}>
         <View style={[styles.topRow, { width: pilesWidth }]}>
           <DiscardCell card={state.discard[state.discard.length - 1]} isFlyingHere={!!flying && flying.to.zone === 'discard'} viewRef={discardViewRef} />
           <View ref={stockViewRef} collapsable={false}>
@@ -547,7 +556,7 @@ function AcesUpScreenInner() {
           </View>
         </View>
 
-        <View style={styles.pilesRow}>
+        <View style={[styles.pilesRow, { gap }]}>
           {state.piles.map((pile, pileIndex) => {
             const hiddenCount = flying && flying.to.zone === 'tableau' && flying.to.index === pileIndex ? flying.count : 0
             // Hidden entirely once won - the win cascade owns displaying these cards now (see the
@@ -580,7 +589,7 @@ function AcesUpScreenInner() {
       </GameChrome>
       {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.elapsed} moves={session.moves} score={computeScore(session.moves, session.elapsed)} onNewGame={startNewGame} />}
+      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
       {stuck && !won && <LossBanner colors={colors} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
@@ -603,7 +612,6 @@ function makeStyles(colors: TableColors) {
     pile: {},
     pilesRow: {
       flexDirection: 'row',
-      gap: PILE_GAP,
       paddingBottom: 20
     },
     topRow: {

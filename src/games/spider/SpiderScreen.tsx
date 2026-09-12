@@ -1,12 +1,13 @@
 import { Pressable, useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, cardWidthForRow, faceUpFanOffset, type TableColors, useCardSize } from '@tastic/cards'
+import { CardSizeProvider, faceUpFanOffset, type TableColors, useCardSize } from '@tastic/cards'
 import { computeContentBounds } from '@tastic/core'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, Text, useWindowDimensions, View, ViewStyle } from 'react-native'
 import Animated, { SharedValue, useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
 
+import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView, ScreenPoint } from '@/components/dealing/measureView'
@@ -33,6 +34,7 @@ import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 import { useSettings } from '@/stores/settings'
@@ -42,7 +44,6 @@ import { createSpiderController, SpiderState } from './rules'
 import { SpiderSettingsSection } from './SpiderSettingsSection'
 
 const TABLEAU_COLUMNS = 10
-const TABLEAU_GAP = 4
 // Stock always starts a game with exactly 50 cards (104 total minus the 54 dealt into the tableau,
 // true for every numSuits variant - see rules.ts's newGame) - 5 rounds of TABLEAU_COLUMNS cards
 // each, so the fan never needs more than 5 packets regardless of how the game was configured.
@@ -247,7 +248,7 @@ function SpiderScreenInner() {
 
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, TABLEAU_GAP)
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const ghost = useDragGhost()
   const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
   const deal = useDealAnimator()
@@ -416,17 +417,21 @@ function SpiderScreenInner() {
   // a just-won deal doesn't get checkpointed as still in-progress (the win-check effect below
   // clears the save outright instead) - since `won` is derived fresh from `state` on every render,
   // undoing back out of a won position re-enables saving again on that same render, no separate
-  // reset needed. `session.elapsed` is also a dependency, not just `state` - it ticks up once a
-  // second on its own timer (see useGameSession.ts), independent of any move, so a save made at
-  // the last real move goes stale the moment the player just sits looking at the board and then
-  // leaves; resuming would silently roll the clock back to whatever it read at that last move
-  // instead of how long they actually had the deal open.
+  // reset needed. Deliberately NOT also keyed on a ticking elapsed-seconds value the way an
+  // earlier version of this effect was: `session.getElapsed()` computes the true current elapsed
+  // from wall-clock time on demand (see useGameSession.ts), so a save made at the last real move is
+  // never stale even once the player just sits looking at the board afterward - resuming always
+  // recomputes the exact right value instead of depending on whenever this effect last happened to
+  // run.
   useEffect(() => {
     if (state && !won) {
-      saveGameInProgress('spider', { state, undoStack: history, moves: session.moves, elapsedSeconds: session.elapsed, config: numSuits })
+      saveGameInProgress('spider', { state, undoStack: history, moves: session.moves, elapsedSeconds: session.getElapsed(), config: numSuits })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, numSuits, session.elapsed, history])
+  }, [state, won, numSuits, history])
+  useSaveInProgressBackstop(!!state && !won, () => {
+    if (state && !won) saveGameInProgress('spider', { state, undoStack: history, moves: session.moves, elapsedSeconds: session.getElapsed(), config: numSuits })
+  })
 
   // Foundation-equivalent measurement for Spider's win cascade: each completed run's own slot
   // (see completedSlotRefs above) is a stable, always-mounted plain View - unlike a foundation
@@ -1288,9 +1293,9 @@ function SpiderScreenInner() {
       above) - the compiler flags this element too since it (indirectly) passes that same closure
       down. */}
       {/* eslint-disable-next-line react-hooks/immutability */}
-      <GameChrome title='Spider' subtitle={`${numSuits} Suit${numSuits > 1 ? 's' : ''}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={history.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} elapsedSeconds={session.elapsed} movesCount={session.moves} settingsContent={<SpiderSettingsSection />} rules={SPIDER_RULES}>
-        <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + TABLEAU_GAP * (TABLEAU_COLUMNS - 1) }]}>
-          <View style={styles.completedGroup}>
+      <GameChrome title='Spider' subtitle={`${numSuits} Suit${numSuits > 1 ? 's' : ''}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={history.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<SpiderSettingsSection />} rules={SPIDER_RULES}>
+        <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
+          <View style={[styles.completedGroup, { gap }]}>
             {Array.from({ length: 8 }).map((_, i) => {
               // Hidden once won - the win cascade owns these cards now (see runWinCascade), the same
               // way Pyramid's discard-top goes blank once its own chain takes over. Also hidden
@@ -1316,7 +1321,7 @@ function SpiderScreenInner() {
 
         {message ? <Text style={styles.message}>{message}</Text> : null}
 
-        <View style={styles.tableauRow}>
+        <View style={[styles.tableauRow, { gap }]}>
           {state.tableau.map((col, colIndex) => {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
@@ -1350,7 +1355,7 @@ function SpiderScreenInner() {
       {won ? (
         <View style={styles.winBanner}>
           <Text style={styles.winText}>
-            You won! {formatTime(session.elapsed)} · {session.moves} moves · Score {computeScore(session.moves, session.elapsed)}
+            You won! {formatTime(session.getElapsed())} · {session.moves} moves · Score {computeScore(session.moves, session.getElapsed())}
           </Text>
           <Pressable style={[styles.button, styles.winButton]} onPress={handleNewGame}>
             <Text style={styles.buttonText}>New Game</Text>
@@ -1433,8 +1438,7 @@ function makeStyles(colors: TableColors) {
     },
     column: {},
     completedGroup: {
-      flexDirection: 'row',
-      gap: TABLEAU_GAP
+      flexDirection: 'row'
     },
     loadingContainer: {
       alignItems: 'center',
@@ -1456,11 +1460,10 @@ function makeStyles(colors: TableColors) {
     },
     tableauRow: {
       flexDirection: 'row',
-      gap: TABLEAU_GAP,
       paddingBottom: 24
     },
     // width is set inline (cardWidth * TABLEAU_COLUMNS + gaps) rather than left to stretch - on a
-    // wide-enough screen, cardWidthForRow clamps cardWidth at its max, so the tableau row below
+    // wide-enough screen, cardLayoutForRow clamps cardWidth at its max, so the tableau row below
     // stops growing and ends up narrower than the full available width. Left unconstrained, this
     // row's own space-between would still spread across that full (wider) width, dragging StockFan
     // past the tableau's real right edge instead of lining up with column 10.

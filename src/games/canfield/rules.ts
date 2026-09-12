@@ -15,7 +15,7 @@
 import { shuffledDeck } from '@/engine/deck'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { top } from '@/engine/pile'
-import { Card, cardColor, cloneCard, Rank, Suit, SUITS } from '@/engine/types'
+import { Card, cardColor, Rank, Suit, SUITS } from '@/engine/types'
 
 export interface CanfieldState {
   /** 4 tableau columns, each dealt 1 card face up. */
@@ -102,14 +102,21 @@ function runLengthAtTop(column: Card[]): number {
   return column.length - runStart
 }
 
+// Shallow: fresh outer tableau/foundation arrays (so a caller can reassign state.tableau[i] /
+// state.foundation[i] to a brand-new pile without touching the original state), but every pile
+// and every card inside starts out as the exact SAME reference as `state`'s own. tryMove/
+// drawStock below replace only the specific pile(s) a move actually touches (via setPile), and
+// clone an individual card only at the one spot its faceUp is actually flipped in place (see
+// flipFaceUp) - every untouched card elsewhere on the board keeps its exact pre-move object
+// identity.
 function cloneState(state: CanfieldState): CanfieldState {
   return {
-    tableau: state.tableau.map((col) => col.map(cloneCard)),
-    foundation: state.foundation.map((f) => f.map(cloneCard)),
+    tableau: state.tableau.slice(),
+    foundation: state.foundation.slice(),
     foundationRank: state.foundationRank,
-    reserve: state.reserve.map(cloneCard),
-    stock: state.stock.map(cloneCard),
-    waste: state.waste.map(cloneCard)
+    reserve: state.reserve,
+    stock: state.stock,
+    waste: state.waste
   }
 }
 
@@ -126,6 +133,36 @@ function getPile(state: CanfieldState, ref: PileRef): Card[] | null {
     default:
       return null
   }
+}
+
+/** Writes a (already-fresh, caller-owned) pile back into `state` at `ref`. */
+function setPile(state: CanfieldState, ref: PileRef, pile: Card[]): void {
+  switch (ref.zone) {
+    case 'tableau':
+      state.tableau[ref.index] = pile
+      break
+    case 'foundation':
+      state.foundation[ref.index] = pile
+      break
+    case 'reserve':
+      state.reserve = pile
+      break
+    case 'waste':
+      state.waste = pile
+      break
+    case 'stock':
+      state.stock = pile
+      break
+  }
+}
+
+/** Replaces the last card of `pile` (mutated in place, since `pile` is always already a fresh
+ * array the caller owns) with a face-up clone, if it isn't face-up already - never mutates the
+ * card object itself. */
+function flipFaceUp(pile: Card[]): void {
+  const i = pile.length - 1
+  const c = pile[i]
+  if (c && !c.faceUp) pile[i] = { ...c, faceUp: true }
 }
 
 function newGame(seed: number): CanfieldState {
@@ -186,14 +223,15 @@ function tryMove(state: CanfieldState, move: Move): CanfieldState | null {
   }
 
   const next = cloneState(state)
-  const nextSourcePile = getPile(next, from)!
-  const nextDestPile = getPile(next, to)!
+  const nextSourcePile = getPile(next, from)!.slice()
+  const nextDestPile = getPile(next, to)!.slice()
+  setPile(next, from, nextSourcePile)
+  setPile(next, to, nextDestPile)
   const moved = nextSourcePile.splice(nextSourcePile.length - count, count)
   nextDestPile.push(...moved)
 
   if (from.zone === 'reserve') {
-    const newTop = top(nextSourcePile)
-    if (newTop && !newTop.faceUp) newTop.faceUp = true
+    flipFaceUp(nextSourcePile)
   }
 
   return next
@@ -208,22 +246,27 @@ function makeDrawStock(drawCount: 1 | 3) {
   return function drawStock(state: CanfieldState): CanfieldState | null {
     if (state.stock.length > 0) {
       const next = cloneState(state)
-      const n = Math.min(drawCount, next.stock.length)
-      const drawn = next.stock.splice(next.stock.length - n, n)
+      const nextStock = next.stock.slice()
+      const nextWaste = next.waste.slice()
+      const n = Math.min(drawCount, nextStock.length)
+      const drawn = nextStock.splice(nextStock.length - n, n)
       for (const c of drawn) {
-        c.faceUp = true
-        next.waste.push(c)
+        nextWaste.push(c.faceUp ? c : { ...c, faceUp: true })
       }
+      setPile(next, { zone: 'stock', index: 0 }, nextStock)
+      setPile(next, { zone: 'waste', index: 0 }, nextWaste)
       return next
     }
     if (state.waste.length > 0) {
       const next = cloneState(state)
-      const recycled = next.waste
+      // Every recycled card's faceUp genuinely flips here - unlike the draw above, there's no
+      // untouched subset to preserve identity for; all of them really do change.
+      const recycled = state.waste
         .slice()
         .reverse()
         .map((c) => ({ ...c, faceUp: false }))
-      next.stock = recycled
-      next.waste = []
+      setPile(next, { zone: 'stock', index: 0 }, recycled)
+      setPile(next, { zone: 'waste', index: 0 }, [])
       return next
     }
     return null

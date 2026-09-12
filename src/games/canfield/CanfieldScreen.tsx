@@ -8,11 +8,12 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, cardWidthForRow, faceUpFanOffset, type TableColors } from '@tastic/cards'
+import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
 import { computeContentBounds } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 
+import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
@@ -43,6 +44,7 @@ import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -56,11 +58,10 @@ import { CanfieldState, createCanfieldController, findSafeAutoPlay, isDescending
 // Floor for useTableauMaxHeight below, not a fixed height anymore - a short screen never fans out
 // less generously than this, but a screen with real headroom to spare now gets more of it.
 const TABLEAU_MIN_HEIGHT = 460
-const TABLEAU_GAP = 10
 // LAYOUT DECISION: the top row needs 7 card-slots (4 foundations + 1 reserve + stock/waste), but
 // the tableau below is only 4 columns wide - the opposite of every other game here, where the top
 // row and tableau are similar widths. Sizing cardWidth off the tableau's own 4 columns (Klondike's
-// approach - see its own TABLEAU_COLUMNS-based cardWidthForRow call) would let the top row's 7
+// approach - see its own TABLEAU_COLUMNS-based cardLayoutForRow call) would let the top row's 7
 // slots overflow the screen on anything narrower than a very wide window. Instead, cardWidth is
 // sized off this TOP row's own 7 slots - the widest row on screen - the same "widest row sets the
 // scale, narrower rows center underneath" idiom Pyramid already uses (its 7-card triangle base
@@ -68,15 +69,18 @@ const TABLEAU_GAP = 10
 // centers under it - see PyramidScreen.tsx). The 4-column tableau then renders smaller and centers
 // underneath the top row (see `board`'s alignItems: 'center' below).
 //
-// TOP_ROW_GAP is deliberately reused as EVERY real gap inside the top row (its own inter-group
-// `gap`, foundationsGroup's internal `gap`, and StockWaste's own hardcoded internal gap all equal
-// 10), which makes this reservation pixel-exact rather than a rough guess: 4 foundations + 1
-// reserve + 2 (stock/waste) = 7 card-widths, with 6 gaps between them (2 between the 3 groups + 3
-// inside foundationsGroup + 1 inside StockWaste) - exactly matching cardWidthForRow's own
-// `7*cardWidth + 10*6` reservation formula, so the top row's real rendered width never exceeds (or
-// falls meaningfully short of) what was reserved for it.
+// The `gap` returned alongside cardWidth by the one cardLayoutForRow call below is deliberately
+// reused as EVERY real gap inside the top row (its own inter-group `gap`, foundationsGroup's
+// internal `gap`, and StockWaste's own internal CARD_GAP_MIN gap all stay equal), which makes this
+// reservation pixel-exact rather than a rough guess: 4 foundations + 1 reserve + 2 (stock/waste) =
+// 7 card-widths, with 6 gaps between them (2 between the 3 groups + 3 inside foundationsGroup + 1
+// inside StockWaste) - exactly matching cardLayoutForRow's own `7*cardWidth + gap*6` reservation
+// formula, so the top row's real rendered width never exceeds (or falls meaningfully short of)
+// what was reserved for it. The narrower 4-column tableau row underneath breathes by that same
+// `gap` too (see TABLEAU_GAP's old declaration, now gone - it and TOP_ROW_GAP have collapsed into
+// this one shared runtime value), so the two rows always match even once cards hit CARD_WIDTH_MAX
+// and cardLayoutForRow starts growing the gap past CARD_GAP_MIN.
 const TOP_ROW_UNITS = 7
-const TOP_ROW_GAP = 10
 
 /** The one card that seeds every foundation's starting rank - rules.ts's newGame cuts it from the
  * very top of the deck and pushes it onto its own suit's foundation pile before anything else, so
@@ -146,7 +150,7 @@ function CanfieldScreenInner() {
   const session = useGameSession()
   const { width: winWidth } = useWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const cardWidth = cardWidthForRow(contentWidth - GAME_CONTENT_PADDING * 2, TOP_ROW_UNITS, TOP_ROW_GAP)
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TOP_ROW_UNITS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
   const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
@@ -435,15 +439,19 @@ function CanfieldScreenInner() {
   // Saves after every move/undo/autoplay/fresh-deal (all flow through setState). Gated on !won:
   // Undo is never disabled post-win (a pre-existing gap, out of scope here), so without this guard,
   // winning and then tapping the still-enabled Undo would resurrect a save for an already-resolved
-  // deal right after checkWin above just cleared it. `session.elapsed` is also a dependency, not
-  // just `state` - it ticks up once a second on its own timer (see useGameSession.ts), independent
-  // of any move, so a save made at the last real move goes stale the moment the player just sits
-  // looking at the board and then leaves; resuming would silently roll the clock back to whatever
-  // it read at that last move instead of how long they actually had the deal open.
+  // deal right after checkWin above just cleared it. Deliberately NOT also keyed on a ticking
+  // elapsed-seconds value the way an earlier version of this effect was: `session.getElapsed()`
+  // computes the true current elapsed from wall-clock time on demand (see useGameSession.ts), so a
+  // save made at the last real move is never stale even once the player just sits looking at the
+  // board afterward - resuming always recomputes the exact right value instead of depending on
+  // whenever this effect last happened to run.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('canfield', { state, undoStack, moves: session.moves, elapsedSeconds: session.elapsed, config: canfieldDraw })
+    if (state && !won) saveGameInProgress('canfield', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: canfieldDraw })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, canfieldDraw, session.elapsed, undoStack])
+  }, [state, won, canfieldDraw, undoStack])
+  useSaveInProgressBackstop(!!state && !won, () => {
+    if (state && !won) saveGameInProgress('canfield', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: canfieldDraw })
+  })
 
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
@@ -759,10 +767,10 @@ function CanfieldScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Canfield' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} elapsedSeconds={session.elapsed} movesCount={session.moves} settingsContent={<CanfieldSettingsSection />} rules={CANFIELD_RULES}>
+      <GameChrome title='Canfield' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<CanfieldSettingsSection />} rules={CANFIELD_RULES}>
         <View style={styles.board}>
-          <View style={styles.topRow}>
-            <View style={styles.foundationsGroup}>
+          <View style={[styles.topRow, { gap }]}>
+            <View style={[styles.foundationsGroup, { gap }]}>
               {state.foundation.map((pile, i) => {
                 const t = top(pile)
                 // The foundation-starter card is part of the initial deal sequence too (see
@@ -792,10 +800,10 @@ function CanfieldScreenInner() {
               <ReserveCell card={reserveTop} isFlyingHere={reserveFlyingHere} dealHidden={reserveDealHidden} shakeToken={reserveTop && shake?.cardId === reserveTop.id ? shake.token : undefined} highlighted={hintCountFor(activeHint, { zone: 'reserve', index: 0 }) > 0} onPress={(measure) => handleCardTap({ zone: 'reserve', index: 0 }, reserveTop!.id, measure)} onDrop={(x, y) => attemptDrop({ zone: 'reserve', index: 0 }, 1, x, y, reserveTop!.id)} />
             </DropZone>
 
-            <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteHiddenCount={flying && flying.to.zone === 'waste' ? flying.count : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id)} stockRef={stockViewRef} />
+            <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteHiddenCount={flying && flying.to.zone === 'waste' ? flying.count : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id)} stockRef={stockViewRef} />
           </View>
 
-          <View style={styles.tableauRow}>
+          <View style={[styles.tableauRow, { gap }]}>
             {state.tableau.map((col, colIndex) => {
               const dragConfig: PileDragConfig = {
                 registry: dropZones,
@@ -824,7 +832,7 @@ function CanfieldScreenInner() {
       animation, not buried under it. */}
       {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.elapsed} moves={session.moves} score={computeScore(session.moves, session.elapsed)} onNewGame={startNewGame} />}
+      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }
@@ -843,8 +851,7 @@ function makeStyles(colors: TableColors) {
     },
     foundationSlot: {},
     foundationsGroup: {
-      flexDirection: 'row',
-      gap: TOP_ROW_GAP
+      flexDirection: 'row'
     },
     loadingText: {
       color: '#fff',
@@ -857,12 +864,10 @@ function makeStyles(colors: TableColors) {
     tableauColumn: {},
     tableauRow: {
       flexDirection: 'row',
-      gap: TABLEAU_GAP,
       paddingBottom: 20
     },
     topRow: {
       flexDirection: 'row',
-      gap: TOP_ROW_GAP,
       marginBottom: 16
     }
   })
