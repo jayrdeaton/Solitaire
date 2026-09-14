@@ -15,7 +15,7 @@ import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView, ScreenPoint } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
-import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { autoMoveSpringFor } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
@@ -242,7 +242,7 @@ function PyramidScreenInner() {
    * queued against a game that's since been replaced by "New Game" doesn't measure/land against
    * the new deal's DOM (card ids are shuffle-independent and reused across deals - see deck.ts).
    * Mirrors Klondike's own pendingFlightRef exactly. */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; gen: number } | null>(null)
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
   const winCascade = useWinCascade()
   // Derived from `state` every render (see useDerivedWinCheck) rather than mirrored into its own
   // useState: it's a pure function of state, so Undo-ing out of a won position correctly drops the
@@ -285,12 +285,12 @@ function PyramidScreenInner() {
       // shuffle-independent and reused across deals - see deck.ts), so drop this flight instead of
       // landing on a nonsensical position.
       if (dealTokenRef.current !== pending.gen || !landed) {
-        ghost.hide()
+        pending.flight.hide()
         setFlying(null)
         undoBusyRef.current = false
         return
       }
-      ghost.flyTo(landed.x, landed.y, () => {
+      pending.flight.flyTo(landed.x, landed.y, () => {
         setFlying(null)
         undoBusyRef.current = false
       })
@@ -575,16 +575,12 @@ function PyramidScreenInner() {
     setSelected(null)
 
     if (origin && movingCard) {
-      ghost.originX.value = origin.x
-      ghost.originY.value = origin.y
-      ghost.dx.value = 0
-      ghost.dy.value = 0
       playCardSound()
       hapticCard()
-      ghost.show({ cards: [movingCard], offsetStep: 0, cardWidth })
+      const flight = ghost.show({ cards: [movingCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
       setFlying({ to: move.from, count: move.count })
       setState(prevState)
-      pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: true, gen: dealTokenRef.current }
+      pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: true, gen: dealTokenRef.current, flight }
     } else {
       setState(prevState)
       undoBusyRef.current = false
@@ -625,17 +621,13 @@ function PyramidScreenInner() {
     // (pre-recycle, face-up) order - the same cards currently sitting reversed/face-down in
     // state.stock.
     const cards = prevState.waste
-    ghost.originX.value = stockOrigin.x
-    ghost.originY.value = stockOrigin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards, offsetStep: 0, cardWidth })
+    const flight = ghost.show({ cards, offsetStep: 0, cardWidth }, { x: stockOrigin.x, y: stockOrigin.y })
     setStockHidden(true)
     setFlying({ to: { zone: 'waste', index: 0 }, count: move.count })
     setState(prevState)
-    ghost.flyTo(wasteDest.x, wasteDest.y, () => {
+    flight.flyTo(wasteDest.x, wasteDest.y, () => {
       setStockHidden(false)
       setFlying(null)
       undoBusyRef.current = false
@@ -739,14 +731,14 @@ function PyramidScreenInner() {
     attemptMove(selected, ref, measure)
   }
 
-  // Shared tail for the solo (King) paths below: flies whichever single card the shared `ghost`
-  // is currently showing on to the discard pile's real position.
-  async function flyToDiscardPile() {
+  // Shared tail for the solo (King) paths below: flies whichever single card `flight` is
+  // currently showing on to the discard pile's real position.
+  async function flyToDiscardPile(flight: DragFlightHandle) {
     const discardPos = await measureView(discardViewRef.current)
     if (discardPos) {
-      ghost.flyTo(discardPos.x, discardPos.y, () => setFlying(null))
+      flight.flyTo(discardPos.x, discardPos.y, () => setFlying(null))
     } else {
-      ghost.hide()
+      flight.hide()
       setFlying(null)
     }
   }
@@ -843,14 +835,10 @@ function PyramidScreenInner() {
       // needed, unlike the pair case below where "first" was selected on a PREVIOUS tap.
       setFlying({ to: { zone: 'discard', index: 0 }, count: 1 })
       setState(result)
-      ghost.originX.value = toOrigin.x
-      ghost.originY.value = toOrigin.y
-      ghost.dx.value = 0
-      ghost.dy.value = 0
       playCardSound()
       hapticCard()
-      ghost.show({ cards: [{ ...fromCard, faceUp: true }], offsetStep: 0, cardWidth })
-      await flyToDiscardPile()
+      const flight = ghost.show({ cards: [{ ...fromCard, faceUp: true }], offsetStep: 0, cardWidth }, { x: toOrigin.x, y: toOrigin.y })
+      await flyToDiscardPile(flight)
       return
     }
 
@@ -885,14 +873,13 @@ function PyramidScreenInner() {
   }
 
   // Drag-completed pairing/King removal - same choreography as attemptMove above, just sourced
-  // from a drop instead of a second tap. The dragged ("first") card's ghost already exists by drop
-  // time (DraggableCard's own pan gesture calls ghost.show() on drag start, against this same
-  // shared useDragGhost() context, and deliberately leaves it mounted on a successful drop for the
-  // caller to resolve - see handleRelease), so a solo (King) drop can fly it on to the discard
-  // as-is; a pair instead reads "first"'s current position straight off that same ghost, retires
-  // it, and hands both cards off to flyPairIndependently so they can travel to the discard on
-  // their own, independent paths.
-  async function attemptDrop(from: PileRef, absoluteX: number, absoluteY: number): Promise<boolean> {
+  // from a drop instead of a second tap. The dragged ("first") card's own flight already exists by
+  // drop time (DraggableCard's own pan gesture calls ghost.showLive() on drag start, and hands that
+  // same DragFlightHandle in here as `flight` on a successful drop - see DraggableCard.tsx's
+  // onDrop), so a solo (King) drop can fly it on to the discard as-is; a pair instead reads
+  // "first"'s current position straight off that same flight, retires it, and hands both cards off
+  // to flyPairIndependently so they can travel to the discard on their own, independent paths.
+  async function attemptDrop(from: PileRef, absoluteX: number, absoluteY: number, flight: DragFlightHandle): Promise<boolean> {
     if (!state) return false
     const target = await dropZones.hitTest(absoluteX, absoluteY)
     if (!target) return false
@@ -911,13 +898,13 @@ function PyramidScreenInner() {
       if (!fromCard) {
         pushUndo(state, null)
         setState(result)
-        ghost.hide()
+        flight.hide()
         return true
       }
       pushUndo(state, null, [{ cardId: fromCard.id, ref: from }])
       setFlying({ to: { zone: 'discard', index: 0 }, count: 1 })
       setState(result)
-      await flyToDiscardPile()
+      await flyToDiscardPile(flight)
       return true
     }
 
@@ -929,15 +916,15 @@ function PyramidScreenInner() {
     if (!fromCard || !toCard || !toOrigin) {
       pushUndo(state, null)
       setState(result)
-      ghost.hide()
+      flight.hide()
       return true
     }
 
-    // "first" is still mid-drag in the shared `ghost` (wherever the pointer released it, not
-    // necessarily "second"'s own position) - read its current screen position straight off the
-    // shared values before retiring that ghost: from here the pair flies independently instead.
-    const fromOrigin = { x: ghost.originX.value + ghost.dx.value, y: ghost.originY.value + ghost.dy.value }
-    ghost.hide()
+    // "first" is still mid-drag in `flight` (wherever the pointer released it, not necessarily
+    // "second"'s own position) - read its current screen position straight off its shared values
+    // before retiring that flight: from here the pair flies independently instead.
+    const fromOrigin = { x: flight.originX.value + flight.dx.value, y: flight.originY.value + flight.dy.value }
+    flight.hide()
 
     pushUndo(state, null, [
       { cardId: fromCard.id, ref: from },
@@ -989,20 +976,16 @@ function PyramidScreenInner() {
 
       const recycleMove: MoveInfo = { from: { zone: 'waste', index: 0 }, to: { zone: 'stock', index: 0 }, count: recycledCards.length, anchorCardId: recycledCards[0].id }
 
-      ghost.originX.value = wasteOrigin.x
-      ghost.originY.value = wasteOrigin.y
-      ghost.dx.value = 0
-      ghost.dy.value = 0
       playCardSound()
       hapticCard()
-      ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth })
+      const flight = ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth }, { x: wasteOrigin.x, y: wasteOrigin.y })
       setStockHidden(true)
       setFlying({ to: { zone: 'stock', index: 0 }, count: recycledCards.length })
 
       pushUndo(state, recycleMove)
       setState(result)
       setSelected(null)
-      ghost.flyTo(stockDest.x, stockDest.y, () => {
+      flight.flyTo(stockDest.x, stockDest.y, () => {
         setStockHidden(false)
         setFlying(null)
       })
@@ -1017,19 +1000,15 @@ function PyramidScreenInner() {
       return
     }
 
-    ghost.originX.value = origin.x
-    ghost.originY.value = origin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth })
+    const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     setFlying({ to: { zone: 'waste', index: 0 }, count: 1 })
 
     pushUndo(state, move)
     setState(result)
     setSelected(null)
-    pendingFlightRef.current = { cardId: drawnCard.id, gen: dealTokenRef.current }
+    pendingFlightRef.current = { cardId: drawnCard.id, gen: dealTokenRef.current, flight }
   }
 
   // Finds one legal move (a pairing/solo King) or a stock-draw suggestion to highlight - see
@@ -1066,7 +1045,7 @@ function PyramidScreenInner() {
         <View style={styles.board}>
           <View style={[styles.controlRow, { width }]}>
             <DiscardCell card={won ? undefined : state.discard[state.discard.length - 1]} isFlyingHere={!!flying && flying.to.zone === 'discard'} viewRef={discardViewRef} />
-            <StockWaste gap={gap} dropZones={dropZones} stockTopCard={state.stock[state.stock.length - 1]} wasteTop={wasteTop} wasteSelected={!!selected && selected.zone === 'waste'} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} wasteHiddenCount={flying && flying.to.zone === 'waste' ? 1 : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} onDrawStock={handleDrawStock} onWastePress={handleSelectWaste} onWasteDrop={(x, y) => attemptDrop({ zone: 'waste', index: 0 }, x, y)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
+            <StockWaste gap={gap} dropZones={dropZones} stockTopCard={state.stock[state.stock.length - 1]} wasteTop={wasteTop} wasteSelected={!!selected && selected.zone === 'waste'} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} wasteHiddenCount={flying && flying.to.zone === 'waste' ? 1 : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} onDrawStock={handleDrawStock} onWastePress={handleSelectWaste} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, x, y, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
           </View>
 
           <View ref={triangleViewRef} collapsable={false} style={[styles.triangle, { width, height }]}>
@@ -1086,7 +1065,7 @@ function PyramidScreenInner() {
 
               return (
                 <DropZone key={card.id} registry={dropZones} pileRef={pileRef} style={cardStyle}>
-                  <DraggableCard card={card} selected={isSelected} hidden={isHidden} hinted={hintCountFor(activeHint, pileRef) > 0} onPress={(measure) => handleSelectPyramid(index, measure)} onDrop={(x, y) => attemptDrop(pileRef, x, y)} shakeToken={shake?.cardId === card.id ? shake.token : undefined} testID={`pyramid-${index}`} />
+                  <DraggableCard card={card} selected={isSelected} hidden={isHidden} hinted={hintCountFor(activeHint, pileRef) > 0} onPress={(measure) => handleSelectPyramid(index, measure)} onDrop={(x, y, flight) => attemptDrop(pileRef, x, y, flight)} shakeToken={shake?.cardId === card.id ? shake.token : undefined} testID={`pyramid-${index}`} />
                 </DropZone>
               )
             })}

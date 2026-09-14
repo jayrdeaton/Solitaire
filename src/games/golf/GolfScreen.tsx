@@ -15,7 +15,7 @@ import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
-import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { PileDragConfig, PileView } from '@/components/PileView'
@@ -126,7 +126,7 @@ function GolfScreenInner() {
    * flies back to a real per-card-registered pile. `gen` guards against a "New Game" tapped mid-
    * flight replacing the deal this flight was measuring against (card ids are shuffle-independent
    * and reused across deals - see engine/deck.ts). */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; gen: number } | null>(null)
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
   // Which card (if any) should play its "nowhere to go" shake right now - see handleCardTap and
@@ -288,12 +288,12 @@ function GolfScreenInner() {
     ;(async () => {
       const landed = pending.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(pending.cardId)
       if (dealTokenRef.current !== pending.gen || !landed) {
-        ghost.hide()
+        pending.flight.hide()
         setFlying(null)
         undoBusyRef.current = false
         return
       }
-      ghost.flyTo(landed.x, landed.y, () => {
+      pending.flight.flyTo(landed.x, landed.y, () => {
         setFlying(null)
         undoBusyRef.current = false
       })
@@ -379,33 +379,12 @@ function GolfScreenInner() {
     setUndoStack((stack) => stack.slice(0, -1))
 
     if (origin && movingCard) {
-      // react-hooks/immutability misfires here: originX/originY/dx/dy are Reanimated SharedValues
-      // (see DragGhostController's own interface doc comment - "settable directly from a gesture
-      // worklet with no JS hop") that useDragGhost() deliberately exposes as public mutable fields,
-      // not opaque hook-owned state - assigning `.value` is the correct, intended Reanimated API,
-      // not a React-purity violation. Klondike/Pyramid/Spider/FreeCell all mutate these same fields
-      // the same way and lint clean; this file alone doesn't, for reasons that trace back to
-      // whole-component static analysis quirks in this specific rule rather than anything about this
-      // call site - confirmed directly: an unmodified copy of KlondikeScreen.tsx/PyramidScreen.tsx
-      // relocated into this same directory stays lint-clean, while even a 10-line file containing
-      // nothing but useDragGhost() plus one JSX-reachable `ghost.originX.value = ...` assignment
-      // reproduces this exact warning in isolation. Same root cause (a known false-positive class
-      // for this rule on Reanimated SharedValues reached through a custom hook) DraggableCard.tsx/
-      // PileView.tsx/DragGhostLayer.tsx already document and disable for their own worklet-closure
-      // mutations of this same `ghost` object - see those files for the fuller writeup, including
-      // the config flag (enableCustomTypeDefinitionForReanimated) that was tried there and confirmed
-      // not to help.
-      /* eslint-disable-next-line react-hooks/immutability */
-      ghost.originX.value = origin.x
-      ghost.originY.value = origin.y
-      ghost.dx.value = 0
-      ghost.dy.value = 0
       playCardSound()
       hapticCard()
-      ghost.show({ cards: [movingCard], offsetStep: 0, cardWidth })
+      const flight = ghost.show({ cards: [movingCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
       setFlying({ to: move.from, count: 1 })
       setState(prevState)
-      pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen: dealTokenRef.current }
+      pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen: dealTokenRef.current, flight }
     } else {
       setState(prevState)
       undoBusyRef.current = false
@@ -426,10 +405,10 @@ function GolfScreenInner() {
   // drop) - applies the move, then marks the waste pile "incoming" and stashes the anchor card id
   // for the pendingFlightRef effect above to measure and fly the ghost onto, instead of it just
   // appearing there instantly.
-  function completeMove(from: PileRef, to: PileRef, anchorCardId: string): boolean {
+  function completeMove(from: PileRef, to: PileRef, anchorCardId: string, flight: DragFlightHandle): boolean {
     if (!applyMove(from, to, anchorCardId)) return false
     setFlying({ to, count: 1 })
-    pendingFlightRef.current = { cardId: anchorCardId, gen: dealTokenRef.current }
+    pendingFlightRef.current = { cardId: anchorCardId, gen: dealTokenRef.current, flight }
     return true
   }
 
@@ -451,21 +430,14 @@ function GolfScreenInner() {
       return
     }
 
-    // See handleUndo's identical block above for why react-hooks/immutability is disabled here -
-    // this is the same safe SharedValue.value assignment, on the same `ghost`.
-    /* eslint-disable-next-line react-hooks/immutability */
-    ghost.originX.value = origin.x
-    ghost.originY.value = origin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth })
+    const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     setFlying({ to: { zone: 'waste', index: 0 }, count: 1 })
 
     pushUndo(state, move)
     setState(result)
-    pendingFlightRef.current = { cardId: drawnCard.id, gen: dealTokenRef.current }
+    pendingFlightRef.current = { cardId: drawnCard.id, gen: dealTokenRef.current, flight }
   }
 
   // Tapping a tableau column's top card sends it to the waste pile if legal - Golf has exactly one
@@ -488,19 +460,12 @@ function GolfScreenInner() {
     if (!card) return
     const origin = await measure()
 
-    // See handleUndo's identical block above for why react-hooks/immutability is disabled here -
-    // this is the same safe SharedValue.value assignment, on the same `ghost`.
-    /* eslint-disable-next-line react-hooks/immutability */
-    ghost.originX.value = origin.x
-    ghost.originY.value = origin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards: [card], offsetStep: 0, cardWidth })
+    const flight = ghost.show({ cards: [card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
 
-    if (!completeMove(move.from, move.to, cardId)) {
-      ghost.hide()
+    if (!completeMove(move.from, move.to, cardId, flight)) {
+      flight.hide()
     }
   }
 
@@ -524,11 +489,6 @@ function GolfScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      {/* react-hooks/immutability flags onUndo={handleUndo} as "may indirectly mutate ghost after
-      render" - handleUndo does assign ghost.originX/Y.value etc, which is the intended, correct
-      Reanimated SharedValue API (see handleUndo's own doc comment above). Same false-positive class
-      as the disables inside handleUndo/handleDrawStock/handleCardTap above. */}
-      {/* eslint-disable-next-line react-hooks/immutability */}
       <GameChrome title='Golf' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<GolfSettingsSection />} rules={GOLF_RULES}>
         {/* No foundation row at all (unlike Klondike/FreeCell/Yukon) - Golf has no suit-based
         foundation, just the stock/waste pair. Narrower than the tableau below, so it's centered
@@ -543,9 +503,6 @@ function GolfScreenInner() {
             stockHinted={activeHint?.kind === 'drawStock'}
             cardWidth={cardWidth}
             gap={gap}
-            // Same react-hooks/immutability false positive as onUndo above - handleDrawStock also
-            // assigns ghost.originX/Y.value etc.
-            // eslint-disable-next-line react-hooks/immutability
             onDrawStock={handleDrawStock}
             // The waste top card is never draggable or tappable on its own in Golf - it's a passive
             // drop target for the tableau's top cards, never a move source. onWastePress/onWasteDrop
@@ -570,7 +527,7 @@ function GolfScreenInner() {
               // PileView's own handleDragEnd already resolves the drop target via dropZones.hitTest
               // before calling this, so - unlike StockWaste's loose DraggableCard onDrop above - no
               // separate hitTest wrapper is needed here.
-              onDrop: (to, _count, anchorCardId) => completeMove({ zone: 'tableau', index: colIndex }, to, anchorCardId)
+              onDrop: (to, _count, anchorCardId, flight) => completeMove({ zone: 'tableau', index: colIndex }, to, anchorCardId, flight)
             }
             // Only ever true during an undo flying a card back into this column - a forward Golf
             // move's destination is always the waste pile, never a tableau column.

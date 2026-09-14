@@ -11,7 +11,7 @@ import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView, ScreenPoint } from '@/components/dealing/measureView'
-import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { autoMoveSpringFor } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
@@ -284,6 +284,13 @@ function SpiderScreenInner() {
     token: number
   } | null>(null)
   const pendingAutoMoveCardIdRef = useRef<string | null>(null)
+  /** The actual DragFlightHandle returned by whichever ghost.show() call started the flight
+   * pendingAutoMoveCardIdRef refers to (finishMoveUndo or completeMove) - flights are no longer
+   * reachable off a single shared mutable `ghost` object, each is its own independent value, so it
+   * has to be threaded through explicitly rather than read straight off `ghost` itself. Always set
+   * alongside pendingAutoMoveCardIdRef, and read (and cleared) together with it by the landing
+   * effect below. */
+  const pendingFlightRef = useRef<DragFlightHandle | null>(null)
   /** Set alongside pendingAutoMoveCardIdRef when a tableau move ALSO completes a run - once that
    * normal move-ghost lands (showing the completed run fully assembled in the tableau, exactly as
    * a plain move would), the ghost-landing effect below hands off to sweepRunToFoundation instead
@@ -544,19 +551,13 @@ function SpiderScreenInner() {
     const origin = movingCards.length > 0 ? await ghost.cardRegistry.measure(move.anchorCardId) : null
 
     if (origin) {
-      // Same react-compiler false positive as handlePressCard's identical block above - see its
-      // comment.
-      /* eslint-disable-next-line react-hooks/immutability */
-      ghost.originX.value = origin.x
-      ghost.originY.value = origin.y
-      ghost.dx.value = 0
-      ghost.dy.value = 0
       playCardSound()
       hapticCard()
-      ghost.show({ cards: movingCards, offsetStep, cardWidth })
+      const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
       setFlying({ to: move.from, count: move.count })
       setState(prevState)
       pendingAutoMoveCardIdRef.current = move.anchorCardId
+      pendingFlightRef.current = flight
     } else {
       setState(prevState)
       undoBusyRef.current = false
@@ -570,8 +571,10 @@ function SpiderScreenInner() {
   // effect guarantees the destination card has already registered by the time this runs.
   useEffect(() => {
     const cardId = pendingAutoMoveCardIdRef.current
-    if (!cardId || !state) return
+    const flight = pendingFlightRef.current
+    if (!cardId || !flight || !state) return
     pendingAutoMoveCardIdRef.current = null
+    pendingFlightRef.current = null
     const sweep = pendingRunSweepRef.current
     pendingRunSweepRef.current = null
     ;(async () => {
@@ -587,9 +590,9 @@ function SpiderScreenInner() {
         undoBusyRef.current = false
       }
       if (landed) {
-        ghost.flyTo(landed.x, landed.y, proceed)
+        flight.flyTo(landed.x, landed.y, proceed)
       } else {
-        ghost.hide()
+        flight.hide()
         proceed()
       }
     })()
@@ -706,9 +709,6 @@ function SpiderScreenInner() {
   // decides who's visibly on top there, so King needs to be last in the array to keep the slot
   // looking like it normally does for as long as anything is still waiting on it.
   //
-  // Same react-compiler false positive as handlePressCard's own ghost.originX.value= block -
-  // this effect can call finishMoveUndo, which mutates `ghost`.
-  /* eslint-disable-next-line react-hooks/immutability */
   useEffect(() => {
     const pending = pendingRunRestoreRef.current
     if (!pending || pending.token !== dealTokenRef.current || !state) return
@@ -1019,22 +1019,12 @@ function SpiderScreenInner() {
     const movingCards = sourcePile.slice(sourcePile.length - move.count)
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
-    // react-hooks/immutability treats `ghost` (from useDragGhost(), a custom hook) as an opaque
-    // value - it can't see that originX/originY/dx/dy are Reanimated SharedValues, mutable by
-    // design, the same way it can't for the identical pattern in PileView.tsx/DraggableCard.tsx's
-    // own worklets (see DragGhostLayer.tsx for the full explanation, including why this isn't
-    // fixable via the compiler's own Reanimated-aware config flag).
-    /* eslint-disable-next-line react-hooks/immutability */
-    ghost.originX.value = origin.x
-    ghost.originY.value = origin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards: movingCards, offsetStep, cardWidth })
+    const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
 
-    if (!(await completeMove(move.from, move.to, move.count, card.id))) {
-      ghost.hide()
+    if (!(await completeMove(move.from, move.to, move.count, card.id, flight))) {
+      flight.hide()
     }
   }
 
@@ -1053,7 +1043,7 @@ function SpiderScreenInner() {
   // outright: runWinCascade already takes over immediately once `isWon` becomes true, bouncing
   // every completed run off its slot as one celebratory cascade, and sweeping the winning run on
   // its own right before that would race the cascade's own use of the same slot.
-  async function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string): Promise<boolean> {
+  async function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle): Promise<boolean> {
     const next = controller.tryMove(state!, { from, to, count })
     if (!next) return false
 
@@ -1066,6 +1056,7 @@ function SpiderScreenInner() {
     session.registerMove()
     setFlying({ to, count })
     pendingAutoMoveCardIdRef.current = anchorCardId
+    pendingFlightRef.current = flight
     if (slotIndex !== null) pendingRunSweepRef.current = { colIndex: to.index, slotIndex, run: justCompleted! }
     return true
   }
@@ -1289,11 +1280,6 @@ function SpiderScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      {/* onUndo={handleUndo} closes over handleUndo, which has its own disabled, justified
-      react-hooks/immutability false positive (see handleUndo's own `ghost.originX.value=` block
-      above) - the compiler flags this element too since it (indirectly) passes that same closure
-      down. */}
-      {/* eslint-disable-next-line react-hooks/immutability */}
       <GameChrome title='Spider' subtitle={`${numSuits} Suit${numSuits > 1 ? 's' : ''}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={history.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<SpiderSettingsSection />} rules={SPIDER_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.completedGroup, { gap }]}>
@@ -1327,7 +1313,7 @@ function SpiderScreenInner() {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
               getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
-              onDrop: (to, count, anchorCardId) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId)
+              onDrop: (to, count, anchorCardId, flight) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)
             }
             const hiddenCount = flying && flying.to.zone === 'tableau' && flying.to.index === colIndex ? flying.count : 0
             return (

@@ -20,7 +20,7 @@ import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
-import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { PileDragConfig, PileView } from '@/components/PileView'
@@ -144,12 +144,12 @@ function ScorpionScreenInner() {
    * CardRegistry-registered at all. Mirrors Canfield's own foundationSlotRefs/Spider's own
    * completedSlotRefs - Scorpion's own "foundation-equivalent" is just each tableau column. */
   const tableauColumnRefs = useRef<(View | null)[]>(new Array(TABLEAU_COLUMNS).fill(null))
-  /** A flight awaiting its post-commit measurement + ghost.flyTo, shared by tap-to-move
+  /** A flight awaiting its post-commit measurement + its own flyTo, shared by tap-to-move
    * (handleCardTap), a drag drop, and undo of an ordinary tableau move - only one is ever in
    * flight at a time. `gen` guards against a "New Game" tapped mid-flight replacing the deal this
    * flight was measuring against (card ids are shuffle-independent and reused across deals - see
    * engine/deck.ts). */
-  const pendingFlightRef = useRef<{ cardId: string; gen: number } | null>(null)
+  const pendingFlightRef = useRef<{ cardId: string; gen: number; flight: DragFlightHandle } | null>(null)
   /** The assisted stock's one-shot deal awaiting its post-commit measurement + deal.start() (see
    * runStockDeal/the effect below) - mirrors Spider's own pendingDealRef for its stock deal, just
    * fixed at exactly 3 destinations (columns FRONT_COLUMNS..FRONT_COLUMNS+2) instead of Spider's
@@ -313,12 +313,12 @@ function ScorpionScreenInner() {
     ;(async () => {
       const landed = await ghost.cardRegistry.measure(pending.cardId)
       if (dealTokenRef.current !== pending.gen || !landed) {
-        ghost.hide()
+        pending.flight.hide()
         setFlying(null)
         undoBusyRef.current = false
         return
       }
-      ghost.flyTo(landed.x, landed.y, () => {
+      pending.flight.flyTo(landed.x, landed.y, () => {
         setFlying(null)
         undoBusyRef.current = false
       })
@@ -477,10 +477,10 @@ function ScorpionScreenInner() {
   // Shared tail for every successful ordinary tableau move, whichever triggered it (tap-to-move or
   // a manual drag's drop) - applies the move, then marks the destination "incoming" and stashes
   // the anchor card id for the pendingFlightRef effect above to measure and fly the ghost onto.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string): boolean {
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle): boolean {
     if (!applyMove(from, to, count, anchorCardId)) return false
     setFlying({ to, count })
-    pendingFlightRef.current = { cardId: anchorCardId, gen: dealTokenRef.current }
+    pendingFlightRef.current = { cardId: anchorCardId, gen: dealTokenRef.current, flight }
     return true
   }
 
@@ -540,20 +540,12 @@ function ScorpionScreenInner() {
     setUndoStack((stack) => stack.slice(0, -1))
 
     if (origin) {
-      // react-hooks/immutability misfires here - see Golf's/Spider's own identical disables and
-      // their doc comments: originX/originY/dx/dy are Reanimated SharedValues useDragGhost()
-      // deliberately exposes as public mutable fields, not opaque hook-owned state.
-      /* eslint-disable-next-line react-hooks/immutability */
-      ghost.originX.value = origin.x
-      ghost.originY.value = origin.y
-      ghost.dx.value = 0
-      ghost.dy.value = 0
       playCardSound()
       hapticCard()
-      ghost.show({ cards: movingCards, offsetStep, cardWidth })
+      const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
       setFlying({ to: move.from, count: move.count })
       setState(prevState)
-      pendingFlightRef.current = { cardId: move.anchorCardId, gen: dealTokenRef.current }
+      pendingFlightRef.current = { cardId: move.anchorCardId, gen: dealTokenRef.current, flight }
     } else {
       setState(prevState)
       undoBusyRef.current = false
@@ -580,17 +572,12 @@ function ScorpionScreenInner() {
     const movingCards = sourcePile.slice(sourcePile.length - move.count)
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
-    /* eslint-disable-next-line react-hooks/immutability */
-    ghost.originX.value = origin.x
-    ghost.originY.value = origin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards: movingCards, offsetStep, cardWidth })
+    const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
 
-    if (!completeMove(move.from, move.to, move.count, card.id)) {
-      ghost.hide()
+    if (!completeMove(move.from, move.to, move.count, card.id, flight)) {
+      flight.hide()
     }
   }
 
@@ -604,7 +591,6 @@ function ScorpionScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      {/* eslint-disable-next-line react-hooks/immutability */}
       <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
         <View style={styles.topRow}>{state.stock.length > 0 && <StockPacket onPress={handleDrawStock} highlighted={activeHint?.kind === 'drawStock'} />}</View>
 
@@ -613,7 +599,7 @@ function ScorpionScreenInner() {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
               getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
-              onDrop: (to, count, anchorCardId) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId)
+              onDrop: (to, count, anchorCardId, flight) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)
             }
             const hiddenCount = flying && flying.to.zone === 'tableau' && flying.to.index === colIndex ? flying.count : 0
             // Hidden entirely once won - at that point every column is either already empty or a

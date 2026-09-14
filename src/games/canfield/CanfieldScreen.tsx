@@ -18,7 +18,7 @@ import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
-import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { PileDragConfig, PileView } from '@/components/PileView'
@@ -109,7 +109,7 @@ function foundationStarter(s: CanfieldState): Card | undefined {
  * defeating the hide entirely. `isFlyingHere` (real moves onto the reserve, i.e. only ever an
  * undo - see its own doc comment below) is never true on a component's first render, so it has a
  * genuine prior frame for useFrozenWhileHidden to freeze and keeps using that overlay untouched. */
-function ReserveCell({ card, isFlyingHere, dealHidden, shakeToken, highlighted, onPress, onDrop }: { card: Card | undefined; isFlyingHere: boolean; dealHidden?: boolean; shakeToken?: number; highlighted?: boolean; onPress: (measure: () => Promise<{ x: number; y: number }>) => void; onDrop: (x: number, y: number) => Promise<boolean> | boolean }) {
+function ReserveCell({ card, isFlyingHere, dealHidden, shakeToken, highlighted, onPress, onDrop }: { card: Card | undefined; isFlyingHere: boolean; dealHidden?: boolean; shakeToken?: number; highlighted?: boolean; onPress: (measure: () => Promise<{ x: number; y: number }>) => void; onDrop: (x: number, y: number, flight: DragFlightHandle) => Promise<boolean> | boolean }) {
   const frozen = useFrozenWhileHidden(card, isFlyingHere)
   return (
     <View>
@@ -177,7 +177,7 @@ function CanfieldScreenInner() {
    * reserve, on an undo) is a real per-card-registered pile. `fast` marks a fireAutoMove-triggered
    * flight. `gen` is the dealTokenRef value at the moment this flight was queued - see
    * KlondikeScreen's identical field for the full race-guard reasoning. */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; gen: number } | null>(null)
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
   /** A draw-3 stock draw awaiting its post-commit measurement + deal.start(), analogous to
    * pendingFlightRef above but for the multi-card deal-style flight - drawnCards is oldest-first,
    * ending with the new top/frontmost card. `gen` guards the same New-Game-mid-flight race
@@ -349,12 +349,12 @@ function CanfieldScreenInner() {
     ;(async () => {
       const landed = pending.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(pending.cardId)
       if (dealTokenRef.current !== pending.gen || !landed) {
-        ghost.hide()
+        pending.flight.hide()
         setFlying(null)
         undoBusyRef.current = false
         return
       }
-      ghost.flyTo(
+      pending.flight.flyTo(
         landed.x,
         landed.y,
         () => {
@@ -553,16 +553,12 @@ function CanfieldScreenInner() {
     setUndoStack((stack) => stack.slice(0, -1))
 
     if (origin) {
-      ghost.originX.value = origin.x
-      ghost.originY.value = origin.y
-      ghost.dx.value = 0
-      ghost.dy.value = 0
       playCardSound()
       hapticCard()
-      ghost.show({ cards: movingCards, offsetStep, cardWidth })
+      const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
       setFlying({ to: move.from, count: move.count })
       setState(prevState)
-      pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen: dealTokenRef.current }
+      pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen: dealTokenRef.current, flight }
     } else {
       setState(prevState)
       undoBusyRef.current = false
@@ -588,10 +584,10 @@ function CanfieldScreenInner() {
   // Shared tail for every successful move, whichever triggered it (tap-to-move, a manual drag's
   // drop, or an auto-play) - applies the move, then marks the destination "incoming" and stashes
   // the anchor card id for the pendingFlightRef effect above to measure and fly the ghost onto.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean; fast?: boolean }): boolean {
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
     setFlying({ to, count })
-    pendingFlightRef.current = { cardId: anchorCardId, fast: opts?.fast, gen: dealTokenRef.current }
+    pendingFlightRef.current = { cardId: anchorCardId, fast: opts?.fast, gen: dealTokenRef.current, flight }
     return true
   }
 
@@ -626,22 +622,18 @@ function CanfieldScreenInner() {
     const origin = await ghost.cardRegistry.measure(entry.card.id)
     if (!origin || stateRef.current !== stateAtStart) return
     const to: PileRef = { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) }
-    ghost.originX.value = origin.x
-    ghost.originY.value = origin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth })
-    if (!completeMove(entry.ref, to, 1, entry.card.id, { silent: true, fast: true })) {
-      ghost.hide()
+    const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
+    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: true })) {
+      flight.hide()
     }
   }
 
-  async function attemptDrop(from: PileRef, count: number, absoluteX: number, absoluteY: number, anchorCardId: string): Promise<boolean> {
+  async function attemptDrop(from: PileRef, count: number, absoluteX: number, absoluteY: number, anchorCardId: string, flight: DragFlightHandle): Promise<boolean> {
     const target = await dropZones.hitTest(absoluteX, absoluteY)
     if (!target) return false
-    return completeMove(from, target, count, anchorCardId)
+    return completeMove(from, target, count, anchorCardId, flight)
   }
 
   function tableauRunCount(colIndex: number, indexFromTop: number): number {
@@ -687,18 +679,14 @@ function CanfieldScreenInner() {
       return
     }
 
-    ghost.originX.value = origin.x
-    ghost.originY.value = origin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth })
+    const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     setFlying({ to: { zone: 'waste', index: 0 }, count: 1 })
 
     pushUndo(state, move)
     setState(result)
-    pendingFlightRef.current = { cardId: drawnCard.id, gen: dealTokenRef.current }
+    pendingFlightRef.current = { cardId: drawnCard.id, gen: dealTokenRef.current, flight }
   }
 
   function resolvePile(ref: PileRef): Card[] | null {
@@ -740,16 +728,12 @@ function CanfieldScreenInner() {
     const movingCards = sourcePile.slice(sourcePile.length - move.count)
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
-    ghost.originX.value = origin.x
-    ghost.originY.value = origin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards: movingCards, offsetStep, cardWidth })
+    const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
 
-    if (!completeMove(move.from, move.to, move.count, cardId)) {
-      ghost.hide()
+    if (!completeMove(move.from, move.to, move.count, cardId, flight)) {
+      flight.hide()
     }
   }
 
@@ -809,10 +793,10 @@ function CanfieldScreenInner() {
             </View>
 
             <DropZone registry={dropZones} pileRef={{ zone: 'reserve', index: 0 }} style={[styles.reserveSlot, { width: cardWidth }]}>
-              <ReserveCell card={reserveTop} isFlyingHere={reserveFlyingHere} dealHidden={reserveDealHidden} shakeToken={reserveTop && shake?.cardId === reserveTop.id ? shake.token : undefined} highlighted={hintCountFor(activeHint, { zone: 'reserve', index: 0 }) > 0} onPress={(measure) => handleCardTap({ zone: 'reserve', index: 0 }, reserveTop!.id, measure)} onDrop={(x, y) => attemptDrop({ zone: 'reserve', index: 0 }, 1, x, y, reserveTop!.id)} />
+              <ReserveCell card={reserveTop} isFlyingHere={reserveFlyingHere} dealHidden={reserveDealHidden} shakeToken={reserveTop && shake?.cardId === reserveTop.id ? shake.token : undefined} highlighted={hintCountFor(activeHint, { zone: 'reserve', index: 0 }) > 0} onPress={(measure) => handleCardTap({ zone: 'reserve', index: 0 }, reserveTop!.id, measure)} onDrop={(x, y, flight) => attemptDrop({ zone: 'reserve', index: 0 }, 1, x, y, reserveTop!.id, flight)} />
             </DropZone>
 
-            <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteHiddenCount={flying && flying.to.zone === 'waste' ? flying.count : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id)} stockRef={stockViewRef} />
+            <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteHiddenCount={flying && flying.to.zone === 'waste' ? flying.count : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} />
           </View>
 
           <View style={[styles.tableauRow, { gap }]}>
@@ -820,7 +804,7 @@ function CanfieldScreenInner() {
               const dragConfig: PileDragConfig = {
                 registry: dropZones,
                 getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
-                onDrop: (to, count, anchorCardId) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId)
+                onDrop: (to, count, anchorCardId, flight) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)
               }
               const hiddenCount = flying && flying.to.zone === 'tableau' && flying.to.index === colIndex ? flying.count : 0
               return (

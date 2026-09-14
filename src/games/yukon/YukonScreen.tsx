@@ -10,7 +10,7 @@ import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
-import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { PileDragConfig, PileView } from '@/components/PileView'
@@ -158,7 +158,7 @@ function YukonScreenInner() {
    * this flight was queued - re-checked once the async measurement below resolves, so a flight
    * queued against a game that's since been replaced by "New Game" doesn't measure/land against the
    * new deal's DOM (card ids are shuffle-independent and reused across deals - see deck.ts). */
-  const pendingFlightRef = useRef<{ cardId: string; fast?: boolean; gen: number } | null>(null)
+  const pendingFlightRef = useRef<{ cardId: string; fast?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
   /** A cascade-undo return flight awaiting its post-commit per-card measurement, mirroring
    * pendingFlightRef's own deferral reasoning - see the [state]-effect below and
    * groupCascadedByFoundation's doc comment. Independent of pendingFlightRef: the primary card's
@@ -362,12 +362,12 @@ function YukonScreenInner() {
       // measuring an unrelated card in the NEW deal (ids are shuffle-independent and reused across
       // deals - see deck.ts), so drop this flight instead of landing on a nonsensical position.
       if (dealTokenRef.current !== pending.gen || !landed) {
-        ghost.hide()
+        pending.flight.hide()
         setFlying(null)
         undoBusyRef.current = false
         return
       }
-      ghost.flyTo(
+      pending.flight.flyTo(
         landed.x,
         landed.y,
         () => {
@@ -508,18 +508,11 @@ function YukonScreenInner() {
     const origin = await ghost.cardRegistry.measure(entry.card.id)
     if (!origin || stateRef.current !== stateAtStart) return
     const to: PileRef = { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) }
-    // Same false-positive opaque-hook-value flag as handleUndo's identical block above - see its
-    // comment.
-    /* eslint-disable-next-line react-hooks/immutability */
-    ghost.originX.value = origin.x
-    ghost.originY.value = origin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth })
-    if (!completeMove(entry.ref, to, 1, entry.card.id, { silent: true, fast: true })) {
-      ghost.hide()
+    const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
+    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: true })) {
+      flight.hide()
     }
   }
 
@@ -652,22 +645,12 @@ function YukonScreenInner() {
     }
 
     if (origin) {
-      // react-hooks/immutability treats `ghost` (from useDragGhost(), a custom hook) as an opaque
-      // value - it can't see that originX/originY/dx/dy are Reanimated SharedValues, mutable by
-      // design, the same way it can't for the identical pattern in
-      // PileView.tsx/DraggableCard.tsx's own worklets (see DragGhostLayer.tsx for the full
-      // explanation) or SpiderScreen.tsx's own identical handleUndo.
-      /* eslint-disable-next-line react-hooks/immutability */
-      ghost.originX.value = origin.x
-      ghost.originY.value = origin.y
-      ghost.dx.value = 0
-      ghost.dy.value = 0
       playCardSound()
       hapticCard()
-      ghost.show({ cards: movingCards, offsetStep, cardWidth })
+      const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
       setFlying({ to: primary.from, count: primary.count })
       setState(prevState)
-      pendingFlightRef.current = { cardId: primary.anchorCardId, gen: dealTokenRef.current }
+      pendingFlightRef.current = { cardId: primary.anchorCardId, gen: dealTokenRef.current, flight }
     } else {
       setState(prevState)
       undoBusyRef.current = false
@@ -715,10 +698,10 @@ function YukonScreenInner() {
   // drop, or an auto-play) - applies the move, then marks the destination "incoming" and stashes
   // the anchor card id for the pendingFlightRef effect above to measure and fly the ghost onto,
   // instead of it just vanishing/appearing at the destination instantly.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean; fast?: boolean }): boolean {
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
     setFlying({ to, count })
-    pendingFlightRef.current = { cardId: anchorCardId, fast: opts?.fast, gen: dealTokenRef.current }
+    pendingFlightRef.current = { cardId: anchorCardId, fast: opts?.fast, gen: dealTokenRef.current, flight }
     return true
   }
 
@@ -775,19 +758,12 @@ function YukonScreenInner() {
     const movingCards = sourcePile.slice(sourcePile.length - move.count)
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
-    // Same false-positive opaque-hook-value flag as handleUndo's identical block above - see its
-    // comment.
-    /* eslint-disable-next-line react-hooks/immutability */
-    ghost.originX.value = origin.x
-    ghost.originY.value = origin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards: movingCards, offsetStep, cardWidth })
+    const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
 
-    if (!completeMove(move.from, move.to, move.count, cardId)) {
-      ghost.hide()
+    if (!completeMove(move.from, move.to, move.count, cardId, flight)) {
+      flight.hide()
     }
   }
 
@@ -801,11 +777,6 @@ function YukonScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      {/* onUndo={handleUndo} closes over handleUndo, which has its own disabled, justified
-      react-hooks/immutability false positive (see handleUndo's own `ghost.originX.value=` block
-      above) - the compiler flags this element too since it (indirectly) passes that same closure
-      down, same as SpiderScreen.tsx's identical GameChrome usage. */}
-      {/* eslint-disable-next-line react-hooks/immutability */}
       <GameChrome title='Yukon' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={YUKON_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.foundationsGroup, { gap }]}>
@@ -840,7 +811,7 @@ function YukonScreenInner() {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
               getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
-              onDrop: (to, count, anchorCardId) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId)
+              onDrop: (to, count, anchorCardId, flight) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)
             }
             const hiddenCount = flying && flying.to.zone === 'tableau' && flying.to.index === colIndex ? flying.count : 0
             return (

@@ -30,7 +30,7 @@ import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
-import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { PileDragConfig, PileView } from '@/components/PileView'
@@ -116,16 +116,17 @@ function AcesUpScreenInner() {
    * (won-gated, see the piles row below), at which point it's no longer CardRegistry-registered
    * at all. Mirrors Canfield's own foundationSlotRefs/Scorpion's own tableauColumnRefs. */
   const pileViewRefs = useRef<(View | null)[]>(new Array(NUM_PILES).fill(null))
-  /** A flight awaiting its post-commit measurement + ghost.flyTo, shared by tap-to-move-to-empty,
-   * tap-to-discard, and undo of either - only one is ever in flight at a time. `viaStock` measures
-   * via stockViewRef (a plain View, not per-card) instead of CardRegistry - only undoing a round
-   * deal flies back toward the stock. `viaDiscard` similarly measures via discardViewRef - a
-   * forward discard's card is no longer registered anywhere once it lands (DiscardCell doesn't
-   * register in CardRegistry - see its own doc comment), so its destination has to be the pile's
-   * own fixed position, not a per-card lookup. `gen` guards against a "New Game" tapped mid-flight
-   * replacing the deal this flight was measuring against (card ids are shuffle-independent and
-   * reused across deals - see engine/deck.ts). */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; viaDiscard?: boolean; gen: number } | null>(null)
+  /** A flight (the DragFlightHandle already returned by the ghost.show() that started it) awaiting
+   * its post-commit measurement + its own flyTo, shared by tap-to-move-to-empty, tap-to-discard,
+   * and undo of either - only one is ever in flight at a time. `viaStock` measures via stockViewRef
+   * (a plain View, not per-card) instead of CardRegistry - only undoing a round deal flies back
+   * toward the stock. `viaDiscard` similarly measures via discardViewRef - a forward discard's card
+   * is no longer registered anywhere once it lands (DiscardCell doesn't register in CardRegistry -
+   * see its own doc comment), so its destination has to be the pile's own fixed position, not a
+   * per-card lookup. `gen` guards against a "New Game" tapped mid-flight replacing the deal this
+   * flight was measuring against (card ids are shuffle-independent and reused across deals - see
+   * engine/deck.ts). */
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; viaDiscard?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
   /** A round deal (4 cards, one per pile) awaiting its post-commit measurement + deal.start() -
    * mirrors Spider's/Scorpion's own stock-deal pattern, fixed at exactly NUM_PILES destinations. */
   const pendingRoundDealRef = useRef<{ dealt: { card: Card; pileIndex: number }[]; origin: { x: number; y: number } | null; token: number } | null>(null)
@@ -246,12 +247,12 @@ function AcesUpScreenInner() {
     ;(async () => {
       const landed = pending.viaStock ? await measureView(stockViewRef.current) : pending.viaDiscard ? await measureView(discardViewRef.current) : await ghost.cardRegistry.measure(pending.cardId)
       if (dealTokenRef.current !== pending.gen || !landed) {
-        ghost.hide()
+        pending.flight.hide()
         setFlying(null)
         undoBusyRef.current = false
         return
       }
-      ghost.flyTo(landed.x, landed.y, () => {
+      pending.flight.flyTo(landed.x, landed.y, () => {
         setFlying(null)
         undoBusyRef.current = false
       })
@@ -410,17 +411,12 @@ function AcesUpScreenInner() {
       setUndoStack((stack) => stack.slice(0, -1))
 
       if (origin && discardCard) {
-        /* eslint-disable-next-line react-hooks/immutability */
-        ghost.originX.value = origin.x
-        ghost.originY.value = origin.y
-        ghost.dx.value = 0
-        ghost.dy.value = 0
         playCardSound()
         hapticCard()
-        ghost.show({ cards: [discardCard], offsetStep: 0, cardWidth })
+        const flight = ghost.show({ cards: [discardCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
         setFlying({ to: move.from, count: 1 })
         setState(prevState)
-        pendingFlightRef.current = { cardId: move.anchorCardId, gen: dealTokenRef.current }
+        pendingFlightRef.current = { cardId: move.anchorCardId, gen: dealTokenRef.current, flight }
       } else {
         setState(prevState)
         undoBusyRef.current = false
@@ -434,16 +430,12 @@ function AcesUpScreenInner() {
     setUndoStack((stack) => stack.slice(0, -1))
 
     if (origin && movingCard) {
-      ghost.originX.value = origin.x
-      ghost.originY.value = origin.y
-      ghost.dx.value = 0
-      ghost.dy.value = 0
       playCardSound()
       hapticCard()
-      ghost.show({ cards: [movingCard], offsetStep: 0, cardWidth })
+      const flight = ghost.show({ cards: [movingCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
       setFlying({ to: move.from, count: 1 })
       setState(prevState)
-      pendingFlightRef.current = { cardId: move.anchorCardId, gen: dealTokenRef.current }
+      pendingFlightRef.current = { cardId: move.anchorCardId, gen: dealTokenRef.current, flight }
     } else {
       setState(prevState)
       undoBusyRef.current = false
@@ -451,13 +443,13 @@ function AcesUpScreenInner() {
   }
 
   // Shared tail for both tap-to-move (handleCardTap) and a manual drag's drop (handleDrop below) -
-  // applies the move, pushes undo, and sets up the post-commit flight measurement. The ghost is
+  // applies the move, pushes undo, and sets up the post-commit flight measurement. The flight is
   // already showing by the time this runs (handleCardTap's own ghost.show() for a tap, or the drag
-  // gesture's own pickup-time ghost.show() for a drop) - this only ever decides where it flies to:
-  // a discard lands via discardViewRef's fixed position (see pendingFlightRef's viaDiscard), a move
-  // to an empty pile via the destination pile's own CardRegistry registration, same as every other
-  // tap-to-move flight in this app.
-  function applyMove(from: PileRef, to: PileRef, card: Card): boolean {
+  // gesture's own pickup-time ghost.show() for a drop, handed in as `flight`) - this only ever
+  // decides where it flies to: a discard lands via discardViewRef's fixed position (see
+  // pendingFlightRef's viaDiscard), a move to an empty pile via the destination pile's own
+  // CardRegistry registration, same as every other tap-to-move flight in this app.
+  function applyMove(from: PileRef, to: PileRef, card: Card, flight: DragFlightHandle): boolean {
     if (!state) return false
     const result = AcesUpController.tryMove(state, { from, to, count: 1 })
     if (!result) return false
@@ -465,7 +457,7 @@ function AcesUpScreenInner() {
     setState(result)
     session.registerMove()
     setFlying({ to, count: 1 })
-    pendingFlightRef.current = { cardId: card.id, viaDiscard: to.zone === 'discard', gen: dealTokenRef.current }
+    pendingFlightRef.current = { cardId: card.id, viaDiscard: to.zone === 'discard', gen: dealTokenRef.current, flight }
     return true
   }
 
@@ -495,26 +487,21 @@ function AcesUpScreenInner() {
       return
     }
     const origin = await measure()
-    /* eslint-disable-next-line react-hooks/immutability */
-    ghost.originX.value = origin.x
-    ghost.originY.value = origin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards: [card], offsetStep: 0, cardWidth })
-    if (!applyMove(move.from, move.to, card)) ghost.hide()
+    const flight = ghost.show({ cards: [card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
+    if (!applyMove(move.from, move.to, card, flight)) flight.hide()
   }
 
   // A manual drag's drop - PileView's own handleDragEnd already resolves the drop target via
   // dropZones.hitTest before calling this (see PileDragConfig's own doc comment), so this only
   // ever needs to apply the move. Only ever resolves for "move onto an empty pile" in practice -
   // there's no registered drop zone for a discard (see this file's header comment).
-  function handleDrop(pileIndex: number, to: PileRef, anchorCardId: string): boolean {
+  function handleDrop(pileIndex: number, to: PileRef, anchorCardId: string, flight: DragFlightHandle): boolean {
     if (won || stuck || !state) return false
     const card = top(state.piles[pileIndex])
     if (!card || card.id !== anchorCardId) return false
-    return applyMove({ zone: 'tableau', index: pileIndex }, to, card)
+    return applyMove({ zone: 'tableau', index: pileIndex }, to, card, flight)
   }
 
   async function handleDrawStock() {
@@ -547,7 +534,6 @@ function AcesUpScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      {/* eslint-disable-next-line react-hooks/immutability */}
       <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={ACESUP_RULES}>
         <View style={[styles.topRow, { width: pilesWidth }]}>
           <DiscardCell card={state.discard[state.discard.length - 1]} isFlyingHere={!!flying && flying.to.zone === 'discard'} viewRef={discardViewRef} />
@@ -570,7 +556,7 @@ function AcesUpScreenInner() {
               // tappable/draggable when rules.ts's autoMoveHint would actually find it a move (see
               // this file's own header comment on why a real drag config is required either way).
               getRunCount: (indexFromTop) => (indexFromTop === 0 && hasLegalMove(pileIndex) ? 1 : 0),
-              onDrop: (to, _count, anchorCardId) => handleDrop(pileIndex, to, anchorCardId)
+              onDrop: (to, _count, anchorCardId, flight) => handleDrop(pileIndex, to, anchorCardId, flight)
             }
             return (
               <DropZone key={pileIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: pileIndex }} style={[styles.pile, { width: cardWidth }]}>
