@@ -358,27 +358,7 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
         const isPressable = runCount > 0
         const cardStyle = { position: 'absolute' as const, top: offsets[i] * scale, left: 0, zIndex: i }
 
-        return (
-          <DraggableTableauCard
-            key={card.id}
-            card={card}
-            selected={isSelected}
-            hinted={isHinted}
-            dimmed={isDimmed}
-            cardStyle={cardStyle}
-            runCount={runCount}
-            indexFromTop={indexFromTop}
-            isHidden={isCardHidden(card, indexFromTop)}
-            shakeToken={shakeStartIndexFromTop !== null && indexFromTop <= shakeStartIndexFromTop && indexFromTop > shakeStartIndexFromTop - shakeCount ? shakeToken : undefined}
-            onPress={isPressable ? onPressCard : undefined}
-            onDragStart={handleDragStart}
-            onDragEnd={handleDragEnd}
-            originX={originX}
-            originY={originY}
-            dx={dx}
-            dy={dy}
-          />
-        )
+        return <DraggableTableauCard key={card.id} card={card} selected={isSelected} hinted={isHinted} dimmed={isDimmed} cardStyle={cardStyle} runCount={runCount} indexFromTop={indexFromTop} isHidden={isCardHidden(card, indexFromTop)} shakeToken={shakeStartIndexFromTop !== null && indexFromTop <= shakeStartIndexFromTop && indexFromTop > shakeStartIndexFromTop - shakeCount ? shakeToken : undefined} onPress={isPressable ? onPressCard : undefined} onDragStart={handleDragStart} onDragEnd={handleDragEnd} originX={originX} originY={originY} dx={dx} dy={dy} />
       })}
       {allCardsHidden && (
         <View style={StyleSheet.absoluteFill} pointerEvents='none'>

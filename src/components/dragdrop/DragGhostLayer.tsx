@@ -169,75 +169,78 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
   // lifetime: `hide()` can race a still-pending settleAfter timer from an earlier flyTo/snapBack
   // call on this SAME handle, and must stop that stale timer from firing after this flight has
   // already been torn down.
-  const createFlight = useCallback((id: number, values: { originX: SharedValue<number>; originY: SharedValue<number>; dx: SharedValue<number>; dy: SharedValue<number> }): DragFlightHandle => {
-    let generation = 0
-    let pendingSettle: (() => void) | null = null
+  const createFlight = useCallback(
+    (id: number, values: { originX: SharedValue<number>; originY: SharedValue<number>; dx: SharedValue<number>; dy: SharedValue<number> }): DragFlightHandle => {
+      let generation = 0
+      let pendingSettle: (() => void) | null = null
 
-    function flushPendingSettle() {
-      const settle = pendingSettle
-      if (!settle) return
-      pendingSettle = null
-      settle()
-    }
-
-    // Reveals the real card (and removes this ghost) `config.duration` after a flight starts,
-    // instead of waiting on withSpring's own per-axis completion callback: that callback was found
-    // to never fire at all for these duration-based springs when run through this app's web target
-    // (confirmed live - the ghost visibly animates to its target via the shared-value-driven
-    // transform below, which doesn't depend on the callback, but then never gets removed,
-    // permanently masking the real card it's standing in for). Passing the very same config that
-    // drives the withSpring calls keeps the timer and the motion it's covering for the same
-    // length, and it fires regardless of whether dx/dy had anything to actually move (a
-    // stock-to-waste draw has dy already at its target, since the two sit on the same row).
-    function settleAfter(config: WithSpringConfig, onSettled: () => void) {
-      const gen = ++generation
-      pendingSettle = onSettled
-      setTimeout(() => {
-        if (generation !== gen) return
+      function flushPendingSettle() {
+        const settle = pendingSettle
+        if (!settle) return
         pendingSettle = null
-        removeFlight(id)
-        onSettled()
-      }, config.duration ?? 0)
-    }
-
-    return {
-      originX: values.originX,
-      originY: values.originY,
-      dx: values.dx,
-      dy: values.dy,
-      snapBack(onSettled) {
-        settleAfter(SNAP_BACK_SPRING, () => {
-          playInvalidSound()
-          hapticInvalid()
-          onSettled()
-        })
-        values.dx.value = withSpring(0, SNAP_BACK_SPRING)
-        values.dy.value = withSpring(0, SNAP_BACK_SPRING)
-      },
-      flyTo(targetX, targetY, onArrived, opts) {
-        // Distance actually left to travel from wherever the ghost is sitting right now - not
-        // always originX/Y (that's only the flight's start point; a manual drag has already
-        // moved dx/dy away from it by the time flyTo runs) - see autoMoveSpringFor's doc comment
-        // in dragSpring.ts for why this determines the settle duration instead of a fixed one.
-        const curX = values.originX.value + values.dx.value
-        const curY = values.originY.value + values.dy.value
-        const distance = Math.hypot(targetX - curX, targetY - curY)
-        const config = opts?.fast ? autoPlaySpringFor(distance) : autoMoveSpringFor(distance)
-        // No hapticCard() here (unlike snapBack's own hapticInvalid above) - a successful flight's
-        // sound+haptic pair now fires together the instant the move was confirmed (see
-        // useCardSounds.ts), not on arrival, so there's nothing left for this settle to trigger
-        // beyond the caller's own onArrived.
-        settleAfter(config, onArrived)
-        values.dx.value = withSpring(targetX - values.originX.value, config)
-        values.dy.value = withSpring(targetY - values.originY.value, config)
-      },
-      hide() {
-        flushPendingSettle()
-        generation += 1
-        removeFlight(id)
+        settle()
       }
-    }
-  }, [playInvalidSound, hapticInvalid, removeFlight])
+
+      // Reveals the real card (and removes this ghost) `config.duration` after a flight starts,
+      // instead of waiting on withSpring's own per-axis completion callback: that callback was found
+      // to never fire at all for these duration-based springs when run through this app's web target
+      // (confirmed live - the ghost visibly animates to its target via the shared-value-driven
+      // transform below, which doesn't depend on the callback, but then never gets removed,
+      // permanently masking the real card it's standing in for). Passing the very same config that
+      // drives the withSpring calls keeps the timer and the motion it's covering for the same
+      // length, and it fires regardless of whether dx/dy had anything to actually move (a
+      // stock-to-waste draw has dy already at its target, since the two sit on the same row).
+      function settleAfter(config: WithSpringConfig, onSettled: () => void) {
+        const gen = ++generation
+        pendingSettle = onSettled
+        setTimeout(() => {
+          if (generation !== gen) return
+          pendingSettle = null
+          removeFlight(id)
+          onSettled()
+        }, config.duration ?? 0)
+      }
+
+      return {
+        originX: values.originX,
+        originY: values.originY,
+        dx: values.dx,
+        dy: values.dy,
+        snapBack(onSettled) {
+          settleAfter(SNAP_BACK_SPRING, () => {
+            playInvalidSound()
+            hapticInvalid()
+            onSettled()
+          })
+          values.dx.value = withSpring(0, SNAP_BACK_SPRING)
+          values.dy.value = withSpring(0, SNAP_BACK_SPRING)
+        },
+        flyTo(targetX, targetY, onArrived, opts) {
+          // Distance actually left to travel from wherever the ghost is sitting right now - not
+          // always originX/Y (that's only the flight's start point; a manual drag has already
+          // moved dx/dy away from it by the time flyTo runs) - see autoMoveSpringFor's doc comment
+          // in dragSpring.ts for why this determines the settle duration instead of a fixed one.
+          const curX = values.originX.value + values.dx.value
+          const curY = values.originY.value + values.dy.value
+          const distance = Math.hypot(targetX - curX, targetY - curY)
+          const config = opts?.fast ? autoPlaySpringFor(distance) : autoMoveSpringFor(distance)
+          // No hapticCard() here (unlike snapBack's own hapticInvalid above) - a successful flight's
+          // sound+haptic pair now fires together the instant the move was confirmed (see
+          // useCardSounds.ts), not on arrival, so there's nothing left for this settle to trigger
+          // beyond the caller's own onArrived.
+          settleAfter(config, onArrived)
+          values.dx.value = withSpring(targetX - values.originX.value, config)
+          values.dy.value = withSpring(targetY - values.originY.value, config)
+        },
+        hide() {
+          flushPendingSettle()
+          generation += 1
+          removeFlight(id)
+        }
+      }
+    },
+    [playInvalidSound, hapticInvalid, removeFlight]
+  )
 
   const controller = useMemo<DragGhostController>(
     () => ({

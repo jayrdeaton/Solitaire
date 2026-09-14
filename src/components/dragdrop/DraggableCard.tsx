@@ -131,28 +131,25 @@ export function DraggableCard({ card, selected, hinted, disabled, onPress, onDro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const handleRelease = useCallback(
-    (absoluteX: number, absoluteY: number) => {
-      ;(async () => {
-        const dropFn = latest.current.onDrop
-        const flight = flightRef.current
-        const applied = dropFn && flight ? await dropFn(absoluteX, absoluteY, flight) : false
-        if (applied) {
-          // Don't hide the ghost here - the caller's onDrop (mirroring handleCardTap) has already
-          // marked this card's destination "incoming" and will measure its real landed position
-          // and fly this same flight the rest of the way there, instead of it just vanishing
-          // mid-air.
-          setDragging(false)
-        } else {
-          flight?.snapBack(() => setDragging(false))
-        }
-      })()
-      setTimeout(() => {
-        wasDraggingRef.current = false
-      }, 0)
-    },
-    []
-  )
+  const handleRelease = useCallback((absoluteX: number, absoluteY: number) => {
+    ;(async () => {
+      const dropFn = latest.current.onDrop
+      const flight = flightRef.current
+      const applied = dropFn && flight ? await dropFn(absoluteX, absoluteY, flight) : false
+      if (applied) {
+        // Don't hide the ghost here - the caller's onDrop (mirroring handleCardTap) has already
+        // marked this card's destination "incoming" and will measure its real landed position
+        // and fly this same flight the rest of the way there, instead of it just vanishing
+        // mid-air.
+        setDragging(false)
+      } else {
+        flight?.snapBack(() => setDragging(false))
+      }
+    })()
+    setTimeout(() => {
+      wasDraggingRef.current = false
+    }, 0)
+  }, [])
 
   // react-hooks/refs and react-hooks/immutability both assume ordinary render-time JS: a ref
   // "passed into a function" or a value "returned from a hook" might get read/written synchronously
