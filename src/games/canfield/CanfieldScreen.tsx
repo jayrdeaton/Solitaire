@@ -255,25 +255,37 @@ function CanfieldScreenInner() {
   // dealTokenRef guards against a stray late measurement/landing from this deal delivering a
   // callback into a newer one - card ids are shuffle-independent (see deck.ts), so a fresh
   // newGame() reuses the same ids a previous deal was still using. Unlike Klondike's runDeal, the
-  // flying cards aren't forced face-down: every card in this 6-step sequence (the foundation
-  // starter, each tableau column's single starting card, and the reserve's own top card) is
-  // genuinely dealt face up in real Canfield (rules.ts's newGame already sets faceUp: true on all
-  // three) - same reasoning FreeCellScreen's own runDeal documents for its own all-face-up deal.
-  // The other 12 (face-down) reserve cards and the 34-card stock are deliberately not part of this
-  // sequence (see dealSequence.ts) - they just appear as piles with no individual flight.
+  // flying cards aren't forced face-down: the foundation starter, each tableau column's single
+  // starting card, and the reserve's own top card are genuinely dealt face up in real Canfield
+  // (rules.ts's newGame already sets faceUp: true on all three) - same reasoning FreeCellScreen's
+  // own runDeal documents for its own all-face-up deal. The 34-card stock is deliberately excluded
+  // from the sequence entirely (see dealSequence.ts) and just appears as a pile, the same treatment
+  // every other game's own leftover stock gets. The reserve's other 12 (face-down) cards DO fly too
+  // - own step, own delayMs, own landed callback, same as any other dealt card - but since
+  // ReserveCell never registers a view for them (it only ever renders the pile's top card), there's
+  // nothing for CardRegistry to measure a destination from: ownDestinations below only asks it for
+  // the steps that have a real view (reserveTop, foundation, tableau), and every hidden reserve
+  // card's entry reuses the reserve top's own measured destination instead - they land stacked
+  // exactly where it does, a beat before it arrives on top of them, matching how a real dealer lays
+  // a pile down before flipping its top card. This also means dealHiddenIds correctly covers the
+  // whole 13-card pile from the start (see dealSequence.ts's reserveTop doc comment), not just its
+  // visible top card, so a future depth visual for the reserve pile can't skip past this animation.
   async function runDeal(s: CanfieldState, token: number) {
     const starter = foundationStarter(s)
     const sequence = starter ? buildCanfieldDealSequence(starter, s.tableau, s.reserve) : []
-    const [origin, destinations] = await Promise.all([measureView(stockViewRef.current), Promise.all(sequence.map((step) => ghost.cardRegistry.measure(step.cardId)))])
+    const [origin, ownDestinations] = await Promise.all([measureView(stockViewRef.current), Promise.all(sequence.map((step) => (step.zone !== 'reserve' || step.reserveTop ? ghost.cardRegistry.measure(step.cardId) : Promise.resolve(null))))])
     if (dealTokenRef.current !== token) return
     if (!origin) {
       setDealHiddenIds(new Set())
       return
     }
 
+    const reserveTopIndex = sequence.findIndex((step) => step.reserveTop)
+    const reserveTopDest = reserveTopIndex >= 0 ? ownDestinations[reserveTopIndex] : null
+
     const entries: DealCardSpec[] = []
     sequence.forEach((step, i) => {
-      const dest = destinations[i]
+      const dest = ownDestinations[i] ?? (step.zone === 'reserve' && !step.reserveTop ? reserveTopDest : null)
       if (!dest) return
       entries.push({
         cardId: step.cardId,

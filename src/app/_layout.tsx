@@ -1,19 +1,21 @@
 import { Provider as ThemeProvider, type ThemeSettings, useAutoPaperTheme, useThemeSettings } from '@rific/auto-paper'
-import { FeedbackPressProvider, type HapticSettings, type SoundSettings } from '@rific/feedback-press'
+import { FeedbackPressProvider, hapticActions, type HapticSettings, soundActions, type SoundSettings } from '@rific/feedback-press'
 import { Toaster, ToastProvider } from '@rific/toaster'
 import { Stack } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
-import { useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { StyleSheet } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import * as RNPaper from 'react-native-paper'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
+import { Provider as ReduxProvider, useDispatch, useSelector } from 'react-redux'
+import { PersistGate } from 'redux-persist/integration/react'
 
 import { DEFAULT_SEED_COLOR, previewCardBack, useTableColors } from '@/components/theme'
 import { UpdateDialog } from '@/components/UpdateDialog'
 import { useCardSoundPlayers } from '@/components/useCardSounds'
 import { CARD_FONT_FAMILY, useFontsPreload } from '@/components/useFontsPreload'
-import { loadSoundFxEnabled, loadVibrateEnabled, saveSoundFxEnabled, saveVibrateEnabled } from '@/stores/feedbackSettings'
+import { persistor, type RootState, store } from '@/redux/store'
 import { GameStatsProvider } from '@/stores/gameStats'
 import { LastActiveGameProvider, loadLastActiveGame } from '@/stores/lastActiveGame'
 import { loadInitialProfilesState, ProfilesInitialState, ProfilesProvider, useProfiles } from '@/stores/profiles'
@@ -88,6 +90,37 @@ function ProfileThemeSync() {
   return null
 }
 
+type FeedbackBridgeProps = {
+  children: ReactNode
+  playCardSound: () => void
+  playInvalidSound: () => void
+}
+
+// Redux-backed haptic/sound settings, dispatching through @rific/feedback-press's own
+// hapticActions/soundActions — converged onto the same shape as Expo-Starter/Snake/BoxHockey's
+// FeedbackBridge, replacing this app's old direct-AsyncStorage loadVibrateEnabled/
+// loadSoundFxEnabled version (stores/feedbackSettings.ts).
+function FeedbackBridge({ children, playCardSound, playInvalidSound }: FeedbackBridgeProps) {
+  const haptic = useSelector((state: RootState) => state.haptic)
+  const sound = useSelector((state: RootState) => state.sound)
+  const dispatch = useDispatch()
+  const onChange = useCallback((next: HapticSettings) => dispatch(hapticActions.initialize(next)), [dispatch])
+  const onSoundChange = useCallback((next: SoundSettings) => dispatch(soundActions.initialize(next)), [dispatch])
+
+  // PersistGate (an ancestor, see RootLayout below) already blocks rendering until redux-persist
+  // has rehydrated, so by the time this mounts haptic/sound are already the real persisted values
+  // — these gates are always ready the instant FeedbackBridge exists, unlike the old version's
+  // async AsyncStorage load.
+  useSplashReady('haptics', true)
+  useSplashReady('sound', true)
+
+  return (
+    <FeedbackPressProvider initialValue={haptic} onChange={onChange} soundInitialValue={sound} onSoundChange={onSoundChange} paper={RNPaper} sound={{ selection: playCardSound, notification: playInvalidSound }}>
+      {children}
+    </FeedbackPressProvider>
+  )
+}
+
 export default function RootLayout() {
   const [themeInitialValue, setThemeInitialValue] = useState<Partial<ThemeSettings> | undefined>(undefined)
   const [themeLoaded, setThemeLoaded] = useState(false)
@@ -95,10 +128,6 @@ export default function RootLayout() {
   const [appSettingsLoaded, setAppSettingsLoaded] = useState(false)
   const [profilesInitial, setProfilesInitial] = useState<ProfilesInitialState | undefined>(undefined)
   const [profilesLoaded, setProfilesLoaded] = useState(false)
-  const [vibrateEnabled, setVibrateEnabled] = useState(true)
-  const [vibrateLoaded, setVibrateLoaded] = useState(false)
-  const [soundFxEnabled, setSoundFxEnabled] = useState(true)
-  const [soundFxLoaded, setSoundFxLoaded] = useState(false)
   const [lastActiveGame, setLastActiveGame] = useState<SolitaireGameId | null>(null)
   const [lastActiveGameLoaded, setLastActiveGameLoaded] = useState(false)
   // Registers the 'fonts' gate itself (see useFontsPreload's own doc) - unlike the other five gates
@@ -125,14 +154,6 @@ export default function RootLayout() {
       setProfilesInitial(s)
       setProfilesLoaded(true)
     })
-    loadVibrateEnabled().then((v) => {
-      setVibrateEnabled(v)
-      setVibrateLoaded(true)
-    })
-    loadSoundFxEnabled().then((v) => {
-      setSoundFxEnabled(v)
-      setSoundFxLoaded(true)
-    })
     loadLastActiveGame().then((g) => {
       setLastActiveGame(g)
       setLastActiveGameLoaded(true)
@@ -142,12 +163,12 @@ export default function RootLayout() {
   useSplashReady('theme', themeLoaded)
   useSplashReady('appSettings', appSettingsLoaded)
   useSplashReady('profiles', profilesLoaded)
-  useSplashReady('haptics', vibrateLoaded)
-  useSplashReady('sound', soundFxLoaded)
   useSplashReady('lastActiveGame', lastActiveGameLoaded)
   // 'fonts' is registered inside useFontsPreload itself, not here - see its own doc comment.
+  // 'haptics'/'sound' are registered inside FeedbackBridge (below) instead, once redux-persist has
+  // rehydrated - see its own comment.
 
-  if (!themeLoaded || !appSettingsLoaded || !profilesLoaded || !vibrateLoaded || !soundFxLoaded || !lastActiveGameLoaded || !fontsLoaded) return null
+  if (!themeLoaded || !appSettingsLoaded || !profilesLoaded || !lastActiveGameLoaded || !fontsLoaded) return null
 
   return (
     <GestureHandlerRootView style={styles.root}>
@@ -157,14 +178,18 @@ export default function RootLayout() {
             <LastActiveGameProvider initialValue={lastActiveGame}>
               <SettingsProvider initialValue={appSettings}>
                 <ThemeProvider initialValue={themeInitialValue} onChange={saveThemeSettings} fontFamily={CARD_FONT_FAMILY}>
-                  <FeedbackPressProvider initialValue={{ vibrate: vibrateEnabled }} onChange={(next: HapticSettings) => saveVibrateEnabled(next.vibrate)} soundInitialValue={{ enabled: soundFxEnabled }} onSoundChange={(next: SoundSettings) => saveSoundFxEnabled(next.enabled)} sound={{ selection: playCardSound, notification: playInvalidSound }} paper={RNPaper}>
-                    <ToastProvider>
-                      <ProfileThemeSync />
-                      <ThemedStack />
-                      <ThemedToaster />
-                      <UpdateDialog />
-                    </ToastProvider>
-                  </FeedbackPressProvider>
+                  <ReduxProvider store={store}>
+                    <PersistGate persistor={persistor}>
+                      <FeedbackBridge playCardSound={playCardSound} playInvalidSound={playInvalidSound}>
+                        <ToastProvider>
+                          <ProfileThemeSync />
+                          <ThemedStack />
+                          <ThemedToaster />
+                          <UpdateDialog />
+                        </ToastProvider>
+                      </FeedbackBridge>
+                    </PersistGate>
+                  </ReduxProvider>
                 </ThemeProvider>
               </SettingsProvider>
             </LastActiveGameProvider>

@@ -9,7 +9,7 @@ import { Card } from '@/engine/types'
 import { PlayingCard } from '../PlayingCard'
 import { playShake } from '../shakeAnimation'
 import { useCardSoundEffects } from '../useCardSounds'
-import { useDragGhost } from './DragGhostLayer'
+import { DragFlightHandle, useDragGhost } from './DragGhostLayer'
 
 interface DraggableCardProps {
   card: Card
@@ -26,8 +26,11 @@ interface DraggableCardProps {
    * every tap regardless of whether the caller ends up using the position. A "nowhere to go"
    * shake never touches it, so deferring the call lets that path skip the cost entirely. */
   onPress?: (measure: () => Promise<{ x: number; y: number }>) => void
-  /** Attempt to drop at this screen point. Return true if a move was applied (skips the snap-back). */
-  onDrop?: (absoluteX: number, absoluteY: number) => Promise<boolean> | boolean
+  /** Attempt to drop at this screen point. `flight` is this drag's own independent ghost flight -
+   * a caller whose move applies should hold onto it and fly/hide it itself once the real
+   * destination is measurable (see DragFlightHandle), instead of it just vanishing. Return true if
+   * a move was applied (skips the snap-back). */
+  onDrop?: (absoluteX: number, absoluteY: number, flight: DragFlightHandle) => Promise<boolean> | boolean
   /** Hide this card - it's mid-flight in the screen-level ghost layer after a tap-to-move landed
    * here (see DragGhostLayer's flyTo). Distinct from the internal drag-hiding below, since this
    * card isn't the one driving the gesture. */
@@ -84,12 +87,20 @@ export function DraggableCard({ card, selected, hinted, disabled, onPress, onDro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shakeToken])
   const cardRegistry = ghost.cardRegistry
-  // Destructured to plain local SharedValue bindings rather than read as `ghost.originX` etc.
-  // inside the worklet below - referencing `ghost` itself inside a worklet closure makes Reanimated
-  // capture the *whole* controller object (see DragGhostController), including `cardRegistry` (a
-  // plain class instance, not a serializable value), which throws "[Worklets] Cannot copy value of
-  // type `CardRegistry`" the moment the gesture is built.
-  const { originX, originY, dx, dy } = ghost
+  // Owned locally (not sourced from `ghost`) so this card's own gesture worklet always has a
+  // stable SharedValue to write to, decided once at mount - see showLive's doc comment in
+  // DragGhostLayer.tsx. Referencing `ghost` itself inside a worklet closure would also make
+  // Reanimated try to capture the *whole* controller object (see DragGhostController), including
+  // `cardRegistry` (a plain class instance, not a serializable value), which throws "[Worklets]
+  // Cannot copy value of type `CardRegistry`" the moment the gesture is built.
+  const originX = useSharedValue(0)
+  const originY = useSharedValue(0)
+  const dx = useSharedValue(0)
+  const dy = useSharedValue(0)
+  // This card's own current flight, if any - set at drag-start, read at drag-end (to snap back or
+  // hand off to the caller's onDrop) and by nothing else, since only one drag can ever be in
+  // progress on this card at a time.
+  const flightRef = useRef<DragFlightHandle | null>(null)
 
   const latest = useRef({ onDrop, disabled, card, cardWidth })
   // Updated in an effect rather than directly during render (mutating a ref during render isn't
@@ -114,7 +125,7 @@ export function DraggableCard({ card, selected, hinted, disabled, onPress, onDro
 
   const handleStart = useCallback(() => {
     wasDraggingRef.current = true
-    ghost.show({ cards: [latest.current.card], offsetStep: 0, cardWidth: latest.current.cardWidth })
+    flightRef.current = ghost.showLive({ cards: [latest.current.card], offsetStep: 0, cardWidth: latest.current.cardWidth }, { originX, originY, dx, dy })
     playCardSound()
     setDragging(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -124,21 +135,22 @@ export function DraggableCard({ card, selected, hinted, disabled, onPress, onDro
     (absoluteX: number, absoluteY: number) => {
       ;(async () => {
         const dropFn = latest.current.onDrop
-        const applied = dropFn ? await dropFn(absoluteX, absoluteY) : false
+        const flight = flightRef.current
+        const applied = dropFn && flight ? await dropFn(absoluteX, absoluteY, flight) : false
         if (applied) {
           // Don't hide the ghost here - the caller's onDrop (mirroring handleCardTap) has already
           // marked this card's destination "incoming" and will measure its real landed position
-          // and fly the ghost the rest of the way there, instead of it just vanishing mid-air.
+          // and fly this same flight the rest of the way there, instead of it just vanishing
+          // mid-air.
           setDragging(false)
         } else {
-          ghost.snapBack(() => setDragging(false))
+          flight?.snapBack(() => setDragging(false))
         }
       })()
       setTimeout(() => {
         wasDraggingRef.current = false
       }, 0)
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   )
 

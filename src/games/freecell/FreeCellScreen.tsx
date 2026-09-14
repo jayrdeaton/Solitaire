@@ -11,7 +11,7 @@ import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
-import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { PileDragConfig, PileView } from '@/components/PileView'
@@ -90,7 +90,7 @@ function FreecellCell({
   /** Lazy measure function - see DraggableCard.tsx's onPress doc comment for why (this is a
    * straight pass-through to that same prop). */
   onPress: (measure: () => Promise<{ x: number; y: number }>) => void
-  onDrop: (x: number, y: number) => Promise<boolean> | boolean
+  onDrop: (x: number, y: number, flight: DragFlightHandle) => Promise<boolean> | boolean
 }) {
   const frozen = useFrozenWhileHidden(card, isFlyingHere)
   return (
@@ -131,14 +131,14 @@ function FreeCellScreenInner() {
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
   const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
-  // `fast` marks a fireAutoMove-triggered flight, so the effect below passes it on to ghost.flyTo
-  // for the quicker auto-play-to-foundation timing (see dragSpring.ts's autoPlaySpringFor). `gen`
+  // `fast` marks a fireAutoMove-triggered flight, so the effect below passes it on to the flight's
+  // own flyTo for the quicker auto-play-to-foundation timing (see dragSpring.ts's autoPlaySpringFor). `gen`
   // is the `dealTokenRef` value at the moment this flight was queued - re-checked once the async
   // measurement below resolves, so a flight queued against a game that's since been replaced by
   // "New Game" doesn't measure/land against the new deal's DOM (card ids are shuffle-independent
   // and reused across deals - see deck.ts). Mirrors exactly how runDeal below already guards itself
   // with dealTokenRef/pendingDealTokenRef.
-  const pendingAutoMoveCardIdRef = useRef<{ cardId: string; fast?: boolean; gen: number; isUndo?: boolean } | null>(null)
+  const pendingAutoMoveCardIdRef = useRef<{ cardId: string; fast?: boolean; gen: number; isUndo?: boolean; flight: DragFlightHandle } | null>(null)
   // A silently auto-played cascade being reversed by handleUndo (see FreeCellUndoMove above) -
   // measured/flown by its own [state]-effect below, independently of and concurrently with the
   // primary move's single-ghost flight (pendingAutoMoveCardIdRef's effect).
@@ -338,13 +338,13 @@ function FreeCellScreenInner() {
       // measuring an unrelated card in the NEW deal (ids are shuffle-independent and reused across
       // deals - see deck.ts), so drop this flight instead of landing on a nonsensical position.
       if (dealTokenRef.current !== pending.gen || !landed) {
-        ghost.hide()
+        pending.flight.hide()
         setFlying(null)
         if (pending.isUndo) finishOneUndoAnimation()
         else undoBusyRef.current = false
         return
       }
-      ghost.flyTo(
+      pending.flight.flyTo(
         landed.x,
         landed.y,
         () => {
@@ -602,16 +602,12 @@ function FreeCellScreenInner() {
     }
 
     if (origin) {
-      ghost.originX.value = origin.x
-      ghost.originY.value = origin.y
-      ghost.dx.value = 0
-      ghost.dy.value = 0
       playCardSound()
       hapticCard()
-      ghost.show({ cards: movingCards, offsetStep, cardWidth })
+      const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
       setFlying({ to: primary.from, count: primary.count })
       setState(prevState)
-      pendingAutoMoveCardIdRef.current = { cardId: primary.anchorCardId, gen: dealTokenRef.current, isUndo: true }
+      pendingAutoMoveCardIdRef.current = { cardId: primary.anchorCardId, gen: dealTokenRef.current, isUndo: true, flight }
     } else {
       setState(prevState)
       finishOneUndoAnimation()
@@ -699,16 +695,12 @@ function FreeCellScreenInner() {
     const movingCards = sourcePile.slice(sourcePile.length - move.count)
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
-    ghost.originX.value = origin.x
-    ghost.originY.value = origin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards: movingCards, offsetStep, cardWidth })
+    const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
 
-    if (!completeMove(move.from, move.to, move.count, cardId)) {
-      ghost.hide()
+    if (!completeMove(move.from, move.to, move.count, cardId, flight)) {
+      flight.hide()
     }
   }
 
@@ -716,7 +708,7 @@ function FreeCellScreenInner() {
   // drag's drop) - applies the move, then marks the destination "incoming" and stashes the
   // anchor card id for the [state]-effect above to measure and fly the ghost onto, instead of it
   // just vanishing/appearing at the destination instantly.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean; fast?: boolean }): boolean {
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) {
       // tableauRunCount's dimming only rules out a run that could NEVER move anywhere (the
       // best-case cap, assuming a non-empty destination - see its own comment). A run that passed
@@ -739,7 +731,7 @@ function FreeCellScreenInner() {
       return false
     }
     setFlying({ to, count })
-    pendingAutoMoveCardIdRef.current = { cardId: anchorCardId, fast: opts?.fast, gen: dealTokenRef.current }
+    pendingAutoMoveCardIdRef.current = { cardId: anchorCardId, fast: opts?.fast, gen: dealTokenRef.current, flight }
     return true
   }
 
@@ -765,22 +757,18 @@ function FreeCellScreenInner() {
     const origin = await ghost.cardRegistry.measure(entry.card.id)
     if (!origin || stateRef.current !== stateAtStart) return
     const to: PileRef = { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) }
-    ghost.originX.value = origin.x
-    ghost.originY.value = origin.y
-    ghost.dx.value = 0
-    ghost.dy.value = 0
     playCardSound()
     hapticCard()
-    ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth })
-    if (!completeMove(entry.ref, to, 1, entry.card.id, { silent: true, fast: true })) {
-      ghost.hide()
+    const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
+    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: true })) {
+      flight.hide()
     }
   }
 
-  async function attemptDrop(from: PileRef, count: number, absoluteX: number, absoluteY: number, anchorCardId: string): Promise<boolean> {
+  async function attemptDrop(from: PileRef, count: number, absoluteX: number, absoluteY: number, anchorCardId: string, flight: DragFlightHandle): Promise<boolean> {
     const target = await dropZones.hitTest(absoluteX, absoluteY)
     if (!target) return false
-    return completeMove(from, target, count, anchorCardId)
+    return completeMove(from, target, count, anchorCardId, flight)
   }
 
   // A card whose own coherent run (indexFromTop + 1 cards) is longer than what the current
@@ -853,7 +841,7 @@ function FreeCellScreenInner() {
                       <PlayingCard card={DECK_PLACEHOLDER_CARD} testID='freecell-deck-origin' />
                     </View>
                   ) : (
-                    <FreecellCell card={card ?? undefined} isFlyingHere={isFlyingHere} shakeToken={card && shake?.cardId === card.id ? shake.token : undefined} highlighted={hintCountFor(activeHint, ref) > 0} onPress={(measure) => handleCardTap(ref, card!.id, measure)} onDrop={(x, y) => attemptDrop(ref, 1, x, y, card!.id)} />
+                    <FreecellCell card={card ?? undefined} isFlyingHere={isFlyingHere} shakeToken={card && shake?.cardId === card.id ? shake.token : undefined} highlighted={hintCountFor(activeHint, ref) > 0} onPress={(measure) => handleCardTap(ref, card!.id, measure)} onDrop={(x, y, flight) => attemptDrop(ref, 1, x, y, card!.id, flight)} />
                   )}
                 </DropZone>
               )
@@ -866,7 +854,7 @@ function FreeCellScreenInner() {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
               getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
-              onDrop: (to, count, anchorCardId) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId)
+              onDrop: (to, count, anchorCardId, flight) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)
             }
             const hiddenCount = flying && flying.to.zone === 'tableau' && flying.to.index === colIndex ? flying.count : 0
             return (

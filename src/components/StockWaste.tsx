@@ -6,6 +6,7 @@ import { Card } from '@/engine/types'
 
 import { CARD_GAP_MIN } from './cardLayout'
 import { DraggableCard } from './dragdrop/DraggableCard'
+import { DragFlightHandle } from './dragdrop/DragGhostLayer'
 import { DropZone } from './dragdrop/DropZone'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
 import { EmptySlot, PlayingCard } from './PlayingCard'
@@ -37,7 +38,7 @@ interface StockWasteProps {
   /** Lazy measure function - see DraggableCard.tsx's onPress doc comment for why (this is a
    * straight pass-through to that same prop). */
   onWastePress: (measure: () => Promise<{ x: number; y: number }>) => void
-  onWasteDrop: (absoluteX: number, absoluteY: number) => Promise<boolean> | boolean
+  onWasteDrop: (absoluteX: number, absoluteY: number, flight: DragFlightHandle) => Promise<boolean> | boolean
   wasteSelected?: boolean
   /** Highlight the waste top / stock pile as the Hint feature's suggested source/destination - see
    * PlayingCard's own `hinted` prop. `stockHinted` covers both the stock pile card itself and its

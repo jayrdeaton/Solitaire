@@ -20,6 +20,9 @@
       "@/games/*": [
         "./src/games/*"
       ],
+      "@/redux/*": [
+        "./src/redux/*"
+      ],
       "@/stores/*": [
         "./src/stores/*"
       ],

@@ -2,12 +2,12 @@ import { faceUpFanOffset, useCardSize } from '@tastic/cards'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
-import Animated, { measure, runOnJS, useAnimatedRef, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
+import Animated, { measure, runOnJS, SharedValue, useAnimatedRef, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
 
 import { PileRef } from '@/engine/gameTypes'
 import { Card } from '@/engine/types'
 
-import { useDragGhost } from './dragdrop/DragGhostLayer'
+import { DragFlightHandle, useDragGhost } from './dragdrop/DragGhostLayer'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
 import { EmptySlot, PlayingCard } from './PlayingCard'
 import { playShake } from './shakeAnimation'
@@ -23,8 +23,10 @@ export interface PileDragConfig {
    * tap-to-move flight measures to find its exact landing spot, so a caller that applies the move
    * can mark that destination "incoming" and fly the ghost the rest of the way there instead of
    * just snapping it into place (see PileView's own handleDragEnd, which no longer hides the ghost
-   * on a successful drop - that's now this callback's job, mirroring handleCardTap). */
-  onDrop: (to: PileRef, count: number, anchorCardId: string) => Promise<boolean> | boolean
+   * on a successful drop - that's now this callback's job, mirroring handleCardTap). `flight` is
+   * this drag's own independent ghost flight - hold onto it and fly/hide it once the real
+   * destination is measurable, instead of it just vanishing. */
+  onDrop: (to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle) => Promise<boolean> | boolean
 }
 
 interface PileViewProps {
@@ -91,6 +93,13 @@ interface DraggableTableauCardProps {
   onPress?: (card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) => void
   onDragStart: (indexFromTop: number, runCount: number) => void
   onDragEnd: (absoluteX: number, absoluteY: number, runCount: number, anchorCardId: string) => void
+  /** This column's own persistent position-tracking values (see PileView's own doc comment on
+   * originX below) - passed down rather than sourced from useDragGhost() so this card's gesture
+   * worklet always writes to a stable SharedValue, decided once per column rather than per card. */
+  originX: SharedValue<number>
+  originY: SharedValue<number>
+  dx: SharedValue<number>
+  dy: SharedValue<number>
 }
 
 /**
@@ -112,7 +121,7 @@ interface DraggableTableauCardProps {
  * screen-level auto-move handlers that call `ghost.cardRegistry.measure(cardId)` after applying a
  * move.
  */
-function DraggableTableauCard({ card, selected, hinted, dimmed, cardStyle, runCount, indexFromTop, isHidden, shakeToken, onPress, onDragStart, onDragEnd }: DraggableTableauCardProps) {
+function DraggableTableauCard({ card, selected, hinted, dimmed, cardStyle, runCount, indexFromTop, isHidden, shakeToken, onPress, onDragStart, onDragEnd, originX, originY, dx, dy }: DraggableTableauCardProps) {
   const viewRef = useAnimatedRef<Animated.View>()
   const ghost = useDragGhost()
   const shakeX = useSharedValue(0)
@@ -137,12 +146,6 @@ function DraggableTableauCard({ card, selected, hinted, dimmed, cardStyle, runCo
   const startAbsX = useSharedValue(0)
   const startAbsY = useSharedValue(0)
   const cardRegistry = ghost.cardRegistry
-  // Destructured to plain local SharedValue bindings rather than read as `ghost.originX` etc.
-  // inside the worklet below - referencing `ghost` itself inside a worklet closure makes Reanimated
-  // capture the *whole* controller object (see DragGhostController), including `cardRegistry` (a
-  // plain class instance, not a serializable value), which throws "[Worklets] Cannot copy value of
-  // type `CardRegistry`" the moment the gesture is built.
-  const { originX, originY, dx, dy } = ghost
   // React Native Web's Pressable can still fire its own native click on the same release a Pan
   // gesture above it already claimed as a drag (confirmed live: a completed drag - moved past
   // minDistance, released over an invalid drop point - still triggered handlePress's tap-to-move
@@ -255,10 +258,22 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
   const ghost = useDragGhost()
   const { playCardSound } = useCardSoundEffects()
   const [activeDrag, setActiveDrag] = useState<{ indexFromTop: number; count: number } | null>(null)
+  // This column's own persistent position-tracking values, tied to this PileView instance's own
+  // lifetime (it stays mounted across every card the column ever holds - see DraggableTableauCard's
+  // own doc comment) rather than sourced dynamically per-drag, so DraggableTableauCard's gesture
+  // worklet always has a stable SharedValue to write to (see DragGhostLayer.tsx's showLive).
+  const originX = useSharedValue(0)
+  const originY = useSharedValue(0)
+  const dx = useSharedValue(0)
+  const dy = useSharedValue(0)
+  // This column's own current flight, if any - set at drag-start, read at drag-end (to snap back
+  // or hand off to `drag.onDrop`) and by nothing else, since only one drag can ever be in progress
+  // from this column at a time.
+  const flightRef = useRef<DragFlightHandle | null>(null)
 
   function handleDragStart(indexFromTop: number, runCount: number) {
     const runCards = cards.slice(cards.length - runCount)
-    ghost.show({ cards: runCards, offsetStep: resolvedFaceUpOffset, cardWidth })
+    flightRef.current = ghost.showLive({ cards: runCards, offsetStep: resolvedFaceUpOffset, cardWidth }, { originX, originY, dx, dy })
     playCardSound()
     setActiveDrag({ indexFromTop, count: runCount })
   }
@@ -266,15 +281,17 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
   function handleDragEnd(absoluteX: number, absoluteY: number, count: number, anchorCardId: string) {
     ;(async () => {
       const target = drag ? await drag.registry.hitTest(absoluteX, absoluteY) : null
-      const applied = target && drag ? await drag.onDrop(target, count, anchorCardId) : false
+      const flight = flightRef.current
+      const applied = target && drag && flight ? await drag.onDrop(target, count, anchorCardId, flight) : false
       if (applied) {
         // Don't hide the ghost here - it's still sitting wherever the pointer released it, not
         // yet at the destination's exact fanned position. The caller's onDrop (mirroring
         // handleCardTap) has already marked that destination "incoming" and will measure its real
-        // landed position and fly the ghost the rest of the way there, same as a tap-to-move.
+        // landed position and fly this same flight the rest of the way there, same as a
+        // tap-to-move.
         setActiveDrag(null)
       } else {
-        ghost.snapBack(() => setActiveDrag(null))
+        flight?.snapBack(() => setActiveDrag(null))
       }
     })()
   }
@@ -341,7 +358,27 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
         const isPressable = runCount > 0
         const cardStyle = { position: 'absolute' as const, top: offsets[i] * scale, left: 0, zIndex: i }
 
-        return <DraggableTableauCard key={card.id} card={card} selected={isSelected} hinted={isHinted} dimmed={isDimmed} cardStyle={cardStyle} runCount={runCount} indexFromTop={indexFromTop} isHidden={isCardHidden(card, indexFromTop)} shakeToken={shakeStartIndexFromTop !== null && indexFromTop <= shakeStartIndexFromTop && indexFromTop > shakeStartIndexFromTop - shakeCount ? shakeToken : undefined} onPress={isPressable ? onPressCard : undefined} onDragStart={handleDragStart} onDragEnd={handleDragEnd} />
+        return (
+          <DraggableTableauCard
+            key={card.id}
+            card={card}
+            selected={isSelected}
+            hinted={isHinted}
+            dimmed={isDimmed}
+            cardStyle={cardStyle}
+            runCount={runCount}
+            indexFromTop={indexFromTop}
+            isHidden={isCardHidden(card, indexFromTop)}
+            shakeToken={shakeStartIndexFromTop !== null && indexFromTop <= shakeStartIndexFromTop && indexFromTop > shakeStartIndexFromTop - shakeCount ? shakeToken : undefined}
+            onPress={isPressable ? onPressCard : undefined}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            originX={originX}
+            originY={originY}
+            dx={dx}
+            dy={dy}
+          />
+        )
       })}
       {allCardsHidden && (
         <View style={StyleSheet.absoluteFill} pointerEvents='none'>
