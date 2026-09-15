@@ -164,10 +164,13 @@ function CanfieldScreenInner() {
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
-  // controllerRef.current, not a plain const - Canfield's draw count is now a per-deal config (see
-  // controllerRef's own doc comment above), the same reasoning KlondikeScreen's own controllerRef
-  // exists for.
-  const { won, setWon, recordedWinRef, pendingWinCascadeRef, checkWin } = useFoundationWinCheck(controllerRef.current, 'canfield', session, dealTokenRef, recordDealWon, hintsUsedRef)
+  // Reads controllerRef.current live inside isWon (rather than passing controllerRef.current
+  // directly, which would freeze this render's controller into checkWin's closure) - matches
+  // KlondikeScreen's identical fix, so a straggling call from a stale render's closure chain still
+  // checks against the CURRENT controller, same as every other controllerRef.current read in this
+  // file. Canfield's draw count is a per-deal config (see controllerRef's own doc comment above),
+  // the same reasoning KlondikeScreen's own controllerRef exists for.
+  const { won, setWon, recordedWinRef, pendingWinCascadeRef, checkWin } = useFoundationWinCheck({ isWon: (s: CanfieldState) => controllerRef.current.isWon(s) }, 'canfield', session, dealTokenRef, recordDealWon, hintsUsedRef)
   /** One ref per foundation slot's own container (see FoundationCell's slotRef) - measured
    * independently of CardRegistry so the win cascade can still find each pile's screen position
    * after its real top card has been hidden (won-gated, see the foundation row below), at which
@@ -194,11 +197,16 @@ function CanfieldScreenInner() {
   // shakeAnimation.ts.
   const [shake, setShake] = useState<{ cardId: string; count: number; token: number } | null>(null)
   const shakeTokenRef = useRef(0)
-  // Mirrors `state` synchronously so fireAutoMove - which has an await gap before it applies its
-  // move, unlike every other mutator here - can tell if some other action already changed state
-  // underneath it and bail instead of applying against a stale snapshot.
+  // Mirrors `state` so fireAutoMove - which has an await gap before it applies its move, unlike
+  // every other mutator here - can tell if some other action already changed state underneath it
+  // and bail instead of applying against a stale snapshot. Synced from a dedicated effect rather
+  // than a direct render-time write (matches YukonScreen's identical fix for the same
+  // react-hooks/refs trip) - fireAutoMove only ever reads `.current` from its own later async
+  // closure, well after this effect has committed.
   const stateRef = useRef(state)
-  stateRef.current = state
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
   // Guards handleUndo against being called again before its own previous invocation has fully
   // settled (visually, not just in state) - see handleUndo below for why an overlapping call would
   // otherwise desync the undo stack or clobber the shared single-flight ghost/deal animation.

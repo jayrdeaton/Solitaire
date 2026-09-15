@@ -224,12 +224,18 @@ function KlondikeScreenInner() {
   // still bumps to a new value and re-triggers the shake instead of being a no-op state update.
   const [shake, setShake] = useState<{ cardId: string; count: number; token: number } | null>(null)
   const shakeTokenRef = useRef(0)
-  // Mirrors `state` synchronously (assigned directly in the render body, same pattern PileView.tsx
-  // uses, PLUS commitState below) so a mutator with an await gap before it applies its move can
-  // tell if some other action already changed state underneath it and bail instead of applying
-  // against a stale snapshot.
+  // Mirrors `state` (via a dedicated effect rather than a direct render-time write, matching
+  // YukonScreen's identical fix for the same react-hooks/refs trip, PLUS commitState below) so a
+  // mutator with an await gap before it applies its move can tell if some other action already
+  // changed state underneath it and bail instead of applying against a stale snapshot. The
+  // rapid-click same-tick guarantee (see commitState's own comment) comes entirely from
+  // commitState's synchronous `stateRef.current = next` - a plain function call, not a render-time
+  // write, so it's unaffected by this effect and still updates stateRef.current well before this
+  // effect (or React's next render) ever runs.
   const stateRef = useRef(state)
-  stateRef.current = state
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
 
   // Every mutator below reads the board via stateRef.current (never the closure `state` variable
   // directly) and commits through this, which updates stateRef.current in the SAME synchronous
@@ -532,6 +538,85 @@ function KlondikeScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
+  // Declared here, before the effect below that calls it, purely so the effect's reference to it
+  // isn't "accessed before declared" (react-hooks/immutability) - function declarations hoist at
+  // runtime regardless of source position, so this reorder is a no-op behaviorally.
+  async function runCascadeReturn(moves: MoveInfo[], origins: CascadeOrigins, gen: number) {
+    // A move whose card is headed back to the stock (reversing a plain draw or a drawAndPlay - see
+    // fireDraw/fireDrawAndPlay) has no per-card CardRegistry entry to measure once it lands there -
+    // the stock only ever renders as a generic pile, never per-card - so its destination is the
+    // same container ref a normal forward draw's ORIGIN already uses instead.
+    const destinations = await Promise.all(moves.map((m) => (m.from.zone === 'stock' ? measureView(stockViewRef.current) : ghost.cardRegistry.measure(m.anchorCardId))))
+    if (dealTokenRef.current !== gen) {
+      settleFlight()
+      return
+    }
+    const s = stateRef.current
+    const entries: DealCardSpec[] = []
+    const strandedTableauIds: string[] = []
+    let strandedWasteCount = 0
+    let entryIndex = 0
+    moves.forEach((m, i) => {
+      const dest = destinations[i]
+      const origin = originForCascadedMove(m, origins)
+      const pile = s ? resolvePile(m.from, s) : null
+      // A single-card move (every ORIGINAL cascaded auto-play) just flies its own anchor. A
+      // multi-card one (a cascaded recycle/draw-3 sweep-draw reversal) needs its own recorded
+      // m.cardIds - unlike the PRIMARY move's own draw-3/recycle undo branches, this move isn't
+      // necessarily the most recent thing that happened to `to`'s pile, so "peek at the current top
+      // N cards" can't reliably reconstruct which cards were actually its own. Reversed so the
+      // newest/top card leads the reverse flight, same convention those primary-move branches use.
+      const ids = m.count > 1 && m.cardIds ? m.cardIds.slice().reverse() : [m.anchorCardId]
+      const cards = ids.map((id) => pile?.find((c) => c.id === id)).filter((c): c is Card => !!c)
+      if (dest && origin && cards.length === ids.length) {
+        cards.forEach((card) => {
+          entries.push({ cardId: card.id, card, from: origin, to: { x: dest.x, y: dest.y }, delayMs: entryIndex * DEAL_STAGGER_MS })
+          entryIndex += 1
+        })
+      } else if (m.from.zone === 'tableau') {
+        strandedTableauIds.push(m.anchorCardId)
+      } else if (m.from.zone === 'waste') {
+        strandedWasteCount += m.count
+      }
+      // m.from.zone === 'stock' needs no stranded-fallback handling - see hideCascadeCards' own
+      // comment on why there's nothing to unhide for a card headed back to the stock.
+    })
+    // A card whose destination measurement failed (a rare edge case) un-hides immediately rather
+    // than staying stuck invisible forever - mirrors runDeal's/runWinCascade's own fallback for
+    // the same failure mode.
+    if (strandedTableauIds.length > 0) {
+      setDealHiddenIds((ids) => {
+        const next = new Set(ids)
+        strandedTableauIds.forEach((id) => next.delete(id))
+        return next
+      })
+    }
+    if (strandedWasteCount > 0) setCascadeWasteHiddenCount((n) => Math.max(0, n - strandedWasteCount))
+
+    if (entries.length === 0) {
+      settleFlight()
+      return
+    }
+    deal.start(
+      entries,
+      cardWidth,
+      (cardId) => {
+        const m = moves.find((mv) => mv.anchorCardId === cardId || mv.cardIds?.includes(cardId))
+        if (m?.from.zone === 'tableau') {
+          setDealHiddenIds((ids) => {
+            if (!ids.has(cardId)) return ids
+            const next = new Set(ids)
+            next.delete(cardId)
+            return next
+          })
+        } else if (m?.from.zone === 'waste') {
+          setCascadeWasteHiddenCount((n) => Math.max(0, n - 1))
+        }
+      },
+      () => settleFlight()
+    )
+  }
+
   // Cascade-return effect (see PATTERN_CASCADE_UNDO): once an undo's revert has committed, fly
   // every cascaded (silently auto-played) card back from the foundation slot it left to wherever
   // it now really sits (a tableau column or the waste), independently and concurrently with the
@@ -665,82 +750,6 @@ function KlondikeScreenInner() {
   async function measureCascadeOrigins(): Promise<CascadeOrigins> {
     const [foundation, stock, waste] = await Promise.all([Promise.all(foundationSlotRefs.current.map((view) => measureView(view))), measureView(stockViewRef.current), measureView(wasteViewRef.current)])
     return { foundation, stock, waste }
-  }
-
-  async function runCascadeReturn(moves: MoveInfo[], origins: CascadeOrigins, gen: number) {
-    // A move whose card is headed back to the stock (reversing a plain draw or a drawAndPlay - see
-    // fireDraw/fireDrawAndPlay) has no per-card CardRegistry entry to measure once it lands there -
-    // the stock only ever renders as a generic pile, never per-card - so its destination is the
-    // same container ref a normal forward draw's ORIGIN already uses instead.
-    const destinations = await Promise.all(moves.map((m) => (m.from.zone === 'stock' ? measureView(stockViewRef.current) : ghost.cardRegistry.measure(m.anchorCardId))))
-    if (dealTokenRef.current !== gen) {
-      settleFlight()
-      return
-    }
-    const s = stateRef.current
-    const entries: DealCardSpec[] = []
-    const strandedTableauIds: string[] = []
-    let strandedWasteCount = 0
-    let entryIndex = 0
-    moves.forEach((m, i) => {
-      const dest = destinations[i]
-      const origin = originForCascadedMove(m, origins)
-      const pile = s ? resolvePile(m.from, s) : null
-      // A single-card move (every ORIGINAL cascaded auto-play) just flies its own anchor. A
-      // multi-card one (a cascaded recycle/draw-3 sweep-draw reversal) needs its own recorded
-      // m.cardIds - unlike the PRIMARY move's own draw-3/recycle undo branches, this move isn't
-      // necessarily the most recent thing that happened to `to`'s pile, so "peek at the current top
-      // N cards" can't reliably reconstruct which cards were actually its own. Reversed so the
-      // newest/top card leads the reverse flight, same convention those primary-move branches use.
-      const ids = m.count > 1 && m.cardIds ? m.cardIds.slice().reverse() : [m.anchorCardId]
-      const cards = ids.map((id) => pile?.find((c) => c.id === id)).filter((c): c is Card => !!c)
-      if (dest && origin && cards.length === ids.length) {
-        cards.forEach((card) => {
-          entries.push({ cardId: card.id, card, from: origin, to: { x: dest.x, y: dest.y }, delayMs: entryIndex * DEAL_STAGGER_MS })
-          entryIndex += 1
-        })
-      } else if (m.from.zone === 'tableau') {
-        strandedTableauIds.push(m.anchorCardId)
-      } else if (m.from.zone === 'waste') {
-        strandedWasteCount += m.count
-      }
-      // m.from.zone === 'stock' needs no stranded-fallback handling - see hideCascadeCards' own
-      // comment on why there's nothing to unhide for a card headed back to the stock.
-    })
-    // A card whose destination measurement failed (a rare edge case) un-hides immediately rather
-    // than staying stuck invisible forever - mirrors runDeal's/runWinCascade's own fallback for
-    // the same failure mode.
-    if (strandedTableauIds.length > 0) {
-      setDealHiddenIds((ids) => {
-        const next = new Set(ids)
-        strandedTableauIds.forEach((id) => next.delete(id))
-        return next
-      })
-    }
-    if (strandedWasteCount > 0) setCascadeWasteHiddenCount((n) => Math.max(0, n - strandedWasteCount))
-
-    if (entries.length === 0) {
-      settleFlight()
-      return
-    }
-    deal.start(
-      entries,
-      cardWidth,
-      (cardId) => {
-        const m = moves.find((mv) => mv.anchorCardId === cardId || mv.cardIds?.includes(cardId))
-        if (m?.from.zone === 'tableau') {
-          setDealHiddenIds((ids) => {
-            if (!ids.has(cardId)) return ids
-            const next = new Set(ids)
-            next.delete(cardId)
-            return next
-          })
-        } else if (m?.from.zone === 'waste') {
-          setCascadeWasteHiddenCount((n) => Math.max(0, n - 1))
-        }
-      },
-      () => settleFlight()
-    )
   }
 
   // Mirrors handleCardTap's forward flight, just in reverse: the card(s) being undone are still

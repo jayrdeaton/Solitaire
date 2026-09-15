@@ -313,6 +313,31 @@ function PyramidScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
+  // Both declared here, before the effect below that calls them, purely so the effect's references
+  // to them aren't "accessed before declared" (react-hooks/immutability) - function declarations
+  // hoist at runtime regardless of source position, so this reorder is a no-op behaviorally.
+  function resolveUndoDestination(ref: PileRef, cardId: string, triangleOrigin: ScreenPoint | null): Promise<ScreenPoint | null> {
+    if (ref.zone === 'pyramid') {
+      if (!triangleOrigin) return Promise.resolve(null)
+      const { row, col } = rowColOf(ref.index)
+      const { left, top } = cardPosition(row, col, cardWidth, cardHeight, gap)
+      return Promise.resolve({ x: triangleOrigin.x + left, y: triangleOrigin.y + top })
+    }
+    return ghost.cardRegistry.measure(cardId)
+  }
+
+  // Shared primitive behind both directions of Pyramid's independent-card-flight overlay: a
+  // forward (removal) flight's cards each already carry their own origin and share one destination
+  // (the discard pile - see flyPairIndependently below); an undo-of-removal flight's cards share
+  // one origin (the discard pile) but each carries its own destination (see undoRemoval). Either
+  // way, by the time this runs every card's full {from, to} is already resolved.
+  function startPairFlight(cards: PairFlightCardSpec[]) {
+    pairFlightGenRef.current += 1
+    pairFlightTotalRef.current = cards.length
+    pairFlightLandedRef.current = 0
+    setPairFlight({ gen: pairFlightGenRef.current, cardWidth, cards })
+  }
+
   // Resolves each removed card's real fly-back destination once prevState has actually committed
   // (see pendingRemovalUndoRef and undoRemoval below), then starts their independent flight. A
   // card whose destination fails to resolve (a rare measurement failure) is un-hidden instead of
@@ -360,16 +385,6 @@ function PyramidScreenInner() {
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
-
-  function resolveUndoDestination(ref: PileRef, cardId: string, triangleOrigin: ScreenPoint | null): Promise<ScreenPoint | null> {
-    if (ref.zone === 'pyramid') {
-      if (!triangleOrigin) return Promise.resolve(null)
-      const { row, col } = rowColOf(ref.index)
-      const { left, top } = cardPosition(row, col, cardWidth, cardHeight, gap)
-      return Promise.resolve({ x: triangleOrigin.x + left, y: triangleOrigin.y + top })
-    }
-    return ghost.cardRegistry.measure(cardId)
-  }
 
   // state.discard always holds all 52 cards by the time isWon() is true (rules.ts's
   // sweepRemainderOnWin folds in whatever was left in stock/waste on the winning move), in true
@@ -780,18 +795,6 @@ function PyramidScreenInner() {
       setFlying(null)
       undoBusyRef.current = false
     }
-  }
-
-  // Shared primitive behind both directions of Pyramid's independent-card-flight overlay: a
-  // forward (removal) flight's cards each already carry their own origin and share one destination
-  // (the discard pile - see flyPairIndependently below); an undo-of-removal flight's cards share
-  // one origin (the discard pile) but each carries its own destination (see undoRemoval). Either
-  // way, by the time this runs every card's full {from, to} is already resolved.
-  function startPairFlight(cards: PairFlightCardSpec[]) {
-    pairFlightGenRef.current += 1
-    pairFlightTotalRef.current = cards.length
-    pairFlightLandedRef.current = 0
-    setPairFlight({ gen: pairFlightGenRef.current, cardWidth, cards })
   }
 
   // Pair-removal flight: both cards travel to the discard pile independently, each from its own
