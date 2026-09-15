@@ -10,9 +10,9 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CARD_ASPECT, CardSizeProvider, type TableColors } from '@tastic/cards'
-import { computeContentBounds } from '@tastic/core'
+import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
+import { StyleSheet, Text, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { FACE_UP_OFFSET_RATIO } from '@/components/CardSizeContext'
@@ -37,11 +37,13 @@ import { top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
+import { clampCardWidthForHeight } from '@/games/shared/clampCardWidthForHeight'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -107,9 +109,17 @@ function TriPeaksScreenInner() {
   // setup already proves lint-clean.
   const [tripeaksRankWrap, setTripeaksRankWrap] = useState(settings.tripeaksRankWrap)
   const controller = useMemo(() => createTriPeaksController(tripeaksRankWrap), [tripeaksRankWrap])
-  const { width: winWidth } = useWindowDimensions()
+  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
+  // with plain useWindowDimensions() otherwise, see the rotation plan.
+  const { width: winWidth } = useRotatedWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, BASE_WIDTH)
+  const { cardWidth: widthCardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, BASE_WIDTH)
+  // Same two-axis clamp as Pyramid's own (see clampCardWidthForHeight's own doc comment) - TriPeaks
+  // has the identical "no PileView/height-budget concept, board height is a pure function of
+  // cardWidth" shape, just with boardHeight's own N=3 (deepest row index) in place of Pyramid's
+  // N=(ROWS-1).
+  const availableHeight = useTableauMaxHeight(widthCardWidth, 0)
+  const cardWidth = clampCardWidthForHeight(widthCardWidth, availableHeight, 3, FACE_UP_OFFSET_RATIO, CARD_ASPECT)
   const cardHeight = cardWidth / CARD_ASPECT
   const [state, setState] = useState<TriPeaksState | null>(null)
   // Every TriPeaks move (a tableau card onto the waste, or a stock draw) always has a real

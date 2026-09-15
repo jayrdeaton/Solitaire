@@ -1,5 +1,5 @@
 import { CARD_ASPECT } from '@tastic/cards'
-import { useWindowDimensions } from 'react-native'
+import { rotateInsets, useRotatedWindowDimensions, useRotation } from '@tastic/core'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { GAME_CONTENT_BOTTOM_PADDING, GAME_CONTENT_TOP_PADDING } from '@/components/GameChrome'
@@ -26,10 +26,18 @@ const TABLEAU_ROW_PADDING_BOTTOM = 20
  * (same pattern PyramidScreen already uses for its own analytic layout) rather than measured live
  * - avoiding the onLayout-vs-mount-commit race the deal animation elsewhere in this app had to
  * work around for a very different reason (see this app's CLAUDE.md).
+ *
+ * Reads useRotatedWindowDimensions()/rotateInsets() (both from @tastic/core) rather than raw
+ * useWindowDimensions()/useSafeAreaInsets() directly, so a screen rendered inside a rotated
+ * ancestor (see the rotation plan) gets a height budget for its own actual, post-rotation
+ * footprint - provably a no-op for every screen with no such ancestor (the only case today):
+ * useRotation() falls back to its Context's static default (rotation 0) with no OrientationProvider
+ * mounted anywhere above, at which point both calls are exact identities.
  */
 export function useTableauMaxHeight(cardWidth: number, floor: number): number {
-  const { height: winHeight } = useWindowDimensions()
-  const insets = useSafeAreaInsets()
+  const { height: winHeight } = useRotatedWindowDimensions()
+  const rotation = useRotation()
+  const insets = rotateInsets(useSafeAreaInsets(), rotation)
   const topRowHeight = cardWidth / CARD_ASPECT
   const available = winHeight - insets.top - insets.bottom - GAME_CONTENT_TOP_PADDING - GAME_CONTENT_BOTTOM_PADDING - topRowHeight - TOP_ROW_MARGIN_BOTTOM - TABLEAU_ROW_PADDING_BOTTOM
   return Math.max(floor, available)

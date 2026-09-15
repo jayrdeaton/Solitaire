@@ -17,7 +17,7 @@ import { WithSpringConfig } from 'react-native-reanimated'
  * clean instead of just fast.
  */
 export const SNAP_BACK_SPRING: WithSpringConfig = {
-  duration: 200,
+  duration: 240,
   dampingRatio: 1,
   overshootClamping: true
 }
@@ -36,8 +36,8 @@ export const SNAP_BACK_SPRING: WithSpringConfig = {
 // almost the instant it's placed. (The card-move click+haptic themselves don't wait on this settle
 // at all - see useCardSounds.ts's playCardSound/hapticCard, fired together the instant each of
 // these flights is kicked off instead.)
-const AUTO_MOVE_MIN_DURATION = 100
-const AUTO_MOVE_MAX_DURATION = 260
+const AUTO_MOVE_MIN_DURATION = 130
+const AUTO_MOVE_MAX_DURATION = 320
 const AUTO_MOVE_MIN_DISTANCE = 60
 const AUTO_MOVE_MAX_DISTANCE = 360
 
@@ -73,11 +73,26 @@ export function autoMoveSpringFor(distance: number): WithSpringConfig {
 // (e.g. auto-completing the last dozen cards of a won deal) feel sluggish. Roughly halving the
 // duration range keeps the same critically-damped glide, just fast enough that a long cascade
 // reads as brisk rather than a deliberate one-at-a-time flight.
-const AUTO_PLAY_MIN_DURATION = 60
-const AUTO_PLAY_MAX_DURATION = 140
+const AUTO_PLAY_MIN_DURATION = 75
+const AUTO_PLAY_MAX_DURATION = 170
 
 /** Same distance-scaled shape as autoMoveSpringFor, but for the quicker auto-play-to-foundation
  * cascade specifically - see the comment above. */
 export function autoPlaySpringFor(distance: number): WithSpringConfig {
   return springForDistance(distance, AUTO_PLAY_MIN_DURATION, AUTO_PLAY_MAX_DURATION)
+}
+
+// The win-completing sweep (useAutoFoundationCascade's sweepingRef - once the whole rest of the
+// game, stock included, is provably clearable, every remaining card flies at this pace instead of
+// autoPlaySpringFor's already-quick one) is meant to read as noticeably brisker still: a flat,
+// constant pace for the whole sweep, not a gradual ramp - each card's own duration keeps scaling
+// with its own travel distance (same distance-scaled shape as every other tier here), it's the
+// sweep as a sequence that doesn't accelerate card-over-card.
+const WIN_SWEEP_MIN_DURATION = 40
+const WIN_SWEEP_MAX_DURATION = 90
+
+/** Same distance-scaled shape as autoPlaySpringFor, but for the win-completing sweep specifically -
+ * see the comment above. */
+export function winSweepSpringFor(distance: number): WithSpringConfig {
+  return springForDistance(distance, WIN_SWEEP_MIN_DURATION, WIN_SWEEP_MAX_DURATION)
 }

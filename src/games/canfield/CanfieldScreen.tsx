@@ -9,9 +9,9 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
-import { computeContentBounds } from '@tastic/core'
+import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
-import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
+import { StyleSheet, Text, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
@@ -32,15 +32,17 @@ import { useGameSession } from '@/components/useGameSession'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { CANFIELD_RULES } from '@/constants/gameRules'
-import { isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
+import { AutoCompleteStep, isFullyAutoCompletableWithDraws, nextAutoCompleteMoveWithDraws } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
-import { runCountFrom, top } from '@/engine/pile'
+import { detectRevealedCard, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card, SUITS } from '@/engine/types'
+import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
+import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
@@ -53,7 +55,7 @@ import { useSettings } from '@/stores/settings'
 
 import { CanfieldSettingsSection } from './CanfieldSettingsSection'
 import { buildCanfieldDealSequence } from './dealSequence'
-import { CanfieldState, createCanfieldController, findSafeAutoPlay, isDescendingAltColorCyclic } from './rules'
+import { CanfieldState, createCanfieldController, findSafeAutoPlay, isDescendingAltColorCyclic, isFoundationStarterCard } from './rules'
 
 // Floor for useTableauMaxHeight below, not a fixed height anymore - a short screen never fans out
 // less generously than this, but a screen with real headroom to spare now gets more of it.
@@ -148,7 +150,9 @@ function CanfieldScreenInner() {
   // the undo stack in startNewGame/restoreGame below.
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
-  const { width: winWidth } = useWindowDimensions()
+  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
+  // with plain useWindowDimensions() otherwise, see the rotation plan.
+  const { width: winWidth } = useRotatedWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
   const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TOP_ROW_UNITS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
@@ -177,7 +181,7 @@ function CanfieldScreenInner() {
    * reserve, on an undo) is a real per-card-registered pile. `fast` marks a fireAutoMove-triggered
    * flight. `gen` is the dealTokenRef value at the moment this flight was queued - see
    * KlondikeScreen's identical field for the full race-guard reasoning. */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; sweep?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
   /** A draw-3 stock draw awaiting its post-commit measurement + deal.start(), analogous to
    * pendingFlightRef above but for the multi-card deal-style flight - drawnCards is oldest-first,
    * ending with the new top/frontmost card. `gen` guards the same New-Game-mid-flight race
@@ -185,6 +189,7 @@ function CanfieldScreenInner() {
   const pendingDealDrawRef = useRef<{ topCardId: string; drawnCards: Card[]; gen: number } | null>(null)
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
+  const cascadeFeedback = useCascadeFeedback(playCardSound, hapticCard)
   // Which card (if any) should play its "nowhere to go" shake right now - see handleCardTap and
   // shakeAnimation.ts.
   const [shake, setShake] = useState<{ cardId: string; count: number; token: number } | null>(null)
@@ -194,10 +199,6 @@ function CanfieldScreenInner() {
   // underneath it and bail instead of applying against a stale snapshot.
   const stateRef = useRef(state)
   stateRef.current = state
-  // Set right after handleUndo's guard, consumed (and cleared) by the auto-play watcher effect
-  // below - suppresses exactly one auto-play check after an undo, so undo doesn't immediately get
-  // replayed by the very mechanism it just reverted.
-  const justUndidRef = useRef(false)
   // Guards handleUndo against being called again before its own previous invocation has fully
   // settled (visually, not just in state) - see handleUndo below for why an overlapping call would
   // otherwise desync the undo stack or clobber the shared single-flight ghost/deal animation.
@@ -361,7 +362,7 @@ function CanfieldScreenInner() {
           setFlying(null)
           undoBusyRef.current = false
         },
-        { fast: pending.fast }
+        { fast: pending.fast, sweep: pending.sweep }
       )
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -419,21 +420,20 @@ function CanfieldScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // Drives the auto-play-to-foundation cascade: re-checks maybeAutoPlay every time the board
-  // settles with nothing else animating. `session.moves === 0` guards against firing on a
-  // freshly dealt (or resumed-but-untouched) board before the player has made a single real move
-  // - auto-played moves are always `silent` and never bump session.moves (see applyMove below),
-  // so this can only ever be satisfied by a genuine tap/drag/stock-draw, not by the cascade
-  // re-triggering itself.
-  useEffect(() => {
-    if (!state || flying !== null || dealHiddenIds.size > 0 || session.moves === 0) return
-    if (justUndidRef.current) {
-      justUndidRef.current = false
-      return
-    }
-    maybeAutoPlay()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, flying, dealHiddenIds, session.moves])
+  // Auto-play-to-foundation: only ever fires as a direct consequence of the player's own move - see
+  // useAutoFoundationCascade for the trigger model (armFromForwardMove/armFromAceEvent, called from
+  // applyMove/handleDrawStock below), and engine/autoFoundation.ts for the two mechanisms
+  // computeNextStep composes.
+  const cascade = useAutoFoundationCascade<CanfieldState>({
+    state,
+    settled: flying === null && dealHiddenIds.size === 0,
+    enabled: () => settings.autoMoveToFoundation,
+    isBusy: () => undoBusyRef.current,
+    computeNextStep,
+    firePlay,
+    fireDraw: handleDrawStock,
+    fireDrawAndPlay
+  })
 
   // Resumes a saved board if one exists, otherwise deals fresh - either way, this screen becomes
   // the "last active game" for as long as it stays mounted (see app/index.tsx), and stops being it
@@ -492,7 +492,6 @@ function CanfieldScreenInner() {
   async function handleUndo() {
     if (undoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
-    justUndidRef.current = true
     if (won) {
       setWon(false)
       winCascade.clear()
@@ -576,6 +575,17 @@ function CanfieldScreenInner() {
       setState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
+      if (!opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
+      // Reveals a foundation-starter card off the RESERVE (not the tableau - Canfield's tableau is
+      // always dealt face-up, so there's no tableau reveal event here at all): auto-play it
+      // immediately as a reward for the move that uncovered it, regardless of whether THIS move was
+      // itself silent - see useAutoFoundationCascade's armFromAceEvent.
+      if (from.zone === 'reserve') {
+        const revealed = detectRevealedCard(state.reserve, result.reserve, count)
+        if (revealed && isFoundationStarterCard(revealed, result.foundationRank)) {
+          cascade.armFromAceEvent({ ref: from, card: revealed }, { zone: 'foundation', index: SUITS.indexOf(revealed.suit) })
+        }
+      }
       return true
     }
     return false
@@ -584,19 +594,20 @@ function CanfieldScreenInner() {
   // Shared tail for every successful move, whichever triggered it (tap-to-move, a manual drag's
   // drop, or an auto-play) - applies the move, then marks the destination "incoming" and stashes
   // the anchor card id for the pendingFlightRef effect above to measure and fly the ghost onto.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean }): boolean {
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
     setFlying({ to, count })
-    pendingFlightRef.current = { cardId: anchorCardId, fast: opts?.fast, gen: dealTokenRef.current, flight }
+    pendingFlightRef.current = { cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flight }
     return true
   }
 
-  // Auto-play-to-foundation: see engine/autoFoundation.ts for the two mechanisms this composes.
+  // Composes engine/autoFoundation.ts's two mechanisms into the shared cascade hook's step shape.
   //
-  // Mechanism B (isFullyAutoCompletable/nextAutoCompleteMove) is reused as-is from the SHARED
-  // engine/autoFoundation.ts: both functions operate purely through the generic GameController
-  // interface (they call controller.tryMove themselves, never touching raw rank comparisons), so
-  // Canfield's own cyclic tryMove generalizes correctly there with zero changes needed.
+  // Mechanism B (isFullyAutoCompletableWithDraws/nextAutoCompleteMoveWithDraws) is reused as-is
+  // from the SHARED engine/autoFoundation.ts: both operate purely through the generic
+  // GameController interface (they call controller.tryMove/drawStock themselves, never touching raw
+  // rank comparisons), so Canfield's own cyclic tryMove generalizes correctly there with zero
+  // changes needed.
   //
   // Mechanism A (findSafeAutoPlay) is Canfield's OWN reimplementation, imported from ./rules (NOT
   // engine/autoFoundation.ts) - the shared version hardcodes an Ace-starting, linearly-building
@@ -606,28 +617,52 @@ function CanfieldScreenInner() {
   // the identical idea, scoped to this game only (see its own doc comment there). Note the
   // argument order is reversed from the shared version: rules.ts's findSafeAutoPlay takes
   // (state, accessible), not engine/autoFoundation.ts's (accessible, foundation).
-  function maybeAutoPlay() {
-    if (!settings.autoMoveToFoundation) return
-    if (!state || !controllerRef.current.accessibleCards) return
-    const entry = isFullyAutoCompletable(controllerRef.current, state) ? nextAutoCompleteMove(controllerRef.current, state) : findSafeAutoPlay(state, controllerRef.current.accessibleCards(state))
-    if (entry) fireAutoMove(entry)
+  function computeNextStep(s: CanfieldState): AutoCompleteStep | null {
+    if (!controllerRef.current.accessibleCards) return null
+    if (isFullyAutoCompletableWithDraws(controllerRef.current, s)) return nextAutoCompleteMoveWithDraws(controllerRef.current, s)
+    const entry = findSafeAutoPlay(s, controllerRef.current.accessibleCards(s))
+    return entry ? { kind: 'play', entry, to: { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) } } : null
   }
 
   // Mirrors handleCardTap's tail, but there's no tap event to supply an origin - it has to measure
   // the card's current position itself, which is the one place this feature has an await gap
   // before applying its move. Guard against something else changing state during that gap by
   // snapshotting stateRef before the await and bailing if it no longer matches after.
-  async function fireAutoMove(entry: AccessibleCard) {
+  async function firePlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
     if (!origin || stateRef.current !== stateAtStart) return
-    const to: PileRef = { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) }
-    playCardSound()
-    hapticCard()
+    cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: true })) {
+    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: !opts.sweep, sweep: opts.sweep })) {
       flight.hide()
     }
+  }
+
+  // Only ever called by the win-completing sweep once a stock card is provably about to go straight
+  // to its foundation (see engine/autoFoundation.ts's 'drawAndPlay' step) - draws AND plays it in
+  // one committed state change, animated as one continuous flight straight from the stock pile,
+  // skipping the ordinary "land on waste first" stop entirely (the confirmed sweep visual). Not a
+  // player decision, so - matching applyMove's own silent branch - this never touches the undo
+  // stack at all (Canfield excludes every silent move from undo, unlike Klondike's cascaded-entry
+  // approach).
+  async function fireDrawAndPlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
+    const current = stateRef.current
+    if (!current || !controllerRef.current.drawStock) return
+    const afterDraw = controllerRef.current.drawStock(current)
+    if (!afterDraw) return
+    const result = controllerRef.current.tryMove(afterDraw, { from: entry.ref, to, count: 1 })
+    if (!result) return
+
+    const origin = await measureView(stockViewRef.current)
+    if (!origin || stateRef.current !== current) return
+
+    cascadeFeedback()
+    const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
+    setFlying({ to, count: 1 })
+    setState(result)
+    checkWin(result, session.moves)
+    pendingFlightRef.current = { cardId: entry.card.id, gen: dealTokenRef.current, flight, sweep: opts.sweep }
   }
 
   async function attemptDrop(from: PileRef, count: number, absoluteX: number, absoluteY: number, anchorCardId: string, flight: DragFlightHandle): Promise<boolean> {
@@ -645,19 +680,31 @@ function CanfieldScreenInner() {
   // branch and the ===1 single-ghost branch, for when the stock has fewer than 3 cards left) -
   // Canfield's own draw count is settings.canfieldDraw (see controllerRef above), the same
   // per-deal-config shape Klondike's own draw setting already has.
-  async function handleDrawStock() {
+  // `opts.sweep` marks this as an automatic step of the win-completing sweep (see the shared
+  // cascade hook's own fireDraw callback above) rather than a genuine player tap - not a player
+  // decision, so (matching applyMove's own silent branch) it never touches the undo stack at all,
+  // and doesn't count toward moves/score.
+  async function handleDrawStock(opts?: { sweep?: boolean }) {
     if (!state || !controllerRef.current.drawStock) return
     const result = controllerRef.current.drawStock(state)
     if (!result) return
-    session.registerMove()
+    if (!opts?.sweep) session.registerMove()
 
     const drawnCard = top(result.waste)
     if (!drawnCard) {
       // Recycling the waste back into the stock, not a single card being drawn - nothing
       // card-shaped to fly, so undo just reverts this instantly (see MoveInfo | null above).
-      pushUndo(state, null)
+      if (!opts?.sweep) pushUndo(state, null)
       setState(result)
       return
+    }
+
+    // Drawing (or revealing) a foundation-starter card is meant to auto-play it immediately as a
+    // reward, regardless of whether this is a genuine player tap or a sweep's own forced draw - see
+    // useAutoFoundationCascade's armFromAceEvent. Canfield's "ace" is whatever rank the foundation
+    // actually starts from (isFoundationStarterCard), not always rank 1.
+    if (isFoundationStarterCard(drawnCard, result.foundationRank)) {
+      cascade.armFromAceEvent({ ref: { zone: 'waste', index: 0 }, card: drawnCard }, { zone: 'foundation', index: SUITS.indexOf(drawnCard.suit) })
     }
 
     const drawnCount = result.waste.length - state.waste.length
@@ -665,7 +712,7 @@ function CanfieldScreenInner() {
 
     if (drawnCount > 1) {
       const drawnCards = result.waste.slice(result.waste.length - drawnCount) // oldest -> newest/top
-      pushUndo(state, move)
+      if (!opts?.sweep) pushUndo(state, move)
       setFlying({ to: { zone: 'waste', index: 0 }, count: drawnCount })
       pendingDealDrawRef.current = { topCardId: drawnCard.id, drawnCards, gen: dealTokenRef.current }
       setState(result)
@@ -674,19 +721,22 @@ function CanfieldScreenInner() {
 
     const origin = await measureView(stockViewRef.current)
     if (!origin) {
-      pushUndo(state, move)
+      if (!opts?.sweep) pushUndo(state, move)
       setState(result)
       return
     }
 
-    playCardSound()
-    hapticCard()
+    if (opts?.sweep) cascadeFeedback()
+    else {
+      playCardSound()
+      hapticCard()
+    }
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     setFlying({ to: { zone: 'waste', index: 0 }, count: 1 })
 
-    pushUndo(state, move)
+    if (!opts?.sweep) pushUndo(state, move)
     setState(result)
-    pendingFlightRef.current = { cardId: drawnCard.id, gen: dealTokenRef.current, flight }
+    pendingFlightRef.current = { cardId: drawnCard.id, sweep: opts?.sweep, gen: dealTokenRef.current, flight }
   }
 
   function resolvePile(ref: PileRef): Card[] | null {

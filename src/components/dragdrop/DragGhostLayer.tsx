@@ -1,6 +1,7 @@
 import { CardSizeProvider } from '@tastic/cards'
+import { useRotatedWindowDimensions } from '@tastic/core'
 import React, { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { StyleSheet, useWindowDimensions, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
 import Animated, { makeMutable, SharedValue, useAnimatedStyle, useSharedValue, withSpring, WithSpringConfig } from 'react-native-reanimated'
 
 import { Card } from '@/engine/types'
@@ -8,7 +9,7 @@ import { Card } from '@/engine/types'
 import { PlayingCard } from '../PlayingCard'
 import { useCardSoundEffects } from '../useCardSounds'
 import { CardRegistry, useCardRegistry } from './CardRegistry'
-import { autoMoveSpringFor, autoPlaySpringFor, SNAP_BACK_SPRING } from './dragSpring'
+import { autoMoveSpringFor, autoPlaySpringFor, SNAP_BACK_SPRING, winSweepSpringFor } from './dragSpring'
 
 interface GhostContent {
   cards: Card[]
@@ -41,8 +42,12 @@ export interface DragFlightHandle {
   /** Animate to an arbitrary screen point, then hide and invoke onArrived (used for tap-to-move:
    * flies from where the card was tapped to wherever it actually landed). `fast` uses the quicker
    * auto-play-to-foundation timing (see dragSpring.ts's autoPlaySpringFor) instead of the normal
-   * tap-to-move/drag/undo one. */
-  flyTo(targetX: number, targetY: number, onArrived: () => void, opts?: { fast?: boolean }): void
+   * tap-to-move/drag/undo one. `sweep` uses the even quicker win-completing-sweep timing (see
+   * dragSpring.ts's winSweepSpringFor) instead of `fast`'s - the two are mutually exclusive in
+   * practice (every sweep flight is also always a "fast" auto-play flight), but kept as separate
+   * flags rather than a single three-value enum since every caller already has `fast` wired and
+   * only needs to additionally opt into `sweep` on top of it. */
+  flyTo(targetX: number, targetY: number, onArrived: () => void, opts?: { fast?: boolean; sweep?: boolean }): void
   /** Hide immediately (used when a drop was applied and the source has already disappeared). */
   hide(): void
 }
@@ -149,7 +154,10 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
   // mounted (and re-measured if the window resizes) rather than assumed zero.
   const containerOffsetX = useSharedValue(0)
   const containerOffsetY = useSharedValue(0)
-  const { width: winWidth, height: winHeight } = useWindowDimensions()
+  // Rotation-aware: winWidth/winHeight themselves swap when rendered inside a rotated wrapper (see
+  // the rotation plan), so this still only re-measures when the overlay's real footprint actually
+  // changes - exact identity with plain useWindowDimensions() for any screen with no such wrapper.
+  const { width: winWidth, height: winHeight } = useRotatedWindowDimensions()
   useEffect(() => {
     overlayRef.current?.measureInWindow((x, y) => {
       containerOffsetX.value = x
@@ -223,7 +231,7 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
           const curX = values.originX.value + values.dx.value
           const curY = values.originY.value + values.dy.value
           const distance = Math.hypot(targetX - curX, targetY - curY)
-          const config = opts?.fast ? autoPlaySpringFor(distance) : autoMoveSpringFor(distance)
+          const config = opts?.sweep ? winSweepSpringFor(distance) : opts?.fast ? autoPlaySpringFor(distance) : autoMoveSpringFor(distance)
           // No hapticCard() here (unlike snapBack's own hapticInvalid above) - a successful flight's
           // sound+haptic pair now fires together the instant the move was confirmed (see
           // useCardSounds.ts), not on arrival, so there's nothing left for this settle to trigger
@@ -242,6 +250,27 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
     [playInvalidSound, hapticInvalid, removeFlight]
   )
 
+  // showLive's caller (DraggableCard/PileView) owns ONE persistent set of SharedValues per
+  // draggable slot/column, reused for every drag that ever starts from there - necessary so the
+  // gesture worklet always has a stable value to write to (see showLive's own doc comment). That
+  // means two overlapping flights from the SAME slot/column would otherwise share the exact same
+  // SharedValue objects: a second drag's worklet writing fresh origin/dx the instant it starts
+  // would silently hijack the FIRST flight's still-mounted, still-settling ghost out from under
+  // it (confirmed live - dragging repeatedly from the same waste slot or tableau column faster
+  // than one flight's settle time visibly stole the earlier ghost's position). Tried cloning onto
+  // fresh SharedValues at handoff first (see git history) - that broke EVERY flight, not just
+  // overlapping ones: swapping a still-mounted FlightGhostCard's rendered SharedValues requires a
+  // React re-render to take effect, so the spring ran invisibly on the new values for up to a
+  // whole render cycle while the screen kept showing the old (now frozen) ones, then jumped to
+  // wherever the animation had already gotten to the moment React caught up - exactly the "clicks
+  // into place at the last frame" bug. Tracking the current owner per persistent-values object
+  // instead, and force-completing it (calling its own hide(), which fires whatever onSettled/
+  // onArrived it's already mid-flight toward) the instant a NEW flight claims the same values,
+  // means only this narrow, genuinely-overlapping-same-source case reverts to the old "cut off"
+  // behavior - every other flight (a different column, a tap-to-move, a stock draw, ...) is still
+  // fully independent and animates normally.
+  const liveOwnersRef = useRef(new Map<SharedValue<number>, DragFlightHandle>())
+
   const controller = useMemo<DragGhostController>(
     () => ({
       cardRegistry,
@@ -252,9 +281,12 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
         return createFlight(id, values)
       },
       showLive(content, values) {
+        liveOwnersRef.current.get(values.originX)?.hide()
         const id = ++nextIdRef.current
         setFlights((prev) => [...prev, { id, content, ...values }])
-        return createFlight(id, values)
+        const handle = createFlight(id, values)
+        liveOwnersRef.current.set(values.originX, handle)
+        return handle
       }
     }),
     [cardRegistry, createFlight]

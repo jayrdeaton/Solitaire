@@ -57,6 +57,11 @@ export interface Settings {
   // red/black ink as light mode) stays the default look; this is an opt-in alternative, not a
   // replacement.
   invertDarkModeColors: boolean
+  // Global, not per-game: freezes the current rotation reading (see @tastic/core's OrientationProvider/
+  // useRotation) instead of following the phone's live tilt - the same "Lock Orientation" setting the
+  // rest of the fleet's own games expose. Defaults false, matching every existing app's own default
+  // for this setting (nothing pins the layout until the player deliberately opts in).
+  lockOrientation: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -71,7 +76,8 @@ export const DEFAULT_SETTINGS: Settings = {
   dimUnplayable: true,
   cardStyle: 'compact',
   cardBackStyle: 'geometric',
-  invertDarkModeColors: false
+  invertDarkModeColors: false,
+  lockOrientation: false
 }
 
 const KEY = 'solitaire.settings.v1'

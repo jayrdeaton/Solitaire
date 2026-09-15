@@ -78,3 +78,17 @@ export function runCountFrom(pile: Card[], indexFromTop: number, isValidRun: (ca
   if (count > 1 && !isValidRun(run)) return 0
   return count
 }
+
+/** The card newly exposed at the top of a pile by a move that took `count` cards off it, if that
+ * move revealed a face-down card - null if nothing was revealed (the pile emptied entirely, or the
+ * newly-exposed card was already face-up). `before`/`after` are the same pile's contents
+ * immediately before/after the move; every tryMove in this app only ever splices the top `count`
+ * cards off a pile, leaving every card below at its original index, so the newly-exposed card (if
+ * any) always sits at the same `before.length - count - 1` index in both arrays. */
+export function detectRevealedCard(before: Card[], after: Card[], count: number): Card | null {
+  const idx = before.length - count - 1
+  if (idx < 0) return null
+  const prev = before[idx]
+  const next = after[idx]
+  return prev && next && !prev.faceUp && next.faceUp ? next : null
+}

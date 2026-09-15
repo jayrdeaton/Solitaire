@@ -27,7 +27,15 @@
 // playing a card that's still genuinely needed, which is worse than never auto-playing it early.
 // Auto-play here is therefore more conservative than Klondike/FreeCell/Yukon/Canfield's: it only
 // ever fires once the deal is provably fully clearable, not continuously during ordinary play.
+//
+// isFullyAutoCompletableWithDraws/nextAutoCompleteMoveWithDraws (own reimplementation, same reason
+// as the plain versions above) extend that same conservative mechanism B to also simulate drawing
+// from stock once no foundation move is available - see engine/autoFoundation.ts's own with-draws
+// pair for the full reasoning. This game's stock never recycles (see drawStock below), so the
+// single-pass rule needs no extra code to enforce: once drawStock returns null, there is simply no
+// further move to simulate.
 
+import { AutoCompleteStep } from '@/engine/autoFoundation'
 import { shuffledDeck } from '@/engine/deck'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { isDescendingSameSuit, top } from '@/engine/pile'
@@ -409,6 +417,57 @@ export function isFullyAutoCompletable(controller: Pick<GameController<FortyThie
  * move for real) advances the cascade by exactly one card. */
 export function nextAutoCompleteMove(controller: Pick<GameController<FortyThievesState>, 'accessibleCards' | 'tryMove'>, state: FortyThievesState): AccessibleCard | null {
   return findNextFoundationMove(controller, state)
+}
+
+/** Draws-aware counterpart of findNextFoundationMove above - own reimplementation for the same
+ * 8-pile-layout reason as the rest of this file's mechanism B. See engine/autoFoundation.ts's
+ * shared version for the full shape/reasoning this mirrors. */
+function findNextAutoCompleteStepWithDraws(controller: Pick<GameController<FortyThievesState>, 'accessibleCards' | 'tryMove' | 'drawStock'>, state: FortyThievesState): AutoCompleteStep | null {
+  const playEntry = findNextFoundationMove(controller, state)
+  if (playEntry) {
+    const slot = findFoundationSlot(state.foundation, playEntry.card)!
+    return { kind: 'play', entry: playEntry, to: { zone: 'foundation', index: slot } }
+  }
+  if (!controller.drawStock) return null
+  const afterDraw = controller.drawStock(state)
+  if (!afterDraw) return null
+  const drawEntry = findNextFoundationMove(controller, afterDraw)
+  if (drawEntry) {
+    const slot = findFoundationSlot(afterDraw.foundation, drawEntry.card)!
+    return { kind: 'drawAndPlay', entry: drawEntry, to: { zone: 'foundation', index: slot } }
+  }
+  return { kind: 'draw' }
+}
+
+/** Draws-aware counterpart of isFullyAutoCompletable above - see engine/autoFoundation.ts's shared
+ * isFullyAutoCompletableWithDraws for the full termination argument, which applies unchanged here. */
+export function isFullyAutoCompletableWithDraws(controller: Pick<GameController<FortyThievesState>, 'isWon' | 'accessibleCards' | 'tryMove' | 'drawStock'>, state: FortyThievesState): boolean {
+  if (!controller.accessibleCards || !controller.drawStock) return false
+  const seen = new Set<string>()
+  let cur = state
+  while (!controller.isWon(cur)) {
+    const step = findNextAutoCompleteStepWithDraws(controller, cur)
+    if (!step) return false
+    if (step.kind === 'play') {
+      cur = controller.tryMove(cur, { from: step.entry.ref, to: step.to, count: 1 })! // unreachable null - findNextFoundationMove only returns moves tryMove already accepted
+    } else if (step.kind === 'drawAndPlay') {
+      const afterDraw = controller.drawStock(cur)! // unreachable null - findNextAutoCompleteStepWithDraws already called this and got a result
+      cur = controller.tryMove(afterDraw, { from: step.entry.ref, to: step.to, count: 1 })! // unreachable null - same reasoning as the 'play' branch above
+    } else {
+      const key = JSON.stringify(cur)
+      if (seen.has(key)) return false
+      seen.add(key)
+      cur = controller.drawStock(cur)! // unreachable null - findNextAutoCompleteStepWithDraws already called this and got a result
+    }
+  }
+  return true
+}
+
+/** The next single step in a draws-aware full auto-complete cascade - only meaningful once
+ * isFullyAutoCompletableWithDraws has confirmed true; each successive call (after applying the
+ * previous step for real) advances the cascade by exactly one step. */
+export function nextAutoCompleteMoveWithDraws(controller: Pick<GameController<FortyThievesState>, 'accessibleCards' | 'tryMove' | 'drawStock'>, state: FortyThievesState): AutoCompleteStep | null {
+  return findNextAutoCompleteStepWithDraws(controller, state)
 }
 
 /** Exported for FortyThievesScreen.tsx's own fireAutoMove, which needs the resolved destination

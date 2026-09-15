@@ -1,11 +1,13 @@
 import { IconButton, Pressable, useHoldToRepeat } from '@rific/feedback-press'
 import { type TableColors } from '@tastic/cards'
+import { rotateInsets, useRotation } from '@tastic/core'
 import { ConfirmDialog, ContentGutter, CornerActionButtons } from '@tastic/hud'
 import { useRouter } from 'expo-router'
-import { ReactNode, useEffect, useMemo, useState } from 'react'
+import { ReactNode, useEffect, useId, useMemo, useState } from 'react'
 import { Pressable as RNPressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import Svg, { Defs, RadialGradient, Rect, Stop } from 'react-native-svg'
 
 import { computeScore } from '@/engine/score'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
@@ -147,6 +149,11 @@ interface GameChromeProps {
    * below via RulesDialog. Owned by each screen, same as settingsContent, rather than GameChrome
    * looking a gameId up itself. */
   rules: string[]
+  /** Renders a soft radial vignette over the felt - brighter through the middle, gently dimmed
+   * toward the edges - instead of the plain flat `tableFelt` fill. Opt-in per screen while the
+   * look is still being evaluated (only Klondike passes this today); every other game keeps the
+   * flat fill until it's confirmed worth rolling out everywhere. */
+  showVignette?: boolean
   /** The game board itself - foundations/tableau/stock, whatever shape a given game needs. Scrolls
    * if it doesn't fit (Pyramid's triangle + stock row can exceed a short viewport). */
   children: ReactNode
@@ -168,11 +175,22 @@ interface GameChromeProps {
  * Previously each of the four game screens hand-rolled its own version of this row (and Pyramid's
  * had drifted to a bottom button row entirely) - unifying it here means a layout tweak (like this
  * one, and the header/footer regrouping that followed it) only has to happen once. */
-export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, hintDisabled, won, hasProgress, getElapsedSeconds, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
+export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, hintDisabled, won, hasProgress, getElapsedSeconds, clockRunning, movesCount, settingsContent, rules, showVignette, children }: GameChromeProps) {
   const router = useRouter()
-  const insets = useSafeAreaInsets()
+  // rotateInsets/toRotationStyle (passed to RulesDialog/ConfirmDialog below) are exact identities
+  // at rotation 0 (the only state for any screen with no OrientationProvider ancestor - see the
+  // rotation plan), so all of this is a no-op everywhere except a screen actually rendered inside a
+  // rotated wrapper.
+  const rotation = useRotation()
+  const insets = rotateInsets(useSafeAreaInsets(), rotation)
   const colors = useTableColors()
   const styles = useMemo(() => makeStyles(colors), [colors])
+  // React Navigation on web keeps a popped screen mounted (hidden, not unmounted) across a stack
+  // pop rather than unmounting it - see .claude/CLAUDE.md's ProfilesManager finding - so more than
+  // one GameChrome (each with its own vignette <RadialGradient>) can genuinely coexist in the DOM
+  // at once there. A shared literal id would make every one of them resolve to whichever instance's
+  // <Defs> happens to come first in the document, same failure mode as CardSheen's own gradient id.
+  const vignetteGradientId = useId()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [rulesOpen, setRulesOpen] = useState(false)
   const [confirmNewGameVisible, setConfirmNewGameVisible] = useState(false)
@@ -235,6 +253,17 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
 
   return (
     <View style={styles.screen}>
+      {showVignette ? (
+        <Svg pointerEvents='none' style={styles.vignette} width='100%' height='100%'>
+          <Defs>
+            <RadialGradient id={vignetteGradientId} cx='50%' cy='50%' rx='75%' ry='75%'>
+              <Stop offset='55%' stopColor={colors.tableFeltDark} stopOpacity={0} />
+              <Stop offset='100%' stopColor={colors.tableFeltDark} stopOpacity={0.55} />
+            </RadialGradient>
+          </Defs>
+          <Rect x={0} y={0} width='100%' height='100%' fill={`url(#${vignetteGradientId})`} />
+        </Svg>
+      ) : null}
       <ContentGutter maxContentWidth={GAME_CONTENT_MAX_WIDTH} style={styles.gutterRow}>
         <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: GAME_CONTENT_TOP_PADDING + insets.top, paddingBottom: GAME_CONTENT_BOTTOM_PADDING + insets.bottom }]}>
           {/* Plain RN Pressable, not @rific/feedback-press's - a background tap toggling the
@@ -358,7 +387,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
         {settingsContent}
       </SettingsDialog>
 
-      <RulesDialog visible={rulesOpen} onDismiss={() => setRulesOpen(false)} title={title} rules={rules} />
+      <RulesDialog visible={rulesOpen} onDismiss={() => setRulesOpen(false)} title={title} rules={rules} rotation={rotation} />
 
       <ConfirmDialog
         visible={confirmNewGameVisible}
@@ -367,6 +396,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
         confirmLabel='New Game'
         cancelLabel='Cancel'
         icon='alert-circle-outline'
+        rotation={rotation}
         onConfirm={() => {
           setConfirmNewGameVisible(false)
           onNewGame()
@@ -494,6 +524,16 @@ function makeStyles(colors: TableColors) {
       justifyContent: 'center',
       position: 'absolute',
       zIndex: 10
+    },
+    // No zIndex (unlike cornerButtons/footerWrap/movesTimerWrap above) - deliberately the first
+    // child under `screen` (see the JSX above) so every other layer paints over it in source order
+    // alone, on both native and web.
+    vignette: {
+      bottom: 0,
+      left: 0,
+      position: 'absolute',
+      right: 0,
+      top: 0
     }
   })
 }

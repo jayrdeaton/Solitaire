@@ -1,7 +1,7 @@
 import { makeDeck, shuffledDeck } from '@/engine/deck'
 import { Move } from '@/engine/gameTypes'
 import { findHint, hintCountFor } from '@/engine/hint'
-import { isDescendingAltColor, isDescendingSameSuit, runCountFrom } from '@/engine/pile'
+import { detectRevealedCard, isDescendingAltColor, isDescendingSameSuit, runCountFrom } from '@/engine/pile'
 import { mulberry32, shuffle } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
@@ -108,6 +108,32 @@ describe('pile helpers', () => {
       // isValidRun for a lone card.
       const pile = [card('hearts', 5)]
       expect(runCountFrom(pile, 0, isDescendingSameSuit)).toBe(1)
+    })
+  })
+
+  describe('detectRevealedCard', () => {
+    it('returns the newly face-up card when the move exposed one', () => {
+      const before = [{ ...card('clubs', 8), faceUp: false }, card('hearts', 7)]
+      const after = [{ ...card('clubs', 8), faceUp: true }]
+      expect(detectRevealedCard(before, after, 1)).toEqual({ ...card('clubs', 8), faceUp: true })
+    })
+
+    it('returns null when the newly-exposed card was already face-up', () => {
+      const before = [card('clubs', 8), card('hearts', 7)]
+      const after = [card('clubs', 8)]
+      expect(detectRevealedCard(before, after, 1)).toBeNull()
+    })
+
+    it('returns null when the move emptied the pile entirely', () => {
+      const before = [card('clubs', 8)]
+      const after: Card[] = []
+      expect(detectRevealedCard(before, after, 1)).toBeNull()
+    })
+
+    it('handles a multi-card move (count > 1)', () => {
+      const before = [{ ...card('clubs', 8), faceUp: false }, card('hearts', 7), card('spades', 6)]
+      const after = [{ ...card('clubs', 8), faceUp: true }]
+      expect(detectRevealedCard(before, after, 2)).toEqual({ ...card('clubs', 8), faceUp: true })
     })
   })
 })

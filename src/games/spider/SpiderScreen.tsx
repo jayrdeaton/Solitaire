@@ -2,9 +2,9 @@ import { Pressable, useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CardSizeProvider, faceUpFanOffset, type TableColors, useCardSize } from '@tastic/cards'
-import { computeContentBounds } from '@tastic/core'
+import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { StyleProp, StyleSheet, Text, useWindowDimensions, View, ViewStyle } from 'react-native'
+import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
 import Animated, { SharedValue, useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
@@ -35,6 +35,7 @@ import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -176,7 +177,8 @@ function SequenceFlightGhosts({ flights, onCardLanded }: { flights: SequenceFlig
   const overlayRef = useRef<View>(null)
   const containerOffsetX = useSharedValue(0)
   const containerOffsetY = useSharedValue(0)
-  const { width: winWidth, height: winHeight } = useWindowDimensions()
+  // Rotation-aware, same reasoning as DragGhostLayer/DealLayer's identical overlay-offset pattern.
+  const { width: winWidth, height: winHeight } = useRotatedWindowDimensions()
   // Own instance, same as StockPacket's own useDragGhost() call above - this is a screen-level
   // sibling component, not nested under SpiderScreenInner, so it needs its own hook call to reach
   // these rather than having them threaded down as props.
@@ -247,9 +249,15 @@ function SpiderScreenInner() {
   const session = useGameSession()
   const [message, setMessage] = useState<string | null>(null)
 
-  const { width: winWidth } = useWindowDimensions()
+  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
+  // with plain useWindowDimensions() otherwise, see the rotation plan.
+  const { width: winWidth } = useRotatedWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
   const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
+  // Was a fixed 420 literal - now adapts to real window height the same way every other
+  // PileView-using game already does (see useTableauMaxHeight's own doc comment), 420 kept as the
+  // floor so a short/cramped screen never gets less generous than it did before.
+  const tableauMaxHeight = useTableauMaxHeight(cardWidth, 420)
   const ghost = useDragGhost()
   const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
   const deal = useDealAnimator()
@@ -1326,7 +1334,7 @@ function SpiderScreenInner() {
                 same "face-up but not currently a legal run head" case FreeCell/Canfield's own
                 dimUnplayable exists for, not Klondike's (whose own drop rule already forces every
                 face-up run to stay internally valid). */}
-                <PileView cards={col} maxHeight={420} onPressCard={(card, indexFromTop, measure) => handlePressCard(colIndex, card, indexFromTop, measure)} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} dimUnplayable={settings.dimUnplayable} shakeCardId={shake?.cardId} shakeCount={shake?.count} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} />
+                <PileView cards={col} maxHeight={tableauMaxHeight} onPressCard={(card, indexFromTop, measure) => handlePressCard(colIndex, card, indexFromTop, measure)} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} dimUnplayable={settings.dimUnplayable} shakeCardId={shake?.cardId} shakeCount={shake?.count} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} />
               </DropZone>
             )
           })}

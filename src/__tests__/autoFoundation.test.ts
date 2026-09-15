@@ -1,4 +1,4 @@
-import { findSafeAutoPlay, isFullyAutoCompletable, isSafeAutoPlay, nextAutoCompleteMove } from '@/engine/autoFoundation'
+import { findSafeAutoPlay, isFullyAutoCompletable, isFullyAutoCompletableWithDraws, isSafeAutoPlay, nextAutoCompleteMove, nextAutoCompleteMoveWithDraws } from '@/engine/autoFoundation'
 import { AccessibleCard } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
 import { FreeCellController, FreeCellState } from '@/games/freecell/rules'
@@ -55,19 +55,19 @@ describe('findSafeAutoPlay', () => {
     expect(findSafeAutoPlay(accessible, foundation)?.card.id).toBe('hearts-1-0')
   })
 
-  it('skips an ace sitting on the waste (just drawn from stock) even though it would otherwise be safe', () => {
+  it('plays an ace sitting on the waste (just drawn from stock) immediately, same as anywhere else', () => {
     const foundation = foundationAt({})
     const accessible: AccessibleCard[] = [{ ref: { zone: 'waste', index: 0 }, card: card('hearts-1-0', 'hearts', 1) }]
-    expect(findSafeAutoPlay(accessible, foundation)).toBeNull()
+    expect(findSafeAutoPlay(accessible, foundation)?.card.id).toBe('hearts-1-0')
   })
 
-  it('still auto-plays a waste ace-position skip past to reach a legal, safe entry further down the list', () => {
+  it('picks a waste ace over a later entry, same ordering as any other accessible card', () => {
     const foundation = foundationAt({})
     const accessible: AccessibleCard[] = [
-      { ref: { zone: 'waste', index: 0 }, card: card('hearts-1-0', 'hearts', 1) }, // skipped - waste ace
-      { ref: { zone: 'tableau', index: 0 }, card: card('spades-1-0', 'spades', 1) } // legal and safe
+      { ref: { zone: 'waste', index: 0 }, card: card('hearts-1-0', 'hearts', 1) },
+      { ref: { zone: 'tableau', index: 0 }, card: card('spades-1-0', 'spades', 1) }
     ]
-    expect(findSafeAutoPlay(accessible, foundation)?.card.id).toBe('spades-1-0')
+    expect(findSafeAutoPlay(accessible, foundation)?.card.id).toBe('hearts-1-0')
   })
 
   it('does not skip a non-ace card on the waste', () => {
@@ -168,6 +168,62 @@ describe('isFullyAutoCompletable / nextAutoCompleteMove (Klondike)', () => {
       cur = controller.tryMove(cur, { from: entry.ref, to, count: 1 })!
     }
     expect(controller.isWon(cur)).toBe(true)
+  })
+})
+
+describe('isFullyAutoCompletableWithDraws / nextAutoCompleteMoveWithDraws (Klondike)', () => {
+  const controller = createKlondikeController(1)
+
+  function emptyState(): KlondikeState {
+    return { tableau: [[], [], [], [], [], [], []], foundation: [[], [], [], []], stock: [], waste: [] }
+  }
+
+  it('completes once the stock is drawn through, unlike the plain (non-draws) check', () => {
+    const state = emptyState()
+    state.foundation = [[card('clubs-13-f', 'clubs', 13)], [card('diamonds-13-f', 'diamonds', 13)], [card('hearts-13-f', 'hearts', 13)], [card('spades-12-f', 'spades', 12)]]
+    state.stock = [card('spades-13-0', 'spades', 13, false)]
+    expect(isFullyAutoCompletable(controller, state)).toBe(false)
+    expect(isFullyAutoCompletableWithDraws(controller, state)).toBe(true)
+
+    const step = nextAutoCompleteMoveWithDraws(controller, state)!
+    expect(step).toEqual({ kind: 'drawAndPlay', entry: { ref: { zone: 'waste', index: 0 }, card: card('spades-13-0', 'spades', 13) }, to: { zone: 'foundation', index: SUITS.indexOf('spades') } })
+  })
+
+  it('keeps recycling through the waste as many passes as it takes to complete', () => {
+    const state = emptyState()
+    // Foundation index 2 is hearts (SUITS order: clubs, diamonds, hearts, spades) - the other 3 are
+    // already done, only hearts goes through the stock.
+    state.foundation = [[card('clubs-13-f', 'clubs', 13)], [card('diamonds-13-f', 'diamonds', 13)], [], [card('spades-13-f', 'spades', 13)]]
+    // Drawing removes from the END of this array, so draw order is 2H,3H,4H,...,KH, then AH last.
+    // None of 2H..KH are playable until AH lands, and by then every one of them is buried under a
+    // later draw, so a single pass can only ever play AH itself before getting stuck on KH. Only a
+    // recycle re-exposes 2H (recycling reverses the order, so the very next pass draws 2H,3H,...
+    // again - now playable one after another with AH already down).
+    state.stock = [card('hearts-1-0', 'hearts', 1, false), ...Array.from({ length: 12 }, (_, i) => card(`hearts-${13 - i}-0`, 'hearts', (13 - i) as Card['rank'], false))]
+    expect(isFullyAutoCompletableWithDraws(controller, state)).toBe(true)
+
+    let cur = state
+    let recycled = false
+    for (let i = 0; i < 200 && !controller.isWon(cur); i++) {
+      const step = nextAutoCompleteMoveWithDraws(controller, cur)!
+      if (step.kind === 'play') cur = controller.tryMove(cur, { from: step.entry.ref, to: step.to, count: 1 })!
+      else {
+        if (cur.stock.length === 0 && cur.waste.length > 0) recycled = true
+        const afterDraw = controller.drawStock!(cur)!
+        cur = step.kind === 'drawAndPlay' ? controller.tryMove(afterDraw, { from: step.entry.ref, to: step.to, count: 1 })! : afterDraw
+      }
+    }
+    expect(controller.isWon(cur)).toBe(true)
+    expect(recycled).toBe(true) // proves this fixture genuinely exercised a recycle, not just a lucky single pass
+  })
+
+  it('returns false promptly instead of hanging when no amount of drawing/recycling ever finds a play', () => {
+    const state = emptyState()
+    // Hearts can never start - no ace of hearts anywhere in this fixture - so every recycle pass
+    // through these cards plays nothing, forever, and the cycle guard must catch the repeat.
+    state.foundation = [[card('clubs-13-f', 'clubs', 13)], [card('diamonds-13-f', 'diamonds', 13)], [], [card('spades-13-f', 'spades', 13)]]
+    state.stock = [card('hearts-5-0', 'hearts', 5, false), card('hearts-3-0', 'hearts', 3, false), card('hearts-2-0', 'hearts', 2, false)]
+    expect(isFullyAutoCompletableWithDraws(controller, state)).toBe(false)
   })
 })
 

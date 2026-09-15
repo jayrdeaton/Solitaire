@@ -3,6 +3,7 @@ import { CardBack, CardFace, DecoratedCardBack, type TableColors, useCardSize } 
 import React from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
+import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg'
 
 import { Card, Rank, Suit } from '@/engine/types'
 import { useProfiles } from '@/stores/profiles'
@@ -65,7 +66,10 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, onPress,
         soundDisabled
         style={[styles.card, styles.shadow, cardSize, style]}
       >
-        <View style={[styles.clip, styles.back]}>{settings.cardBackStyle === 'geometric' ? <CardBack colors={colors} width={width} height={height} tag={activeProfile?.tag} invertDarkModeColors={settings.invertDarkModeColors} /> : <DecoratedCardBack style={settings.cardBackStyle} colors={colors} width={width} height={height} invertDarkModeColors={settings.invertDarkModeColors} />}</View>
+        <View style={[styles.clip, styles.back]}>
+          {settings.cardBackStyle === 'geometric' ? <CardBack colors={colors} width={width} height={height} tag={activeProfile?.tag} invertDarkModeColors={settings.invertDarkModeColors} /> : <DecoratedCardBack style={settings.cardBackStyle} colors={colors} width={width} height={height} invertDarkModeColors={settings.invertDarkModeColors} />}
+          <CardSheen />
+        </View>
         {dimOverlay}
         {borderOverlay}
       </Pressable>
@@ -76,12 +80,38 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, onPress,
     <Pressable testID={testID} onPress={onPress} disabled={disabled} soundDisabled style={[styles.card, styles.shadow, cardSize, style]}>
       <View style={[styles.clip, styles.face]}>
         <CardFace card={card} colors={colors} width={width} height={height} cardStyle={settings.cardStyle} invertDarkModeColors={settings.invertDarkModeColors} />
+        <CardSheen />
       </View>
       {dimOverlay}
       {borderOverlay}
     </Pressable>
   )
 }
+
+/** A faint diagonal gloss over the card's own flat face/back fill, like light catching glossy
+ * cardstock - the same static gradient for every card regardless of suit/rank/colors (no props),
+ * so it's one cheap shared element tree rather than something recomputed per card. Lives inside
+ * `clip` (see both call sites above), which already clips its children to CARD_RADIUS, so this
+ * doesn't need its own corner rounding. */
+const CardSheen = React.memo(function CardSheen() {
+  // Every card mounts its own CardSheen instance (dozens at once, on web literally the same real
+  // DOM <svg> id-lookup semantics as any other document) - a shared literal id here would make
+  // every card's fill="url(#...)" resolve to whichever instance's <Defs> happens to be first in
+  // the document, silently working today only because every instance's gradient is byte-identical.
+  const gradientId = React.useId()
+  return (
+    <Svg pointerEvents='none' style={StyleSheet.absoluteFill} width='100%' height='100%'>
+      <Defs>
+        <LinearGradient id={gradientId} x1='0%' y1='0%' x2='65%' y2='85%'>
+          <Stop offset='0%' stopColor='#FFFFFF' stopOpacity={0.24} />
+          <Stop offset='28%' stopColor='#FFFFFF' stopOpacity={0.07} />
+          <Stop offset='50%' stopColor='#FFFFFF' stopOpacity={0} />
+        </LinearGradient>
+      </Defs>
+      <Rect x={0} y={0} width='100%' height='100%' fill={`url(#${gradientId})`} />
+    </Svg>
+  )
+})
 
 export function EmptySlot({ onPress, hinted, style, children, testID }: { onPress?: () => void; hinted?: boolean; style?: StyleProp<ViewStyle>; children?: React.ReactNode; testID?: string }) {
   const colors = useTableColors()

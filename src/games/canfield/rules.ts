@@ -443,14 +443,21 @@ export function isSafeAutoPlay(state: CanfieldState, card: Card): boolean {
   return oppMinLength >= cyclicPosition(card.rank, state.foundationRank)
 }
 
+/** True for a card at cyclic position 0 - this game's foundation-starting rank, the "ace" of its
+ * own 13-card cycle (set per-deal from whichever card was cut first; see foundationRank). Exported
+ * for CanfieldScreen.tsx's draw/reveal auto-play trigger, which needs this in place of a hardcoded
+ * `card.rank === 1` check - Canfield's own cycle doesn't necessarily start at Ace. */
+export function isFoundationStarterCard(card: Card, foundationRank: Rank): boolean {
+  return cyclicPosition(card.rank, foundationRank) === 0
+}
+
 /** Cyclic-foundation counterpart of engine/autoFoundation.ts's findSafeAutoPlay - same shape, using
- * this file's own canPlaceOnFoundationCyclic/isSafeAutoPlay instead of the shared Ace-start ones.
- * Also mirrors its waste-skip: a card at cyclic position 0 (this game's foundation-starting rank,
- * the "ace" of its own cycle) is trivially always safe, so one drawn to the waste from stock would
- * otherwise vanish to the foundation before the player sees it - skip it there the same way. */
+ * this file's own canPlaceOnFoundationCyclic/isSafeAutoPlay instead of the shared Ace-start ones. A
+ * waste-top card at its foundation-starting rank is included here like any other card - drawing or
+ * revealing one is meant to play it immediately as a deliberate payoff for the player (see
+ * useAutoFoundationCascade's armFromAceEvent, same as every other game). */
 export function findSafeAutoPlay(state: CanfieldState, accessible: AccessibleCard[]): AccessibleCard | null {
   for (const entry of accessible) {
-    if (entry.ref.zone === 'waste' && cyclicPosition(entry.card.rank, state.foundationRank) === 0) continue
     const f = suitIndex(entry.card.suit)
     if (canPlaceOnFoundationCyclic(state.foundation[f], entry.card, state.foundationRank) && isSafeAutoPlay(state, entry.card)) {
       return entry

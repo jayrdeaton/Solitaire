@@ -10,6 +10,13 @@ export interface MoveInfo {
   to: PileRef
   count: number
   anchorCardId: string
+  /** The full oldest-to-newest card id list for a count > 1 move, only when it can't be reliably
+   * reconstructed later by peeking at the current top `count` cards of `to`'s pile (that trick only
+   * works for the single most recent move on the stack - a multi-card auto-draw/recycle folded into
+   * a cascade, undone alongside other moves that happened after it, needs its own record instead).
+   * Unused (and unnecessary) for a single-card move, or for a primary move's own draw-3/recycle
+   * undo, which is always undoing the single most recent stack entry. */
+  cardIds?: string[]
 }
 
 /** One entry in a game's undo stack: the state to revert to, plus (when there's something

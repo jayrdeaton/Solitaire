@@ -1,6 +1,7 @@
 import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
+import { useRotatedWindowDimensions } from '@tastic/core'
 import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { StyleSheet, useWindowDimensions, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
 import Animated, { SharedValue, useAnimatedStyle, useFrameCallback, useSharedValue } from 'react-native-reanimated'
 
 import { Card } from '@/engine/types'
@@ -228,12 +229,15 @@ type CascadeState = { mode: 'idle' } | { mode: 'chains'; chains: ResolvedChain[]
 export function WinCascadeProvider({ children }: { children: ReactNode }) {
   const [cascade, setCascade] = useState<CascadeState>({ mode: 'idle' })
   const [generation, setGeneration] = useState(0)
-  const { width: winWidth, height: winHeight } = useWindowDimensions()
+  // Rotation-aware: winWidth/winHeight swap when rendered inside a rotated wrapper (see the
+  // rotation plan), so the cascade bounces within the screen's real, post-rotation footprint -
+  // exact identity with plain useWindowDimensions() for any screen with no such wrapper.
+  const { width: winWidth, height: winHeight } = useRotatedWindowDimensions()
   // Read at startChains-call time via the ref (not the useMemo's own deps) so the controller
   // identity stays stable across resizes, the same way useDealAnimator's does.
   const boundsRef = useRef({ width: winWidth, height: winHeight })
   useEffect(() => {
-    // useWindowDimensions() can transiently report a degenerate 0x0 size (e.g. right after a fresh
+    // useRotatedWindowDimensions() can transiently report a degenerate 0x0 size (e.g. right after a fresh
     // web navigation, before the viewport has settled) - guard against ever computing a chain's
     // bounce path against that, which would send every card wildly off-screen. Keeping the last
     // known-good size until a real one arrives is harmless: it's only ever off by a frame or two.
@@ -291,7 +295,8 @@ export function WinCascadeGhosts() {
   const overlayRef = useRef<View>(null)
   const containerOffsetX = useSharedValue(0)
   const containerOffsetY = useSharedValue(0)
-  const { width: winWidth, height: winHeight } = useWindowDimensions()
+  // Rotation-aware, same reasoning as WinCascadeProvider's own boundsRef above.
+  const { width: winWidth, height: winHeight } = useRotatedWindowDimensions()
 
   useEffect(() => {
     overlayRef.current?.measureInWindow((x, y) => {

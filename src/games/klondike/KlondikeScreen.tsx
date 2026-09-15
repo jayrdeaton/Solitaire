@@ -2,9 +2,9 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
-import { computeContentBounds } from '@tastic/core'
+import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
-import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
+import { StyleSheet, Text, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
@@ -22,15 +22,17 @@ import { useGameSession } from '@/components/useGameSession'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { KLONDIKE_RULES } from '@/constants/gameRules'
-import { findSafeAutoPlay, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
+import { AutoCompleteStep, findSafeAutoPlay, isFullyAutoCompletableWithDraws, nextAutoCompleteMoveWithDraws } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
-import { isDescendingAltColor, runCountFrom, top } from '@/engine/pile'
+import { detectRevealedCard, isDescendingAltColor, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card, SUITS } from '@/engine/types'
+import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
+import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
@@ -58,6 +60,28 @@ const TABLEAU_COLUMNS = 7
 interface KlondikeUndoMove {
   primary: MoveInfo | null
   cascaded: MoveInfo[]
+}
+
+/** Every container-ref position a cascaded move's reverse flight might need as its origin or
+ * destination, pre-measured once up front in handleUndo (all three are cheap, content-independent
+ * refs). A cascaded move's own `to`/`from` zone picks which of these applies (see
+ * originForCascadedMove/isStockDestinedMove below) - an ordinary auto-played card still uses
+ * `foundation` exactly as before; only the newer stock-cycling-during-a-win moves ever reach for
+ * `stock`/`waste` instead. */
+interface CascadeOrigins {
+  foundation: ({ x: number; y: number } | null)[]
+  stock: { x: number; y: number } | null
+  waste: { x: number; y: number } | null
+}
+
+/** Where a cascaded move's reverse flight starts FROM - wherever the card currently sits, i.e.
+ * `m.to` (the pile the forward move landed it in). Every ordinary auto-played card's `to` is a
+ * foundation slot, unchanged from before this move's own draws-aware extension; a stock-cycling
+ * move's `to` can also be 'stock' (reversing a recycle) or 'waste' (reversing a plain draw). */
+function originForCascadedMove(m: MoveInfo, origins: CascadeOrigins): { x: number; y: number } | null {
+  if (m.to.zone === 'stock') return origins.stock
+  if (m.to.zone === 'waste') return origins.waste
+  return origins.foundation[m.to.index] ?? null
 }
 type KlondikeUndoEntry = UndoEntry<KlondikeState, KlondikeUndoMove>
 // A save written before this shape existed stored `move` as a bare MoveInfo | null (see
@@ -97,7 +121,9 @@ function KlondikeScreenInner() {
   // alongside the undo stack in startNewGame/restoreGame below.
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
-  const { width: winWidth } = useWindowDimensions()
+  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
+  // with plain useWindowDimensions() otherwise, see the rotation plan.
+  const { width: winWidth } = useRotatedWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
   const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
@@ -162,7 +188,7 @@ function KlondikeScreenInner() {
    * "New Game" doesn't measure/land against the new deal's DOM (card ids are shuffle-independent
    * and reused across deals - see deck.ts). Mirrors exactly how runDeal below already guards itself
    * with dealTokenRef/pendingDealTokenRef. */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; sweep?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
   /** Draw-3 stock draws awaiting their post-commit measurement + deal.start() - a list for the same
    * overlapping-actions reason as pendingFlightRef above. Analogous shape, for the multi-card
    * deal-style flight (see the [state]-effect below and handleDrawStock) - drawnCards is
@@ -177,7 +203,7 @@ function KlondikeScreenInner() {
    * entry once buried under a later foundation arrival. Stays a single slot (not a list) - undo
    * itself is still fully serialized (see undoBusyRef/activeFlightCountRef below), so at most one
    * of these is ever pending at a time. */
-  const pendingCascadeUndoRef = useRef<{ moves: MoveInfo[]; origins: ({ x: number; y: number } | null)[]; gen: number } | null>(null)
+  const pendingCascadeUndoRef = useRef<{ moves: MoveInfo[]; origins: CascadeOrigins; gen: number } | null>(null)
   /** How many independent flight-completions are outstanding right now, summed across every
    * concurrently-active action (tap-to-move, drag, auto-play, stock-draw all now run concurrently
    * with each other - see PATTERN_OVERLAP_GATE; undo alone still waits for this to hit 0 before it
@@ -192,6 +218,7 @@ function KlondikeScreenInner() {
   const [activeFlightCount, setActiveFlightCount] = useState(0)
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
+  const cascadeFeedback = useCascadeFeedback(playCardSound, hapticCard)
   // Which card (if any) should play its "nowhere to go" shake right now - see handleCardTap and
   // shakeAnimation.ts. shakeTokenRef only ever counts up, so tapping the same stuck card again
   // still bumps to a new value and re-triggers the shake instead of being a no-op state update.
@@ -218,10 +245,6 @@ function KlondikeScreenInner() {
     stateRef.current = next
     setState(next)
   }
-  // Set right after handleUndo's guard, consumed (and cleared) by the auto-play watcher effect
-  // below - suppresses exactly one auto-play check after an undo, so undo doesn't immediately get
-  // replayed by the very mechanism it just reverted.
-  const justUndidRef = useRef(false)
   // True for the whole span of one handleUndo call, from its own guard through every flight it
   // kicked off fully settling (visually, not just in state) - cleared by settleFlight once
   // activeFlightCountRef returns to 0. Undo alone still holds FULL mutual exclusion (see
@@ -438,7 +461,7 @@ function KlondikeScreenInner() {
             setFlying((f) => f.filter((e) => e.id !== p.flyingId))
             settleFlight()
           },
-          { fast: p.fast }
+          { fast: p.fast, sweep: p.sweep }
         )
       })()
     })
@@ -523,26 +546,22 @@ function KlondikeScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // Drives the auto-play-to-foundation cascade: re-checks maybeAutoPlay every time the board
-  // settles with nothing else animating. `activeFlightCount > 0` guards against starting an
-  // auto-play move while the player's own tap/drag/stock-draw (now allowed to overlap each other -
-  // see PATTERN_OVERLAP_GATE) is still in the air, so the cascade only ever picks up once the board
-  // is genuinely idle (an auto-play's own landing brings the count back to 0, which re-triggers
-  // this effect - the cascade is self-sustaining with no explicit recursion); `dealHiddenIds.size >
-  // 0` guards against firing mid-deal, since the deal animation never touches activeFlightCount at
-  // all. `session.moves === 0` guards against firing on a freshly dealt (or resumed-but-untouched)
-  // board before the player has made a single real move - auto-played moves are always `silent`
-  // and never bump session.moves (see applyMove below), so this can only ever be satisfied by a
-  // genuine tap/drag/stock-draw, not by the cascade re-triggering itself.
-  useEffect(() => {
-    if (!state || activeFlightCount > 0 || dealHiddenIds.size > 0 || session.moves === 0) return
-    if (justUndidRef.current) {
-      justUndidRef.current = false
-      return
-    }
-    maybeAutoPlay()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, activeFlightCount, dealHiddenIds, session.moves])
+  // Auto-play-to-foundation: only ever fires as a direct consequence of the player's own move - see
+  // useAutoFoundationCascade for the trigger model (armFromForwardMove/armFromAceEvent, called from
+  // applyMove/handleDrawStock below), and engine/autoFoundation.ts for the two mechanisms
+  // computeNextStep composes. `activeFlightCount > 0` guards against firing while the player's own
+  // tap/drag/stock-draw (allowed to overlap each other - see PATTERN_OVERLAP_GATE) is still in the
+  // air; `dealHiddenIds.size > 0` guards against firing mid-deal.
+  const cascade = useAutoFoundationCascade<KlondikeState>({
+    state,
+    settled: activeFlightCount === 0 && dealHiddenIds.size === 0,
+    enabled: () => settings.autoMoveToFoundation,
+    isBusy: () => undoBusyRef.current,
+    computeNextStep,
+    firePlay,
+    fireDraw: handleDrawStock,
+    fireDrawAndPlay
+  })
 
   // Resumes a saved board if one exists, otherwise deals fresh - either way, this screen becomes
   // the "last active game" for as long as it stays mounted (see app/index.tsx), and stops being it
@@ -620,7 +639,13 @@ function KlondikeScreenInner() {
   function hideCascadeCards(moves: MoveInfo[]) {
     if (moves.length === 0) return
     const tableauIds = moves.filter((m) => m.from.zone === 'tableau').map((m) => m.anchorCardId)
-    const wasteCount = moves.filter((m) => m.from.zone === 'waste').length
+    // Summed by each move's own `count`, not "1 per move" - every ORIGINAL cascaded move (an
+    // ordinary single-card auto-play) had count === 1 anyway, so this was equivalent before, but a
+    // cascaded recycle reversal (see the stock-cycling sweep) can carry a real multi-card count.
+    // Nothing analogous is needed for a from.zone === 'stock' cascaded move (reversing a plain draw
+    // or a drawAndPlay) - the stock pile never shows individual card identity, only a generic
+    // face-down pile, so there's nothing there to flash/hide in the first place.
+    const wasteCount = moves.filter((m) => m.from.zone === 'waste').reduce((sum, m) => sum + m.count, 0)
     if (tableauIds.length > 0) setDealHiddenIds((ids) => new Set([...ids, ...tableauIds]))
     if (wasteCount > 0) setCascadeWasteHiddenCount((n) => n + wasteCount)
   }
@@ -634,8 +659,20 @@ function KlondikeScreenInner() {
   // (the draw-3-undo branch below can't run both at once - see its own comment). Always ends in
   // exactly one settleFlight() call, matching the one completion this cascade was counted as in
   // activeFlightCountRef.
-  async function runCascadeReturn(moves: MoveInfo[], origins: ({ x: number; y: number } | null)[], gen: number) {
-    const destinations = await Promise.all(moves.map((m) => ghost.cardRegistry.measure(m.anchorCardId)))
+  // Pre-measures every container ref a cascaded move's reverse flight might need (see
+  // CascadeOrigins) - called once, up front in handleUndo, before anything reverts, since all
+  // three are cheap content-independent refs safe to measure synchronously.
+  async function measureCascadeOrigins(): Promise<CascadeOrigins> {
+    const [foundation, stock, waste] = await Promise.all([Promise.all(foundationSlotRefs.current.map((view) => measureView(view))), measureView(stockViewRef.current), measureView(wasteViewRef.current)])
+    return { foundation, stock, waste }
+  }
+
+  async function runCascadeReturn(moves: MoveInfo[], origins: CascadeOrigins, gen: number) {
+    // A move whose card is headed back to the stock (reversing a plain draw or a drawAndPlay - see
+    // fireDraw/fireDrawAndPlay) has no per-card CardRegistry entry to measure once it lands there -
+    // the stock only ever renders as a generic pile, never per-card - so its destination is the
+    // same container ref a normal forward draw's ORIGIN already uses instead.
+    const destinations = await Promise.all(moves.map((m) => (m.from.zone === 'stock' ? measureView(stockViewRef.current) : ghost.cardRegistry.measure(m.anchorCardId))))
     if (dealTokenRef.current !== gen) {
       settleFlight()
       return
@@ -644,17 +681,31 @@ function KlondikeScreenInner() {
     const entries: DealCardSpec[] = []
     const strandedTableauIds: string[] = []
     let strandedWasteCount = 0
+    let entryIndex = 0
     moves.forEach((m, i) => {
       const dest = destinations[i]
-      const origin = origins[m.to.index]
-      const card = s ? resolvePile(m.from, s)?.find((c) => c.id === m.anchorCardId) : undefined
-      if (dest && origin && card) {
-        entries.push({ cardId: m.anchorCardId, card, from: origin, to: { x: dest.x, y: dest.y }, delayMs: i * DEAL_STAGGER_MS })
+      const origin = originForCascadedMove(m, origins)
+      const pile = s ? resolvePile(m.from, s) : null
+      // A single-card move (every ORIGINAL cascaded auto-play) just flies its own anchor. A
+      // multi-card one (a cascaded recycle/draw-3 sweep-draw reversal) needs its own recorded
+      // m.cardIds - unlike the PRIMARY move's own draw-3/recycle undo branches, this move isn't
+      // necessarily the most recent thing that happened to `to`'s pile, so "peek at the current top
+      // N cards" can't reliably reconstruct which cards were actually its own. Reversed so the
+      // newest/top card leads the reverse flight, same convention those primary-move branches use.
+      const ids = m.count > 1 && m.cardIds ? m.cardIds.slice().reverse() : [m.anchorCardId]
+      const cards = ids.map((id) => pile?.find((c) => c.id === id)).filter((c): c is Card => !!c)
+      if (dest && origin && cards.length === ids.length) {
+        cards.forEach((card) => {
+          entries.push({ cardId: card.id, card, from: origin, to: { x: dest.x, y: dest.y }, delayMs: entryIndex * DEAL_STAGGER_MS })
+          entryIndex += 1
+        })
       } else if (m.from.zone === 'tableau') {
         strandedTableauIds.push(m.anchorCardId)
       } else if (m.from.zone === 'waste') {
-        strandedWasteCount += 1
+        strandedWasteCount += m.count
       }
+      // m.from.zone === 'stock' needs no stranded-fallback handling - see hideCascadeCards' own
+      // comment on why there's nothing to unhide for a card headed back to the stock.
     })
     // A card whose destination measurement failed (a rare edge case) un-hides immediately rather
     // than staying stuck invisible forever - mirrors runDeal's/runWinCascade's own fallback for
@@ -676,7 +727,7 @@ function KlondikeScreenInner() {
       entries,
       cardWidth,
       (cardId) => {
-        const m = moves.find((mv) => mv.anchorCardId === cardId)
+        const m = moves.find((mv) => mv.anchorCardId === cardId || mv.cardIds?.includes(cardId))
         if (m?.from.zone === 'tableau') {
           setDealHiddenIds((ids) => {
             if (!ids.has(cardId)) return ids
@@ -704,7 +755,6 @@ function KlondikeScreenInner() {
   async function handleUndo() {
     if (undoBusyRef.current || activeFlightCountRef.current > 0 || flying.length > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
-    justUndidRef.current = true
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition - the only move available once it's true is New Game), so any undo reachable while
     // won must be undoing the winning move itself. Clears the "You Won!" banner and stops the
@@ -729,10 +779,9 @@ function KlondikeScreenInner() {
     const gen = dealTokenRef.current
     startFlights(cascaded.length > 0 ? 2 : 1)
 
-    // Foundation slot origins for the cascade (a container ref, content-independent - safe to
-    // measure now, before anything reverts) - measured up front regardless of which branch below
+    // Container-ref origins for the cascade - measured up front regardless of which branch below
     // ends up handling the primary move.
-    const cascadeOrigins = cascaded.length > 0 ? await Promise.all(foundationSlotRefs.current.map((view) => measureView(view))) : null
+    const cascadeOrigins = cascaded.length > 0 ? await measureCascadeOrigins() : null
 
     if (!move) {
       hideCascadeCards(cascaded)
@@ -887,6 +936,17 @@ function KlondikeScreenInner() {
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
+      if (!opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
+      // Reveals an ace: auto-play it immediately as a reward for the move that uncovered it (see
+      // useAutoFoundationCascade's armFromAceEvent), regardless of whether THIS move was itself
+      // silent - a cascaded tableau-to-foundation play can just as well reveal a fresh ace
+      // underneath as a manual one can, and that ace deserves the same instant payoff either way.
+      if (from.zone === 'tableau') {
+        const revealed = detectRevealedCard(current.tableau[from.index], result.tableau[from.index], count)
+        if (revealed && revealed.rank === 1) {
+          cascade.armFromAceEvent({ ref: from, card: revealed }, { zone: 'foundation', index: SUITS.indexOf(revealed.suit) })
+        }
+      }
       return true
     }
     return false
@@ -896,26 +956,24 @@ function KlondikeScreenInner() {
   // drop, or an auto-play) - applies the move, then marks the destination "incoming" and stashes
   // the anchor card id for the pendingFlightRef effect above to measure and fly the ghost onto,
   // instead of it just vanishing/appearing at the destination instantly.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean }): boolean {
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
     const flyingId = ++flyingIdRef.current
     setFlying((f) => [...f, { id: flyingId, to, count }])
-    pendingFlightRef.current.push({ cardId: anchorCardId, fast: opts?.fast, gen: dealTokenRef.current, flyingId, flight })
+    pendingFlightRef.current.push({ cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 
-  // Auto-play-to-foundation: see engine/autoFoundation.ts for the two mechanisms this composes.
-  // Re-run after every settled state change by the watcher effect above, which only fires once the
-  // board is fully idle (activeFlightCount === 0) - so at most one of these is ever in flight at a
-  // time, even though the player's own actions (see PATTERN_OVERLAP_GATE) no longer wait for it.
-  function maybeAutoPlay() {
-    if (!settings.autoMoveToFoundation) return
-    if (!state) return
-    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
+  // Composes engine/autoFoundation.ts's two mechanisms into the shared cascade hook's step shape -
+  // mechanism B (a guaranteed full clear, draws-aware so it can also reach through the stock) takes
+  // priority and, once true, ignores mechanism A's caution entirely since there's no longer any
+  // player decision left to protect.
+  function computeNextStep(s: KlondikeState): AutoCompleteStep | null {
     const controller = controllerRef.current
-    if (!controller.accessibleCards) return
-    const entry = isFullyAutoCompletable(controller, state) ? nextAutoCompleteMove(controller, state) : findSafeAutoPlay(controller.accessibleCards(state), state.foundation)
-    if (entry) fireAutoMove(entry)
+    if (!controller.accessibleCards) return null
+    if (isFullyAutoCompletableWithDraws(controller, s)) return nextAutoCompleteMoveWithDraws(controller, s)
+    const entry = findSafeAutoPlay(controller.accessibleCards(s), s.foundation)
+    return entry ? { kind: 'play', entry, to: { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) } } : null
   }
 
   // Mirrors handleCardTap's tail, but there's no tap event to supply an origin - it has to measure
@@ -924,7 +982,7 @@ function KlondikeScreenInner() {
   // handleUndo - captures everything it needs from the pre-move state synchronously first). Guard
   // against something else changing state during that gap by snapshotting stateRef before the
   // await and bailing if it no longer matches after.
-  async function fireAutoMove(entry: AccessibleCard) {
+  async function firePlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
@@ -932,14 +990,46 @@ function KlondikeScreenInner() {
       settleFlight()
       return
     }
-    const to: PileRef = { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) }
-    playCardSound()
-    hapticCard()
+    cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: true })) {
+    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: !opts.sweep, sweep: opts.sweep })) {
       flight.hide()
       settleFlight()
     }
+  }
+
+  // Only ever called by the win-completing sweep once a stock card is provably about to go straight
+  // to its foundation (see engine/autoFoundation.ts's 'drawAndPlay' step) - draws AND plays it in
+  // one committed state change, animated as one continuous flight straight from the stock pile,
+  // skipping the ordinary "land on waste first" stop entirely (the confirmed sweep visual). Reuses
+  // the exact same pendingFlightRef/[state]-effect mechanism an ordinary draw-to-waste already uses
+  // (a card's own post-commit CardRegistry registration, wherever it lands) - the only differences
+  // are committing the FINAL (post-play) state directly, recording the undo as a cascaded move
+  // (this isn't a player decision), and passing sweep through for the quicker spring.
+  async function fireDrawAndPlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
+    const current = stateRef.current
+    if (!current || !controllerRef.current.drawStock) return
+    const afterDraw = controllerRef.current.drawStock(current)
+    if (!afterDraw) return
+    const result = controllerRef.current.tryMove(afterDraw, { from: entry.ref, to, count: 1 })
+    if (!result) return
+    startFlights(1)
+
+    const origin = await measureView(stockViewRef.current)
+    if (!origin || stateRef.current !== current || undoBusyRef.current) {
+      settleFlight()
+      return
+    }
+
+    cascadeFeedback()
+    const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
+    const flyingId = ++flyingIdRef.current
+    setFlying((f) => [...f, { id: flyingId, to, count: 1 }])
+
+    pushCascadedMove({ from: { zone: 'stock', index: 0 }, to, count: 1, anchorCardId: entry.card.id })
+    commitState(result)
+    checkWin(result, session.moves)
+    pendingFlightRef.current.push({ cardId: entry.card.id, gen: dealTokenRef.current, flyingId, flight, sweep: opts.sweep })
   }
 
   // Drag-and-drop's own entry point into flight bookkeeping (see activeFlightCountRef's doc
@@ -973,7 +1063,13 @@ function KlondikeScreenInner() {
   // fixed origin (the stock pile) instead of a tapped card's position. Draw-3 instead
   // hands off to the deal-style multi-card flight (see the [state]-effect above) - every newly
   // drawn card flies, not just the new top one.
-  async function handleDrawStock() {
+  // `opts.sweep` marks this as an automatic step of the win-completing sweep (see fireDraw, passed
+  // as the shared cascade hook's own fireDraw callback) rather than a genuine player tap - not a
+  // player decision, so its undo entry folds into the current cascade (pushCascadedMove) instead of
+  // pushing its own stack entry, and it doesn't count toward moves/score. Every other branch below
+  // (the actual draw/recycle logic, the flight animation) is identical either way; only the
+  // undo-push and the flight's spring config differ.
+  async function handleDrawStock(opts?: { sweep?: boolean }) {
     // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
     // Without this, rapid-clicking the stock pile several times before React re-renders drew the
     // SAME card repeatedly (every call computing drawStock() against the same stale board) instead
@@ -984,37 +1080,59 @@ function KlondikeScreenInner() {
     const result = controllerRef.current.drawStock(current)
     if (!result) return
     startFlights(1)
-    session.registerMove()
+    if (!opts?.sweep) session.registerMove()
 
     const drawnCard = top(result.waste)
     if (!drawnCard) {
       // Recycling the waste back into the stock (see PATTERN_RECYCLE) - the whole waste flies as
       // one clump, from the waste slot to the stock slot, both content-independent container refs
-      // measurable synchronously (no post-commit deferral needed for either end).
+      // measurable synchronously (no post-commit deferral needed for either end). cardIds records
+      // the full group (oldest-to-newest) for a later cascaded-undo reversal to reconstruct exactly
+      // this move's own cards even after other moves happen on top of it - see undoTypes.ts.
       const wasteOrigin = await measureView(wasteViewRef.current)
       const stockDest = await measureView(stockViewRef.current)
       const recycledCards = current.waste.slice()
-      const move: MoveInfo = { from: { zone: 'waste', index: 0 }, to: { zone: 'stock', index: 0 }, count: recycledCards.length, anchorCardId: recycledCards[0]?.id ?? '' }
-      pushUndo(current, move)
+      const move: MoveInfo = { from: { zone: 'waste', index: 0 }, to: { zone: 'stock', index: 0 }, count: recycledCards.length, anchorCardId: recycledCards[0]?.id ?? '', cardIds: recycledCards.map((c) => c.id) }
+      if (opts?.sweep) pushCascadedMove(move)
+      else pushUndo(current, move)
 
       if (wasteOrigin && stockDest && recycledCards.length > 0) {
-        playCardSound()
-        hapticCard()
+        if (opts?.sweep) cascadeFeedback()
+        else {
+          playCardSound()
+          hapticCard()
+        }
         const flight = ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth }, { x: wasteOrigin.x, y: wasteOrigin.y })
         const flyingId = ++flyingIdRef.current
         setFlying((f) => [...f, { id: flyingId, to: { zone: 'waste', index: 0 }, count: recycledCards.length }])
         setStockHidden(true)
         commitState(result)
-        flight.flyTo(stockDest.x, stockDest.y, () => {
-          setFlying((f) => f.filter((e) => e.id !== flyingId))
-          setStockHidden(false)
-          settleFlight()
-        })
+        flight.flyTo(
+          stockDest.x,
+          stockDest.y,
+          () => {
+            setFlying((f) => f.filter((e) => e.id !== flyingId))
+            setStockHidden(false)
+            settleFlight()
+          },
+          { sweep: opts?.sweep }
+        )
       } else {
         commitState(result)
         settleFlight()
       }
       return
+    }
+
+    // Drawing (or revealing) an ace is meant to auto-play it immediately as a reward, regardless of
+    // whether this is a genuine player tap or a sweep's own forced draw - see
+    // useAutoFoundationCascade's armFromAceEvent. A sweep's own draws only ever reach this point via
+    // a plain 'draw' step (see engine/autoFoundation.ts's AutoCompleteStep) - one where the newly
+    // drawn top card DIDN'T come back as immediately playable - so armFromAceEvent here can only
+    // ever matter for a genuine player tap in practice, but it costs nothing to leave it
+    // unconditional rather than special-cased away.
+    if (drawnCard.rank === 1) {
+      cascade.armFromAceEvent({ ref: { zone: 'waste', index: 0 }, card: drawnCard }, { zone: 'foundation', index: SUITS.indexOf(drawnCard.suit) })
     }
 
     // How many cards this draw actually added - normally klondikeDraw, but fewer once the stock
@@ -1024,7 +1142,9 @@ function KlondikeScreenInner() {
 
     if (drawnCount > 1) {
       const drawnCards = result.waste.slice(result.waste.length - drawnCount) // oldest -> newest/top
-      pushUndo(current, move)
+      const moveWithIds: MoveInfo = { ...move, cardIds: drawnCards.map((c) => c.id) }
+      if (opts?.sweep) pushCascadedMove(moveWithIds)
+      else pushUndo(current, moveWithIds)
       const flyingId = ++flyingIdRef.current
       setFlying((f) => [...f, { id: flyingId, to: { zone: 'waste', index: 0 }, count: drawnCount }])
       pendingDealDrawRef.current.push({ topCardId: drawnCard.id, drawnCards, gen: dealTokenRef.current, flyingId })
@@ -1034,21 +1154,26 @@ function KlondikeScreenInner() {
 
     const origin = await measureView(stockViewRef.current)
     if (!origin) {
-      pushUndo(current, move)
+      if (opts?.sweep) pushCascadedMove(move)
+      else pushUndo(current, move)
       commitState(result)
       settleFlight()
       return
     }
 
-    playCardSound()
-    hapticCard()
+    if (opts?.sweep) cascadeFeedback()
+    else {
+      playCardSound()
+      hapticCard()
+    }
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = ++flyingIdRef.current
     setFlying((f) => [...f, { id: flyingId, to: { zone: 'waste', index: 0 }, count: 1 }])
 
-    pushUndo(current, move)
+    if (opts?.sweep) pushCascadedMove(move)
+    else pushUndo(current, move)
     commitState(result)
-    pendingFlightRef.current.push({ cardId: drawnCard.id, gen: dealTokenRef.current, flyingId, flight })
+    pendingFlightRef.current.push({ cardId: drawnCard.id, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
   }
 
   // `s` defaults to the closure's own live `state` (every pre-existing call site) - runCascadeReturn
@@ -1064,6 +1189,8 @@ function KlondikeScreenInner() {
         return s.foundation[ref.index] ?? null
       case 'waste':
         return s.waste
+      case 'stock':
+        return s.stock
       default:
         return null
     }
@@ -1137,7 +1264,7 @@ function KlondikeScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Klondike' subtitle={`Draw ${klondikeDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<KlondikeSettingsSection />} rules={KLONDIKE_RULES}>
+      <GameChrome title='Klondike' subtitle={`Draw ${klondikeDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<KlondikeSettingsSection />} rules={KLONDIKE_RULES} showVignette>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {

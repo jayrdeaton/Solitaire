@@ -22,9 +22,9 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CardSizeProvider, type TableColors } from '@tastic/cards'
-import { computeContentBounds } from '@tastic/core'
+import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
-import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
+import { StyleSheet, Text, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
@@ -55,6 +55,7 @@ import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
+import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -63,7 +64,6 @@ import { buildAcesUpDealSequence } from './dealSequence'
 import { AcesUpController, AcesUpState } from './rules'
 
 const NUM_PILES = 4
-const PILE_MAX_HEIGHT = 320
 
 // A plain face-down placeholder for the stock pile display - id/suit/rank are never shown
 // (faceUp: false always renders CardBack instead), so any valid values work here.
@@ -74,12 +74,18 @@ export default withGameProviders(AcesUpScreenInner)
 function AcesUpScreenInner() {
   const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
-  const { width: winWidth } = useWindowDimensions()
+  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
+  // with plain useWindowDimensions() otherwise, see the rotation plan.
+  const { width: winWidth } = useRotatedWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
   const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, NUM_PILES)
   // Spans the same width as pilesRow below (4 piles + 3 gaps) so topRow's own space-between can
   // put the discard pile and stock at its two ends, mirroring Pyramid's controlRow/triangle.
   const pilesWidth = cardWidth * NUM_PILES + gap * (NUM_PILES - 1)
+  // Was a fixed 320 module constant - now adapts to real window height the same way every other
+  // PileView-using game already does (see useTableauMaxHeight's own doc comment), 320 kept as the
+  // floor so a short/cramped screen never gets less generous than it did before.
+  const tableauMaxHeight = useTableauMaxHeight(cardWidth, 320)
   const [state, setState] = useState<AcesUpState | null>(null)
   const [undoStack, setUndoStack] = useState<UndoEntry<AcesUpState>[]>([])
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
@@ -566,7 +572,7 @@ function AcesUpScreenInner() {
                   }}
                   collapsable={false}
                 >
-                  <PileView cards={cards} onPressCard={(card, _indexFromTop, measure) => handleCardTap(pileIndex, card, measure)} maxHeight={PILE_MAX_HEIGHT} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} shakeCardId={shake?.cardId} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: pileIndex })} />
+                  <PileView cards={cards} onPressCard={(card, _indexFromTop, measure) => handleCardTap(pileIndex, card, measure)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} shakeCardId={shake?.cardId} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: pileIndex })} />
                 </View>
               </DropZone>
             )

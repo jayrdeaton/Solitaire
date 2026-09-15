@@ -292,11 +292,11 @@ describe('Canfield isSafeAutoPlay / findSafeAutoPlay (cyclic, non-Ace-starting)'
     expect(found?.card.id).toBe('hearts-7-0')
   })
 
-  it('skips a foundation-starting-rank card sitting on the waste (just drawn from stock)', () => {
+  it('plays a foundation-starting-rank card sitting on the waste (just drawn from stock) immediately, same as anywhere else', () => {
     const startRankCard: Card = { id: 'hearts-5-0', suit: 'hearts', rank: 5, faceUp: true }
     const state: CanfieldState = { tableau: [[], [], [], []], foundation: [[], [], [], []], foundationRank: 5, reserve: [], stock: [], waste: [] }
     const accessible = [{ ref: { zone: 'waste' as const, index: 0 }, card: startRankCard }]
-    expect(findSafeAutoPlay(state, accessible)).toBeNull()
+    expect(findSafeAutoPlay(state, accessible)?.card.id).toBe('hearts-5-0')
   })
 })
 

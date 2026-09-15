@@ -1,6 +1,7 @@
 import { CardSizeProvider } from '@tastic/cards'
+import { useRotatedWindowDimensions } from '@tastic/core'
 import { createContext, memo, ReactNode, Ref, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
-import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
 import Animated, { cancelAnimation, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
 
 import { Card } from '@/engine/types'
@@ -188,7 +189,10 @@ export function DealProvider({ children }: { children: ReactNode }) {
   // (and re-measured on resize) rather than assumed zero.
   const containerOffsetX = useSharedValue(0)
   const containerOffsetY = useSharedValue(0)
-  const { width: winWidth, height: winHeight } = useWindowDimensions()
+  // Rotation-aware: winWidth/winHeight themselves swap when rendered inside a rotated wrapper (see
+  // the rotation plan), so this still only re-measures when the overlay's real footprint actually
+  // changes - exact identity with plain useWindowDimensions() for any screen with no such wrapper.
+  const { width: winWidth, height: winHeight } = useRotatedWindowDimensions()
   useEffect(() => {
     overlayRef.current?.measureInWindow((x, y) => {
       containerOffsetX.value = x

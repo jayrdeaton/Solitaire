@@ -2,9 +2,9 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
-import { computeContentBounds } from '@tastic/core'
+import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
+import { StyleSheet, Text, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
@@ -22,15 +22,17 @@ import { useGameSession } from '@/components/useGameSession'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { YUKON_RULES } from '@/constants/gameRules'
-import { findSafeAutoPlay, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
+import { AutoCompleteStep, findSafeAutoPlay, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
-import { alwaysValidRun, runCountFrom, top } from '@/engine/pile'
+import { alwaysValidRun, detectRevealedCard, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card, SUITS } from '@/engine/types'
+import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
+import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
@@ -129,7 +131,9 @@ function YukonScreenInner() {
   // the undo stack in startNewGame/restoreGame below.
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
-  const { width: winWidth } = useWindowDimensions()
+  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
+  // with plain useWindowDimensions() otherwise, see the rotation plan.
+  const { width: winWidth } = useRotatedWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
   const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
@@ -158,7 +162,7 @@ function YukonScreenInner() {
    * this flight was queued - re-checked once the async measurement below resolves, so a flight
    * queued against a game that's since been replaced by "New Game" doesn't measure/land against the
    * new deal's DOM (card ids are shuffle-independent and reused across deals - see deck.ts). */
-  const pendingFlightRef = useRef<{ cardId: string; fast?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
+  const pendingFlightRef = useRef<{ cardId: string; fast?: boolean; sweep?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
   /** A cascade-undo return flight awaiting its post-commit per-card measurement, mirroring
    * pendingFlightRef's own deferral reasoning - see the [state]-effect below and
    * groupCascadedByFoundation's doc comment. Independent of pendingFlightRef: the primary card's
@@ -173,6 +177,7 @@ function YukonScreenInner() {
   const [cascadeFlyingFoundations, setCascadeFlyingFoundations] = useState<Set<number>>(new Set())
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
+  const cascadeFeedback = useCascadeFeedback(playCardSound, hapticCard)
   // Which card (if any) should play its "nowhere to go" shake right now - see handleCardTap and
   // shakeAnimation.ts. shakeTokenRef only ever counts up, so tapping the same stuck card again
   // still bumps to a new value and re-triggers the shake instead of being a no-op state update.
@@ -189,10 +194,6 @@ function YukonScreenInner() {
   useEffect(() => {
     stateRef.current = state
   }, [state])
-  // Set right after handleUndo's guard, consumed (and cleared) by the auto-play watcher effect
-  // below - suppresses exactly one auto-play check after an undo, so undo doesn't immediately get
-  // replayed by the very mechanism it just reverted.
-  const justUndidRef = useRef(false)
   // Guards handleUndo against being called again before its own previous invocation has fully
   // settled (visually, not just in state) - see handleUndo below for why an overlapping call would
   // otherwise desync the undo stack or clobber the shared single-flight ghost/deal animation.
@@ -374,7 +375,7 @@ function YukonScreenInner() {
           setFlying(null)
           undoBusyRef.current = false
         },
-        { fast: pending.fast }
+        { fast: pending.fast, sweep: pending.sweep }
       )
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -483,18 +484,19 @@ function YukonScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // Auto-play-to-foundation: see engine/autoFoundation.ts for the two mechanisms this composes.
-  // Declared here, just above the watcher effect that calls it, rather than lower in the component
-  // (Klondike/FreeCell's equivalent function is declared further down and still lints clean there,
+  // Auto-play-to-foundation: only ever fires as a direct consequence of the player's own move - see
+  // useAutoFoundationCascade for the trigger model (armFromForwardMove/armFromAceEvent, called from
+  // applyMove below), and engine/autoFoundation.ts for the two mechanisms computeNextStep composes.
+  // Declared here, just above the hook call that uses them, rather than lower in the component
+  // (Klondike/FreeCell's equivalent functions are declared further down and still lint clean there,
   // but the same forward-reference shape trips react-hooks/immutability in this file specifically -
   // this ordering resolves it cleanly with no behavior change, since function declarations hoist
   // either way). Mechanism B (a guaranteed full clear) takes priority and, once true, ignores
   // mechanism A's caution entirely since there's no longer any player decision left to protect.
-  function maybeAutoPlay() {
-    if (!settings.autoMoveToFoundation) return
-    if (!state || !controller.accessibleCards) return
-    const entry = isFullyAutoCompletable(controller, state) ? nextAutoCompleteMove(controller, state) : findSafeAutoPlay(controller.accessibleCards(state), state.foundation)
-    if (entry) fireAutoMove(entry)
+  function computeNextStep(s: YukonState): AutoCompleteStep | null {
+    if (!controller.accessibleCards) return null
+    const entry = isFullyAutoCompletable(controller, s) ? nextAutoCompleteMove(controller, s) : findSafeAutoPlay(controller.accessibleCards(s), s.foundation)
+    return entry ? { kind: 'play', entry, to: { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) } } : null
   }
 
   // Mirrors handleCardTap's tail, but there's no tap event to supply an origin - it has to measure
@@ -503,37 +505,25 @@ function YukonScreenInner() {
   // handleUndo - captures everything it needs from the pre-move state synchronously first). Guard
   // against something else changing state during that gap by snapshotting stateRef before the
   // await and bailing if it no longer matches after.
-  async function fireAutoMove(entry: AccessibleCard) {
+  async function firePlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
     if (!origin || stateRef.current !== stateAtStart) return
-    const to: PileRef = { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) }
-    playCardSound()
-    hapticCard()
+    cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: true })) {
+    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: !opts.sweep, sweep: opts.sweep })) {
       flight.hide()
     }
   }
 
-  // Drives the auto-play-to-foundation cascade: re-checks maybeAutoPlay every time the board
-  // settles with nothing else animating. `flying !== null` guards against overlapping the
-  // single-ghost system (an auto-play's own landing sets it back to null, which re-triggers this
-  // effect - the cascade is self-sustaining with no explicit recursion); `dealHiddenIds.size > 0`
-  // guards against firing mid-deal, since the deal animation never touches `flying` at all.
-  // `session.moves === 0` guards against firing on a freshly dealt (or resumed-but-untouched)
-  // board before the player has made a single real move - auto-played moves are always `silent`
-  // and never bump session.moves (see applyMove below), so this can only ever be satisfied by a
-  // genuine tap/drag, not by the cascade re-triggering itself.
-  useEffect(() => {
-    if (!state || flying !== null || dealHiddenIds.size > 0 || session.moves === 0) return
-    if (justUndidRef.current) {
-      justUndidRef.current = false
-      return
-    }
-    maybeAutoPlay()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, flying, dealHiddenIds, session.moves])
+  const cascade = useAutoFoundationCascade<YukonState>({
+    state,
+    settled: flying === null && dealHiddenIds.size === 0,
+    enabled: () => settings.autoMoveToFoundation,
+    isBusy: () => undoBusyRef.current,
+    computeNextStep,
+    firePlay
+  })
 
   // Resumes a saved board if one exists, otherwise deals fresh - either way, this screen becomes
   // the "last active game" for as long as it stays mounted (see app/index.tsx), and stops being it
@@ -597,7 +587,6 @@ function YukonScreenInner() {
   async function handleUndo() {
     if (undoBusyRef.current || cascadeUndoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
-    justUndidRef.current = true
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition - the only move available once it's true is New Game), so any undo reachable while
     // won must be undoing the winning move itself. Clears the "You Won!" banner and stops the
@@ -689,6 +678,17 @@ function YukonScreenInner() {
       setState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
+      if (!opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
+      // Reveals an ace: auto-play it immediately as a reward for the move that uncovered it (see
+      // useAutoFoundationCascade's armFromAceEvent), regardless of whether THIS move was itself
+      // silent - a cascaded tableau-to-foundation play can just as well reveal a fresh ace
+      // underneath as a manual one can, and that ace deserves the same instant payoff either way.
+      if (from.zone === 'tableau') {
+        const revealed = detectRevealedCard(state.tableau[from.index], result.tableau[from.index], count)
+        if (revealed && revealed.rank === 1) {
+          cascade.armFromAceEvent({ ref: from, card: revealed }, { zone: 'foundation', index: SUITS.indexOf(revealed.suit) })
+        }
+      }
       return true
     }
     return false
@@ -698,10 +698,10 @@ function YukonScreenInner() {
   // drop, or an auto-play) - applies the move, then marks the destination "incoming" and stashes
   // the anchor card id for the pendingFlightRef effect above to measure and fly the ghost onto,
   // instead of it just vanishing/appearing at the destination instantly.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean }): boolean {
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
     setFlying({ to, count })
-    pendingFlightRef.current = { cardId: anchorCardId, fast: opts?.fast, gen: dealTokenRef.current, flight }
+    pendingFlightRef.current = { cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flight }
     return true
   }
 

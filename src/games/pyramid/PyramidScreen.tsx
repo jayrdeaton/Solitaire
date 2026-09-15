@@ -4,9 +4,9 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CARD_ASPECT, CardSizeProvider, type TableColors } from '@tastic/cards'
-import { computeContentBounds } from '@tastic/core'
+import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
-import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
+import { StyleSheet, Text, View } from 'react-native'
 import Animated, { SharedValue, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
@@ -32,12 +32,14 @@ import { findHint, hintCountFor, HintResult } from '@/engine/hint'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
+import { clampCardWidthForHeight } from '@/games/shared/clampCardWidthForHeight'
 import { DiscardCell } from '@/games/shared/DiscardCell'
 import { MoveInfo } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -141,7 +143,8 @@ function PairFlightGhosts({ flight, onCardLanded }: { flight: PairFlightState | 
   const overlayRef = useRef<View>(null)
   const containerOffsetX = useSharedValue(0)
   const containerOffsetY = useSharedValue(0)
-  const { width: winWidth, height: winHeight } = useWindowDimensions()
+  // Rotation-aware, same reasoning as DragGhostLayer/DealLayer's identical overlay-offset pattern.
+  const { width: winWidth, height: winHeight } = useRotatedWindowDimensions()
 
   useEffect(() => {
     overlayRef.current?.measureInWindow((x, y) => {
@@ -191,9 +194,21 @@ export default withGameProviders(PyramidScreenInner)
 function PyramidScreenInner() {
   const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
-  const { width: winWidth } = useWindowDimensions()
+  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
+  // with plain useWindowDimensions() otherwise, see the rotation plan.
+  const { width: winWidth } = useRotatedWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TRIANGLE_WIDTH_UNITS)
+  const { cardWidth: widthCardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TRIANGLE_WIDTH_UNITS)
+  // Pyramid has no PileView/height-budget concept - the triangle's own height is a pure function of
+  // cardWidth (see `height` below), so a landscape hold's much wider available width could otherwise
+  // drive cardWidth (and therefore triangle height) taller than the now-shorter viewport can fit.
+  // Clamps cardWidth by BOTH axes: reuses useTableauMaxHeight's own "how much vertical room is
+  // there" budget (built for PileView's maxHeight, but the underlying available-height question is
+  // the same one) to back-solve the largest cardWidth whose resulting triangle height still fits,
+  // fed the width-derived cardWidth since the correction term it needs (topRowHeight) only matters
+  // at second order here.
+  const availableHeight = useTableauMaxHeight(widthCardWidth, 0)
+  const cardWidth = clampCardWidthForHeight(widthCardWidth, availableHeight, ROWS - 1, FACE_UP_OFFSET_RATIO, CARD_ASPECT)
   const cardHeight = cardWidth / CARD_ASPECT
   const [state, setState] = useState<PyramidState | null>(null)
   const [selected, setSelected] = useState<PileRef | null>(null)

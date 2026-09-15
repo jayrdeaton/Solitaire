@@ -9,9 +9,9 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
-import { computeContentBounds } from '@tastic/core'
+import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
-import { StyleSheet, Text, useWindowDimensions, View } from 'react-native'
+import { StyleSheet, Text, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
@@ -29,14 +29,17 @@ import { useGameSession } from '@/components/useGameSession'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { FORTYTHIEVES_RULES } from '@/constants/gameRules'
+import { AutoCompleteStep } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
 import { isDescendingSameSuit, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card, SUITS } from '@/engine/types'
+import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
+import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
@@ -49,7 +52,7 @@ import { useSettings } from '@/stores/settings'
 
 import { buildFortyThievesDealSequence } from './dealSequence'
 import { FortyThievesSettingsSection } from './FortyThievesSettingsSection'
-import { createFortyThievesController, findFoundationSlot, FortyThievesState, isFullyAutoCompletable, nextAutoCompleteMove } from './rules'
+import { createFortyThievesController, findFoundationSlot, FortyThievesState, isFullyAutoCompletableWithDraws, nextAutoCompleteMoveWithDraws } from './rules'
 
 const TABLEAU_COLUMNS = 10
 const TABLEAU_MIN_HEIGHT = 360
@@ -112,7 +115,9 @@ function FortyThievesScreenInner() {
   // alongside the undo stack in startNewGame/restoreGame below.
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
-  const { width: winWidth } = useWindowDimensions()
+  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
+  // with plain useWindowDimensions() otherwise, see the rotation plan.
+  const { width: winWidth } = useRotatedWindowDimensions()
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
   const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
@@ -134,9 +139,10 @@ function FortyThievesScreenInner() {
    * (handleDrawStock), undo, and auto-play (fireAutoMove) - only one is ever in flight at a time.
    * `gen` is the dealTokenRef value at the moment this flight was queued - see KlondikeScreen's
    * identical field for the full race-guard reasoning. */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; sweep?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
+  const cascadeFeedback = useCascadeFeedback(playCardSound, hapticCard)
   const [shake, setShake] = useState<{ cardId: string; count: number; token: number } | null>(null)
   const shakeTokenRef = useRef(0)
   // Mirrors `state` synchronously so fireAutoMove - which has an await gap before it applies its
@@ -144,7 +150,6 @@ function FortyThievesScreenInner() {
   // underneath it and bail instead of applying against a stale snapshot.
   const stateRef = useRef(state)
   stateRef.current = state
-  const justUndidRef = useRef(false)
   const undoBusyRef = useRef(false)
 
   function startNewGame() {
@@ -277,24 +282,27 @@ function FortyThievesScreenInner() {
           setFlying(null)
           undoBusyRef.current = false
         },
-        { fast: pending.fast }
+        { fast: pending.fast, sweep: pending.sweep }
       )
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // Drives the auto-complete-to-foundation cascade - see rules.ts's own header comment on why
-  // this only ever fires once the whole remaining deal is provably clearable (no continuous
-  // "safe" heuristic, unlike Klondike/FreeCell/Yukon/Canfield).
-  useEffect(() => {
-    if (!settings.autoMoveToFoundation || !state || flying !== null || dealHiddenIds.size > 0 || session.moves === 0) return
-    if (justUndidRef.current) {
-      justUndidRef.current = false
-      return
-    }
-    maybeAutoPlay()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, flying, dealHiddenIds, session.moves, settings.autoMoveToFoundation])
+  // Auto-play-to-foundation: only ever fires as a direct consequence of the player's own move - see
+  // useAutoFoundationCascade for the trigger model (armFromForwardMove/armFromAceEvent, called from
+  // applyMove/handleDrawStock below), and rules.ts's own header comment on why this game only ever
+  // fires once the whole remaining deal is provably clearable (no continuous "safe" heuristic,
+  // unlike Klondike/FreeCell/Yukon/Canfield - no computeNextStep fallback to one below either).
+  const cascade = useAutoFoundationCascade<FortyThievesState>({
+    state,
+    settled: flying === null && dealHiddenIds.size === 0,
+    enabled: () => settings.autoMoveToFoundation,
+    isBusy: () => undoBusyRef.current,
+    computeNextStep,
+    firePlay,
+    fireDraw: handleDrawStock,
+    fireDrawAndPlay
+  })
 
   useEffect(() => {
     loadGameInProgress<FortyThievesState>('fortythieves').then((saved) => {
@@ -342,7 +350,6 @@ function FortyThievesScreenInner() {
   async function handleUndo() {
     if (undoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
-    justUndidRef.current = true
     if (won) {
       setWon(false)
       winCascade.clear()
@@ -384,43 +391,70 @@ function FortyThievesScreenInner() {
       setState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
+      if (!opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
+      // No reveal check here - this game's tableau is dealt (and only ever receives) already
+      // face-up cards (see rules.ts's own header comment), so there is no "reveal the newly-exposed
+      // card" event to detect at all, unlike Klondike/Canfield/Yukon.
       return true
     }
     return false
   }
 
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean }): boolean {
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
     setFlying({ to, count })
-    pendingFlightRef.current = { cardId: anchorCardId, fast: opts?.fast, gen: dealTokenRef.current, flight }
+    pendingFlightRef.current = { cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flight }
     return true
   }
 
-  function maybeAutoPlay() {
-    if (!state) return
-    if (!isFullyAutoCompletable(controllerRef.current, state)) return
-    const entry = nextAutoCompleteMove(controllerRef.current, state)
-    if (entry) fireAutoMove(entry)
+  // No Mechanism A fallback here (see rules.ts's own header comment on why this game only
+  // reimplements the conservative "whole board provably clearable" mechanism B, draws-aware so it
+  // can also reach through the stock) - a step only ever comes from
+  // isFullyAutoCompletableWithDraws/nextAutoCompleteMoveWithDraws, never a continuous heuristic.
+  function computeNextStep(s: FortyThievesState): AutoCompleteStep | null {
+    if (!isFullyAutoCompletableWithDraws(controllerRef.current, s)) return null
+    return nextAutoCompleteMoveWithDraws(controllerRef.current, s)
   }
 
   // Mirrors handleCardTap's tail, but there's no tap event to supply an origin - it has to
   // measure the card's current position itself, which is the one place this feature has an await
   // gap before applying its move. Guard against something else changing state during that gap by
   // snapshotting stateRef before the await and bailing if it no longer matches after.
-  async function fireAutoMove(entry: AccessibleCard) {
+  async function firePlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
     const stateAtStart = stateRef.current
     if (!stateAtStart) return
-    const slot = findFoundationSlot(stateAtStart.foundation, entry.card)
-    if (slot === null) return
     const origin = await ghost.cardRegistry.measure(entry.card.id)
     if (!origin || stateRef.current !== stateAtStart) return
-    const to: PileRef = { zone: 'foundation', index: slot }
-    playCardSound()
-    hapticCard()
+    cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: true })) {
+    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: !opts.sweep, sweep: opts.sweep })) {
       flight.hide()
     }
+  }
+
+  // Only ever called by the win-completing sweep once a stock card is provably about to go straight
+  // to its foundation (see engine/autoFoundation.ts's 'drawAndPlay' step) - draws AND plays it in
+  // one committed state change, animated as one continuous flight straight from the stock pile,
+  // skipping the ordinary "land on waste first" stop entirely (the confirmed sweep visual). Not a
+  // player decision, so - matching applyMove's own silent branch - this never touches the undo
+  // stack at all (this game excludes every silent move from undo, same as Canfield).
+  async function fireDrawAndPlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
+    const current = stateRef.current
+    if (!current || !controllerRef.current.drawStock) return
+    const afterDraw = controllerRef.current.drawStock(current)
+    if (!afterDraw) return
+    const result = controllerRef.current.tryMove(afterDraw, { from: entry.ref, to, count: 1 })
+    if (!result) return
+
+    const origin = await measureView(stockViewRef.current)
+    if (!origin || stateRef.current !== current) return
+
+    cascadeFeedback()
+    const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
+    setFlying({ to, count: 1 })
+    setState(result)
+    checkWin(result, session.moves)
+    pendingFlightRef.current = { cardId: entry.card.id, gen: dealTokenRef.current, flight, sweep: opts.sweep }
   }
 
   async function attemptDrop(from: PileRef, count: number, absoluteX: number, absoluteY: number, anchorCardId: string, flight: DragFlightHandle): Promise<boolean> {
@@ -435,30 +469,50 @@ function FortyThievesScreenInner() {
     return runCountFrom(state.tableau[colIndex], indexFromTop, isDescendingSameSuit)
   }
 
-  async function handleDrawStock() {
+  // `opts.sweep` marks this as an automatic step of the win-completing sweep (see the shared
+  // cascade hook's own fireDraw callback above) rather than a genuine player tap - not a player
+  // decision, so (matching applyMove's own silent branch) it never touches the undo stack at all,
+  // and doesn't count toward moves/score.
+  async function handleDrawStock(opts?: { sweep?: boolean }) {
     if (won || !state || !controllerRef.current.drawStock) return
     const result = controllerRef.current.drawStock(state)
     if (!result) return
-    session.registerMove()
+    if (!opts?.sweep) session.registerMove()
 
     const drawnCard = top(result.waste)!
+    // Drawing an ace is meant to auto-play it immediately as a reward, regardless of whether this
+    // is a genuine player tap or a sweep's own forced draw - see useAutoFoundationCascade's
+    // armFromAceEvent. A sweep's own draws only ever reach this point via a plain 'draw' step (see
+    // engine/autoFoundation.ts's AutoCompleteStep) - one where the newly drawn card DIDN'T come
+    // back as immediately playable - so this can only ever matter for a genuine player tap in
+    // practice, but it costs nothing to leave it unconditional rather than special-cased away.
+    if (drawnCard.rank === 1) {
+      // Never null for an ace: exactly 8 aces exist for exactly 8 slots, an ace can only ever
+      // match findFoundationSlot's empty-pile branch (never a non-empty one - see its own logic),
+      // and this one hasn't been placed anywhere yet, so at least one slot must still be open.
+      const slot = findFoundationSlot(result.foundation, drawnCard)!
+      cascade.armFromAceEvent({ ref: { zone: 'waste', index: 0 }, card: drawnCard }, { zone: 'foundation', index: slot })
+    }
     const move: MoveInfo = { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: 1, anchorCardId: drawnCard.id }
 
     const origin = await measureView(stockViewRef.current)
     if (!origin) {
-      pushUndo(state, move)
+      if (!opts?.sweep) pushUndo(state, move)
       setState(result)
       return
     }
 
-    playCardSound()
-    hapticCard()
+    if (opts?.sweep) cascadeFeedback()
+    else {
+      playCardSound()
+      hapticCard()
+    }
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     setFlying({ to: { zone: 'waste', index: 0 }, count: 1 })
 
-    pushUndo(state, move)
+    if (!opts?.sweep) pushUndo(state, move)
     setState(result)
-    pendingFlightRef.current = { cardId: drawnCard.id, gen: dealTokenRef.current, flight }
+    pendingFlightRef.current = { cardId: drawnCard.id, sweep: opts?.sweep, gen: dealTokenRef.current, flight }
   }
 
   function resolvePile(ref: PileRef): Card[] | null {

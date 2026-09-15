@@ -1,6 +1,6 @@
 import { GameController } from '@/engine/gameTypes'
 import { Card, SUITS } from '@/engine/types'
-import { createFortyThievesController, findFoundationSlot, FortyThievesState, isFullyAutoCompletable, nextAutoCompleteMove } from '@/games/fortythieves/rules'
+import { createFortyThievesController, findFoundationSlot, FortyThievesState, isFullyAutoCompletable, isFullyAutoCompletableWithDraws, nextAutoCompleteMove, nextAutoCompleteMoveWithDraws } from '@/games/fortythieves/rules'
 
 const Strict = createFortyThievesController(false)
 const RunMoves = createFortyThievesController(true)
@@ -189,6 +189,46 @@ describe('Forty Thieves isFullyAutoCompletable / nextAutoCompleteMove', () => {
     tableau[0] = [heartsK, buried] // buried sits ON TOP of heartsK - heartsK isn't accessible
     const state: FortyThievesState = { tableau, foundation: Array.from({ length: 8 }, () => []), stock: [], waste: [] }
     expect(isFullyAutoCompletable(Strict, state)).toBe(false)
+  })
+})
+
+describe('Forty Thieves isFullyAutoCompletableWithDraws / nextAutoCompleteMoveWithDraws', () => {
+  // 7 of the 8 foundation slots pre-filled to length 13 (dummy cards, isWon only checks length) -
+  // only slot 0 is left for each test to build up itself, via the stock.
+  const otherSlotsDone: Card[] = Array.from({ length: 13 }, (_, i) => ({ id: `hearts-${i}-x`, suit: 'hearts', rank: ((i % 13) + 1) as Card['rank'], faceUp: true }))
+
+  function almostWonState(slot0: Card[]): FortyThievesState {
+    const foundation = Array.from({ length: 8 }, () => otherSlotsDone)
+    foundation[0] = slot0
+    return { tableau: Array.from({ length: 10 }, () => []), foundation, stock: [], waste: [] }
+  }
+
+  it('completes once the stock is drawn through, unlike the plain (non-draws) check', () => {
+    const clubsUpToQueen = Array.from({ length: 12 }, (_, i) => card('clubs', (i + 1) as Card['rank']))
+    const state = almostWonState(clubsUpToQueen)
+    state.stock = [{ id: 'clubs-13-0', suit: 'clubs', rank: 13, faceUp: false }]
+
+    expect(isFullyAutoCompletable(Strict, state)).toBe(false)
+    expect(isFullyAutoCompletableWithDraws(Strict, state)).toBe(true)
+    expect(nextAutoCompleteMoveWithDraws(Strict, state)?.kind).toBe('drawAndPlay')
+  })
+
+  // The single most important correctness case for this game: unlike Klondike/Canfield (see
+  // autoFoundation.test.ts's own "keeps recycling" test, which completes an equivalent fixture),
+  // this game's stock never recycles once empty - a card stuck behind an un-completable neighbor
+  // stays stuck forever, and this must correctly report `false` rather than assume a recycle that
+  // will never actually happen.
+  it('never recycles - a fixture only completable WITH a recycle pass is correctly reported as not completable', () => {
+    const state = almostWonState([])
+    // drawStock pops from the end, so draw order is 2H, 3H, then AH last. AH plays immediately
+    // once drawn (claims the empty slot), which only exposes 3H - still not playable (needs 2H
+    // first) - so 2H stays buried under it forever, with no recycle to ever re-expose it.
+    state.stock = [
+      { id: 'hearts-1-0', suit: 'hearts', rank: 1, faceUp: false },
+      { id: 'hearts-3-0', suit: 'hearts', rank: 3, faceUp: false },
+      { id: 'hearts-2-0', suit: 'hearts', rank: 2, faceUp: false }
+    ]
+    expect(isFullyAutoCompletableWithDraws(Strict, state)).toBe(false)
   })
 })
 

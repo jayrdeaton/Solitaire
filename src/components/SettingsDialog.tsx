@@ -71,9 +71,9 @@ interface SettingsDialogProps {
 }
 
 // Thin adapter over @tastic/hud's shared settings shell, matching the rest of the fleet's own
-// SettingsDialog.tsx convention. No rotation/lockOrientation/deferBottomEdgeGestures - Solitaire is
-// portrait-only with no split-screen or edge-anchored swipe controls, so there's nothing for any of
-// those three to lock/guard against. Check for Updates is left showing (its own Platform.OS check
+// SettingsDialog.tsx convention. No deferBottomEdgeGestures - Solitaire has no edge-anchored swipe
+// controls, so there's nothing for that one to guard against (unlike lockOrientation, now wired up
+// below - see the rotation plan). Check for Updates is left showing (its own Platform.OS check
 // already hides it on web) - the root layout's UpdateDialog handles the autoCheck/autoPrompt flow,
 // this just adds the manual "Check for Updates" button/version row.
 export function SettingsDialog({ visible, onDismiss, children }: SettingsDialogProps) {
@@ -83,7 +83,7 @@ export function SettingsDialog({ visible, onDismiss, children }: SettingsDialogP
   const { error } = useToast()
 
   return (
-    <BaseSettingsDialog visible={visible} onDismiss={onDismiss} version={release.otaVersion} onUpdateError={(message) => error('Update check failed', message)}>
+    <BaseSettingsDialog visible={visible} onDismiss={onDismiss} version={release.otaVersion} onUpdateError={(message) => error('Update check failed', message)} lockOrientation={settings.lockOrientation} onLockOrientationChange={(value) => updateSettings({ lockOrientation: value })}>
       {children}
       <SettingsSection>
         {/* Same bare-row shape as BaseSettingsDialog's own Sound/Haptics rows (an icon badge whose
