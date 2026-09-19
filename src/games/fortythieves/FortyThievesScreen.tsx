@@ -41,6 +41,7 @@ import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
+import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
@@ -101,7 +102,13 @@ function FortyThievesScreenInner() {
   // state has: a mid-game settings change must never mutate the current deal's own rules.
   const controllerRef = useRef(createFortyThievesController(settings.fortyThievesRunMoves))
   const [runMoves, setRunMoves] = useState(settings.fortyThievesRunMoves)
-  const [state, setState] = useState<FortyThievesState | null>(null)
+  // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
+  // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
+  // exclusion with everything else; tap/drag/auto-play/stock-draw can all run concurrently with
+  // each other - PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`,
+  // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
+  // unchanged.
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<FortyThievesState>()
   const [undoStack, setUndoStack] = useState<UndoEntry<FortyThievesState>[]>([])
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -122,7 +129,6 @@ function FortyThievesScreenInner() {
   const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
-  const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
@@ -139,28 +145,28 @@ function FortyThievesScreenInner() {
    * independently of CardRegistry so the win cascade can still find each pile's screen position
    * after its real top card has been hidden (won-gated, see the foundation row below). */
   const foundationSlotRefs = useRef<(View | null)[]>(new Array(NUM_FOUNDATIONS).fill(null))
-  /** A flight (its own independent DragFlightHandle, from ghost.show) awaiting its post-commit
-   * measurement + flyTo, shared by tap-to-move (handleCardTap), drawing from the stock
-   * (handleDrawStock), undo, and auto-play (fireAutoMove) - only one is ever in flight at a time.
-   * `gen` is the dealTokenRef value at the moment this flight was queued - see KlondikeScreen's
-   * identical field for the full race-guard reasoning. */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; sweep?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
+  /** Flights awaiting their post-commit measurement + flight.flyTo, queued by tap-to-move
+   * (handleCardTap), drawing from the stock (handleDrawStock), undo, and auto-play (firePlay/
+   * fireDrawAndPlay) - a list (not a single slot) since these can now genuinely overlap (see
+   * useFlightConcurrency's own doc comment / PATTERN_OVERLAP_GATE): two entries queued in the same
+   * commit would otherwise clobber each other in a single ref slot, permanently stranding whichever
+   * one lost. Each entry carries its own already-created DragFlightHandle (from whichever call site
+   * queued it) to fly/hide once measured, and its own flyingId to remove exactly its own `flying`
+   * entry once it lands - see the [state]-effect below. `viaStock` measures via stockViewRef (a
+   * plain View, not per-card) instead of CardRegistry - only undoing a stock draw flies back toward
+   * the stock (this game has no waste-to-stock recycle at all, unlike Klondike, so that's the only
+   * stock-adjacent case there is); every other destination is a real per-card-registered pile.
+   * `fast` marks a firePlay-triggered flight, passed on to flight.flyTo for the quicker
+   * auto-play-to-foundation timing. `gen` is the dealTokenRef value at the moment this flight was
+   * queued - re-checked once the async measurement below resolves, so a flight queued against a
+   * game that's since been replaced by "New Game" doesn't measure/land against the new deal's DOM
+   * (card ids are shuffle-independent and reused across deals - see deck.ts). */
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; sweep?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
   const cascadeFeedback = useCascadeFeedback(playCardSound, hapticCard)
   const [shake, setShake] = useState<{ cardId: string; count: number; token: number } | null>(null)
   const shakeTokenRef = useRef(0)
-  // Mirrors `state` so fireAutoMove - which has an await gap before it applies its move, unlike
-  // every other mutator here - can tell if some other action already changed state underneath it
-  // and bail instead of applying against a stale snapshot. Synced from a dedicated effect rather
-  // than a direct render-time write (matches YukonScreen's identical fix for the same
-  // react-hooks/refs trip) - fireAutoMove only ever reads `.current` from its own later async
-  // closure, well after this effect has committed.
-  const stateRef = useRef(state)
-  useEffect(() => {
-    stateRef.current = state
-  }, [state])
-  const undoBusyRef = useRef(false)
 
   function startNewGame() {
     const myToken = ++dealTokenRef.current
@@ -170,7 +176,8 @@ function FortyThievesScreenInner() {
     setUndoStack([])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
     session.reset()
     setWon(false)
     recordedWinRef.current = false
@@ -179,7 +186,7 @@ function FortyThievesScreenInner() {
 
     setDealHiddenIds(new Set(s.tableau.flat().map((c) => c.id)))
     scheduleDeal(myToken)
-    setState(s)
+    commitState(s)
   }
 
   // Restores a previously saved board exactly as left - no deal-fly-in animation (this isn't a
@@ -195,12 +202,13 @@ function FortyThievesScreenInner() {
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
     session.restore(saved.moves, saved.elapsedSeconds)
     setWon(false)
     recordedWinRef.current = false
     setDealHiddenIds(new Set())
-    setState(saved.state)
+    commitState(saved.state)
   }
 
   function handleNewGame() {
@@ -274,27 +282,29 @@ function FortyThievesScreenInner() {
   // after the setState in applyMove/handleDrawStock would find the still-mounted SOURCE card.
   // Deferring to a [state]-keyed effect guarantees the destination card has already registered.
   useEffect(() => {
+    if (pendingFlightRef.current.length === 0 || !state) return
     const pending = pendingFlightRef.current
-    if (!pending || !state) return
-    pendingFlightRef.current = null
-    ;(async () => {
-      const landed = pending.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(pending.cardId)
-      if (dealTokenRef.current !== pending.gen || !landed) {
-        pending.flight.hide()
-        setFlying(null)
-        undoBusyRef.current = false
-        return
-      }
-      pending.flight.flyTo(
-        landed.x,
-        landed.y,
-        () => {
-          setFlying(null)
-          undoBusyRef.current = false
-        },
-        { fast: pending.fast, sweep: pending.sweep }
-      )
-    })()
+    pendingFlightRef.current = []
+    pending.forEach((p) => {
+      ;(async () => {
+        const landed = p.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(p.cardId)
+        if (dealTokenRef.current !== p.gen || !landed) {
+          p.flight.hide()
+          endFlying(p.flyingId)
+          settleFlight()
+          return
+        }
+        p.flight.flyTo(
+          landed.x,
+          landed.y,
+          () => {
+            endFlying(p.flyingId)
+            settleFlight()
+          },
+          { fast: p.fast, sweep: p.sweep }
+        )
+      })()
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
@@ -305,7 +315,7 @@ function FortyThievesScreenInner() {
   // unlike Klondike/FreeCell/Yukon/Canfield - no computeNextStep fallback to one below either).
   const cascade = useAutoFoundationCascade<FortyThievesState>({
     state,
-    settled: flying === null && dealHiddenIds.size === 0,
+    settled: activeFlightCount === 0 && dealHiddenIds.size === 0,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     computeNextStep,
@@ -358,7 +368,7 @@ function FortyThievesScreenInner() {
   }
 
   async function handleUndo() {
-    if (undoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
+    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
     if (won) {
       setWon(false)
@@ -366,14 +376,16 @@ function FortyThievesScreenInner() {
     }
     const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
+    startFlights(1)
+
     if (!move) {
       setUndoStack((stack) => stack.slice(0, -1))
-      setState(prevState)
-      undoBusyRef.current = false
+      commitState(prevState)
+      settleFlight() // nothing to fly, settles immediately
       return
     }
 
-    const sourcePile = resolvePile(move.to)
+    const sourcePile = resolvePile(move.to, stateRef.current)
     const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : []
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
     const origin = movingCards.length > 0 ? await ghost.cardRegistry.measure(move.anchorCardId) : null
@@ -384,21 +396,26 @@ function FortyThievesScreenInner() {
       playCardSound()
       hapticCard()
       const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
-      setFlying({ to: move.from, count: move.count })
-      setState(prevState)
-      pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen: dealTokenRef.current, flight }
+      const flyingId = beginFlying(move.from, move.count)
+      commitState(prevState)
+      pendingFlightRef.current.push({ cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen: dealTokenRef.current, flyingId, flight })
     } else {
-      setState(prevState)
-      undoBusyRef.current = false
+      commitState(prevState)
+      settleFlight()
     }
   }
 
   function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean }) {
-    if (!state) return false
-    const result = controllerRef.current.tryMove(state, { from, to, count })
+    // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
+    // closure's `state` - two actions can now be triggered back-to-back before React re-renders
+    // (see PATTERN_OVERLAP_GATE), and each must build its own tryMove on top of whatever the
+    // OTHER's commitState just did, not the same stale board both closures captured.
+    const current = stateRef.current
+    if (!current) return false
+    const result = controllerRef.current.tryMove(current, { from, to, count })
     if (result) {
-      if (!opts?.silent) pushUndo(state, { from, to, count, anchorCardId })
-      setState(result)
+      if (!opts?.silent) pushUndo(current, { from, to, count, anchorCardId })
+      commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
       if (!opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
@@ -412,8 +429,8 @@ function FortyThievesScreenInner() {
 
   function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
-    setFlying({ to, count })
-    pendingFlightRef.current = { cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flight }
+    const flyingId = beginFlying(to, count)
+    pendingFlightRef.current.push({ cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 
@@ -431,14 +448,18 @@ function FortyThievesScreenInner() {
   // gap before applying its move. Guard against something else changing state during that gap by
   // snapshotting stateRef before the await and bailing if it no longer matches after.
   async function firePlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
+    startFlights(1)
     const stateAtStart = stateRef.current
-    if (!stateAtStart) return
     const origin = await ghost.cardRegistry.measure(entry.card.id)
-    if (!origin || stateRef.current !== stateAtStart) return
+    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current) {
+      settleFlight()
+      return
+    }
     cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: !opts.sweep, sweep: opts.sweep })) {
       flight.hide()
+      settleFlight()
     }
   }
 
@@ -455,22 +476,35 @@ function FortyThievesScreenInner() {
     if (!afterDraw) return
     const result = controllerRef.current.tryMove(afterDraw, { from: entry.ref, to, count: 1 })
     if (!result) return
+    startFlights(1)
 
     const origin = await measureView(stockViewRef.current)
-    if (!origin || stateRef.current !== current) return
+    if (!origin || stateRef.current !== current || undoBusyRef.current) {
+      settleFlight()
+      return
+    }
 
     cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    setFlying({ to, count: 1 })
-    setState(result)
+    const flyingId = beginFlying(to, 1)
+    commitState(result)
     checkWin(result, session.moves)
-    pendingFlightRef.current = { cardId: entry.card.id, gen: dealTokenRef.current, flight, sweep: opts.sweep }
+    pendingFlightRef.current.push({ cardId: entry.card.id, gen: dealTokenRef.current, flyingId, flight, sweep: opts.sweep })
   }
 
   async function attemptDrop(from: PileRef, count: number, absoluteX: number, absoluteY: number, anchorCardId: string, flight: DragFlightHandle): Promise<boolean> {
+    if (undoBusyRef.current) return false
+    startFlights(1)
     const target = await dropZones.hitTest(absoluteX, absoluteY)
-    if (!target) return false
-    return completeMove(from, target, count, anchorCardId, flight)
+    if (!target || undoBusyRef.current) {
+      settleFlight()
+      return false
+    }
+    if (!completeMove(from, target, count, anchorCardId, flight)) {
+      settleFlight()
+      return false
+    }
+    return true
   }
 
   function tableauRunCount(colIndex: number, indexFromTop: number): number {
@@ -484,9 +518,13 @@ function FortyThievesScreenInner() {
   // decision, so (matching applyMove's own silent branch) it never touches the undo stack at all,
   // and doesn't count toward moves/score.
   async function handleDrawStock(opts?: { sweep?: boolean }) {
-    if (won || !state || !controllerRef.current.drawStock) return
-    const result = controllerRef.current.drawStock(state)
+    // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
+    const current = stateRef.current
+    if (won || !current || !controllerRef.current.drawStock) return
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
+    const result = controllerRef.current.drawStock(current)
     if (!result) return
+    startFlights(1)
     if (!opts?.sweep) session.registerMove()
 
     const drawnCard = top(result.waste)!
@@ -507,8 +545,9 @@ function FortyThievesScreenInner() {
 
     const origin = await measureView(stockViewRef.current)
     if (!origin) {
-      if (!opts?.sweep) pushUndo(state, move)
-      setState(result)
+      if (!opts?.sweep) pushUndo(current, move)
+      commitState(result)
+      settleFlight()
       return
     }
 
@@ -518,22 +557,25 @@ function FortyThievesScreenInner() {
       hapticCard()
     }
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    setFlying({ to: { zone: 'waste', index: 0 }, count: 1 })
+    const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
 
-    if (!opts?.sweep) pushUndo(state, move)
-    setState(result)
-    pendingFlightRef.current = { cardId: drawnCard.id, sweep: opts?.sweep, gen: dealTokenRef.current, flight }
+    if (!opts?.sweep) pushUndo(current, move)
+    commitState(result)
+    pendingFlightRef.current.push({ cardId: drawnCard.id, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
   }
 
-  function resolvePile(ref: PileRef): Card[] | null {
-    if (!state) return null
+  // `s` defaults to the closure's own live `state` (every pre-existing call site) - handleUndo
+  // passes an explicit state (stateRef.current) instead, since that call has an await gap before it
+  // reads this and can't rely on whichever `state` its own closure happened to capture.
+  function resolvePile(ref: PileRef, s: FortyThievesState | null = state): Card[] | null {
+    if (!s) return null
     switch (ref.zone) {
       case 'tableau':
-        return state.tableau[ref.index] ?? null
+        return s.tableau[ref.index] ?? null
       case 'foundation':
-        return state.foundation[ref.index] ?? null
+        return s.foundation[ref.index] ?? null
       case 'waste':
-        return state.waste
+        return s.waste
       default:
         return null
     }
@@ -541,6 +583,7 @@ function FortyThievesScreenInner() {
 
   async function handleCardTap(ref: PileRef, cardId: string, measure: () => Promise<{ x: number; y: number }>, indexFromTop?: number) {
     if (!state || !controllerRef.current.autoMoveHint) return
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
     const move = controllerRef.current.autoMoveHint(state, ref, cardId)
     if (!move) {
       const count = ref.zone === 'tableau' && indexFromTop !== undefined ? Math.max(1, tableauRunCount(ref.index, indexFromTop)) : 1
@@ -550,9 +593,13 @@ function FortyThievesScreenInner() {
       return
     }
 
+    startFlights(1)
     const origin = await measure()
     const sourcePile = resolvePile(move.from)
-    if (!sourcePile) return
+    if (!sourcePile || undoBusyRef.current) {
+      settleFlight()
+      return
+    }
     const movingCards = sourcePile.slice(sourcePile.length - move.count)
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
@@ -562,6 +609,7 @@ function FortyThievesScreenInner() {
 
     if (!completeMove(move.from, move.to, move.count, cardId, flight)) {
       flight.hide()
+      settleFlight()
     }
   }
 
@@ -582,7 +630,7 @@ function FortyThievesScreenInner() {
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)
-              const isFlyingHere = !!flying && flying.to.zone === 'foundation' && flying.to.index === i
+              const isFlyingHere = flying.some((f) => f.to.zone === 'foundation' && f.to.index === i)
               return (
                 <DropZone key={i} registry={dropZones} pileRef={{ zone: 'foundation', index: i }} style={[styles.foundationSlot, { width: cardWidth }]}>
                   <FoundationCell
@@ -599,7 +647,7 @@ function FortyThievesScreenInner() {
             })}
           </View>
 
-          <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteHiddenCount={flying && flying.to.zone === 'waste' ? flying.count : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} />
+          <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} />
         </View>
 
         <View style={[styles.tableauRow, { gap }]}>
@@ -607,9 +655,23 @@ function FortyThievesScreenInner() {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
               getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
-              onDrop: (to, count, anchorCardId, flight) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)
+              // Claims a flight slot (see activeFlightCountRef's doc comment above) purely so undo
+              // sees this drop as in-flight for its whole duration, not just once completeMove
+              // lands one - PileView.tsx (shared, not ours to edit) already ran its own hitTest
+              // await before invoking this callback, so this is the earliest point this screen gets
+              // a look-in. Rejects outright if undo is running (see attemptDrop's identical comment
+              // on why undo holds full mutual exclusion, not just a one-way wait).
+              onDrop: (to, count, anchorCardId, flight) => {
+                if (undoBusyRef.current) return false
+                startFlights(1)
+                if (!completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)) {
+                  settleFlight()
+                  return false
+                }
+                return true
+              }
             }
-            const hiddenCount = flying && flying.to.zone === 'tableau' && flying.to.index === colIndex ? flying.count : 0
+            const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === colIndex).reduce((sum, f) => sum + f.count, 0)
             return (
               <DropZone key={colIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: colIndex }} style={[styles.tableauColumn, { width: cardWidth }]}>
                 {/* dimUnplayable: the whole tableau is always face-up (like FreeCell/Canfield), so

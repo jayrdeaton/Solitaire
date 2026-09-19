@@ -41,6 +41,7 @@ import { Card } from '@/engine/types'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
+import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
@@ -111,7 +112,15 @@ function ScorpionScreenInner() {
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
   const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
-  const [state, setState] = useState<ScorpionState | null>(null)
+  // Owns state/stateRef/commitState, the `flying` array, activeFlightCountRef, and undoBusyRef - see
+  // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
+  // exclusion with everything else; tap/drag/stock-draw can all run concurrently with each other -
+  // PATTERN_OVERLAP_GATE, same as Klondike). `shrinkFlying`/`activeFlightCount` (the hook's state
+  // mirror of the ref) are deliberately NOT destructured - Scorpion has no per-card-landing fan flown
+  // via `ghost` (the assisted stock's multi-card burst uses `dealHiddenIds`, not `flying`, same as the
+  // initial deal - see runStockDeal below) and no auto-play cascade to gate on a `settled` flag, so
+  // neither would have a read site (and `noUnusedLocals`/eslint would flag them as dead).
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<ScorpionState>()
   // Nullable move (Spider's default): an ordinary tableau move always has one, but the assisted
   // stock's one-shot deal lands 3 cards across 3 different columns at once - no single MoveInfo
   // shape for that, so it's recorded as `move: null` and handleUndo detects that case itself (see
@@ -130,7 +139,6 @@ function ScorpionScreenInner() {
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
   const ghost = useDragGhost()
-  const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
   const deal = useDealAnimator()
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
   const dealTokenRef = useRef(0)
@@ -146,22 +154,43 @@ function ScorpionScreenInner() {
    * CardRegistry-registered at all. Mirrors Canfield's own foundationSlotRefs/Spider's own
    * completedSlotRefs - Scorpion's own "foundation-equivalent" is just each tableau column. */
   const tableauColumnRefs = useRef<(View | null)[]>(new Array(TABLEAU_COLUMNS).fill(null))
-  /** A flight awaiting its post-commit measurement + its own flyTo, shared by tap-to-move
-   * (handleCardTap), a drag drop, and undo of an ordinary tableau move - only one is ever in
-   * flight at a time. `gen` guards against a "New Game" tapped mid-flight replacing the deal this
-   * flight was measuring against (card ids are shuffle-independent and reused across deals - see
-   * engine/deck.ts). */
-  const pendingFlightRef = useRef<{ cardId: string; gen: number; flight: DragFlightHandle } | null>(null)
-  /** The assisted stock's one-shot deal awaiting its post-commit measurement + deal.start() (see
-   * runStockDeal/the effect below) - mirrors Spider's own pendingDealRef for its stock deal, just
-   * fixed at exactly 3 destinations (columns FRONT_COLUMNS..FRONT_COLUMNS+2) instead of Spider's
-   * variable "however many columns are non-empty." */
-  const pendingStockDealRef = useRef<{ dealt: { card: Card; colIndex: number }[]; origin: { x: number; y: number } | null; token: number } | null>(null)
+  /** Flights awaiting their post-commit measurement + their own flyTo, queued by tap-to-move
+   * (handleCardTap), a drag drop (the tableau onDrop below), and undo of an ordinary tableau move -
+   * a real list now (not a single slot), since these can genuinely overlap once nothing serializes
+   * them behind a single busy-gate anymore (see useFlightConcurrency's own PATTERN_OVERLAP_GATE doc
+   * comment) - two entries queued in the same commit would otherwise clobber each other in a single
+   * ref slot, permanently stranding whichever one lost. Each entry carries its own already-created
+   * DragFlightHandle to fly/hide once measured, and its own beginFlying-issued flyingId to remove
+   * exactly its own `flying` entry (and settle exactly its own activeFlightCount claim) once it
+   * lands - see the [state]-effect below. `gen` is the `dealTokenRef` value at the moment this
+   * flight was queued - re-checked once the async measurement below resolves, so a flight queued
+   * against a game that's since been replaced by "New Game" doesn't measure/land against the new
+   * deal's DOM (card ids are shuffle-independent and reused across deals - see engine/deck.ts).
+   * Mirrors Klondike's own pendingFlightRef, minus the viaStock/fast/sweep flight variants Scorpion
+   * has no equivalent of (no foundation auto-play, and the assisted stock's own multi-card burst
+   * flies via the separate DealLayer-based pendingStockDealRef below, not through `ghost`). */
+  const pendingFlightRef = useRef<{ cardId: string; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
+  /** The assisted stock's one-shot deal(s) awaiting their post-commit measurement + deal.start()
+   * (see runStockDeal/the effect below) - mirrors Spider's own pendingDealRef for its stock deal,
+   * just fixed at exactly 3 destinations (columns FRONT_COLUMNS..FRONT_COLUMNS+2) instead of
+   * Spider's variable "however many columns are non-empty." A real array (not a single slot),
+   * even though there's only ever one stock packet per deal: `state.stock.length === 0` only
+   * closes the gate AFTER handleDrawStock's own async measurement + commitState resolve, so a fast
+   * double-tap on the packet could still race two concurrent handleDrawStock calls into this queue
+   * before the first one's commit lands (same overlapping-actions reasoning as pendingFlightRef
+   * above, applied defensively here even though the realistic case is a single entry) - a
+   * single-slot ref would silently drop the first call's dealt/origin/token, permanently stranding
+   * those 3 cards hidden forever (dealHiddenIds set but nothing to ever clear it), exactly the
+   * "measure raced the commit" failure mode this repo's CLAUDE.md documents for the initial deal. */
+  const pendingStockDealRef = useRef<{ dealt: { card: Card; colIndex: number }[]; origin: { x: number; y: number } | null; token: number }[]>([])
   /** An undone stock deal awaiting its post-commit measurement + deal.start() (see
    * runUndoStockDeal/the effect below) - the mirror image of pendingStockDealRef: origins (where
    * the 3 dealt cards currently sit) are measured up front, before the revert removes them, while
    * the shared destination (the restored stock packet) can only be measured after, once it exists
-   * to register itself. */
+   * to register itself. Stays a single slot (not a list), unlike pendingFlightRef/pendingStockDealRef
+   * above - undo itself is still fully serialized (guarded by undoBusyRef AND
+   * activeFlightCountRef === 0, see handleUndo's own guard), so at most one of these is ever pending
+   * at a time, mirroring Klondike's own pendingCascadeUndoRef for the identical reason. */
   const pendingUndoStockDealRef = useRef<{ entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null }[]; token: number } | null>(null)
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
@@ -169,7 +198,6 @@ function ScorpionScreenInner() {
   // shakeAnimation.ts.
   const [shake, setShake] = useState<{ cardId: string; count: number; token: number } | null>(null)
   const shakeTokenRef = useRef(0)
-  const undoBusyRef = useRef(false)
 
   // Takes the controller to deal with explicitly, rather than reading the outer `controller`
   // memo directly - `setAssistedStock` below only takes effect on the NEXT render, so a caller
@@ -182,7 +210,10 @@ function ScorpionScreenInner() {
     setUndoStack([])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
+    pendingStockDealRef.current = []
+    pendingUndoStockDealRef.current = null
     session.reset()
     recordedWinRef.current = false
     winCascade.clear()
@@ -190,7 +221,7 @@ function ScorpionScreenInner() {
 
     setDealHiddenIds(allTableauCardIds(s.tableau))
     scheduleDeal(myToken)
-    setState(s)
+    commitState(s)
   }
 
   // Restores a previously saved board exactly as left - no deal-fly-in animation (this isn't a new
@@ -209,11 +240,14 @@ function ScorpionScreenInner() {
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
+    pendingStockDealRef.current = []
+    pendingUndoStockDealRef.current = null
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
     setDealHiddenIds(new Set())
-    setState(saved.state)
+    commitState(saved.state)
   }
 
   // Dealing a new game over one still in progress abandons it (counted as a loss) - GameChrome
@@ -309,34 +343,44 @@ function ScorpionScreenInner() {
   // card's own registration effect hasn't run yet). Deferring to a [state]-keyed effect guarantees
   // the destination card has already registered by the time this runs.
   useEffect(() => {
+    if (pendingFlightRef.current.length === 0 || !state) return
     const pending = pendingFlightRef.current
-    if (!pending || !state) return
-    pendingFlightRef.current = null
-    ;(async () => {
-      const landed = await ghost.cardRegistry.measure(pending.cardId)
-      if (dealTokenRef.current !== pending.gen || !landed) {
-        pending.flight.hide()
-        setFlying(null)
-        undoBusyRef.current = false
-        return
-      }
-      pending.flight.flyTo(landed.x, landed.y, () => {
-        setFlying(null)
-        undoBusyRef.current = false
-      })
-    })()
+    pendingFlightRef.current = []
+    pending.forEach((p) => {
+      ;(async () => {
+        const landed = await ghost.cardRegistry.measure(p.cardId)
+        if (dealTokenRef.current !== p.gen || !landed) {
+          p.flight.hide()
+          endFlying(p.flyingId)
+          settleFlight()
+          return
+        }
+        p.flight.flyTo(landed.x, landed.y, () => {
+          endFlying(p.flyingId)
+          settleFlight()
+        })
+      })()
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
   // Assisted stock's one-shot deal: mirrors Spider's own stock-deal effect (runDeal's shared tail,
   // just fixed at 3 destinations instead of Spider's 10).
+  // Every exit path settles exactly one activeFlightCount claim (the one handleDrawStock claimed
+  // via startFlights(1) before queueing this) - see PATTERN_OVERLAP_GATE / the pendingStockDealRef
+  // effect below, which settles on behalf of an entry that's already stale by the time this even
+  // gets called.
   async function runStockDeal(dealt: { card: Card; colIndex: number }[], origin: { x: number; y: number } | null, token: number) {
     if (!origin) {
       setDealHiddenIds(new Set())
+      settleFlight()
       return
     }
     const destinations = await Promise.all(dealt.map((d) => ghost.cardRegistry.measure(d.card.id)))
-    if (dealTokenRef.current !== token) return
+    if (dealTokenRef.current !== token) {
+      settleFlight()
+      return
+    }
 
     const entries: DealCardSpec[] = []
     dealt.forEach((d, i) => {
@@ -346,6 +390,7 @@ function ScorpionScreenInner() {
     })
     if (entries.length === 0) {
       setDealHiddenIds(new Set())
+      settleFlight()
       return
     }
 
@@ -361,15 +406,21 @@ function ScorpionScreenInner() {
           return next
         })
       },
-      () => {}
+      () => settleFlight()
     )
   }
 
   useEffect(() => {
+    if (pendingStockDealRef.current.length === 0 || !state) return
     const pending = pendingStockDealRef.current
-    if (!pending || pending.token !== dealTokenRef.current || !state) return
-    pendingStockDealRef.current = null
-    runStockDeal(pending.dealt, pending.origin, pending.token)
+    pendingStockDealRef.current = []
+    pending.forEach((p) => {
+      if (p.token !== dealTokenRef.current) {
+        settleFlight()
+        return
+      }
+      runStockDeal(p.dealt, p.origin, p.token)
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
@@ -377,10 +428,14 @@ function ScorpionScreenInner() {
   // tableau spots (measured by handleUndo before its own revert removes them) back to the
   // restored stock packet, converging on that one shared point - the mirror image of
   // runStockDeal, same idea as Spider's own runUndoDeal.
+  // Every exit path calls settleFlight() exactly once (retiring the ad hoc scattered
+  // undoBusyRef-clearing this used to have across its own two early bails plus handleUndo's own
+  // measurement-failure bail) - consolidated so the one startFlights(1) claim handleUndo made up
+  // front for this branch is always settled exactly once, regardless of which path gets taken.
   async function runUndoStockDeal(entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null }[], token: number) {
     const destination = await ghost.cardRegistry.measure(STOCK_PACKET_ID)
     if (dealTokenRef.current !== token || !destination) {
-      undoBusyRef.current = false
+      settleFlight()
       return
     }
     const dealEntries: DealCardSpec[] = []
@@ -389,23 +444,29 @@ function ScorpionScreenInner() {
       dealEntries.push({ cardId: e.card.id, card: e.card, from: e.origin, to: destination, delayMs: e.delayMs })
     })
     if (dealEntries.length === 0) {
-      undoBusyRef.current = false
+      settleFlight()
       return
     }
     deal.start(
       dealEntries,
       cardWidth,
       () => {},
-      () => {
-        undoBusyRef.current = false
-      }
+      () => settleFlight()
     )
   }
 
   useEffect(() => {
     const pending = pendingUndoStockDealRef.current
-    if (!pending || pending.token !== dealTokenRef.current || !state) return
+    if (!pending || !state) return
     pendingUndoStockDealRef.current = null
+    // A stray token mismatch here (e.g. a "New Game" that fired between handleUndo queuing this and
+    // this effect running) settles directly rather than falling into runUndoStockDeal, which would
+    // otherwise never get called at all for this entry - previously this just left the ref (and its
+    // startFlights claim) stranded.
+    if (pending.token !== dealTokenRef.current) {
+      settleFlight()
+      return
+    }
     runUndoStockDeal(pending.entries, pending.token)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
@@ -466,23 +527,31 @@ function ScorpionScreenInner() {
     return runCountFrom(state.tableau[colIndex], indexFromTop, alwaysValidRun)
   }
 
+  // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
+  // closure's `state` - tap and drag can now both be mid-flight at once (see
+  // PATTERN_OVERLAP_GATE), and each must build its own tryMove on top of whatever the OTHER's
+  // commitState just did, not the same stale board both closures captured.
   function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string): boolean {
-    if (!state) return false
-    const result = controller.tryMove(state, { from, to, count })
+    const current = stateRef.current
+    if (!current) return false
+    const result = controller.tryMove(current, { from, to, count })
     if (!result) return false
-    pushUndo(state, { from, to, count, anchorCardId })
-    setState(result)
+    pushUndo(current, { from, to, count, anchorCardId })
+    commitState(result)
     session.registerMove()
     return true
   }
 
   // Shared tail for every successful ordinary tableau move, whichever triggered it (tap-to-move or
   // a manual drag's drop) - applies the move, then marks the destination "incoming" and stashes
-  // the anchor card id for the pendingFlightRef effect above to measure and fly the ghost onto.
+  // the anchor card id for the pendingFlightRef effect above to measure and fly the ghost onto. The
+  // caller (handleCardTap, the tableau onDrop below) is the one that claims the activeFlightCount
+  // slot via startFlights(1) before calling this, and settles it either immediately on failure or
+  // via the pendingFlightRef effect once this entry's flight actually lands.
   function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle): boolean {
     if (!applyMove(from, to, count, anchorCardId)) return false
-    setFlying({ to, count })
-    pendingFlightRef.current = { cardId: anchorCardId, gen: dealTokenRef.current, flight }
+    const flyingId = beginFlying(to, count)
+    pendingFlightRef.current.push({ cardId: anchorCardId, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 
@@ -492,19 +561,23 @@ function ScorpionScreenInner() {
   // (no single MoveInfo shape covers "3 cards landed in 3 different columns at once"), then let
   // the pendingStockDealRef effect above fly each card once its own destination has registered.
   async function handleDrawStock() {
-    if (won || !state || state.stock.length === 0 || !controller.drawStock) return
-    const dealt = state.stock.map((card, i) => ({ card: { ...card, faceUp: true }, colIndex: FRONT_COLUMNS + i }))
-    const result = controller.drawStock(state)
+    // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
+    const current = stateRef.current
+    if (won || !current || current.stock.length === 0 || !controller.drawStock) return
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
+    const dealt = current.stock.map((card, i) => ({ card: { ...card, faceUp: true }, colIndex: FRONT_COLUMNS + i }))
+    const result = controller.drawStock(current)
     if (!result) return
+    startFlights(1)
     session.registerMove()
-    pushUndo(state, null)
+    pushUndo(current, null)
 
     const myToken = ++dealTokenRef.current
     const origin = await ghost.cardRegistry.measure(STOCK_PACKET_ID)
 
     setDealHiddenIds(new Set(dealt.map((d) => d.card.id)))
-    pendingStockDealRef.current = { dealt, origin, token: myToken }
-    setState(result)
+    pendingStockDealRef.current.push({ dealt, origin, token: myToken })
+    commitState(result)
   }
 
   // Mirrors handleCardTap's/handleDrop's forward flight, just in reverse, for an ordinary tableau
@@ -513,15 +586,25 @@ function ScorpionScreenInner() {
   // it flies the rest of the way there. A null move (the assisted stock's one-shot deal) instead
   // reverses via runUndoStockDeal above, mirroring Spider's own null-move undo branch.
   async function handleUndo() {
-    if (undoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
+    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
     if (won) winCascade.clear()
     const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
+    // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
+    const current = stateRef.current
+    if (!current) {
+      undoBusyRef.current = false
+      return
+    }
+    // Claimed synchronously here (see activeFlightCountRef's doc comment) - one call always
+    // resolves to exactly one completion below (a landed flight, a landed deal, or an immediate
+    // "nothing to fly" settle), whichever branch handles it.
+    startFlights(1)
 
     if (!move) {
       const myToken = ++dealTokenRef.current
-      const dealtColumns = state.tableau.map((col, colIndex) => ({ col, colIndex })).filter(({ col, colIndex }) => col.length === prevState.tableau[colIndex].length + 1)
+      const dealtColumns = current.tableau.map((col, colIndex) => ({ col, colIndex })).filter(({ col, colIndex }) => col.length === prevState.tableau[colIndex].length + 1)
       const dealtCards = dealtColumns.map(({ col }) => col[col.length - 1])
       const origins = await Promise.all(dealtCards.map((c) => ghost.cardRegistry.measure(c.id)))
 
@@ -530,11 +613,11 @@ function ScorpionScreenInner() {
         entries: dealtCards.map((c, i) => ({ card: c, delayMs: dealtColumns[i].colIndex * DEAL_STAGGER_MS, origin: origins[i] })),
         token: myToken
       }
-      setState(prevState)
+      commitState(prevState)
       return
     }
 
-    const sourcePile = state.tableau[move.to.index] ?? null
+    const sourcePile = current.tableau[move.to.index] ?? null
     const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : []
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
     const origin = movingCards.length > 0 ? await ghost.cardRegistry.measure(move.anchorCardId) : null
@@ -545,12 +628,12 @@ function ScorpionScreenInner() {
       playCardSound()
       hapticCard()
       const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
-      setFlying({ to: move.from, count: move.count })
-      setState(prevState)
-      pendingFlightRef.current = { cardId: move.anchorCardId, gen: dealTokenRef.current, flight }
+      const flyingId = beginFlying(move.from, move.count)
+      commitState(prevState)
+      pendingFlightRef.current.push({ cardId: move.anchorCardId, gen: dealTokenRef.current, flyingId, flight })
     } else {
-      setState(prevState)
-      undoBusyRef.current = false
+      commitState(prevState)
+      settleFlight()
     }
   }
 
@@ -559,6 +642,7 @@ function ScorpionScreenInner() {
   // considers other tableau columns, same as Spider/Yukon.
   async function handleCardTap(colIndex: number, card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) {
     if (won || !state || !controller.autoMoveHint) return
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
     const move = controller.autoMoveHint(state, { zone: 'tableau', index: colIndex }, card.id)
     if (!move) {
       const count = Math.max(1, tableauRunCount(colIndex, indexFromTop))
@@ -568,9 +652,16 @@ function ScorpionScreenInner() {
       return
     }
 
+    // Claimed synchronously before the await below (see PATTERN_OVERLAP_GATE) - so undo (the only
+    // thing that still waits on activeFlightCountRef) sees this tap as in-flight for its whole
+    // duration, not just once completeMove lands one.
+    startFlights(1)
     const origin = await measure()
-    const sourcePile = state.tableau[move.from.index] ?? null
-    if (!sourcePile) return
+    const sourcePile = stateRef.current?.tableau[move.from.index] ?? null
+    if (!sourcePile || undoBusyRef.current) {
+      settleFlight()
+      return
+    }
     const movingCards = sourcePile.slice(sourcePile.length - move.count)
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
@@ -580,6 +671,7 @@ function ScorpionScreenInner() {
 
     if (!completeMove(move.from, move.to, move.count, card.id, flight)) {
       flight.hide()
+      settleFlight()
     }
   }
 
@@ -601,9 +693,23 @@ function ScorpionScreenInner() {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
               getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
-              onDrop: (to, count, anchorCardId, flight) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)
+              // Claims a flight slot (see activeFlightCountRef's doc comment) purely so undo sees
+              // this drop as in-flight for its whole duration, not just once completeMove lands one
+              // - PileView.tsx (shared, not ours to edit) already ran its own hitTest await before
+              // invoking this callback, so this is the earliest point ScorpionScreen gets a look-in.
+              // Rejects outright if undo is currently running (undo holds full mutual exclusion, not
+              // just a one-way wait - see undoBusyRef's own doc comment).
+              onDrop: (to, count, anchorCardId, flight) => {
+                if (undoBusyRef.current) return false
+                startFlights(1)
+                if (!completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)) {
+                  settleFlight()
+                  return false
+                }
+                return true
+              }
             }
-            const hiddenCount = flying && flying.to.zone === 'tableau' && flying.to.index === colIndex ? flying.count : 0
+            const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === colIndex).reduce((sum, f) => sum + f.count, 0)
             // Hidden entirely once won - at that point every column is either already empty or a
             // complete run (see rules.ts's isWon), and the win cascade owns displaying those cards
             // now (see runWinCascade), the same way Spider's own completed-sequence slots go blank

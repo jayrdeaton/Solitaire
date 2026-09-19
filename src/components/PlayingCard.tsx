@@ -10,7 +10,7 @@ import { useProfiles } from '@/stores/profiles'
 import { useSettings } from '@/stores/settings'
 
 import { startHintPulse, stopHintPulse } from './hintAnimation'
-import { CARD_RADIUS, useTableColors } from './theme'
+import { CARD_RADIUS, cardRadiusForWidth, useTableColors } from './theme'
 
 interface PlayingCardProps {
   card: Card
@@ -39,7 +39,8 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, onPress,
   const { activeProfile } = useProfiles()
   const { settings } = useSettings()
   const { width, height } = useCardSize()
-  const styles = React.useMemo(() => makeStyles(colors, settings.invertDarkModeColors), [colors, settings.invertDarkModeColors])
+  const cardRadius = cardRadiusForWidth(width)
+  const styles = React.useMemo(() => makeStyles(colors, settings.invertDarkModeColors, cardRadius), [colors, settings.invertDarkModeColors, cardRadius])
   const cardSize = { width, height }
   const hintOpacity = useSharedValue(1)
   const hintAnimatedStyle = useAnimatedStyle(() => ({ opacity: hintOpacity.value }))
@@ -91,8 +92,8 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, onPress,
 /** A faint diagonal gloss over the card's own flat face/back fill, like light catching glossy
  * cardstock - the same static gradient for every card regardless of suit/rank/colors (no props),
  * so it's one cheap shared element tree rather than something recomputed per card. Lives inside
- * `clip` (see both call sites above), which already clips its children to CARD_RADIUS, so this
- * doesn't need its own corner rounding. */
+ * `clip` (see both call sites above), which already clips its children to the card's own rounded
+ * radius, so this doesn't need its own corner rounding. */
 const CardSheen = React.memo(function CardSheen() {
   // Every card mounts its own CardSheen instance (dozens at once, on web literally the same real
   // DOM <svg> id-lookup semantics as any other document) - a shared literal id here would make
@@ -157,14 +158,14 @@ export function FoundationSlot({ suit, rank = 1, onPress, hinted, style }: Found
   )
 }
 
-function makeStyles(colors: TableColors, invertDarkModeColors?: boolean) {
+function makeStyles(colors: TableColors, invertDarkModeColors?: boolean, radius: number = CARD_RADIUS) {
   return StyleSheet.create({
     back: {
       backgroundColor: colors.cardBack
     },
     border: {
       borderColor: colors.cardBorder,
-      borderRadius: CARD_RADIUS,
+      borderRadius: radius,
       borderWidth: 1,
       bottom: 0,
       left: 0,
@@ -173,10 +174,10 @@ function makeStyles(colors: TableColors, invertDarkModeColors?: boolean) {
       top: 0
     },
     card: {
-      borderRadius: CARD_RADIUS
+      borderRadius: radius
     },
     clip: {
-      borderRadius: CARD_RADIUS,
+      borderRadius: radius,
       bottom: 0,
       left: 0,
       overflow: 'hidden',
@@ -186,7 +187,7 @@ function makeStyles(colors: TableColors, invertDarkModeColors?: boolean) {
     },
     dim: {
       backgroundColor: invertDarkModeColors ? colors.dimOverlayInverted : colors.dimOverlay,
-      borderRadius: CARD_RADIUS,
+      borderRadius: radius,
       bottom: 0,
       left: 0,
       position: 'absolute',
@@ -214,7 +215,7 @@ function makeStyles(colors: TableColors, invertDarkModeColors?: boolean) {
     },
     hintRing: {
       borderColor: colors.hintGreen,
-      borderRadius: CARD_RADIUS,
+      borderRadius: radius,
       borderWidth: 3,
       bottom: 0,
       left: 0,
@@ -224,7 +225,7 @@ function makeStyles(colors: TableColors, invertDarkModeColors?: boolean) {
     },
     selectedRing: {
       borderColor: colors.selectedGlow,
-      borderRadius: CARD_RADIUS,
+      borderRadius: radius,
       borderWidth: 3,
       bottom: 0,
       left: 0,

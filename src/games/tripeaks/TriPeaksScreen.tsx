@@ -41,6 +41,7 @@ import { clampCardWidthForHeight } from '@/games/shared/clampCardWidthForHeight'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
+import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
@@ -121,7 +122,16 @@ function TriPeaksScreenInner() {
   const availableHeight = useTableauMaxHeight(widthCardWidth, 0)
   const cardWidth = clampCardWidthForHeight(widthCardWidth, availableHeight, 3, FACE_UP_OFFSET_RATIO, CARD_ASPECT)
   const cardHeight = cardWidth / CARD_ASPECT
-  const [state, setState] = useState<TriPeaksState | null>(null)
+  // Owns state/stateRef/commitState, the `flying` array, and undoBusyRef - see
+  // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
+  // exclusion with everything else; tap/drag/stock-draw can all run concurrently with each other -
+  // PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`, `commitState`,
+  // `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
+  // `shrinkFlying`/`activeFlightCount` (the hook's multi-card-fan and cascade-settled-watcher
+  // support) are deliberately left un-destructured - TriPeaks has no recycle/multi-card fan draw and
+  // no foundation-by-suit auto-play, so nothing here would ever call/read them, and this repo's
+  // tsconfig treats an unused local as a real compile error (noUnusedLocals).
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<TriPeaksState>()
   // Every TriPeaks move (a tableau card onto the waste, or a stock draw) always has a real
   // origin/destination and a real card to fly - same reasoning as Golf's own non-nullable
   // UndoEntry<TState, MoveInfo> instantiation (unlike Klondike's/Pyramid's nullable default).
@@ -139,7 +149,6 @@ function TriPeaksScreenInner() {
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
   const ghost = useDragGhost()
-  const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
   // Wraps the whole StockWaste component (not just its wasteArea child) - StockWaste's wasteArea is
@@ -159,23 +168,25 @@ function TriPeaksScreenInner() {
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
   const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, 'tripeaks', session, dealTokenRef, recordDealWon, hintsUsedRef)
-  /** A flight awaiting its post-commit measurement + ghost.flyTo, shared by tap-to-move
+  /** Flights awaiting their post-commit measurement + ghost.flyTo, queued by tap-to-move
    * (handleCardTap), a drag drop (handleDrop), drawing from the stock (handleDrawStock), and undo -
-   * only one is ever in flight at a time. `viaStock` measures via stockViewRef (a plain View, not
-   * per-card) instead of CardRegistry - only undoing a stock draw flies back toward the stock; every
-   * other flight targets the waste (always CardRegistry-backed, via StockWaste's DraggableCard
+   * a list (not a single slot), since these can now genuinely overlap (see PATTERN_OVERLAP_GATE):
+   * two entries queued in the same commit would otherwise clobber each other in a single ref slot,
+   * permanently stranding whichever one lost. `viaStock` measures via stockViewRef (a plain View,
+   * not per-card) instead of CardRegistry - only undoing a stock draw flies back toward the stock;
+   * every other flight targets the waste (always CardRegistry-backed, via StockWaste's DraggableCard
    * wasteTop) or a tableau slot an undo is restoring a card into (always exposed once restored -
    * see handleUndo - so it's freshly CardRegistry-registered too). `gen` guards against a "New Game"
    * tapped mid-flight replacing the deal this flight was measuring against (card ids are
-   * shuffle-independent and reused across deals - see engine/deck.ts). */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
+   * shuffle-independent and reused across deals - see engine/deck.ts). `flyingId` removes exactly
+   * this entry's own `flying` array entry once it lands - see the [state]-effect below. */
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
   // Which card (if any) should play its "nowhere to go" shake right now - always exactly one card,
   // same as Golf (TriPeaks never drags/taps more than a single card at a time).
   const [shake, setShake] = useState<{ cardId: string; token: number } | null>(null)
   const shakeTokenRef = useRef(0)
-  const undoBusyRef = useRef(false)
 
   // Takes the controller to deal with explicitly, rather than reading the outer `controller`
   // memo directly - `setTripeaksRankWrap` below only takes effect on the NEXT render, so a caller
@@ -188,7 +199,8 @@ function TriPeaksScreenInner() {
     setUndoStack([])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
     session.reset()
     recordedWinRef.current = false
     winCascade.clear()
@@ -197,7 +209,7 @@ function TriPeaksScreenInner() {
     const dealtIds = new Set([...s.tableau.filter((c): c is Card => !!c).map((c) => c.id), ...s.waste.map((c) => c.id)])
     setDealHiddenIds(dealtIds)
     scheduleDeal(myToken)
-    setState(s)
+    commitState(s)
   }
 
   // Restores a previously saved board exactly as left - no deal-fly-in animation. Also restores
@@ -216,11 +228,12 @@ function TriPeaksScreenInner() {
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
     setDealHiddenIds(new Set())
-    setState(saved.state)
+    commitState(saved.state)
   }
 
   function handleNewGame() {
@@ -322,22 +335,24 @@ function TriPeaksScreenInner() {
   // pre-commit state. Deferring to a [state]-keyed effect guarantees the destination has already
   // registered by the time this runs.
   useEffect(() => {
+    if (pendingFlightRef.current.length === 0 || !state) return
     const pending = pendingFlightRef.current
-    if (!pending || !state) return
-    pendingFlightRef.current = null
-    ;(async () => {
-      const landed = pending.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(pending.cardId)
-      if (dealTokenRef.current !== pending.gen || !landed) {
-        pending.flight.hide()
-        setFlying(null)
-        undoBusyRef.current = false
-        return
-      }
-      pending.flight.flyTo(landed.x, landed.y, () => {
-        setFlying(null)
-        undoBusyRef.current = false
-      })
-    })()
+    pendingFlightRef.current = []
+    pending.forEach((p) => {
+      ;(async () => {
+        const landed = p.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(p.cardId)
+        if (dealTokenRef.current !== p.gen || !landed) {
+          p.flight.hide()
+          endFlying(p.flyingId)
+          settleFlight()
+          return
+        }
+        p.flight.flyTo(landed.x, landed.y, () => {
+          endFlying(p.flyingId)
+          settleFlight()
+        })
+      })()
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
@@ -396,13 +411,18 @@ function TriPeaksScreenInner() {
   // gone before it was ever moved out - see rules.ts's isExposed), or the stock pile for an undone
   // draw (see pendingFlightRef's `viaStock`).
   async function handleUndo() {
-    if (undoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
+    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
+    startFlights(1)
     if (won) winCascade.clear()
     const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
 
-    const movingCard = top(state.waste)
+    // Reads via stateRef.current, not the closure `state` - there's a real await gap below (the
+    // CardRegistry measurement), and another action could commit in the meantime (see
+    // PATTERN_OVERLAP_GATE/commitState's own doc comment).
+    const current = stateRef.current
+    const movingCard = current ? top(current.waste) : undefined
     const origin = movingCard && movingCard.id === move.anchorCardId ? await ghost.cardRegistry.measure(move.anchorCardId) : null
 
     setUndoStack((stack) => stack.slice(0, -1))
@@ -411,21 +431,26 @@ function TriPeaksScreenInner() {
       playCardSound()
       hapticCard()
       const flight = ghost.show({ cards: [movingCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-      setFlying({ to: move.from, count: 1 })
-      setState(prevState)
-      pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen: dealTokenRef.current, flight }
+      const flyingId = beginFlying(move.from, 1)
+      commitState(prevState)
+      pendingFlightRef.current.push({ cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen: dealTokenRef.current, flyingId, flight })
     } else {
-      setState(prevState)
-      undoBusyRef.current = false
+      commitState(prevState)
+      settleFlight()
     }
   }
 
+  // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
+  // closure's `state` - two actions can now be triggered back-to-back before React re-renders (see
+  // PATTERN_OVERLAP_GATE), and each must build its own tryMove on top of whatever the OTHER's
+  // commitState just did, not the same stale board both closures captured.
   function applyMove(from: PileRef, to: PileRef, anchorCardId: string): boolean {
-    if (!state) return false
-    const result = controller.tryMove(state, { from, to, count: 1 })
+    const current = stateRef.current
+    if (!current) return false
+    const result = controller.tryMove(current, { from, to, count: 1 })
     if (!result) return false
-    pushUndo(state, { from, to, count: 1, anchorCardId })
-    setState(result)
+    pushUndo(current, { from, to, count: 1, anchorCardId })
+    commitState(result)
     session.registerMove()
     return true
   }
@@ -435,15 +460,19 @@ function TriPeaksScreenInner() {
   // for the pendingFlightRef effect above to measure and fly the ghost onto.
   function completeMove(from: PileRef, to: PileRef, anchorCardId: string, flight: DragFlightHandle): boolean {
     if (!applyMove(from, to, anchorCardId)) return false
-    setFlying({ to, count: 1 })
-    pendingFlightRef.current = { cardId: anchorCardId, gen: dealTokenRef.current, flight }
+    const flyingId = beginFlying(to, 1)
+    pendingFlightRef.current.push({ cardId: anchorCardId, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 
   async function handleDrawStock() {
-    if (won || !state) return
-    const result = controller.drawStock!(state)
+    // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
+    const current = stateRef.current
+    if (won || !current) return
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
+    const result = controller.drawStock!(current)
     if (!result) return
+    startFlights(1)
     session.registerMove()
 
     // drawStock never returns a result with an unchanged waste - TriPeaks has no recycle case (see
@@ -453,25 +482,27 @@ function TriPeaksScreenInner() {
 
     const origin = await measureView(stockViewRef.current)
     if (!origin) {
-      pushUndo(state, move)
-      setState(result)
+      pushUndo(current, move)
+      commitState(result)
+      settleFlight()
       return
     }
 
     playCardSound()
     hapticCard()
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    setFlying({ to: { zone: 'waste', index: 0 }, count: 1 })
+    const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
 
-    pushUndo(state, move)
-    setState(result)
-    pendingFlightRef.current = { cardId: drawnCard.id, gen: dealTokenRef.current, flight }
+    pushUndo(current, move)
+    commitState(result)
+    pendingFlightRef.current.push({ cardId: drawnCard.id, gen: dealTokenRef.current, flyingId, flight })
   }
 
   // Tapping an exposed tableau card sends it to the waste pile if legal - TriPeaks has exactly one
   // possible destination (autoMoveHint either finds that one move or returns null), same as Golf.
   async function handleCardTap(ref: PileRef, cardId: string, measure: () => Promise<{ x: number; y: number }>) {
     if (won || !state || !controller.autoMoveHint) return
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
     const move = controller.autoMoveHint(state, ref, cardId)
     if (!move) {
       // Nowhere legal to go - shake the card so the tap reads as "received, just stuck" rather than
@@ -485,7 +516,16 @@ function TriPeaksScreenInner() {
 
     const card = cardAt(state, ref)
     if (!card) return
+
+    // Claimed synchronously before the await below (see PATTERN_OVERLAP_GATE) - so undo (the only
+    // thing that still waits on activeFlightCountRef) sees this tap as in-flight for its whole
+    // duration, not just once completeMove lands one.
+    startFlights(1)
     const origin = await measure()
+    if (undoBusyRef.current) {
+      settleFlight()
+      return
+    }
 
     playCardSound()
     hapticCard()
@@ -493,6 +533,7 @@ function TriPeaksScreenInner() {
 
     if (!completeMove(move.from, move.to, cardId, flight)) {
       flight.hide()
+      settleFlight()
     }
   }
 
@@ -502,11 +543,26 @@ function TriPeaksScreenInner() {
   // hand off to the same completeMove tail as a tap.
   async function handleDrop(from: PileRef, absoluteX: number, absoluteY: number, flight: DragFlightHandle): Promise<boolean> {
     if (!state) return false
+    if (undoBusyRef.current) return false // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
+    startFlights(1)
     const target = await dropZones.hitTest(absoluteX, absoluteY)
-    if (!target) return false
-    const card = cardAt(state, from)
-    if (!card) return false
-    return completeMove(from, target, card.id, flight)
+    if (!target || undoBusyRef.current) {
+      settleFlight()
+      return false
+    }
+    // Reads via stateRef.current, not the closure `state` - there's a real await gap above
+    // (hitTest), and another action could commit in the meantime (see PATTERN_OVERLAP_GATE).
+    const latest = stateRef.current
+    const card = latest ? cardAt(latest, from) : null
+    if (!card) {
+      settleFlight()
+      return false
+    }
+    if (!completeMove(from, target, card.id, flight)) {
+      settleFlight()
+      return false
+    }
+    return true
   }
 
   if (!state) {
@@ -522,7 +578,7 @@ function TriPeaksScreenInner() {
   const positions = buildCardPositions(cardWidth, cardHeight, gap)
   const wasteTopCard = won ? undefined : top(state.waste)
   const wasteHiddenByDeal = wasteTopCard && dealHiddenIds.has(wasteTopCard.id) ? 1 : 0
-  const wasteHiddenByFlight = flying && flying.to.zone === 'waste' ? flying.count : 0
+  const wasteHiddenByFlight = flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)
   const wasteHiddenCount = Math.max(wasteHiddenByDeal, wasteHiddenByFlight)
 
   // A tableau slot's card is hidden while its own deal ghost hasn't landed yet, or while an undo's
@@ -532,7 +588,7 @@ function TriPeaksScreenInner() {
   // hidden-ids set is needed the way Pyramid's pyramidHiddenIds tracks a King/pair's fan-out.
   function isTableauHidden(cardId: string, index: number): boolean {
     if (dealHiddenIds.has(cardId)) return true
-    return !!flying && flying.to.zone === 'tableau' && flying.to.index === index
+    return flying.some((f) => f.to.zone === 'tableau' && f.to.index === index)
   }
 
   return (
@@ -561,7 +617,7 @@ function TriPeaksScreenInner() {
               // empty/recycle-hint placeholder, if the stock was empty) until that ghost actually
               // lands, instead of letting the real face-down card pop in a beat early. Mirrors how
               // wasteHiddenCount above is derived from this same `flying` state.
-              stockHidden={flying?.to.zone === 'stock'}
+              stockHidden={flying.some((f) => f.to.zone === 'stock')}
             />
           </View>
 

@@ -44,6 +44,7 @@ import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
+import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
@@ -136,7 +137,13 @@ function CanfieldScreenInner() {
   // mid-game settings change must never mutate the current deal's own rules.
   const controllerRef = useRef(createCanfieldController(settings.canfieldDraw))
   const [canfieldDraw, setCanfieldDraw] = useState<1 | 3>(settings.canfieldDraw)
-  const [state, setState] = useState<CanfieldState | null>(null)
+  // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
+  // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
+  // exclusion with everything else; tap/drag/auto-play/stock-draw can all run concurrently with
+  // each other - PATTERN_OVERLAP_GATE, mirrors KlondikeScreen's identical adoption of this hook).
+  // Destructured below so every existing reference to `state`, `commitState`, `flying`,
+  // `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<CanfieldState>()
   const [undoStack, setUndoStack] = useState<UndoEntry<CanfieldState>[]>([])
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -157,7 +164,6 @@ function CanfieldScreenInner() {
   const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TOP_ROW_UNITS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
-  const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
@@ -176,20 +182,30 @@ function CanfieldScreenInner() {
    * after its real top card has been hidden (won-gated, see the foundation row below), at which
    * point that card is no longer CardRegistry-registered at all. */
   const foundationSlotRefs = useRef<(View | null)[]>(new Array(4).fill(null))
-  /** A flight awaiting its post-commit measurement + ghost.flyTo, shared by tap-to-move
-   * (handleCardTap), drawing from the stock (handleDrawStock), undo, and auto-play (fireAutoMove) -
-   * only one is ever in flight at a time, since all four drive the same single-flight ghost.
-   * `viaStock` measures via stockViewRef (a plain View, not per-card) instead of CardRegistry -
-   * only undoing a stock draw flies back toward the stock; every other destination (including the
-   * reserve, on an undo) is a real per-card-registered pile. `fast` marks a fireAutoMove-triggered
-   * flight. `gen` is the dealTokenRef value at the moment this flight was queued - see
-   * KlondikeScreen's identical field for the full race-guard reasoning. */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; sweep?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
-  /** A draw-3 stock draw awaiting its post-commit measurement + deal.start(), analogous to
-   * pendingFlightRef above but for the multi-card deal-style flight - drawnCards is oldest-first,
-   * ending with the new top/frontmost card. `gen` guards the same New-Game-mid-flight race
-   * pendingFlightRef's does, above. */
-  const pendingDealDrawRef = useRef<{ topCardId: string; drawnCards: Card[]; gen: number } | null>(null)
+  /** Flights awaiting their post-commit measurement + flight.flyTo, queued by tap-to-move
+   * (handleCardTap), drawing from the stock (handleDrawStock), undo, and auto-play (firePlay/
+   * fireDrawAndPlay) - a list (not a single slot) since these can now genuinely overlap (see
+   * useFlightConcurrency's own PATTERN_OVERLAP_GATE doc comment, mirrors KlondikeScreen's identical
+   * field): two entries queued in the same commit would otherwise clobber each other in a single
+   * ref slot, permanently stranding whichever one lost. Each entry carries its own already-created
+   * DragFlightHandle (from whichever call site queued it - or, for a drag's own drop, handed in via
+   * PileDragConfig.onDrop/DraggableCard's onDrop) to fly/hide once measured, and its own flyingId to
+   * remove exactly its own `flying` entry once it lands - see the [state]-effect below. `viaStock`
+   * measures via stockViewRef (a plain View, not per-card) instead of CardRegistry - only undoing a
+   * stock draw flies back toward the stock; every other destination (including the reserve, on an
+   * undo) is a real per-card-registered pile. `fast` marks a fireAutoMove-triggered flight, passed
+   * on to flight.flyTo for the quicker auto-play-to-foundation timing. `gen` is the dealTokenRef
+   * value at the moment this flight was queued - re-checked once the async measurement below
+   * resolves, so a flight queued against a game that's since been replaced by "New Game" doesn't
+   * measure/land against the new deal's DOM (card ids are shuffle-independent and reused across
+   * deals - see deck.ts). */
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; sweep?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
+  /** Draw-3 stock draws awaiting their post-commit measurement + deal.start() - a list for the same
+   * overlapping-actions reason as pendingFlightRef above. Analogous shape, for the multi-card
+   * deal-style flight (see the [state]-effect below and handleDrawStock) - drawnCards is
+   * oldest-first, ending with the new top/frontmost card. `gen`/`flyingId` guard the same races
+   * pendingFlightRef's do, above. */
+  const pendingDealDrawRef = useRef<{ topCardId: string; drawnCards: Card[]; gen: number; flyingId: number }[]>([])
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
   const cascadeFeedback = useCascadeFeedback(playCardSound, hapticCard)
@@ -197,20 +213,6 @@ function CanfieldScreenInner() {
   // shakeAnimation.ts.
   const [shake, setShake] = useState<{ cardId: string; count: number; token: number } | null>(null)
   const shakeTokenRef = useRef(0)
-  // Mirrors `state` so fireAutoMove - which has an await gap before it applies its move, unlike
-  // every other mutator here - can tell if some other action already changed state underneath it
-  // and bail instead of applying against a stale snapshot. Synced from a dedicated effect rather
-  // than a direct render-time write (matches YukonScreen's identical fix for the same
-  // react-hooks/refs trip) - fireAutoMove only ever reads `.current` from its own later async
-  // closure, well after this effect has committed.
-  const stateRef = useRef(state)
-  useEffect(() => {
-    stateRef.current = state
-  }, [state])
-  // Guards handleUndo against being called again before its own previous invocation has fully
-  // settled (visually, not just in state) - see handleUndo below for why an overlapping call would
-  // otherwise desync the undo stack or clobber the shared single-flight ghost/deal animation.
-  const undoBusyRef = useRef(false)
 
   function startNewGame() {
     const myToken = ++dealTokenRef.current
@@ -220,7 +222,9 @@ function CanfieldScreenInner() {
     setUndoStack([])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
+    pendingDealDrawRef.current = []
     session.reset()
     setWon(false)
     recordedWinRef.current = false
@@ -231,7 +235,7 @@ function CanfieldScreenInner() {
     const sequence = starter ? buildCanfieldDealSequence(starter, s.tableau, s.reserve) : []
     setDealHiddenIds(new Set(sequence.map((step) => step.cardId)))
     scheduleDeal(myToken)
-    setState(s)
+    commitState(s)
   }
 
   // Restores a previously saved board exactly as left - no deal-fly-in animation (this isn't a new
@@ -245,12 +249,14 @@ function CanfieldScreenInner() {
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
+    pendingDealDrawRef.current = []
     session.restore(saved.moves, saved.elapsedSeconds)
     setWon(false)
     recordedWinRef.current = false
     setDealHiddenIds(new Set())
-    setState(saved.state)
+    commitState(saved.state)
   }
 
   // Dealing a new game over one still in progress abandons it (counted as a loss) - GameChrome
@@ -352,27 +358,29 @@ function CanfieldScreenInner() {
   // to a [state]-keyed effect guarantees the destination card has already registered by the time
   // this runs.
   useEffect(() => {
+    if (pendingFlightRef.current.length === 0 || !state) return
     const pending = pendingFlightRef.current
-    if (!pending || !state) return
-    pendingFlightRef.current = null
-    ;(async () => {
-      const landed = pending.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(pending.cardId)
-      if (dealTokenRef.current !== pending.gen || !landed) {
-        pending.flight.hide()
-        setFlying(null)
-        undoBusyRef.current = false
-        return
-      }
-      pending.flight.flyTo(
-        landed.x,
-        landed.y,
-        () => {
-          setFlying(null)
-          undoBusyRef.current = false
-        },
-        { fast: pending.fast, sweep: pending.sweep }
-      )
-    })()
+    pendingFlightRef.current = []
+    pending.forEach((p) => {
+      ;(async () => {
+        const landed = p.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(p.cardId)
+        if (dealTokenRef.current !== p.gen || !landed) {
+          p.flight.hide()
+          endFlying(p.flyingId)
+          settleFlight()
+          return
+        }
+        p.flight.flyTo(
+          landed.x,
+          landed.y,
+          () => {
+            endFlying(p.flyingId)
+            settleFlight()
+          },
+          { fast: p.fast, sweep: p.sweep }
+        )
+      })()
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
@@ -395,36 +403,42 @@ function CanfieldScreenInner() {
   // independently in quick staggered succession, like a mini re-run of the initial deal, instead of
   // one card flying while the rest silently popped in behind it.
   useEffect(() => {
+    if (pendingDealDrawRef.current.length === 0 || !state) return
     const pending = pendingDealDrawRef.current
-    if (!pending || !state) return
-    pendingDealDrawRef.current = null
-    ;(async () => {
-      const [origin, topPos] = await Promise.all([measureView(stockViewRef.current), ghost.cardRegistry.measure(pending.topCardId)])
-      if (dealTokenRef.current !== pending.gen || !origin || !topPos) {
-        setFlying(null)
-        return
-      }
-      const fanOffset = faceUpFanOffset(cardWidth)
-      const n = pending.drawnCards.length
-      const entries: DealCardSpec[] = pending.drawnCards.map((card, i) => {
-        const distanceFromTop = n - 1 - i // i=0 is the oldest/farthest card, i=n-1 is the new top
-        return {
-          cardId: card.id,
-          card: { ...card, faceUp: true },
-          from: origin,
-          to: { x: topPos.x - fanOffset * distanceFromTop, y: topPos.y },
-          delayMs: i * DEAL_STAGGER_MS
+    pendingDealDrawRef.current = []
+    pending.forEach((p) => {
+      ;(async () => {
+        const [origin, topPos] = await Promise.all([measureView(stockViewRef.current), ghost.cardRegistry.measure(p.topCardId)])
+        if (dealTokenRef.current !== p.gen || !origin || !topPos) {
+          endFlying(p.flyingId)
+          settleFlight()
+          return
         }
-      })
-      deal.start(
-        entries,
-        cardWidth,
-        () => {
-          setFlying((f) => (f && f.to.zone === 'waste' ? { ...f, count: Math.max(0, f.count - 1) } : f))
-        },
-        () => setFlying(null)
-      )
-    })()
+        const fanOffset = faceUpFanOffset(cardWidth)
+        const n = p.drawnCards.length
+        const entries: DealCardSpec[] = p.drawnCards.map((card, i) => {
+          const distanceFromTop = n - 1 - i // i=0 is the oldest/farthest card, i=n-1 is the new top
+          return {
+            cardId: card.id,
+            card: { ...card, faceUp: true },
+            from: origin,
+            to: { x: topPos.x - fanOffset * distanceFromTop, y: topPos.y },
+            delayMs: i * DEAL_STAGGER_MS
+          }
+        })
+        deal.start(
+          entries,
+          cardWidth,
+          () => {
+            shrinkFlying(p.flyingId)
+          },
+          () => {
+            endFlying(p.flyingId)
+            settleFlight()
+          }
+        )
+      })()
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
@@ -434,7 +448,7 @@ function CanfieldScreenInner() {
   // computeNextStep composes.
   const cascade = useAutoFoundationCascade<CanfieldState>({
     state,
-    settled: flying === null && dealHiddenIds.size === 0,
+    settled: activeFlightCount === 0 && dealHiddenIds.size === 0,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     computeNextStep,
@@ -498,7 +512,7 @@ function CanfieldScreenInner() {
   // (fixed at 3, unlimited recycling - rules.ts's DRAW_COUNT), so the multi-card-draw-undo branch
   // below applies here the same way it does there.
   async function handleUndo() {
-    if (undoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
+    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
     if (won) {
       setWon(false)
@@ -506,11 +520,17 @@ function CanfieldScreenInner() {
     }
     const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
+    // Captured once, up front - every stash this call makes uses this same token, so a "New Game"
+    // that fires mid-await consistently invalidates every one of this undo's pending flights rather
+    // than some using a token read before the race and some after (mirrors KlondikeScreen's
+    // identical `gen` capture in its own handleUndo).
+    const gen = dealTokenRef.current
+    startFlights(1)
 
     if (!move) {
       setUndoStack((stack) => stack.slice(0, -1))
-      setState(prevState)
-      undoBusyRef.current = false
+      commitState(prevState)
+      settleFlight()
       return
     }
 
@@ -536,18 +556,18 @@ function CanfieldScreenInner() {
             to: stockDest,
             delayMs: i * DEAL_STAGGER_MS
           }))
-        setState(prevState)
+        commitState(prevState)
         deal.start(
           entries,
           cardWidth,
           () => {},
           () => {
-            undoBusyRef.current = false
+            settleFlight()
           }
         )
       } else {
-        setState(prevState)
-        undoBusyRef.current = false
+        commitState(prevState)
+        settleFlight()
       }
       return
     }
@@ -563,12 +583,12 @@ function CanfieldScreenInner() {
       playCardSound()
       hapticCard()
       const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
-      setFlying({ to: move.from, count: move.count })
-      setState(prevState)
-      pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen: dealTokenRef.current, flight }
+      const flyingId = beginFlying(move.from, move.count)
+      commitState(prevState)
+      pendingFlightRef.current.push({ cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen, flyingId, flight })
     } else {
-      setState(prevState)
-      undoBusyRef.current = false
+      commitState(prevState)
+      settleFlight()
     }
   }
 
@@ -576,11 +596,17 @@ function CanfieldScreenInner() {
   // auto-played card isn't a player decision, so it skips the undo stack entirely and doesn't
   // count toward the moves/score the player is judged on.
   function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean }) {
-    if (!state) return false
-    const result = controllerRef.current.tryMove(state, { from, to, count })
+    // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
+    // closure's `state` - two actions can now be triggered back-to-back before React re-renders
+    // (see PATTERN_OVERLAP_GATE), and each must build its own tryMove on top of whatever the OTHER's
+    // commitState just did, not the same stale board both closures captured (mirrors
+    // KlondikeScreen's identical applyMove).
+    const current = stateRef.current
+    if (!current) return false
+    const result = controllerRef.current.tryMove(current, { from, to, count })
     if (result) {
-      if (!opts?.silent) pushUndo(state, { from, to, count, anchorCardId })
-      setState(result)
+      if (!opts?.silent) pushUndo(current, { from, to, count, anchorCardId })
+      commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
       if (!opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
@@ -589,7 +615,7 @@ function CanfieldScreenInner() {
       // immediately as a reward for the move that uncovered it, regardless of whether THIS move was
       // itself silent - see useAutoFoundationCascade's armFromAceEvent.
       if (from.zone === 'reserve') {
-        const revealed = detectRevealedCard(state.reserve, result.reserve, count)
+        const revealed = detectRevealedCard(current.reserve, result.reserve, count)
         if (revealed && isFoundationStarterCard(revealed, result.foundationRank)) {
           cascade.armFromAceEvent({ ref: from, card: revealed }, { zone: 'foundation', index: SUITS.indexOf(revealed.suit) })
         }
@@ -604,8 +630,8 @@ function CanfieldScreenInner() {
   // the anchor card id for the pendingFlightRef effect above to measure and fly the ghost onto.
   function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
-    setFlying({ to, count })
-    pendingFlightRef.current = { cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flight }
+    const flyingId = beginFlying(to, count)
+    pendingFlightRef.current.push({ cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 
@@ -637,13 +663,18 @@ function CanfieldScreenInner() {
   // before applying its move. Guard against something else changing state during that gap by
   // snapshotting stateRef before the await and bailing if it no longer matches after.
   async function firePlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
+    startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
-    if (!origin || stateRef.current !== stateAtStart) return
+    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current) {
+      settleFlight()
+      return
+    }
     cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: !opts.sweep, sweep: opts.sweep })) {
       flight.hide()
+      settleFlight()
     }
   }
 
@@ -661,22 +692,35 @@ function CanfieldScreenInner() {
     if (!afterDraw) return
     const result = controllerRef.current.tryMove(afterDraw, { from: entry.ref, to, count: 1 })
     if (!result) return
+    startFlights(1)
 
     const origin = await measureView(stockViewRef.current)
-    if (!origin || stateRef.current !== current) return
+    if (!origin || stateRef.current !== current || undoBusyRef.current) {
+      settleFlight()
+      return
+    }
 
     cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    setFlying({ to, count: 1 })
-    setState(result)
+    const flyingId = beginFlying(to, 1)
+    commitState(result)
     checkWin(result, session.moves)
-    pendingFlightRef.current = { cardId: entry.card.id, gen: dealTokenRef.current, flight, sweep: opts.sweep }
+    pendingFlightRef.current.push({ cardId: entry.card.id, gen: dealTokenRef.current, flyingId, flight, sweep: opts.sweep })
   }
 
   async function attemptDrop(from: PileRef, count: number, absoluteX: number, absoluteY: number, anchorCardId: string, flight: DragFlightHandle): Promise<boolean> {
+    if (undoBusyRef.current) return false
+    startFlights(1)
     const target = await dropZones.hitTest(absoluteX, absoluteY)
-    if (!target) return false
-    return completeMove(from, target, count, anchorCardId, flight)
+    if (!target || undoBusyRef.current) {
+      settleFlight()
+      return false
+    }
+    if (!completeMove(from, target, count, anchorCardId, flight)) {
+      settleFlight()
+      return false
+    }
+    return true
   }
 
   function tableauRunCount(colIndex: number, indexFromTop: number): number {
@@ -693,17 +737,25 @@ function CanfieldScreenInner() {
   // decision, so (matching applyMove's own silent branch) it never touches the undo stack at all,
   // and doesn't count toward moves/score.
   async function handleDrawStock(opts?: { sweep?: boolean }) {
-    if (!state || !controllerRef.current.drawStock) return
-    const result = controllerRef.current.drawStock(state)
+    // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
+    // Without this, rapid-tapping the stock pile several times before React re-renders drew the
+    // SAME card repeatedly (every call computing drawStock() against the same stale board) instead
+    // of drawing several different ones in a row.
+    const current = stateRef.current
+    if (!current || !controllerRef.current.drawStock) return
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
+    const result = controllerRef.current.drawStock(current)
     if (!result) return
+    startFlights(1)
     if (!opts?.sweep) session.registerMove()
 
     const drawnCard = top(result.waste)
     if (!drawnCard) {
       // Recycling the waste back into the stock, not a single card being drawn - nothing
       // card-shaped to fly, so undo just reverts this instantly (see MoveInfo | null above).
-      if (!opts?.sweep) pushUndo(state, null)
-      setState(result)
+      if (!opts?.sweep) pushUndo(current, null)
+      commitState(result)
+      settleFlight()
       return
     }
 
@@ -715,22 +767,23 @@ function CanfieldScreenInner() {
       cascade.armFromAceEvent({ ref: { zone: 'waste', index: 0 }, card: drawnCard }, { zone: 'foundation', index: SUITS.indexOf(drawnCard.suit) })
     }
 
-    const drawnCount = result.waste.length - state.waste.length
+    const drawnCount = result.waste.length - current.waste.length
     const move: MoveInfo = { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: drawnCount, anchorCardId: drawnCard.id }
 
     if (drawnCount > 1) {
       const drawnCards = result.waste.slice(result.waste.length - drawnCount) // oldest -> newest/top
-      if (!opts?.sweep) pushUndo(state, move)
-      setFlying({ to: { zone: 'waste', index: 0 }, count: drawnCount })
-      pendingDealDrawRef.current = { topCardId: drawnCard.id, drawnCards, gen: dealTokenRef.current }
-      setState(result)
+      if (!opts?.sweep) pushUndo(current, move)
+      const flyingId = beginFlying({ zone: 'waste', index: 0 }, drawnCount)
+      pendingDealDrawRef.current.push({ topCardId: drawnCard.id, drawnCards, gen: dealTokenRef.current, flyingId })
+      commitState(result)
       return
     }
 
     const origin = await measureView(stockViewRef.current)
     if (!origin) {
-      if (!opts?.sweep) pushUndo(state, move)
-      setState(result)
+      if (!opts?.sweep) pushUndo(current, move)
+      commitState(result)
+      settleFlight()
       return
     }
 
@@ -740,11 +793,11 @@ function CanfieldScreenInner() {
       hapticCard()
     }
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    setFlying({ to: { zone: 'waste', index: 0 }, count: 1 })
+    const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
 
-    if (!opts?.sweep) pushUndo(state, move)
-    setState(result)
-    pendingFlightRef.current = { cardId: drawnCard.id, sweep: opts?.sweep, gen: dealTokenRef.current, flight }
+    if (!opts?.sweep) pushUndo(current, move)
+    commitState(result)
+    pendingFlightRef.current.push({ cardId: drawnCard.id, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
   }
 
   function resolvePile(ref: PileRef): Card[] | null {
@@ -771,6 +824,7 @@ function CanfieldScreenInner() {
   // from.
   async function handleCardTap(ref: PileRef, cardId: string, measure: () => Promise<{ x: number; y: number }>, indexFromTop?: number) {
     if (!state || !controllerRef.current.autoMoveHint) return
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
     const move = controllerRef.current.autoMoveHint(state, ref, cardId)
     if (!move) {
       const count = ref.zone === 'tableau' && indexFromTop !== undefined ? Math.max(1, tableauRunCount(ref.index, indexFromTop)) : 1
@@ -780,9 +834,16 @@ function CanfieldScreenInner() {
       return
     }
 
+    // Claimed synchronously before the await below (see PATTERN_OVERLAP_GATE) - so undo (the only
+    // thing that still waits on activeFlightCountRef) sees this tap as in-flight for its whole
+    // duration, not just once completeMove lands one.
+    startFlights(1)
     const origin = await measure()
     const sourcePile = resolvePile(move.from)
-    if (!sourcePile) return
+    if (!sourcePile || undoBusyRef.current) {
+      settleFlight()
+      return
+    }
     const movingCards = sourcePile.slice(sourcePile.length - move.count)
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
@@ -792,6 +853,7 @@ function CanfieldScreenInner() {
 
     if (!completeMove(move.from, move.to, move.count, cardId, flight)) {
       flight.hide()
+      settleFlight()
     }
   }
 
@@ -813,7 +875,7 @@ function CanfieldScreenInner() {
   // The reserve can only ever be a flight DESTINATION on an undo (tryMove itself never sends a
   // card back onto the reserve - see rules.ts) - mirrors the foundation/waste/tableau `isFlyingHere`
   // checks below exactly.
-  const reserveFlyingHere = !!flying && flying.to.zone === 'reserve'
+  const reserveFlyingHere = flying.some((f) => f.to.zone === 'reserve')
   // The reserve's own top (13th) card is part of the initial deal sequence now (see
   // dealSequence.ts) - kept as its own separate flag rather than folded into reserveFlyingHere,
   // since ReserveCell needs to tell the two hidden-reasons apart (see its own doc comment).
@@ -832,7 +894,7 @@ function CanfieldScreenInner() {
                 // same dealHiddenIds membership the reserve's own top card uses, so the starter stays
                 // hidden until its own deal flight lands instead of showing at full opacity from the
                 // very first frame of a fresh deal.
-                const isFlyingHere = (!!flying && flying.to.zone === 'foundation' && flying.to.index === i) || (!!t && dealHiddenIds.has(t.id))
+                const isFlyingHere = flying.some((f) => f.to.zone === 'foundation' && f.to.index === i) || (!!t && dealHiddenIds.has(t.id))
                 return (
                   <DropZone key={i} registry={dropZones} pileRef={{ zone: 'foundation', index: i }} style={[styles.foundationSlot, { width: cardWidth }]}>
                     <FoundationCell
@@ -854,7 +916,7 @@ function CanfieldScreenInner() {
               <ReserveCell card={reserveTop} isFlyingHere={reserveFlyingHere} dealHidden={reserveDealHidden} shakeToken={reserveTop && shake?.cardId === reserveTop.id ? shake.token : undefined} highlighted={hintCountFor(activeHint, { zone: 'reserve', index: 0 }) > 0} onPress={(measure) => handleCardTap({ zone: 'reserve', index: 0 }, reserveTop!.id, measure)} onDrop={(x, y, flight) => attemptDrop({ zone: 'reserve', index: 0 }, 1, x, y, reserveTop!.id, flight)} />
             </DropZone>
 
-            <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteHiddenCount={flying && flying.to.zone === 'waste' ? flying.count : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} />
+            <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} />
           </View>
 
           <View style={[styles.tableauRow, { gap }]}>
@@ -862,9 +924,23 @@ function CanfieldScreenInner() {
               const dragConfig: PileDragConfig = {
                 registry: dropZones,
                 getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
-                onDrop: (to, count, anchorCardId, flight) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)
+                // Claims a flight slot (see activeFlightCountRef's doc comment above) purely so undo
+                // sees this drop as in-flight for its whole duration, not just once completeMove
+                // lands one - PileView.tsx (shared, not ours to edit) already ran its own hitTest
+                // await before invoking this callback, so this is the earliest point CanfieldScreen
+                // gets a look-in. Rejects outright if undo is running (see attemptDrop's identical
+                // comment on why undo holds full mutual exclusion, not just a one-way wait).
+                onDrop: (to, count, anchorCardId, flight) => {
+                  if (undoBusyRef.current) return false
+                  startFlights(1)
+                  if (!completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)) {
+                    settleFlight()
+                    return false
+                  }
+                  return true
+                }
               }
-              const hiddenCount = flying && flying.to.zone === 'tableau' && flying.to.index === colIndex ? flying.count : 0
+              const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === colIndex).reduce((sum, f) => sum + f.count, 0)
               return (
                 <DropZone key={colIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: colIndex }} style={[styles.tableauColumn, { width: cardWidth }]}>
                   {/* dimUnplayable: unlike Klondike (genuine face-down burial reads as unavailable

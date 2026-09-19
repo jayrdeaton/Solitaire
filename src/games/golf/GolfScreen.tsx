@@ -34,6 +34,7 @@ import { computeScore } from '@/engine/score'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
+import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
@@ -80,7 +81,13 @@ function GolfScreenInner() {
   const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
   const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
-  const [state, setState] = useState<GolfState | null>(null)
+  // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
+  // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
+  // exclusion with everything else; tap/drag/stock-draw can all run concurrently with each other -
+  // PATTERN_OVERLAP_GATE, same as Klondike's own KlondikeScreen.tsx). Destructured below so every
+  // existing reference to `state`, `commitState`, `flying`, `startFlights`, `settleFlight`,
+  // `undoBusyRef`, etc. keeps working unchanged.
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<GolfState>()
   // Unlike Klondike (whose stock-draw undo entries carry move: null for a recycle - "nothing card-
   // shaped to fly") and Pyramid (same null convention for its pairing moves, which use a totally
   // different removedCards field instead of MoveInfo), every Golf move - a tableau card onto the
@@ -103,7 +110,6 @@ function GolfScreenInner() {
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
   const ghost = useDragGhost()
-  const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
   // components/StockWaste.tsx is used unmodified and exposes no ref for the waste zone specifically
@@ -121,14 +127,20 @@ function GolfScreenInner() {
   // useState, same as Pyramid/Spider (not Klondike/FreeCell's useFoundationWinCheck) - Golf has no
   // suit-based foundation for a "won" flag to hang off, just "every tableau column is empty".
   const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, 'golf', session, dealTokenRef, recordDealWon, hintsUsedRef)
-  /** A flight awaiting its post-commit measurement + ghost.flyTo, shared by tap-to-move
-   * (handleCardTap), drawing from the stock (handleDrawStock), and undo - only one is ever in
-   * flight at a time. `viaStock` measures via stockViewRef (a plain View, not per-card) instead of
-   * CardRegistry - only undoing a stock draw flies back toward the stock; a tableau-bound undo
-   * flies back to a real per-card-registered pile. `gen` guards against a "New Game" tapped mid-
-   * flight replacing the deal this flight was measuring against (card ids are shuffle-independent
-   * and reused across deals - see engine/deck.ts). */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
+  /** Flights awaiting their post-commit measurement + ghost.flyTo, queued by tap-to-move
+   * (handleCardTap), drawing from the stock (handleDrawStock), and undo - a list (not a single
+   * slot), since these can now genuinely overlap (see useFlightConcurrency's own
+   * PATTERN_OVERLAP_GATE doc comment, and KlondikeScreen.tsx's identical pendingFlightRef): two
+   * entries queued in the same commit would otherwise clobber each other in a single ref slot,
+   * permanently stranding whichever one lost. Each entry carries its own already-created
+   * DragFlightHandle to fly/hide once measured, and its own flyingId to remove exactly its own
+   * `flying` entry once it lands - see the [state]-effect below. `viaStock` measures via
+   * stockViewRef (a plain View, not per-card) instead of CardRegistry - only undoing a stock draw
+   * flies back toward the stock; a tableau-bound undo flies back to a real per-card-registered
+   * pile. `gen` guards against a "New Game" tapped mid-flight replacing the deal this flight was
+   * measuring against (card ids are shuffle-independent and reused across deals - see
+   * engine/deck.ts). */
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
   // Which card (if any) should play its "nowhere to go" shake right now - see handleCardTap and
@@ -136,10 +148,6 @@ function GolfScreenInner() {
   // single card), unlike Klondike's own shake, which can cover a whole run.
   const [shake, setShake] = useState<{ cardId: string; token: number } | null>(null)
   const shakeTokenRef = useRef(0)
-  // Guards handleUndo against being re-entered before its own previous invocation has fully settled
-  // (visually, not just in state) - see handleUndo below for why an overlapping call would otherwise
-  // desync the undo stack or clobber the shared single-flight ghost.
-  const undoBusyRef = useRef(false)
 
   // Takes the controller to deal with explicitly, rather than reading the outer `controller`
   // memo directly - `setGolfRankWrap` below only takes effect on the NEXT render, so a caller
@@ -152,7 +160,8 @@ function GolfScreenInner() {
     setUndoStack([])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
     session.reset()
     recordedWinRef.current = false
     winCascade.clear()
@@ -164,7 +173,7 @@ function GolfScreenInner() {
     const dealtIds = new Set([...s.tableau.flat().map((c) => c.id), ...s.waste.map((c) => c.id)])
     setDealHiddenIds(dealtIds)
     scheduleDeal(myToken)
-    setState(s)
+    commitState(s)
   }
 
   // Restores a previously saved board exactly as left - no deal-fly-in animation (this isn't a new
@@ -182,11 +191,12 @@ function GolfScreenInner() {
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
     setDealHiddenIds(new Set())
-    setState(saved.state)
+    commitState(saved.state)
   }
 
   // Dealing a new game over one still in progress abandons it (counted as a loss) - GameChrome only
@@ -284,22 +294,24 @@ function GolfScreenInner() {
   // [state]-keyed effect guarantees the destination card has already registered by the time this
   // runs.
   useEffect(() => {
+    if (pendingFlightRef.current.length === 0 || !state) return
     const pending = pendingFlightRef.current
-    if (!pending || !state) return
-    pendingFlightRef.current = null
-    ;(async () => {
-      const landed = pending.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(pending.cardId)
-      if (dealTokenRef.current !== pending.gen || !landed) {
-        pending.flight.hide()
-        setFlying(null)
-        undoBusyRef.current = false
-        return
-      }
-      pending.flight.flyTo(landed.x, landed.y, () => {
-        setFlying(null)
-        undoBusyRef.current = false
-      })
-    })()
+    pendingFlightRef.current = []
+    pending.forEach((p) => {
+      ;(async () => {
+        const landed = p.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(p.cardId)
+        if (dealTokenRef.current !== p.gen || !landed) {
+          p.flight.hide()
+          endFlying(p.flyingId)
+          settleFlight()
+          return
+        }
+        p.flight.flyTo(landed.x, landed.y, () => {
+          endFlying(p.flyingId)
+          settleFlight()
+        })
+      })()
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
@@ -360,8 +372,9 @@ function GolfScreenInner() {
   // back to `move.from` - a tableau column, or the stock pile for an undone draw (see
   // pendingFlightRef's `viaStock`).
   async function handleUndo() {
-    if (undoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
+    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
+    startFlights(1)
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition), so any undo reachable while won must be undoing the winning move itself - stop the
     // bouncing win cascade immediately instead of leaving it animating over a board that's already
@@ -371,7 +384,11 @@ function GolfScreenInner() {
     const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
 
-    const movingCard = top(state.waste)
+    // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment: two
+    // actions can now be triggered back-to-back before React re-renders (PATTERN_OVERLAP_GATE), so
+    // this needs whatever the board actually is right now, not whatever it was at this render.
+    const current = stateRef.current
+    const movingCard = current ? top(current.waste) : undefined
     // While won, the winning card's DraggableCard is deliberately unmounted (see wasteTopCard
     // below), so it has no CardRegistry entry - measure the waste slot's plain view ref instead
     // (the same technique runWinCascade above already uses for this exact reason), rather than a
@@ -384,21 +401,26 @@ function GolfScreenInner() {
       playCardSound()
       hapticCard()
       const flight = ghost.show({ cards: [movingCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-      setFlying({ to: move.from, count: 1 })
-      setState(prevState)
-      pendingFlightRef.current = { cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen: dealTokenRef.current, flight }
+      const flyingId = beginFlying(move.from, 1)
+      commitState(prevState)
+      pendingFlightRef.current.push({ cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen: dealTokenRef.current, flyingId, flight })
     } else {
-      setState(prevState)
-      undoBusyRef.current = false
+      commitState(prevState)
+      settleFlight()
     }
   }
 
   function applyMove(from: PileRef, to: PileRef, anchorCardId: string): boolean {
-    if (!state) return false
-    const result = controller.tryMove(state, { from, to, count: 1 })
+    // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
+    // closure's `state` - two actions can now be triggered back-to-back before React re-renders
+    // (see PATTERN_OVERLAP_GATE), and each must build its own tryMove on top of whatever the
+    // OTHER's commitState just did, not the same stale board both closures captured.
+    const current = stateRef.current
+    if (!current) return false
+    const result = controller.tryMove(current, { from, to, count: 1 })
     if (!result) return false
-    pushUndo(state, { from, to, count: 1, anchorCardId })
-    setState(result)
+    pushUndo(current, { from, to, count: 1, anchorCardId })
+    commitState(result)
     session.registerMove()
     return true
   }
@@ -409,15 +431,22 @@ function GolfScreenInner() {
   // appearing there instantly.
   function completeMove(from: PileRef, to: PileRef, anchorCardId: string, flight: DragFlightHandle): boolean {
     if (!applyMove(from, to, anchorCardId)) return false
-    setFlying({ to, count: 1 })
-    pendingFlightRef.current = { cardId: anchorCardId, gen: dealTokenRef.current, flight }
+    const flyingId = beginFlying(to, 1)
+    pendingFlightRef.current.push({ cardId: anchorCardId, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 
   async function handleDrawStock() {
-    if (won || !state) return
-    const result = controller.drawStock!(state)
+    if (won) return
+    // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
+    // Without this, rapid-tapping the stock pile several times before React re-renders would draw
+    // against the same stale board each time instead of drawing several different cards in a row.
+    const current = stateRef.current
+    if (!current) return
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
+    const result = controller.drawStock!(current)
     if (!result) return
+    startFlights(1)
     session.registerMove()
 
     // drawStock never returns a result with an unchanged waste - Golf has no recycle case (see
@@ -427,19 +456,20 @@ function GolfScreenInner() {
 
     const origin = await measureView(stockViewRef.current)
     if (!origin) {
-      pushUndo(state, move)
-      setState(result)
+      pushUndo(current, move)
+      commitState(result)
+      settleFlight()
       return
     }
 
     playCardSound()
     hapticCard()
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    setFlying({ to: { zone: 'waste', index: 0 }, count: 1 })
+    const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
 
-    pushUndo(state, move)
-    setState(result)
-    pendingFlightRef.current = { cardId: drawnCard.id, gen: dealTokenRef.current, flight }
+    pushUndo(current, move)
+    commitState(result)
+    pendingFlightRef.current.push({ cardId: drawnCard.id, gen: dealTokenRef.current, flyingId, flight })
   }
 
   // Tapping a tableau column's top card sends it to the waste pile if legal - Golf has exactly one
@@ -447,6 +477,7 @@ function GolfScreenInner() {
   // Klondike/Yukon's own tap-to-move there's no "best of several destinations" ranking here at all.
   async function handleCardTap(ref: PileRef, cardId: string, measure: () => Promise<{ x: number; y: number }>) {
     if (won || !state || !controller.autoMoveHint) return
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
     const move = controller.autoMoveHint(state, ref, cardId)
     if (!move) {
       // Nowhere legal to go - shake the card so the tap reads as "received, just stuck" rather than
@@ -458,9 +489,18 @@ function GolfScreenInner() {
       return
     }
 
-    const card = ref.zone === 'tableau' ? top(state.tableau[ref.index]) : undefined
-    if (!card) return
+    // Claimed synchronously before the await below (see PATTERN_OVERLAP_GATE) - so undo (the only
+    // thing that still waits on activeFlightCountRef) sees this tap as in-flight for its whole
+    // duration, not just once completeMove lands one.
+    startFlights(1)
     const origin = await measure()
+    // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
+    const current = stateRef.current
+    const card = current && ref.zone === 'tableau' ? top(current.tableau[ref.index]) : undefined
+    if (!card || undoBusyRef.current) {
+      settleFlight()
+      return
+    }
 
     playCardSound()
     hapticCard()
@@ -468,6 +508,7 @@ function GolfScreenInner() {
 
     if (!completeMove(move.from, move.to, cardId, flight)) {
       flight.hide()
+      settleFlight()
     }
   }
 
@@ -486,7 +527,7 @@ function GolfScreenInner() {
   // landing there (a tableau tap/drag move, or a stock draw). The two never overlap in practice (the
   // deal finishes before any real move can happen), but Math.max reads correctly either way.
   const wasteHiddenByDeal = wasteTopCard && dealHiddenIds.has(wasteTopCard.id) ? 1 : 0
-  const wasteHiddenByFlight = flying && flying.to.zone === 'waste' ? flying.count : 0
+  const wasteHiddenByFlight = flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)
   const wasteHiddenCount = Math.max(wasteHiddenByDeal, wasteHiddenByFlight)
 
   return (
@@ -528,12 +569,22 @@ function GolfScreenInner() {
               getRunCount: (indexFromTop) => (indexFromTop === 0 ? 1 : 0),
               // PileView's own handleDragEnd already resolves the drop target via dropZones.hitTest
               // before calling this, so - unlike StockWaste's loose DraggableCard onDrop above - no
-              // separate hitTest wrapper is needed here.
-              onDrop: (to, _count, anchorCardId, flight) => completeMove({ zone: 'tableau', index: colIndex }, to, anchorCardId, flight)
+              // separate hitTest wrapper is needed here. Rejects outright if undo is running (see
+              // handleCardTap's identical comment on why undo holds full mutual exclusion, not just
+              // a one-way wait).
+              onDrop: (to, _count, anchorCardId, flight) => {
+                if (undoBusyRef.current) return false
+                startFlights(1)
+                if (!completeMove({ zone: 'tableau', index: colIndex }, to, anchorCardId, flight)) {
+                  settleFlight()
+                  return false
+                }
+                return true
+              }
             }
             // Only ever true during an undo flying a card back into this column - a forward Golf
             // move's destination is always the waste pile, never a tableau column.
-            const hiddenCount = flying && flying.to.zone === 'tableau' && flying.to.index === colIndex ? flying.count : 0
+            const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === colIndex).reduce((sum, f) => sum + f.count, 0)
             return (
               <DropZone key={colIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: colIndex }} style={[styles.tableauColumn, { width: cardWidth }]}>
                 {/* dimUnplayable: Golf has no multi-card runs at all - getRunCount below is

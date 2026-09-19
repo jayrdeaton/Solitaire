@@ -34,6 +34,7 @@ import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
+import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
@@ -114,7 +115,13 @@ function YukonScreenInner() {
   // No draw-count/suit-count-style config to lock at deal time (unlike Klondike/Spider) - a single
   // stable controller for the lifetime of this screen.
   const controller = useMemo(() => createYukonController(), [])
-  const [state, setState] = useState<YukonState | null>(null)
+  // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
+  // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
+  // exclusion with everything else; tap/drag/auto-play can all run concurrently with each other -
+  // PATTERN_OVERLAP_GATE, same as Klondike's own extraction of this bookkeeping). Destructured
+  // below so every existing reference to `state`, `commitState`, `flying`, `startFlights`,
+  // `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<YukonState>()
   // Every Yukon move (tableau->tableau, tableau->foundation) has a real origin/destination to fly -
   // no stock-draw-shaped move that would need a null MoveInfo, unlike Klondike's undo stack. Mirrors
   // FreeCell's own non-nullable UndoEntry<FreeCellState, MoveInfo>.
@@ -138,7 +145,6 @@ function YukonScreenInner() {
   const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
-  const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
   const deal = useDealAnimator()
   const dealOriginRef = useRef<View>(null)
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
@@ -155,25 +161,39 @@ function YukonScreenInner() {
    * after its real King has been hidden (won-gated, see the foundation row below), at which point
    * that card is no longer CardRegistry-registered at all. */
   const foundationSlotRefs = useRef<(View | null)[]>(new Array(4).fill(null))
-  /** A flight awaiting its post-commit measurement + ghost.flyTo, shared by tap-to-move
-   * (handleCardTap), undo, and auto-play (fireAutoMove) - only one is ever in flight at a time.
-   * `fast` marks a fireAutoMove-triggered flight, so the effect below passes it on to ghost.flyTo
-   * for the quicker auto-play-to-foundation timing. `gen` is the `dealTokenRef` value at the moment
-   * this flight was queued - re-checked once the async measurement below resolves, so a flight
-   * queued against a game that's since been replaced by "New Game" doesn't measure/land against the
-   * new deal's DOM (card ids are shuffle-independent and reused across deals - see deck.ts). */
-  const pendingFlightRef = useRef<{ cardId: string; fast?: boolean; sweep?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
+  /** Flights awaiting their post-commit measurement + ghost.flyTo, queued by tap-to-move
+   * (handleCardTap), a tableau drag's own onDrop, undo, and auto-play (firePlay) - a list (not a
+   * single slot), since these can now genuinely overlap (see PATTERN_OVERLAP_GATE, same as
+   * Klondike's own pendingFlightRef): two entries queued in the same commit would otherwise
+   * clobber each other in a single ref slot, permanently stranding whichever one lost. Each entry
+   * carries its own already-created DragFlightHandle (from whichever call site queued it) to
+   * fly/hide once measured, and its own flyingId to remove exactly its own `flying` entry once it
+   * lands - see the [state]-effect below. `fast` marks a firePlay-triggered flight, passed on to
+   * flight.flyTo for the quicker auto-play-to-foundation timing. `gen` is the `dealTokenRef` value
+   * at the moment this flight was queued - re-checked once the async measurement below resolves, so
+   * a flight queued against a game that's since been replaced by "New Game" doesn't measure/land
+   * against the new deal's DOM (card ids are shuffle-independent and reused across deals - see
+   * deck.ts). */
+  const pendingFlightRef = useRef<{ cardId: string; fast?: boolean; sweep?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
   /** A cascade-undo return flight awaiting its post-commit per-card measurement, mirroring
    * pendingFlightRef's own deferral reasoning - see the [state]-effect below and
    * groupCascadedByFoundation's doc comment. Independent of pendingFlightRef: the primary card's
    * flight and any cascaded cards' return flights animate concurrently (separate providers -
    * DragGhostLayer for the primary, DealLayer's N-independent ghosts for the cascade), not
-   * sequentially. */
+   * sequentially - each counts as its own completion against activeFlightCountRef (see handleUndo's
+   * `startFlights(cascadeGroups.length > 0 ? 2 : 1)`). Stays a single slot (not a list, unlike
+   * pendingFlightRef) - undo itself is still fully serialized (undoBusyRef + activeFlightCountRef,
+   * see useFlightConcurrency), so at most one cascade-undo op is ever pending at a time; it already
+   * carries multiple cards per op via `groups`, which is a different axis (several cards within ONE
+   * pending op) from several concurrent ops, so there's nothing here for a list to buy. Mirrors
+   * Klondike's own pendingCascadeUndoRef, which stays single-slot for the identical reason. */
   const pendingCascadeUndoRef = useRef<{ groups: CascadeUndoGroup[]; gen: number } | null>(null)
-  // Which foundation piles currently have a card mid-flight back into them via cascade undo -
-  // FoundationCell's own isFlyingHere (see the foundation row below) ORs this together with the
-  // existing single-slot `flying` state, since a cascade-undo can be returning cards to MULTIPLE
-  // foundations at once while `flying` only ever tracks one destination.
+  // Which foundation piles currently have a card mid-flight back into them via cascade undo - kept
+  // as its own separate mechanism rather than folded into `flying` (per Klondike's own precedent,
+  // its cascadeWasteHiddenCount, for the identical "one cascade-undo can touch several destinations
+  // at once" problem): FoundationCell's own isFlyingHere (see the foundation row below) ORs this
+  // together with `flying`'s own per-entry aggregation, since a cascade-undo can be returning cards
+  // to MULTIPLE foundations at once as ITS OWN single flying entry wouldn't distinguish.
   const [cascadeFlyingFoundations, setCascadeFlyingFoundations] = useState<Set<number>>(new Set())
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
@@ -183,27 +203,6 @@ function YukonScreenInner() {
   // still bumps to a new value and re-triggers the shake instead of being a no-op state update.
   const [shake, setShake] = useState<{ cardId: string; count: number; token: number } | null>(null)
   const shakeTokenRef = useRef(0)
-  // Mirrors `state` so fireAutoMove - which has an await gap before it applies its move, unlike
-  // every other mutator here - can tell if some other action already changed state underneath it
-  // and bail instead of applying against a stale snapshot. Synced from a dedicated effect rather
-  // than a direct render-time write (Klondike/FreeCell do write it inline in the render body, but
-  // the same line here trips react-hooks/refs - the effect form is both lint-clean and the
-  // more conventional way to mirror a prop/state value into a ref anyway) - fireAutoMove only ever
-  // reads `.current` from its own later async closure, well after this effect has committed.
-  const stateRef = useRef(state)
-  useEffect(() => {
-    stateRef.current = state
-  }, [state])
-  // Guards handleUndo against being called again before its own previous invocation has fully
-  // settled (visually, not just in state) - see handleUndo below for why an overlapping call would
-  // otherwise desync the undo stack or clobber the shared single-flight ghost/deal animation.
-  const undoBusyRef = useRef(false)
-  // Separate from undoBusyRef (which tracks the PRIMARY card's own flight, exactly as before this
-  // fix): guards handleUndo against being re-entered while a cascade-undo return flight is still
-  // using the shared `deal` animator (see pendingCascadeUndoRef's effect below) - deal.start() only
-  // ever supports one active batch of ghosts at a time, and the initial deal itself also shares
-  // this same `deal` instance, so a second handleUndo call mid-cascade-flight would clobber it.
-  const cascadeUndoBusyRef = useRef(false)
 
   function startNewGame() {
     const myToken = ++dealTokenRef.current
@@ -211,7 +210,9 @@ function YukonScreenInner() {
     setUndoStack([])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
+    pendingCascadeUndoRef.current = null
     session.reset()
     setWon(false)
     recordedWinRef.current = false
@@ -222,7 +223,7 @@ function YukonScreenInner() {
     setDealHiddenIds(dealtIds)
     setDeckVisible(true)
     scheduleDeal(myToken)
-    setState(s)
+    commitState(s)
   }
 
   // Restores a previously saved board exactly as left - no deal-fly-in animation (this isn't a new
@@ -234,13 +235,15 @@ function YukonScreenInner() {
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
+    pendingCascadeUndoRef.current = null
     session.restore(saved.moves, saved.elapsedSeconds)
     setWon(false)
     recordedWinRef.current = false
     setDealHiddenIds(new Set())
     setDeckVisible(false)
-    setState(saved.state)
+    commitState(saved.state)
   }
 
   // Dealing a new game over one still in progress abandons it (counted as a loss) - GameChrome
@@ -353,31 +356,34 @@ function YukonScreenInner() {
   // roughly where it started - indistinguishable from a snap. Deferring to a [state]-keyed effect
   // guarantees the destination card has already registered by the time this runs.
   useEffect(() => {
+    if (pendingFlightRef.current.length === 0 || !state) return
     const pending = pendingFlightRef.current
-    if (!pending || !state) return
-    pendingFlightRef.current = null
-    ;(async () => {
-      const landed = await ghost.cardRegistry.measure(pending.cardId)
-      // A new game can start while the measurement above is in flight (e.g. tapping "New Game"
-      // mid auto-play-cascade - see maybeAutoPlay). `landed`, if it resolved at all, would then be
-      // measuring an unrelated card in the NEW deal (ids are shuffle-independent and reused across
-      // deals - see deck.ts), so drop this flight instead of landing on a nonsensical position.
-      if (dealTokenRef.current !== pending.gen || !landed) {
-        pending.flight.hide()
-        setFlying(null)
-        undoBusyRef.current = false
-        return
-      }
-      pending.flight.flyTo(
-        landed.x,
-        landed.y,
-        () => {
-          setFlying(null)
-          undoBusyRef.current = false
-        },
-        { fast: pending.fast, sweep: pending.sweep }
-      )
-    })()
+    pendingFlightRef.current = []
+    pending.forEach((p) => {
+      ;(async () => {
+        const landed = await ghost.cardRegistry.measure(p.cardId)
+        // A new game can start while the measurement above is in flight (e.g. tapping "New Game"
+        // mid auto-play-cascade - see maybeAutoPlay). `landed`, if it resolved at all, would then
+        // be measuring an unrelated card in the NEW deal (ids are shuffle-independent and reused
+        // across deals - see deck.ts), so drop this flight instead of landing on a nonsensical
+        // position.
+        if (dealTokenRef.current !== p.gen || !landed) {
+          p.flight.hide()
+          endFlying(p.flyingId)
+          settleFlight()
+          return
+        }
+        p.flight.flyTo(
+          landed.x,
+          landed.y,
+          () => {
+            endFlying(p.flyingId)
+            settleFlight()
+          },
+          { fast: p.fast, sweep: p.sweep }
+        )
+      })()
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
@@ -388,6 +394,25 @@ function YukonScreenInner() {
   // Same measure-after-commit reasoning as every other deferred effect in this file: a cascaded
   // card's own CardRegistry entry only exists once its tableau column's registration effect has
   // actually run for the just-reverted state, which this [state]-keyed effect waits for.
+  //
+  // This cascade-return flight's completion is folded straight into activeFlightCountRef via
+  // settleFlight() below (handleUndo claims it up front via `startFlights(cascadeGroups.length > 0
+  // ? 2 : 1)`) rather than guarded by its own separate busy ref. An earlier version of this file had
+  // a dedicated `cascadeUndoBusyRef`, reasoning that the shared `deal` animator (useDealAnimator)
+  // only supports one active ghost batch at a time, and the initial deal + this cascade-return both
+  // share that same `deal` instance. That's a real constraint on `deal`, but it doesn't need its own
+  // busy ref here: Yukon's PRIMARY undo flight always goes through `ghost` (DragGhostLayer), never
+  // `deal` - unlike Klondike, which has draw-3/recycle-undo branches that route the primary flight
+  // through `deal` too, and even Klondike doesn't use a separate busy ref for that overlap (see its
+  // own handleUndo, which just sequences the cascade's deal.start() to start after the primary
+  // deal.start() batch it shares finishes). So the only two things that could ever contend for
+  // `deal` here are this cascade-return and a fresh "New Game" deal - and undoBusyRef already blocks
+  // a new deal from starting mid-undo (startNewGame/restoreGame aren't reachable while undoBusyRef
+  // is true), while dealTokenRef's own gen-check above/below drops this cascade-return's callbacks
+  // harmlessly if a new deal ever did start anyway. No concrete case where retiring the separate ref
+  // breaks anything was found - see YukonScreen's CLAUDE.md history for the analogous fix to
+  // DealGhostCard's own React key generation, which already makes overlapping deal.start() calls
+  // safe at the mechanism level.
   useEffect(() => {
     const pending = pendingCascadeUndoRef.current
     if (!pending || !state) return
@@ -420,7 +445,7 @@ function YukonScreenInner() {
       // would otherwise land against the NEW deal's unrelated cards.
       if (dealTokenRef.current !== pending.gen) {
         clearFlags(allCardIds, foundationIndices)
-        cascadeUndoBusyRef.current = false
+        settleFlight()
         return
       }
 
@@ -437,7 +462,7 @@ function YukonScreenInner() {
       )
       if (dealTokenRef.current !== pending.gen) {
         clearFlags(allCardIds, foundationIndices)
-        cascadeUndoBusyRef.current = false
+        settleFlight()
         return
       }
 
@@ -447,7 +472,7 @@ function YukonScreenInner() {
 
       if (entries.length === 0) {
         clearFlags([], foundationIndices)
-        cascadeUndoBusyRef.current = false
+        settleFlight()
         return
       }
 
@@ -466,7 +491,7 @@ function YukonScreenInner() {
         () => {
           if (dealTokenRef.current !== pending.gen) return
           clearFlags([], foundationIndices)
-          cascadeUndoBusyRef.current = false
+          settleFlight()
         }
       )
     })()
@@ -504,21 +529,30 @@ function YukonScreenInner() {
   // before applying its move (every other mutator here either has no await at all, or - like
   // handleUndo - captures everything it needs from the pre-move state synchronously first). Guard
   // against something else changing state during that gap by snapshotting stateRef before the
-  // await and bailing if it no longer matches after.
+  // await and bailing if it no longer matches after. Claims a flight slot up front (see
+  // activeFlightCountRef's own doc comment) - mirrors handleCardTap/tableau onDrop's identical
+  // undoBusyRef gate, even though the cascade hook's own isBusy check already keeps this from being
+  // invoked while undo is running - belt and suspenders against the same race those two guard.
   async function firePlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
+    if (undoBusyRef.current) return
+    startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
-    if (!origin || stateRef.current !== stateAtStart) return
+    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current) {
+      settleFlight()
+      return
+    }
     cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: !opts.sweep, sweep: opts.sweep })) {
       flight.hide()
+      settleFlight()
     }
   }
 
   const cascade = useAutoFoundationCascade<YukonState>({
     state,
-    settled: flying === null && dealHiddenIds.size === 0,
+    settled: activeFlightCount === 0 && dealHiddenIds.size === 0,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     computeNextStep,
@@ -583,9 +617,12 @@ function YukonScreenInner() {
   // (the pendingFlightRef effect above can only measure a DESTINATION once it's committed and
   // re-rendered, so the ORIGIN has to be captured here, synchronously against the still-current
   // state), then revert and mark `move.from` as incoming so it flies the rest of the way there
-  // exactly like a fresh move would.
+  // exactly like a fresh move would. `activeFlightCountRef.current > 0` subsumes both the old
+  // `flying !== null` and `cascadeUndoBusyRef.current` checks this guard used to also carry - undo
+  // still holds full mutual exclusion (see useFlightConcurrency's own undoBusyRef doc comment), it
+  // just now waits on one counter instead of three separate flags.
   async function handleUndo() {
-    if (undoBusyRef.current || cascadeUndoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
+    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition - the only move available once it's true is New Game), so any undo reachable while
@@ -603,21 +640,28 @@ function YukonScreenInner() {
     const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
     const { primary, cascaded } = move
+    // Captured once, up front - every stash this call makes uses this same token, so a "New Game"
+    // that fires mid-await consistently invalidates every one of this undo's pending flights rather
+    // than some using a token read before the race and some after (mirrors Klondike's own `gen`).
+    const gen = dealTokenRef.current
+
+    // Resolved against stateRef.current, not the render-closure `state` - same reasoning as
+    // applyMove's identical read (see PATTERN_OVERLAP_GATE). Computed synchronously here, before any
+    // await, so it's available up front for startFlights' own count below, and each cascaded card is
+    // still findable on its real foundation pile right now, whereas after the revert later in this
+    // function it (may) no longer be there at all.
+    const cascadeGroups = groupCascadedByFoundation(stateRef.current ?? state, cascaded)
+    startFlights(cascadeGroups.length > 0 ? 2 : 1)
 
     const sourcePile = resolvePile(primary.to)
     const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - primary.count) : []
     const offsetStep = primary.count > 1 ? faceUpFanOffset(cardWidth) : 0
     const origin = movingCards.length > 0 ? await ghost.cardRegistry.measure(primary.anchorCardId) : null
-    // Resolved against the still-current (pre-revert) `state`, same reasoning as `origin` above -
-    // each cascaded card is still findable on its real foundation pile right now, whereas after
-    // the revert below it (may) no longer be there at all.
-    const cascadeGroups = groupCascadedByFoundation(state, cascaded)
 
     setUndoStack((stack) => stack.slice(0, -1))
 
     if (cascadeGroups.length > 0) {
-      cascadeUndoBusyRef.current = true
-      // Hidden BEFORE setState(prevState) below, in the same commit - React batches same-tick
+      // Hidden BEFORE commitState(prevState) below, in the same commit - React batches same-tick
       // setState calls, so this avoids a frame where the restored cards flash fully visible before
       // their ghosts arrive to cover them (same reasoning startNewGame's own setDealHiddenIds
       // relies on for the initial deal).
@@ -637,16 +681,16 @@ function YukonScreenInner() {
       playCardSound()
       hapticCard()
       const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
-      setFlying({ to: primary.from, count: primary.count })
-      setState(prevState)
-      pendingFlightRef.current = { cardId: primary.anchorCardId, gen: dealTokenRef.current, flight }
+      const flyingId = beginFlying(primary.from, primary.count)
+      commitState(prevState)
+      pendingFlightRef.current.push({ cardId: primary.anchorCardId, gen, flyingId, flight })
     } else {
-      setState(prevState)
-      undoBusyRef.current = false
+      commitState(prevState)
+      settleFlight() // primary: nothing to fly, settles immediately
     }
 
     if (cascadeGroups.length > 0) {
-      pendingCascadeUndoRef.current = { groups: cascadeGroups, gen: dealTokenRef.current }
+      pendingCascadeUndoRef.current = { groups: cascadeGroups, gen }
     }
   }
 
@@ -655,8 +699,13 @@ function YukonScreenInner() {
   // reverts the whole triggering move plus any cascade it set off, in one step) and doesn't count
   // toward the moves/score the player is judged on.
   function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean }) {
-    if (!state) return false
-    const result = controller.tryMove(state, { from, to, count })
+    // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
+    // closure's `state` - two actions can now be triggered back-to-back before React re-renders
+    // (see PATTERN_OVERLAP_GATE), and each must build its own tryMove on top of whatever the OTHER's
+    // commitState just did, not the same stale board both closures captured.
+    const current = stateRef.current
+    if (!current) return false
+    const result = controller.tryMove(current, { from, to, count })
     if (result) {
       const moveInfo: MoveInfo = { from, to, count, anchorCardId }
       if (opts?.silent) {
@@ -673,9 +722,9 @@ function YukonScreenInner() {
           return [...stack.slice(0, -1), { ...last, move: { ...last.move, cascaded: [...last.move.cascaded, moveInfo] } }]
         })
       } else {
-        pushUndo(state, { primary: moveInfo, cascaded: [] })
+        pushUndo(current, { primary: moveInfo, cascaded: [] })
       }
-      setState(result)
+      commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
       if (!opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
@@ -684,7 +733,7 @@ function YukonScreenInner() {
       // silent - a cascaded tableau-to-foundation play can just as well reveal a fresh ace
       // underneath as a manual one can, and that ace deserves the same instant payoff either way.
       if (from.zone === 'tableau') {
-        const revealed = detectRevealedCard(state.tableau[from.index], result.tableau[from.index], count)
+        const revealed = detectRevealedCard(current.tableau[from.index], result.tableau[from.index], count)
         if (revealed && revealed.rank === 1) {
           cascade.armFromAceEvent({ ref: from, card: revealed }, { zone: 'foundation', index: SUITS.indexOf(revealed.suit) })
         }
@@ -700,8 +749,8 @@ function YukonScreenInner() {
   // instead of it just vanishing/appearing at the destination instantly.
   function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
-    setFlying({ to, count })
-    pendingFlightRef.current = { cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flight }
+    const flyingId = beginFlying(to, count)
+    pendingFlightRef.current.push({ cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 
@@ -737,6 +786,7 @@ function YukonScreenInner() {
   // so the ghost always lands exactly on top of it with no seam.
   async function handleCardTap(ref: PileRef, cardId: string, measure: () => Promise<{ x: number; y: number }>, indexFromTop?: number) {
     if (!state || !controller.autoMoveHint) return
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
     const move = controller.autoMoveHint(state, ref, cardId)
     if (!move) {
       // Nowhere legal to go - shake the card so the tap reads as "received, just stuck" rather
@@ -752,9 +802,16 @@ function YukonScreenInner() {
       return
     }
 
+    // Claimed synchronously before the await below (see PATTERN_OVERLAP_GATE) - so undo (the only
+    // thing that still waits on activeFlightCountRef) sees this tap as in-flight for its whole
+    // duration, not just once completeMove lands one.
+    startFlights(1)
     const origin = await measure()
     const sourcePile = resolvePile(move.from)
-    if (!sourcePile) return
+    if (!sourcePile || undoBusyRef.current) {
+      settleFlight()
+      return
+    }
     const movingCards = sourcePile.slice(sourcePile.length - move.count)
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
@@ -764,6 +821,7 @@ function YukonScreenInner() {
 
     if (!completeMove(move.from, move.to, move.count, cardId, flight)) {
       flight.hide()
+      settleFlight()
     }
   }
 
@@ -782,7 +840,7 @@ function YukonScreenInner() {
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)
-              const isFlyingHere = (!!flying && flying.to.zone === 'foundation' && flying.to.index === i) || cascadeFlyingFoundations.has(i)
+              const isFlyingHere = flying.some((f) => f.to.zone === 'foundation' && f.to.index === i) || cascadeFlyingFoundations.has(i)
               return (
                 <DropZone key={i} registry={dropZones} pileRef={{ zone: 'foundation', index: i }} style={[styles.foundationSlot, { width: cardWidth }]}>
                   <FoundationCell
@@ -811,9 +869,25 @@ function YukonScreenInner() {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
               getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
-              onDrop: (to, count, anchorCardId, flight) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)
+              // Claims a flight slot (see activeFlightCountRef's doc comment above) purely so undo
+              // sees this drop as in-flight for its whole duration, not just once completeMove
+              // lands one - PileView.tsx (shared, not ours to edit) already ran its own hitTest
+              // await before invoking this callback, so this is the earliest point YukonScreen
+              // gets a look-in. Rejects outright if undo is running (undo holds full mutual
+              // exclusion, not just a one-way wait - see undoBusyRef's own doc comment) - the
+              // drag's own ghost (already shown by PileView/DraggableCard well before this runs)
+              // just snaps back, same as "no legal target".
+              onDrop: (to, count, anchorCardId, flight) => {
+                if (undoBusyRef.current) return false
+                startFlights(1)
+                if (!completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)) {
+                  settleFlight()
+                  return false
+                }
+                return true
+              }
             }
-            const hiddenCount = flying && flying.to.zone === 'tableau' && flying.to.index === colIndex ? flying.count : 0
+            const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === colIndex).reduce((sum, f) => sum + f.count, 0)
             return (
               <DropZone key={colIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: colIndex }} style={[styles.tableauColumn, { width: cardWidth }]}>
                 <PileView cards={col} onPressCard={(card, indexFromTop, measure) => handleCardTap({ zone: 'tableau', index: colIndex }, card.id, measure, indexFromTop)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} shakeCardId={shake?.cardId} shakeCount={shake?.count} shakeToken={shake?.token} />

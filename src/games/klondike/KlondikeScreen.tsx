@@ -34,6 +34,7 @@ import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
+import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
@@ -107,7 +108,13 @@ function KlondikeScreenInner() {
   // render: the in-progress game's own controller/rules must stay fixed to whatever draw count it
   // was dealt with, even if the player changes the setting mid-game without starting a new deal.
   const [klondikeDraw, setKlondikeDraw] = useState<1 | 3>(settings.klondikeDraw)
-  const [state, setState] = useState<KlondikeState | null>(null)
+  // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
+  // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
+  // exclusion with everything else; tap/drag/auto-play/stock-draw can all run concurrently with
+  // each other - PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`,
+  // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
+  // unchanged.
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<KlondikeState>()
   const [undoStack, setUndoStack] = useState<KlondikeUndoEntry[]>([])
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -128,13 +135,6 @@ function KlondikeScreenInner() {
   const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
-  // Every currently-in-flight move's own "what's still hidden at the destination" descriptor -
-  // a list, not a single value, since concurrent flights (see PATTERN_OVERLAP_GATE) can each be
-  // headed to a different pile at once. `id` is this entry's own flyingIdRef-issued id, used to
-  // remove exactly this entry (and no other) once its own flight lands - see settleFlight's
-  // callers below.
-  const [flying, setFlying] = useState<{ id: number; to: PileRef; count: number }[]>([])
-  const flyingIdRef = useRef(0)
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
   /** Waste slot's own wrapping View, for measuring its screen position as a group-ghost flight's
@@ -201,21 +201,9 @@ function KlondikeScreenInner() {
    * captured synchronously in handleUndo (a container ref, content-independent, safe to measure
    * before the state revert commits) since the cascaded cards themselves have no CardRegistry
    * entry once buried under a later foundation arrival. Stays a single slot (not a list) - undo
-   * itself is still fully serialized (see undoBusyRef/activeFlightCountRef below), so at most one
+   * itself is still fully serialized (see useFlightConcurrency's undoBusyRef/activeFlightCountRef), so at most one
    * of these is ever pending at a time. */
   const pendingCascadeUndoRef = useRef<{ moves: MoveInfo[]; origins: CascadeOrigins; gen: number } | null>(null)
-  /** How many independent flight-completions are outstanding right now, summed across every
-   * concurrently-active action (tap-to-move, drag, auto-play, stock-draw all now run concurrently
-   * with each other - see PATTERN_OVERLAP_GATE; undo alone still waits for this to hit 0 before it
-   * can start, and blocks everything else while it runs, to protect the undo stack). Normally +1
-   * per action, +2 for an undo whose entry also carries cascaded moves (the primary move's own
-   * DragGhostLayer flight and the cascaded cards' independent DealLayer flight are two genuinely
-   * concurrent completions). The ref is authoritative and updated synchronously (closing the gap
-   * where a rapid second action could start during an async measurement window before a `setState`
-   * has even committed); the state mirror exists only so the auto-play watcher effect below can
-   * re-run once the count changes. */
-  const activeFlightCountRef = useRef(0)
-  const [activeFlightCount, setActiveFlightCount] = useState(0)
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
   const cascadeFeedback = useCascadeFeedback(playCardSound, hapticCard)
@@ -224,62 +212,6 @@ function KlondikeScreenInner() {
   // still bumps to a new value and re-triggers the shake instead of being a no-op state update.
   const [shake, setShake] = useState<{ cardId: string; count: number; token: number } | null>(null)
   const shakeTokenRef = useRef(0)
-  // Mirrors `state` (via a dedicated effect rather than a direct render-time write, matching
-  // YukonScreen's identical fix for the same react-hooks/refs trip, PLUS commitState below) so a
-  // mutator with an await gap before it applies its move can tell if some other action already
-  // changed state underneath it and bail instead of applying against a stale snapshot. The
-  // rapid-click same-tick guarantee (see commitState's own comment) comes entirely from
-  // commitState's synchronous `stateRef.current = next` - a plain function call, not a render-time
-  // write, so it's unaffected by this effect and still updates stateRef.current well before this
-  // effect (or React's next render) ever runs.
-  const stateRef = useRef(state)
-  useEffect(() => {
-    stateRef.current = state
-  }, [state])
-
-  // Every mutator below reads the board via stateRef.current (never the closure `state` variable
-  // directly) and commits through this, which updates stateRef.current in the SAME synchronous
-  // tick as the setState call - not just on React's next render pass. This matters now that
-  // multiple actions can be triggered back-to-back before React has had a chance to re-render (see
-  // PATTERN_OVERLAP_GATE): reading the closure `state` in that window would have every one of them
-  // building their own move on top of the SAME stale board and clobbering each other's setState
-  // call (whichever commits last silently discards every earlier one's move) - confirmed live by
-  // rapid-clicking the stock pile 3 times, which drew the SAME card 3 times instead of 3 different
-  // ones before this fix. `state` itself stays the correct thing to read from the render body
-  // (JSX) and from [state]-effects (both only ever see an already-committed value, no race there).
-  function commitState(next: KlondikeState) {
-    stateRef.current = next
-    setState(next)
-  }
-  // True for the whole span of one handleUndo call, from its own guard through every flight it
-  // kicked off fully settling (visually, not just in state) - cleared by settleFlight once
-  // activeFlightCountRef returns to 0. Undo alone still holds FULL mutual exclusion (see
-  // PATTERN_OVERLAP_GATE): it refuses to start while anything else is active (activeFlightCountRef
-  // > 0), AND every other flight-starting entry point (handleCardTap, handleDrawStock,
-  // fireAutoMove/maybeAutoPlay, attemptDrop, the tableau's own onDrop) refuses to start while THIS
-  // is true - reverting to an earlier board and applying a fresh move on top of it are not safe to
-  // interleave (undo's own `commitState(prevState)` would silently clobber whatever a concurrent
-  // action just committed, or vice versa), unlike two ordinary moves, which are.
-  const undoBusyRef = useRef(false)
-
-  // Claims N outstanding completions up front (see activeFlightCountRef above) - called once per
-  // flight-starting action, before its own async measurement/flight actually begins.
-  function startFlights(n: number) {
-    activeFlightCountRef.current += n
-    setActiveFlightCount(activeFlightCountRef.current)
-  }
-
-  // Shared completion tail for every flight-starting action (see activeFlightCountRef above) - call
-  // once per independent completion (a landed ghost flight, a landed deal, or a "nothing to
-  // animate" bail); only actually clears undoBusyRef once every completion every currently-active
-  // action claimed up front has reported in.
-  function settleFlight() {
-    activeFlightCountRef.current = Math.max(0, activeFlightCountRef.current - 1)
-    setActiveFlightCount(activeFlightCountRef.current)
-    if (activeFlightCountRef.current === 0) {
-      undoBusyRef.current = false
-    }
-  }
 
   function startNewGame() {
     const myToken = ++dealTokenRef.current
@@ -289,13 +221,10 @@ function KlondikeScreenInner() {
     setUndoStack([])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
-    activeFlightCountRef.current = 0
-    setActiveFlightCount(0)
+    resetFlightConcurrency()
     pendingFlightRef.current = []
     pendingDealDrawRef.current = []
     pendingCascadeUndoRef.current = null
-    setFlying([])
     setStockHidden(false)
     setCascadeWasteHiddenCount(0)
     setWinCascadeFallbackSuits(new Set())
@@ -328,13 +257,10 @@ function KlondikeScreenInner() {
     setUndoStack((saved.undoStack ?? []).map(normalizeUndoEntry))
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
-    activeFlightCountRef.current = 0
-    setActiveFlightCount(0)
+    resetFlightConcurrency()
     pendingFlightRef.current = []
     pendingDealDrawRef.current = []
     pendingCascadeUndoRef.current = null
-    setFlying([])
     setStockHidden(false)
     setCascadeWasteHiddenCount(0)
     setWinCascadeFallbackSuits(new Set())
@@ -456,7 +382,7 @@ function KlondikeScreenInner() {
         // position.
         if (dealTokenRef.current !== p.gen || !landed) {
           p.flight.hide()
-          setFlying((f) => f.filter((e) => e.id !== p.flyingId))
+          endFlying(p.flyingId)
           settleFlight()
           return
         }
@@ -464,7 +390,7 @@ function KlondikeScreenInner() {
           landed.x,
           landed.y,
           () => {
-            setFlying((f) => f.filter((e) => e.id !== p.flyingId))
+            endFlying(p.flyingId)
             settleFlight()
           },
           { fast: p.fast, sweep: p.sweep }
@@ -503,7 +429,7 @@ function KlondikeScreenInner() {
         // been replaced makes `topPos` (if it resolves at all) measure an unrelated card in the
         // new deal, so bail out rather than fly a deal-style flight toward it.
         if (dealTokenRef.current !== p.gen || !origin || !topPos) {
-          setFlying((f) => f.filter((e) => e.id !== p.flyingId))
+          endFlying(p.flyingId)
           settleFlight()
           return
         }
@@ -526,10 +452,10 @@ function KlondikeScreenInner() {
             // Each landed ghost reveals its own slot immediately (see StockWaste's per-slot
             // freezing) - farthest-from-top lands first (smallest delay), so the count shrinks
             // outside-in, front slot last.
-            setFlying((f) => f.map((e) => (e.id === p.flyingId ? { ...e, count: Math.max(0, e.count - 1) } : e)))
+            shrinkFlying(p.flyingId)
           },
           () => {
-            setFlying((f) => f.filter((e) => e.id !== p.flyingId))
+            endFlying(p.flyingId)
             settleFlight()
           }
         )
@@ -819,12 +745,11 @@ function KlondikeScreenInner() {
         playCardSound()
         hapticCard()
         const flight = ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth }, { x: stockOrigin.x, y: stockOrigin.y })
-        const flyingId = ++flyingIdRef.current
-        setFlying((f) => [...f, { id: flyingId, to: { zone: 'waste', index: 0 }, count: recycledCards.length }])
+        const flyingId = beginFlying({ zone: 'waste', index: 0 }, recycledCards.length)
         setStockHidden(true)
         commitState(prevState)
         flight.flyTo(wasteDest.x, wasteDest.y, () => {
-          setFlying((f) => f.filter((e) => e.id !== flyingId))
+          endFlying(flyingId)
           setStockHidden(false)
           settleFlight()
         })
@@ -915,8 +840,7 @@ function KlondikeScreenInner() {
       playCardSound()
       hapticCard()
       const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
-      const flyingId = ++flyingIdRef.current
-      setFlying((f) => [...f, { id: flyingId, to: move.from, count: move.count }])
+      const flyingId = beginFlying(move.from, move.count)
       commitState(prevState)
       pendingFlightRef.current.push({ cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen, flyingId, flight })
     } else {
@@ -967,8 +891,7 @@ function KlondikeScreenInner() {
   // instead of it just vanishing/appearing at the destination instantly.
   function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
-    const flyingId = ++flyingIdRef.current
-    setFlying((f) => [...f, { id: flyingId, to, count }])
+    const flyingId = beginFlying(to, count)
     pendingFlightRef.current.push({ cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
@@ -1032,8 +955,7 @@ function KlondikeScreenInner() {
 
     cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    const flyingId = ++flyingIdRef.current
-    setFlying((f) => [...f, { id: flyingId, to, count: 1 }])
+    const flyingId = beginFlying(to, 1)
 
     pushCascadedMove({ from: { zone: 'stock', index: 0 }, to, count: 1, anchorCardId: entry.card.id })
     commitState(result)
@@ -1112,15 +1034,14 @@ function KlondikeScreenInner() {
           hapticCard()
         }
         const flight = ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth }, { x: wasteOrigin.x, y: wasteOrigin.y })
-        const flyingId = ++flyingIdRef.current
-        setFlying((f) => [...f, { id: flyingId, to: { zone: 'waste', index: 0 }, count: recycledCards.length }])
+        const flyingId = beginFlying({ zone: 'waste', index: 0 }, recycledCards.length)
         setStockHidden(true)
         commitState(result)
         flight.flyTo(
           stockDest.x,
           stockDest.y,
           () => {
-            setFlying((f) => f.filter((e) => e.id !== flyingId))
+            endFlying(flyingId)
             setStockHidden(false)
             settleFlight()
           },
@@ -1154,8 +1075,7 @@ function KlondikeScreenInner() {
       const moveWithIds: MoveInfo = { ...move, cardIds: drawnCards.map((c) => c.id) }
       if (opts?.sweep) pushCascadedMove(moveWithIds)
       else pushUndo(current, moveWithIds)
-      const flyingId = ++flyingIdRef.current
-      setFlying((f) => [...f, { id: flyingId, to: { zone: 'waste', index: 0 }, count: drawnCount }])
+      const flyingId = beginFlying({ zone: 'waste', index: 0 }, drawnCount)
       pendingDealDrawRef.current.push({ topCardId: drawnCard.id, drawnCards, gen: dealTokenRef.current, flyingId })
       commitState(result)
       return
@@ -1176,8 +1096,7 @@ function KlondikeScreenInner() {
       hapticCard()
     }
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    const flyingId = ++flyingIdRef.current
-    setFlying((f) => [...f, { id: flyingId, to: { zone: 'waste', index: 0 }, count: 1 }])
+    const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
 
     if (opts?.sweep) pushCascadedMove(move)
     else pushUndo(current, move)
@@ -1273,7 +1192,7 @@ function KlondikeScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Klondike' subtitle={`Draw ${klondikeDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<KlondikeSettingsSection />} rules={KLONDIKE_RULES} showVignette>
+      <GameChrome title='Klondike' subtitle={`Draw ${klondikeDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<KlondikeSettingsSection />} rules={KLONDIKE_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {

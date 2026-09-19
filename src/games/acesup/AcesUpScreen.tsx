@@ -52,6 +52,7 @@ import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
+import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
@@ -86,7 +87,14 @@ function AcesUpScreenInner() {
   // PileView-using game already does (see useTableauMaxHeight's own doc comment), 320 kept as the
   // floor so a short/cramped screen never gets less generous than it did before.
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, 320)
-  const [state, setState] = useState<AcesUpState | null>(null)
+  // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
+  // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
+  // exclusion with everything else; tap/drag/stock-draw can all run concurrently with each other -
+  // PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`, `commitState`,
+  // `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working unchanged. Aces Up
+  // has no foundation-by-suit auto-play, so (unlike Klondike) nothing here ever needs
+  // shrinkFlying/activeFlightCount themselves - only activeFlightCountRef, for handleUndo's guard.
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<AcesUpState>()
   const [undoStack, setUndoStack] = useState<UndoEntry<AcesUpState>[]>([])
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -101,7 +109,6 @@ function AcesUpScreenInner() {
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
   const ghost = useDragGhost()
-  const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
   const discardViewRef = useRef<View>(null)
@@ -122,28 +129,41 @@ function AcesUpScreenInner() {
    * (won-gated, see the piles row below), at which point it's no longer CardRegistry-registered
    * at all. Mirrors Canfield's own foundationSlotRefs/Scorpion's own tableauColumnRefs. */
   const pileViewRefs = useRef<(View | null)[]>(new Array(NUM_PILES).fill(null))
-  /** A flight (the DragFlightHandle already returned by the ghost.show() that started it) awaiting
-   * its post-commit measurement + its own flyTo, shared by tap-to-move-to-empty, tap-to-discard,
-   * and undo of either - only one is ever in flight at a time. `viaStock` measures via stockViewRef
-   * (a plain View, not per-card) instead of CardRegistry - only undoing a round deal flies back
-   * toward the stock. `viaDiscard` similarly measures via discardViewRef - a forward discard's card
-   * is no longer registered anywhere once it lands (DiscardCell doesn't register in CardRegistry -
-   * see its own doc comment), so its destination has to be the pile's own fixed position, not a
-   * per-card lookup. `gen` guards against a "New Game" tapped mid-flight replacing the deal this
-   * flight was measuring against (card ids are shuffle-independent and reused across deals - see
-   * engine/deck.ts). */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; viaDiscard?: boolean; gen: number; flight: DragFlightHandle } | null>(null)
+  /** Flights (each carrying the DragFlightHandle already returned by the ghost.show() that started
+   * it) awaiting their own post-commit measurement + flyTo, queued by tap-to-move-to-empty,
+   * tap-to-discard, and undo of either - a list (not a single slot), since these can now genuinely
+   * overlap (see PATTERN_OVERLAP_GATE): two entries queued in the same commit would otherwise
+   * clobber each other in a single ref slot, permanently stranding whichever one lost. Each entry
+   * carries its own already-created flight to fly/hide once measured, and its own flyingId to
+   * remove exactly its own `flying` entry once it lands - see the [state]-effect below. `viaStock`
+   * measures via stockViewRef (a plain View, not per-card) instead of CardRegistry - only undoing a
+   * round deal flies back toward the stock. `viaDiscard` similarly measures via discardViewRef - a
+   * forward discard's card is no longer registered anywhere once it lands (DiscardCell doesn't
+   * register in CardRegistry - see its own doc comment), so its destination has to be the pile's
+   * own fixed position, not a per-card lookup. `gen` guards against a "New Game" tapped mid-flight
+   * replacing the deal this flight was measuring against (card ids are shuffle-independent and
+   * reused across deals - see engine/deck.ts). */
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; viaDiscard?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
   /** A round deal (4 cards, one per pile) awaiting its post-commit measurement + deal.start() -
-   * mirrors Spider's/Scorpion's own stock-deal pattern, fixed at exactly NUM_PILES destinations. */
-  const pendingRoundDealRef = useRef<{ dealt: { card: Card; pileIndex: number }[]; origin: { x: number; y: number } | null; token: number } | null>(null)
+   * mirrors Spider's/Scorpion's own stock-deal pattern, fixed at exactly NUM_PILES destinations. A
+   * list (not a single slot), same reasoning as Klondike's own pendingDealDrawRef: handleDrawStock
+   * isn't gated on "no round deal already pending" (only on undoBusyRef), so a rapid double-tap of
+   * the stock pile before the first round deal's own [state]-effect has drained can genuinely queue
+   * a second entry here before the first is read - a single slot would let the second overwrite the
+   * first outright. Each entry carries its own `token`, so a stale one (dealTokenRef bumped by a
+   * "New Game" mid-flight) is simply dropped rather than clobbering a fresher one. */
+  const pendingRoundDealRef = useRef<{ dealt: { card: Card; pileIndex: number }[]; origin: { x: number; y: number } | null; token: number }[]>([])
   /** An undone round deal awaiting its post-commit measurement + deal.start() - the mirror image
-   * of pendingRoundDealRef, same idea as Scorpion's own runUndoStockDeal. */
+   * of pendingRoundDealRef, same idea as Scorpion's own runUndoStockDeal. Stays a single slot (not a
+   * list), unlike pendingRoundDealRef above - this is only ever populated from within handleUndo,
+   * which holds full mutual exclusion for its whole span (undoBusyRef/activeFlightCountRef - see
+   * useFlightConcurrency's own doc comment), so at most one of these can ever be pending at a time.
+   * Mirrors Klondike's own pendingCascadeUndoRef for the identical reasoning. */
   const pendingUndoRoundDealRef = useRef<{ entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null }[]; token: number } | null>(null)
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
   const [shake, setShake] = useState<{ cardId: string; token: number } | null>(null)
   const shakeTokenRef = useRef(0)
-  const undoBusyRef = useRef(false)
 
   function startNewGame() {
     const myToken = ++dealTokenRef.current
@@ -151,7 +171,10 @@ function AcesUpScreenInner() {
     setUndoStack([])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
+    pendingRoundDealRef.current = []
+    pendingUndoRoundDealRef.current = null
     session.reset()
     recordedWinRef.current = false
     recordedLossRef.current = false
@@ -160,7 +183,7 @@ function AcesUpScreenInner() {
 
     setDealHiddenIds(new Set(s.piles.flat().map((c) => c.id)))
     scheduleDeal(myToken)
-    setState(s)
+    commitState(s)
   }
 
   function restoreGame(saved: SavedGame<AcesUpState>) {
@@ -168,14 +191,17 @@ function AcesUpScreenInner() {
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingFlightRef.current = []
+    pendingRoundDealRef.current = []
+    pendingUndoRoundDealRef.current = null
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
     recordedLossRef.current = false
     setDealHiddenIds(new Set())
     // Optional for backward compatibility: a save written before the discard pile existed has no
     // `discard` field at all - same reasoning as SavedGame's own optional undoStack.
-    setState({ ...saved.state, discard: saved.state.discard ?? [] })
+    commitState({ ...saved.state, discard: saved.state.discard ?? [] })
   }
 
   // Dealing a new game over one still in progress abandons it (counted as a loss, same as every
@@ -247,32 +273,47 @@ function AcesUpScreenInner() {
   }, [state])
 
   useEffect(() => {
+    if (pendingFlightRef.current.length === 0 || !state) return
     const pending = pendingFlightRef.current
-    if (!pending || !state) return
-    pendingFlightRef.current = null
-    ;(async () => {
-      const landed = pending.viaStock ? await measureView(stockViewRef.current) : pending.viaDiscard ? await measureView(discardViewRef.current) : await ghost.cardRegistry.measure(pending.cardId)
-      if (dealTokenRef.current !== pending.gen || !landed) {
-        pending.flight.hide()
-        setFlying(null)
-        undoBusyRef.current = false
-        return
-      }
-      pending.flight.flyTo(landed.x, landed.y, () => {
-        setFlying(null)
-        undoBusyRef.current = false
-      })
-    })()
+    pendingFlightRef.current = []
+    pending.forEach((p) => {
+      ;(async () => {
+        const landed = p.viaStock ? await measureView(stockViewRef.current) : p.viaDiscard ? await measureView(discardViewRef.current) : await ghost.cardRegistry.measure(p.cardId)
+        if (dealTokenRef.current !== p.gen || !landed) {
+          p.flight.hide()
+          endFlying(p.flyingId)
+          settleFlight()
+          return
+        }
+        p.flight.flyTo(landed.x, landed.y, () => {
+          endFlying(p.flyingId)
+          settleFlight()
+        })
+      })()
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
+  // A round deal counts as exactly ONE flight-completion for startFlights/settleFlight purposes
+  // (claimed once by handleDrawStock, settled once here) - mirrors how Klondike's own draw-3/
+  // recycle multi-card deals count as one completion, not N (see handleDrawStock's own
+  // beginFlying(..., drawnCount) - one flying ENTRY covering several cards - and its matching single
+  // settleFlight() call once the whole deal.start() lands). This round deal doesn't touch the
+  // `flying` array at all (unlike a drag/tap flight) - its cards hide/reveal via dealHiddenIds, the
+  // same mechanism the initial deal uses - so settleFlight() here exists purely to release
+  // handleDrawStock's own startFlights(1) claim once this deal is genuinely done (landed, or
+  // abandoned because a measurement failed or a newer deal replaced it).
   async function runRoundDeal(dealt: { card: Card; pileIndex: number }[], origin: { x: number; y: number } | null, token: number) {
     if (!origin) {
       setDealHiddenIds(new Set())
+      settleFlight()
       return
     }
     const destinations = await Promise.all(dealt.map((d) => ghost.cardRegistry.measure(d.card.id)))
-    if (dealTokenRef.current !== token) return
+    if (dealTokenRef.current !== token) {
+      settleFlight()
+      return
+    }
 
     const entries: DealCardSpec[] = []
     dealt.forEach((d, i) => {
@@ -282,6 +323,7 @@ function AcesUpScreenInner() {
     })
     if (entries.length === 0) {
       setDealHiddenIds(new Set())
+      settleFlight()
       return
     }
 
@@ -297,22 +339,25 @@ function AcesUpScreenInner() {
           return next
         })
       },
-      () => {}
+      () => settleFlight()
     )
   }
 
   useEffect(() => {
+    if (pendingRoundDealRef.current.length === 0 || !state) return
     const pending = pendingRoundDealRef.current
-    if (!pending || pending.token !== dealTokenRef.current || !state) return
-    pendingRoundDealRef.current = null
-    runRoundDeal(pending.dealt, pending.origin, pending.token)
+    pendingRoundDealRef.current = []
+    pending.forEach((p) => runRoundDeal(p.dealt, p.origin, p.token))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
+  // Same one-completion accounting as runRoundDeal above - settleFlight() here releases the single
+  // startFlights(1) claim handleUndo made for this whole round-deal-undo branch, whichever of the
+  // three exits below is actually taken.
   async function runUndoRoundDeal(entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null }[], token: number) {
     const destination = await measureView(stockViewRef.current)
     if (dealTokenRef.current !== token || !destination) {
-      undoBusyRef.current = false
+      settleFlight()
       return
     }
     const dealEntries: DealCardSpec[] = []
@@ -321,16 +366,14 @@ function AcesUpScreenInner() {
       dealEntries.push({ cardId: e.card.id, card: e.card, from: e.origin, to: destination, delayMs: e.delayMs })
     })
     if (dealEntries.length === 0) {
-      undoBusyRef.current = false
+      settleFlight()
       return
     }
     deal.start(
       dealEntries,
       cardWidth,
       () => {},
-      () => {
-        undoBusyRef.current = false
-      }
+      () => settleFlight()
     )
   }
 
@@ -385,9 +428,17 @@ function AcesUpScreenInner() {
     setUndoStack((stack) => [...stack, { state: prev, move }])
   }
 
+  // Guarded on activeFlightCountRef, not `flying.length` (unlike a check on `flying` alone) - a
+  // round-deal-undo (see the `!move` branch below) never touches the `flying` array at all (see
+  // runRoundDeal's own doc comment), so activeFlightCountRef is the only thing that actually reports
+  // it as in-flight; checking `flying` here would let undo start on top of a round deal still
+  // mid-air. Every branch below claims exactly one flight (startFlights(1)) and settles it exactly
+  // once - Aces Up has no cascaded/auto-played moves riding along (unlike Klondike's undo, which can
+  // claim 2), so a single claim always covers the whole call.
   async function handleUndo() {
-    if (undoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
+    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
+    startFlights(1)
     if (won) winCascade.clear()
     const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
@@ -402,7 +453,7 @@ function AcesUpScreenInner() {
         entries: dealtCards.map((c, i) => ({ card: c, delayMs: i * DEAL_STAGGER_MS, origin: origins[i] })),
         token: myToken
       }
-      setState(prevState)
+      commitState(prevState)
       return
     }
 
@@ -420,12 +471,12 @@ function AcesUpScreenInner() {
         playCardSound()
         hapticCard()
         const flight = ghost.show({ cards: [discardCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-        setFlying({ to: move.from, count: 1 })
-        setState(prevState)
-        pendingFlightRef.current = { cardId: move.anchorCardId, gen: dealTokenRef.current, flight }
+        const flyingId = beginFlying(move.from, 1)
+        commitState(prevState)
+        pendingFlightRef.current.push({ cardId: move.anchorCardId, gen: dealTokenRef.current, flyingId, flight })
       } else {
-        setState(prevState)
-        undoBusyRef.current = false
+        commitState(prevState)
+        settleFlight()
       }
       return
     }
@@ -439,12 +490,12 @@ function AcesUpScreenInner() {
       playCardSound()
       hapticCard()
       const flight = ghost.show({ cards: [movingCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-      setFlying({ to: move.from, count: 1 })
-      setState(prevState)
-      pendingFlightRef.current = { cardId: move.anchorCardId, gen: dealTokenRef.current, flight }
+      const flyingId = beginFlying(move.from, 1)
+      commitState(prevState)
+      pendingFlightRef.current.push({ cardId: move.anchorCardId, gen: dealTokenRef.current, flyingId, flight })
     } else {
-      setState(prevState)
-      undoBusyRef.current = false
+      commitState(prevState)
+      settleFlight()
     }
   }
 
@@ -456,14 +507,22 @@ function AcesUpScreenInner() {
   // pendingFlightRef's viaDiscard), a move to an empty pile via the destination pile's own
   // CardRegistry registration, same as every other tap-to-move flight in this app.
   function applyMove(from: PileRef, to: PileRef, card: Card, flight: DragFlightHandle): boolean {
-    if (!state) return false
-    const result = AcesUpController.tryMove(state, { from, to, count: 1 })
+    // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
+    // closure's `state` - handleCardTap/handleDrop are both allowed to overlap each other (see
+    // PATTERN_OVERLAP_GATE), so each must build its own tryMove on top of whatever the OTHER's
+    // commitState just did, not the same stale board both closures captured. Their own hint/card
+    // lookups upstream of this can stay closure-based (see handleCardTap) - tryMove re-validates the
+    // move against the real current board here regardless, so a slightly stale hint just fails
+    // cleanly instead of corrupting anything.
+    const current = stateRef.current
+    if (!current) return false
+    const result = AcesUpController.tryMove(current, { from, to, count: 1 })
     if (!result) return false
-    pushUndo(state, { from, to, count: 1, anchorCardId: card.id })
-    setState(result)
+    pushUndo(current, { from, to, count: 1, anchorCardId: card.id })
+    commitState(result)
     session.registerMove()
-    setFlying({ to, count: 1 })
-    pendingFlightRef.current = { cardId: card.id, viaDiscard: to.zone === 'discard', gen: dealTokenRef.current, flight }
+    const flyingId = beginFlying(to, 1)
+    pendingFlightRef.current.push({ cardId: card.id, viaDiscard: to.zone === 'discard', gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 
@@ -484,6 +543,7 @@ function AcesUpScreenInner() {
   // ghost copy shown at the tapped origin then flies to wherever it actually landed, mirroring
   // every other tap-to-move handler in this app (e.g. KlondikeScreen's own handleCardTap).
   async function handleCardTap(pileIndex: number, card: Card, measure: () => Promise<{ x: number; y: number }>) {
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
     if (won || stuck || !state) return
     const move = AcesUpController.autoMoveHint!(state, { zone: 'tableau', index: pileIndex }, card.id)
     if (!move) {
@@ -492,11 +552,22 @@ function AcesUpScreenInner() {
       playInvalidSound()
       return
     }
+    // Claimed synchronously before the await below (see PATTERN_OVERLAP_GATE) - so undo (the only
+    // thing that still waits on activeFlightCountRef) sees this tap as in-flight for its whole
+    // duration, not just once applyMove lands one.
+    startFlights(1)
     const origin = await measure()
+    if (undoBusyRef.current) {
+      settleFlight()
+      return
+    }
     playCardSound()
     hapticCard()
     const flight = ghost.show({ cards: [card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    if (!applyMove(move.from, move.to, card, flight)) flight.hide()
+    if (!applyMove(move.from, move.to, card, flight)) {
+      flight.hide()
+      settleFlight()
+    }
   }
 
   // A manual drag's drop - PileView's own handleDragEnd already resolves the drop target via
@@ -504,15 +575,30 @@ function AcesUpScreenInner() {
   // ever needs to apply the move. Only ever resolves for "move onto an empty pile" in practice -
   // there's no registered drop zone for a discard (see this file's header comment).
   function handleDrop(pileIndex: number, to: PileRef, anchorCardId: string, flight: DragFlightHandle): boolean {
+    if (undoBusyRef.current) return false // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
     if (won || stuck || !state) return false
     const card = top(state.piles[pileIndex])
     if (!card || card.id !== anchorCardId) return false
-    return applyMove({ zone: 'tableau', index: pileIndex }, to, card, flight)
+    // Claims a flight slot (see activeFlightCountRef's doc comment) purely so undo sees this drop
+    // as in-flight for its whole duration, not just once applyMove lands one - mirrors Klondike's
+    // own tableau onDrop.
+    startFlights(1)
+    if (!applyMove({ zone: 'tableau', index: pileIndex }, to, card, flight)) {
+      settleFlight()
+      return false
+    }
+    return true
   }
 
   async function handleDrawStock() {
-    if (won || stuck || !state || !AcesUpController.drawStock) return
-    const result = AcesUpController.drawStock(state)
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
+    // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
+    // Without this, rapid-tapping the stock pile several times before React re-renders would deal
+    // the SAME round repeatedly (every call computing drawStock() against the same stale board)
+    // instead of dealing several different rounds in a row.
+    const current = stateRef.current
+    if (won || stuck || !current || !AcesUpController.drawStock) return
+    const result = AcesUpController.drawStock(current)
     if (!result) return
     // Read the dealt cards off the POST-deal state (rules.ts's drawStock already sets faceUp:
     // true on each) rather than the pre-deal stock, so the flight below shows each card's real,
@@ -520,14 +606,17 @@ function AcesUpScreenInner() {
     // Golf/Klondike's own single-card stock draws already establish, not a face-down mystery card.
     const dealt = result.piles.map((pile, pileIndex) => ({ card: top(pile)!, pileIndex }))
     session.registerMove()
-    pushUndo(state, null)
+    pushUndo(current, null)
+    // A round deal counts as one flight-completion (see runRoundDeal's own doc comment) - claimed
+    // here, settled once inside runRoundDeal regardless of which of its exits is actually taken.
+    startFlights(1)
 
     const myToken = ++dealTokenRef.current
     const origin = await measureView(stockViewRef.current)
 
     setDealHiddenIds(new Set(dealt.map((d) => d.card.id)))
-    pendingRoundDealRef.current = { dealt, origin, token: myToken }
-    setState(result)
+    pendingRoundDealRef.current.push({ dealt, origin, token: myToken })
+    commitState(result)
   }
 
   if (!state) {
@@ -542,7 +631,7 @@ function AcesUpScreenInner() {
     <CardSizeProvider width={cardWidth}>
       <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={ACESUP_RULES}>
         <View style={[styles.topRow, { width: pilesWidth }]}>
-          <DiscardCell card={state.discard[state.discard.length - 1]} isFlyingHere={!!flying && flying.to.zone === 'discard'} viewRef={discardViewRef} />
+          <DiscardCell card={state.discard[state.discard.length - 1]} isFlyingHere={flying.some((f) => f.to.zone === 'discard')} viewRef={discardViewRef} />
           <View ref={stockViewRef} collapsable={false}>
             <PlayingCard card={STOCK_DISPLAY_CARD} onPress={handleDrawStock} disabled={state.stock.length === 0} hinted={activeHint?.kind === 'drawStock'} />
           </View>
@@ -550,7 +639,7 @@ function AcesUpScreenInner() {
 
         <View style={[styles.pilesRow, { gap }]}>
           {state.piles.map((pile, pileIndex) => {
-            const hiddenCount = flying && flying.to.zone === 'tableau' && flying.to.index === pileIndex ? flying.count : 0
+            const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === pileIndex).reduce((sum, f) => sum + f.count, 0)
             // Hidden entirely once won - the win cascade owns displaying these cards now (see the
             // pendingWinCascadeRef effect above), the same way every other game's own final pile
             // display goes blank once its cascade takes over.

@@ -15,10 +15,7 @@ export interface WinBannerProps {
 }
 
 /** The post-win overlay: a centered card with a score summary and a New Game button, dimming the
- * board behind it. Shared by Klondike/FreeCell - confirmed byte-identical between the two before
- * this extraction. Spider's own win UI is a bottom-anchored banner strip with no scrim, and
- * Pyramid's is a transparent overlay with the title and stats combined into one line - both
- * genuinely different, so neither uses this. */
+ * board behind it. Shared by every game. */
 export function WinBanner({ colors, elapsedSeconds, moves, score, onNewGame }: WinBannerProps) {
   const styles = useMemo(() => makeStyles(colors), [colors])
   return (
@@ -33,6 +30,7 @@ export function WinBanner({ colors, elapsedSeconds, moves, score, onNewGame }: W
         <Text style={styles.winSubtitle}>
           Moves: {moves} · Score: {score} · Time: {formatTime(elapsedSeconds)}
         </Text>
+        <Text style={styles.winCaption}>Lower is better — fewer moves and less time.</Text>
         <Pressable style={styles.button} onPress={onNewGame}>
           <Text style={styles.buttonText}>New Game</Text>
         </Pressable>
@@ -53,6 +51,12 @@ function makeStyles(colors: TableColors) {
       color: colors.tableFeltDark,
       fontFamily: CARD_FONT_FAMILY,
       fontWeight: '700'
+    },
+    winCaption: {
+      color: '#777',
+      fontFamily: CARD_FONT_FAMILY,
+      fontSize: 12,
+      marginBottom: 8
     },
     winCard: {
       alignItems: 'center',
@@ -75,8 +79,7 @@ function makeStyles(colors: TableColors) {
     winSubtitle: {
       color: '#444',
       fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      marginBottom: 8
+      fontSize: 16
     },
     winTitle: {
       color: colors.tableFeltDark,

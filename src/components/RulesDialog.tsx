@@ -35,6 +35,11 @@ export function RulesDialog({ visible, onDismiss, title, rules, rotation = 0 }: 
               <Text style={[styles.ruleText, { color: colors.onSurfaceVariant }]}>{rule}</Text>
             </View>
           ))}
+          {/* One shared section rather than a per-game rules.ts bullet - the formula (see
+          engine/score.ts) is identical across every game, so duplicating this sentence into all
+          11 games' constants/gameRules.ts entries would just be 11 copies to keep in sync. */}
+          <Text style={[styles.scoreHeading, { color: colors.onSurface }]}>Scoring</Text>
+          <Text style={[styles.scoreText, { color: colors.onSurfaceVariant }]}>Score is moves + seconds elapsed, so lower is better - a fast, efficient win scores low.</Text>
         </ScrollView>
         <Button mode='contained' onPress={onDismiss} style={styles.closeButton}>
           Got it
@@ -71,6 +76,18 @@ const styles = StyleSheet.create({
     fontFamily: CARD_FONT_FAMILY,
     fontSize: 15,
     lineHeight: 22
+  },
+  scoreHeading: {
+    fontFamily: CARD_FONT_FAMILY,
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 6,
+    marginTop: 8
+  },
+  scoreText: {
+    fontFamily: CARD_FONT_FAMILY,
+    fontSize: 14,
+    lineHeight: 20
   },
   scroll: {
     flexGrow: 0

@@ -1,7 +1,7 @@
 import { Provider as ThemeProvider, type ThemeSettings, useAutoPaperTheme, useThemeSettings } from '@rific/auto-paper'
 import { FeedbackPressProvider, hapticActions, type HapticSettings, soundActions, type SoundSettings } from '@rific/feedback-press'
 import { Toaster, ToastProvider } from '@rific/toaster'
-import { OrientationProvider } from '@tastic/core'
+import { OrientationProvider, useThemedRootBackground } from '@tastic/core'
 import { Stack } from 'expo-router'
 import { DeviceMotion } from 'expo-sensors'
 import * as SplashScreen from 'expo-splash-screen'
@@ -29,8 +29,16 @@ import { useSplashReady } from '@/utils/splashGate'
 SplashScreen.preventAutoHideAsync()
 
 function ThemedStack() {
+  // Hardcoded `true`, not this app's own live system-theme `dark` (see useAutoPaperTheme()'s `dark`
+  // used elsewhere in this file, e.g. ProfileThemeSync) - theme.ts's own felt palettes are dark-toned
+  // in every appearance mode by design ("Both felt palettes below are dark-toned green in every
+  // appearance mode"), so syncing the OS root-window background to a light-system-theme user's live
+  // `dark` would flash white against this app's always-dark table during a push/pop transition, which
+  // is worse than the black-default corner-flash this hook exists to fix. gestureEnabled left at the
+  // hook's own default (false) - this Stack had no prior gestureEnabled setting to preserve.
+  const screenOptions = useThemedRootBackground(true, false)
   return (
-    <Stack screenOptions={{ headerShown: false }}>
+    <Stack screenOptions={screenOptions}>
       <Stack.Screen name='index' options={{ title: 'Solitaire Suite' }} />
       <Stack.Screen name='klondike' options={{ title: 'Klondike' }} />
       <Stack.Screen name='spider' options={{ title: 'Spider' }} />

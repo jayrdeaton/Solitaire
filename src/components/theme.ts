@@ -22,7 +22,20 @@ export const CARD_WIDTH = 64
 // Chosen aspect ratio for the card face; can be revisited once real hand-drawn
 // court/number art exists and it's clear whether this still looks proportionate.
 export const CARD_HEIGHT = 93
-export const CARD_RADIUS = 4
+
+// Matches @tastic/cards' own CardFace/CardBack corner radius (width * 0.06 - see
+// node_modules/@tastic/cards/src/CardFace.tsx and CardBack.tsx). The outer clip/shadow/ring
+// around a card has to scale with that same formula off the card's own live rendered width, not a
+// flat constant - a fixed radius falls inside the card face's own drawn curve once a card renders
+// wide enough (few-pile layouts like Aces Up), clipping the border's rounded corner short and
+// leaving a visible white gap between the two curves.
+export function cardRadiusForWidth(width: number): number {
+  return width * 0.06
+}
+// Radius for CARD_WIDTH-fixed contexts (e.g. HeroCards' home-screen fan, always rendered at
+// CARD_WIDTH regardless of any in-game layout) - real gameplay cards use
+// cardRadiusForWidth(width) with their own live width instead, since that varies per game/layout.
+export const CARD_RADIUS = cardRadiusForWidth(CARD_WIDTH)
 
 // Card ink stays fixed across both palettes - cardFace itself is nearly the same near-white in
 // light and dark mode, so a card should read like a physical card regardless of the felt/chrome

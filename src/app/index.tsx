@@ -1,5 +1,6 @@
 import { IconButton, Pressable } from '@rific/feedback-press'
 import { type TableColors } from '@tastic/cards'
+import { PressAwayOverlay, usePopoverHost } from '@tastic/hud'
 import { Link, Redirect, useRouter } from 'expo-router'
 import { useEffect, useMemo, useState } from 'react'
 import { ScrollView, StyleSheet, Text, View } from 'react-native'
@@ -11,6 +12,7 @@ import { HeroCards } from '@/components/HeroCards'
 import { ProfilePanel } from '@/components/ProfilePanel'
 import { RulesDialog } from '@/components/RulesDialog'
 import { SettingsDialog } from '@/components/SettingsDialog'
+import { TableBackground } from '@/components/TableBackground'
 import { CHROME_FG, useTableColors } from '@/components/theme'
 import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { ACESUP_RULES, CANFIELD_RULES, FORTYTHIEVES_RULES, FREECELL_RULES, GOLF_RULES, KLONDIKE_RULES, PYRAMID_RULES, SCORPION_RULES, SPIDER_RULES, TRIPEAKS_RULES, YUKON_RULES } from '@/constants/gameRules'
@@ -42,15 +44,6 @@ interface GameEntry {
 // then Spider/Scorpion (tableau sequence-building, but no foundations at all), then the
 // clear-the-tableau games (Pyramid/Golf/TriPeaks discard cards outright instead of building
 // anything up), then Aces Up last (its own odd-one-out shape - no tableau building at all).
-// How many of the top game tiles render their preview cards immediately on mount, roughly
-// matching how many actually fit above the fold on a typical phone (the hero fan + heading +
-// profile panel already fill a good chunk of the screen before the grid starts). The rest defer
-// their cards by a frame (see Home's `previewsRevealed`) so the initial commit only has to mount
-// this many tiles' worth of card art (~100 SVG/View nodes) rather than all eleven's (~400+) -
-// otherwise every tile mounting its full starting deal in one synchronous burst is real,
-// noticeable work on mobile, most of it for tiles the player can't even see yet.
-const EAGER_PREVIEW_COUNT = 4
-
 const GAMES: GameEntry[] = [
   { href: '/klondike', title: 'Klondike', blurb: 'The classic. Draw 1 or draw 3.', placements: buildKlondikePreview(), rules: KLONDIKE_RULES },
   { href: '/freecell', title: 'FreeCell', blurb: 'Nearly every deal is winnable.', placements: buildFreeCellPreview(), rules: FREECELL_RULES },
@@ -74,9 +67,21 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [rulesFor, setRulesFor] = useState<GameEntry | null>(null)
   const { lastActiveGame } = useLastActiveGame()
-  // Deferred by one frame rather than rendered eagerly, so the below-the-fold tiles' full starting
-  // deals don't compete with the first-visible tiles for the same synchronous commit (see
-  // EAGER_PREVIEW_COUNT above).
+  // Owns the profile row's popover state so a full-screen @tastic/hud PressAwayOverlay can be
+  // rendered here, at the screen root, below (see the early-sibling render order right after
+  // TableBackground) every real control - Solitaire has just the one, unscoped zone (no
+  // split-screen sibling to shield from), so unlike the fleet's split-screen loadout/lobby
+  // screens this needs neither a style rect nor a second host to shield against.
+  const profileHost = usePopoverHost()
+  // Every tile's card art is deferred by one frame rather than rendered eagerly - mounting all
+  // eleven tiles' full starting deals (~400+ SVG/View nodes) synchronously in the very same commit
+  // that a navigation lands on is real, noticeable native-bridge work (confirmed live on-device:
+  // it was enough to make the whole screen transition itself stall for a beat, reading as "pressing
+  // Home hangs" rather than a quick, responsive tap - far worse than the tile briefly showing no
+  // card art). Deferring unconditionally, with no eagerly-rendered exception for the above-the-fold
+  // tiles, keeps Home's own first commit to just its cheap chrome (title/blurb/borders, no card
+  // SVGs at all) - by far the more responsive tradeoff, even though it means every tile (not just
+  // the below-the-fold ones) shows empty for one frame.
   const [previewsRevealed, setPreviewsRevealed] = useState(false)
   useEffect(() => {
     const id = requestAnimationFrame(() => setPreviewsRevealed(true))
@@ -90,7 +95,19 @@ export default function Home() {
   if (lastActiveGame) return <Redirect href={`/${lastActiveGame}`} />
 
   return (
-    <View style={[styles.screen, { backgroundColor: colors.tableFelt }]}>
+    <View style={styles.screen}>
+      <TableBackground />
+      {/* Unlike the fleet's non-scrolling split-screen HUDs (where PressAwayOverlay's own "plain
+      paint order, later sibling wins" doc comment is enough on its own), this screen's real
+      content is a ScrollView full of plain, unpositioned Views (HeroCards, headings, the game
+      grid) - on web, those still capture a tap even with no handler of their own (RN Web resolves
+      hit-testing via real DOM stacking, not native's "walk up looking for a responder, fall
+      through if none" model), so paint order alone would never let a tap on blank ScrollView
+      space reach this overlay. styles.pressAway's zIndex fixes that: above the ScrollView's own
+      (unset/0) stacking so blank space actually dismisses, but still below cornerButton/
+      profilePanelWrap's zIndex:10 so those stay directly tappable, same idea as their own
+      "wins pointer-event hit-testing on web" comments below. */}
+      <PressAwayOverlay active={profileHost.openId !== null} onPress={profileHost.close} style={styles.pressAway} />
       <IconButton icon='trophy' iconColor={CHROME_FG} size={24} style={[styles.cornerButton, { top: 8 + insets.top, left: 8 + insets.left }]} onPress={() => router.push('/achievements')} accessibilityLabel='Stats & Achievements' />
       <IconButton icon='cog' iconColor={CHROME_FG} size={24} style={[styles.cornerButton, { top: 8 + insets.top, right: 8 + insets.right }]} onPress={() => setSettingsOpen(true)} accessibilityLabel='Settings' />
 
@@ -100,14 +117,14 @@ export default function Home() {
         <Text style={styles.subheading}>No ads. No accounts. No network. Just cards.</Text>
 
         <View style={styles.profilePanelWrap}>
-          <ProfilePanel />
+          <ProfilePanel host={profileHost} />
         </View>
 
         <View style={styles.grid}>
-          {GAMES.map((g, i) => (
+          {GAMES.map((g) => (
             <Link key={g.href} href={g.href} asChild>
               <Pressable style={styles.card}>
-                <GamePreview placements={i < EAGER_PREVIEW_COUNT || previewsRevealed ? g.placements : []} colors={colors} style={styles.preview} />
+                <GamePreview placements={previewsRevealed ? g.placements : []} colors={colors} style={styles.preview} />
                 <View style={styles.cardText}>
                   <Text style={styles.cardTitle}>{g.title}</Text>
                   <Text style={styles.cardBlurb}>{g.blurb}</Text>
@@ -195,6 +212,12 @@ function makeStyles(colors: TableColors, dark: boolean, paperColors: MD3Theme['c
     },
     infoButton: {
       padding: 4
+    },
+    // See this style's render-site comment - above the ScrollView's own unset/0 stacking (so a
+    // tap on its blank space actually reaches this overlay on web) but below cornerButton/
+    // profilePanelWrap's zIndex:10 (so those stay directly tappable through it).
+    pressAway: {
+      zIndex: 5
     },
     preview: {
       backgroundColor: colors.tableFelt,

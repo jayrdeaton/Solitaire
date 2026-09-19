@@ -36,6 +36,7 @@ import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
+import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
@@ -113,7 +114,12 @@ function FreeCellScreenInner() {
   const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
-  const [state, setState] = useState<FreeCellState | null>(null)
+  // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
+  // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
+  // exclusion with everything else; tap/drag/auto-play can all run concurrently with each other -
+  // PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`, `commitState`,
+  // `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<FreeCellState>()
   const [undoStack, setUndoStack] = useState<UndoEntry<FreeCellState, FreeCellUndoMove>[]>([])
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -134,24 +140,29 @@ function FreeCellScreenInner() {
   const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
-  const [flying, setFlying] = useState<{ to: PileRef; count: number } | null>(null)
   // `fast` marks a fireAutoMove-triggered flight, so the effect below passes it on to the flight's
   // own flyTo for the quicker auto-play-to-foundation timing (see dragSpring.ts's autoPlaySpringFor). `gen`
   // is the `dealTokenRef` value at the moment this flight was queued - re-checked once the async
   // measurement below resolves, so a flight queued against a game that's since been replaced by
   // "New Game" doesn't measure/land against the new deal's DOM (card ids are shuffle-independent
   // and reused across deals - see deck.ts). Mirrors exactly how runDeal below already guards itself
-  // with dealTokenRef/pendingDealTokenRef.
-  const pendingAutoMoveCardIdRef = useRef<{ cardId: string; fast?: boolean; sweep?: boolean; gen: number; isUndo?: boolean; flight: DragFlightHandle } | null>(null)
+  // with dealTokenRef/pendingDealTokenRef. A list (not a single slot) since concurrent flights (see
+  // PATTERN_OVERLAP_GATE) can now genuinely overlap - two entries queued in the same commit would
+  // otherwise clobber each other in a single ref slot, permanently stranding whichever one lost.
+  // `flyingId` is this entry's own beginFlying-issued id, removed via endFlying once it lands.
+  // `isUndo` (Klondike has no equivalent - see its own `viaStock`) no longer distinguishes anything
+  // here: the old finishOneUndoAnimation-vs-undoBusyRef split this flag used to pick between has
+  // collapsed into a single settleFlight() call for every flight, undo or not.
+  const pendingAutoMoveCardIdRef = useRef<{ cardId: string; fast?: boolean; sweep?: boolean; gen: number; flight: DragFlightHandle; flyingId: number }[]>([])
   // A silently auto-played cascade being reversed by handleUndo (see FreeCellUndoMove above) -
   // measured/flown by its own [state]-effect below, independently of and concurrently with the
-  // primary move's single-ghost flight (pendingAutoMoveCardIdRef's effect).
+  // primary move's own flight(s) (pendingAutoMoveCardIdRef's effect). Stays a single nullable slot
+  // (not a list, unlike pendingAutoMoveCardIdRef above) - undo itself is still fully serialized (see
+  // useFlightConcurrency's undoBusyRef/activeFlightCountRef: handleUndo refuses to start while
+  // either is nonzero, and every other flight-starting entry point refuses to start while
+  // undoBusyRef is true), so at most one cascade-undo is ever pending at a time, same reasoning
+  // Klondike's own pendingCascadeUndoRef documents.
   const pendingCascadeUndoRef = useRef<{ moves: MoveInfo[]; gen: number } | null>(null)
-  // How many of the animations ONE handleUndo press kicked off (the primary flight, plus - only
-  // when it had a cascade to reverse too - that whole separate batch) are still in flight. Only
-  // once this reaches zero does undoBusyRef actually clear, so a second Undo press can't overlap
-  // either flight - see handleUndo/finishOneUndoAnimation below.
-  const undoPendingAnimationsRef = useRef(0)
   const deal = useDealAnimator()
   const dealOriginRef = useRef<View>(null)
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
@@ -176,16 +187,6 @@ function FreeCellScreenInner() {
   // still bumps to a new value and re-triggers the shake instead of being a no-op state update.
   const [shake, setShake] = useState<{ cardId: string; count: number; token: number } | null>(null)
   const shakeTokenRef = useRef(0)
-  // Mirrors `state` synchronously (assigned directly in the render body, same pattern PileView.tsx
-  // uses) so fireAutoMove - which has an await gap before it applies its move, unlike every other
-  // mutator here - can tell if some other action already changed state underneath it and bail
-  // instead of applying against a stale snapshot.
-  const stateRef = useRef(state)
-  stateRef.current = state
-  // Guards handleUndo against being called again before its own previous invocation has fully
-  // settled (visually, not just in state) - see handleUndo below for why an overlapping call would
-  // otherwise desync the undo stack or clobber the shared single-flight ghost animation.
-  const undoBusyRef = useRef(false)
 
   // Resumes a saved board if one exists, otherwise deals fresh - either way, this screen becomes
   // the "last active game" for as long as it stays mounted (see app/index.tsx), and stops being it
@@ -201,7 +202,7 @@ function FreeCellScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Saves after every move/undo/autoplay/fresh-deal (all flow through setState). Gated on !won:
+  // Saves after every move/undo/autoplay/fresh-deal (all flow through commitState). Gated on !won:
   // Undo is never disabled post-win (a pre-existing gap, out of scope here), so without this guard,
   // winning and then tapping the still-enabled Undo would resurrect a save for an already-resolved
   // deal right after checkWin below just cleared it. Deliberately NOT also keyed on a ticking
@@ -323,47 +324,47 @@ function FreeCellScreenInner() {
     winCascade.startChains(chains, cardWidth)
   }
 
-  // Measuring CardRegistry synchronously right after the setState in applyMove would find the
+  // Measuring CardRegistry synchronously right after the commitState in applyMove would find the
   // still-mounted SOURCE card (the destination card's own registration effect hasn't run yet), so
   // the ghost would "fly" a near-zero distance back to roughly where it started - indistinguishable
   // from a snap (same race documented for Klondike's deal animation). Deferring to a [state]-keyed
   // effect guarantees the destination card has already registered by the time this runs.
   useEffect(() => {
+    if (pendingAutoMoveCardIdRef.current.length === 0 || !state) return
     const pending = pendingAutoMoveCardIdRef.current
-    if (!pending || !state) return
-    pendingAutoMoveCardIdRef.current = null
-    ;(async () => {
-      const landed = await ghost.cardRegistry.measure(pending.cardId)
-      // A new game can start while the measurement above is in flight (e.g. tapping "New Game"
-      // mid auto-play-cascade - see maybeAutoPlay). `landed`, if it resolved at all, would then be
-      // measuring an unrelated card in the NEW deal (ids are shuffle-independent and reused across
-      // deals - see deck.ts), so drop this flight instead of landing on a nonsensical position.
-      if (dealTokenRef.current !== pending.gen || !landed) {
-        pending.flight.hide()
-        setFlying(null)
-        if (pending.isUndo) finishOneUndoAnimation()
-        else undoBusyRef.current = false
-        return
-      }
-      pending.flight.flyTo(
-        landed.x,
-        landed.y,
-        () => {
-          setFlying(null)
-          if (pending.isUndo) finishOneUndoAnimation()
-          else undoBusyRef.current = false
-        },
-        { fast: pending.fast, sweep: pending.sweep }
-      )
-    })()
+    pendingAutoMoveCardIdRef.current = []
+    pending.forEach((p) => {
+      ;(async () => {
+        const landed = await ghost.cardRegistry.measure(p.cardId)
+        // A new game can start while the measurement above is in flight (e.g. tapping "New Game"
+        // mid auto-play-cascade - see maybeAutoPlay). `landed`, if it resolved at all, would then be
+        // measuring an unrelated card in the NEW deal (ids are shuffle-independent and reused across
+        // deals - see deck.ts), so drop this flight instead of landing on a nonsensical position.
+        if (dealTokenRef.current !== p.gen || !landed) {
+          p.flight.hide()
+          endFlying(p.flyingId)
+          settleFlight()
+          return
+        }
+        p.flight.flyTo(
+          landed.x,
+          landed.y,
+          () => {
+            endFlying(p.flyingId)
+            settleFlight()
+          },
+          { fast: p.fast, sweep: p.sweep }
+        )
+      })()
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
   // Reverses a silently auto-played cascade's own flight (see FreeCellUndoMove/handleUndo below) -
-  // independent of, and running concurrently with, the primary move's single-ghost flight above.
+  // independent of, and running concurrently with, the primary move's own flight(s) above.
   // Deferred the same way (a [state]-effect) since these cards' own registration effects, back in
   // their now-reverted tableau/freecell homes, haven't necessarily run yet in the same commit as
-  // handleUndo's setState(prevState). Every cascaded move's shared origin is its FOUNDATION pile's
+  // handleUndo's commitState(prevState). Every cascaded move's shared origin is its FOUNDATION pile's
   // own container ref (foundationSlotRefs) rather than CardRegistry - a buried, no-longer-topmost
   // foundation card has no registry entry of its own (see foundationSlotRefs' doc comment above).
   useEffect(() => {
@@ -376,7 +377,7 @@ function FreeCellScreenInner() {
       // A new game can start while these measurements are in flight (e.g. tapping "New Game" right
       // after an Undo) - same dealTokenRef guard every other async step here uses.
       if (dealTokenRef.current !== pending.gen) {
-        finishOneUndoAnimation()
+        settleFlight()
         return
       }
       const originByIndex = new Map(foundationIndices.map((idx, i) => [idx, origins[i]]))
@@ -411,7 +412,7 @@ function FreeCellScreenInner() {
       }
 
       if (entries.length === 0) {
-        finishOneUndoAnimation()
+        settleFlight()
         return
       }
 
@@ -427,7 +428,7 @@ function FreeCellScreenInner() {
             return next
           })
         },
-        () => finishOneUndoAnimation()
+        () => settleFlight()
       )
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -451,7 +452,7 @@ function FreeCellScreenInner() {
   // draw/reveal moment to reward, only the player's own foundation moves ever start a cascade.
   const cascade = useAutoFoundationCascade<FreeCellState>({
     state,
-    settled: flying === null && dealHiddenIds.size === 0,
+    settled: activeFlightCount === 0 && dealHiddenIds.size === 0,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     computeNextStep,
@@ -464,7 +465,9 @@ function FreeCellScreenInner() {
     setUndoStack([])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingAutoMoveCardIdRef.current = []
+    pendingCascadeUndoRef.current = null
     session.reset()
     setWon(false)
     recordedWinRef.current = false
@@ -475,7 +478,7 @@ function FreeCellScreenInner() {
     setDealHiddenIds(dealtIds)
     setDeckVisible(true)
     scheduleDeal(myToken)
-    setState(s)
+    commitState(s)
   }
 
   // Restores a previously saved board exactly as left - no deal-fly-in animation (this isn't a new
@@ -487,13 +490,15 @@ function FreeCellScreenInner() {
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
     hintsUsedRef.current = false
-    undoBusyRef.current = false
+    resetFlightConcurrency()
+    pendingAutoMoveCardIdRef.current = []
+    pendingCascadeUndoRef.current = null
     session.restore(saved.moves, saved.elapsedSeconds)
     setWon(false)
     recordedWinRef.current = false
     setDealHiddenIds(new Set())
     setDeckVisible(false)
-    setState(saved.state)
+    commitState(saved.state)
   }
 
   // Dealing a new game over one still in progress abandons it (counted as a loss) - GameChrome
@@ -527,14 +532,6 @@ function FreeCellScreenInner() {
     setUndoStack((stack) => [...stack, { state: prev, move: { primary: move, cascaded: [] } }])
   }
 
-  // Only handleUndo touches this - decrements the "how many animations is this Undo press still
-  // waiting on" counter, clearing undoBusyRef once every one of them (the primary flight, and -
-  // only when it had a cascade to reverse too - that whole separate batch) has actually settled.
-  function finishOneUndoAnimation() {
-    undoPendingAnimationsRef.current -= 1
-    if (undoPendingAnimationsRef.current <= 0) undoBusyRef.current = false
-  }
-
   // Mirrors handleCardTap's forward flight, just in reverse: the card(s) being undone are still
   // sitting wherever the move left them (`move.to`) - measure that real position before reverting
   // (the pendingAutoMoveCardIdRef effect below can only measure a DESTINATION once it's committed
@@ -547,7 +544,7 @@ function FreeCellScreenInner() {
   // `primary` move also reverse-animates every card the auto-play cascade silently played on top of
   // it, in one Undo press (see FreeCellUndoMove above and the pendingCascadeUndoRef effect above).
   async function handleUndo() {
-    if (undoBusyRef.current || flying !== null || undoStack.length === 0 || !state) return
+    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition - the only move available once it's true is New Game), so any undo reachable while
@@ -565,11 +562,16 @@ function FreeCellScreenInner() {
     const entry = undoStack[undoStack.length - 1]
     const { move: undoMove, state: prevState } = entry
     const { primary, cascaded } = undoMove
+    // Captured once, up front - every stash this call makes uses this same token, so a "New Game"
+    // that fires mid-await consistently invalidates every one of this undo's pending flights rather
+    // than some using a token read before the race and some after (mirrors Klondike's own handleUndo).
+    const gen = dealTokenRef.current
+    startFlights(cascaded.length > 0 ? 2 : 1)
 
     if (!primary) {
       setUndoStack((stack) => stack.slice(0, -1))
-      setState(prevState)
-      undoBusyRef.current = false
+      commitState(prevState)
+      settleFlight() // primary: nothing to fly, settles immediately
       return
     }
 
@@ -580,12 +582,10 @@ function FreeCellScreenInner() {
 
     setUndoStack((stack) => stack.slice(0, -1))
 
-    undoPendingAnimationsRef.current = 1 + (cascaded.length > 0 ? 1 : 0)
-
     if (cascaded.length > 0) {
       const cascadeIds = new Set(cascaded.map((m) => m.anchorCardId))
       // Same "hide before reverting" ordering as Pyramid's own removal-undo (see this repo's own
-      // CLAUDE.md) - set the hide flags in the SAME synchronous stretch as setState(prevState)
+      // CLAUDE.md) - set the hide flags in the SAME synchronous stretch as commitState(prevState)
       // below, so React batches them into one commit with no frame where the restored cards flash
       // fully visible before their ghosts arrive to cover them.
       setDealHiddenIds((ids) => {
@@ -593,19 +593,19 @@ function FreeCellScreenInner() {
         cascadeIds.forEach((id) => next.add(id))
         return next
       })
-      pendingCascadeUndoRef.current = { moves: cascaded, gen: dealTokenRef.current }
+      pendingCascadeUndoRef.current = { moves: cascaded, gen }
     }
 
     if (origin) {
       playCardSound()
       hapticCard()
       const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
-      setFlying({ to: primary.from, count: primary.count })
-      setState(prevState)
-      pendingAutoMoveCardIdRef.current = { cardId: primary.anchorCardId, gen: dealTokenRef.current, isUndo: true, flight }
+      const flyingId = beginFlying(primary.from, primary.count)
+      commitState(prevState)
+      pendingAutoMoveCardIdRef.current.push({ cardId: primary.anchorCardId, gen, flight, flyingId })
     } else {
-      setState(prevState)
-      finishOneUndoAnimation()
+      commitState(prevState)
+      settleFlight()
     }
   }
 
@@ -614,8 +614,13 @@ function FreeCellScreenInner() {
   // reverts the whole triggering move plus any cascade it set off, in one step) and doesn't count
   // toward the moves/score the player is judged on.
   function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean }) {
-    if (!state) return false
-    const result = FreeCellController.tryMove(state, { from, to, count })
+    // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
+    // closure's `state` - two actions can now be triggered back-to-back before React re-renders
+    // (see PATTERN_OVERLAP_GATE), and each must build its own tryMove on top of whatever the OTHER's
+    // commitState just did, not the same stale board both closures captured.
+    const current = stateRef.current
+    if (!current) return false
+    const result = FreeCellController.tryMove(current, { from, to, count })
     if (result) {
       const moveInfo: MoveInfo = { from, to, count, anchorCardId }
       if (opts?.silent) {
@@ -630,9 +635,9 @@ function FreeCellScreenInner() {
           return [...stack.slice(0, -1), updated]
         })
       } else {
-        pushUndo(state, moveInfo)
+        pushUndo(current, moveInfo)
       }
-      setState(result)
+      commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
       if (!opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
@@ -641,15 +646,19 @@ function FreeCellScreenInner() {
     return false
   }
 
-  function resolvePile(ref: PileRef): Card[] | null {
-    if (!state) return null
+  // `s` defaults to the closure's own live `state` (every pre-existing call site) - handleCardTap
+  // passes an explicit stateRef.current instead (see its own call site below), since that call has
+  // an await gap before it and wants the board as of right now, not whatever render handleCardTap's
+  // own closure was created against (mirrors Klondike's resolvePile).
+  function resolvePile(ref: PileRef, s: FreeCellState | null = state): Card[] | null {
+    if (!s) return null
     switch (ref.zone) {
       case 'tableau':
-        return state.tableau[ref.index] ?? null
+        return s.tableau[ref.index] ?? null
       case 'foundation':
-        return state.foundation[ref.index] ?? null
+        return s.foundation[ref.index] ?? null
       case 'freecell': {
-        const c = state.freecells[ref.index]
+        const c = s.freecells[ref.index]
         return c ? [c] : null
       }
       default:
@@ -670,6 +679,7 @@ function FreeCellScreenInner() {
   // the ghost always lands exactly on top of it with no seam.
   async function handleCardTap(ref: PileRef, cardId: string, measure: () => Promise<{ x: number; y: number }>, indexFromTop?: number) {
     if (!state || !FreeCellController.autoMoveHint) return
+    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
     const move = FreeCellController.autoMoveHint(state, ref, cardId)
     if (!move) {
       // Nowhere legal to go - shake the card so the tap reads as "received, just stuck" rather
@@ -685,9 +695,19 @@ function FreeCellScreenInner() {
       return
     }
 
+    // Claimed synchronously before the await below (see PATTERN_OVERLAP_GATE) - so undo (the only
+    // thing that still waits on activeFlightCountRef) sees this tap as in-flight for its whole
+    // duration, not just once completeMove lands one.
+    startFlights(1)
     const origin = await measure()
-    const sourcePile = resolvePile(move.from)
-    if (!sourcePile) return
+    // Reads via stateRef.current (not the render closure's `state` - see resolvePile's own doc
+    // comment) - this runs after an await gap, during which some other concurrent action may
+    // already have committed a newer board.
+    const sourcePile = resolvePile(move.from, stateRef.current)
+    if (!sourcePile || undoBusyRef.current) {
+      settleFlight()
+      return
+    }
     const movingCards = sourcePile.slice(sourcePile.length - move.count)
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
@@ -697,6 +717,7 @@ function FreeCellScreenInner() {
 
     if (!completeMove(move.from, move.to, move.count, cardId, flight)) {
       flight.hide()
+      settleFlight()
     }
   }
 
@@ -713,21 +734,25 @@ function FreeCellScreenInner() {
       // 2 smaller than the best case. Since any card may start an empty column regardless of rank
       // (canPlaceOnTableau), this capacity check is the ONLY way a >1-count move to an empty column
       // can fail - so surface it, rather than leaving the player to guess why it silently bounced.
-      if (state && to.zone === 'tableau' && count > 1) {
-        const cap = maxSupermoveCount(state, to.index)
+      // Reads stateRef.current (not the render closure's `state`), same reasoning as applyMove's
+      // own doc comment - applyMove itself already rejected this move against the true current
+      // board, so this diagnostic should explain that same board, not a possibly-stale render.
+      const current = stateRef.current
+      if (current && to.zone === 'tableau' && count > 1) {
+        const cap = maxSupermoveCount(current, to.index)
         if (count > cap) {
-          const freecells = countEmptyFreecells(state)
+          const freecells = countEmptyFreecells(current)
           // Excludes `to` itself, matching what actually fed `cap` above - the destination can't
           // double as its own intermediate storage, so this is the count of OTHER empty columns
           // that could help, not the board's total (which would be one higher here).
-          const otherEmptyCols = countEmptyTableauColumns(state, to.index)
+          const otherEmptyCols = countEmptyTableauColumns(current, to.index)
           infoToast(`Only ${cap} card${cap === 1 ? '' : 's'} can move to an empty column with ${freecells} free cell${freecells === 1 ? '' : 's'} and ${otherEmptyCols} other empty column${otherEmptyCols === 1 ? '' : 's'}.`)
         }
       }
       return false
     }
-    setFlying({ to, count })
-    pendingAutoMoveCardIdRef.current = { cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flight }
+    const flyingId = beginFlying(to, count)
+    pendingAutoMoveCardIdRef.current.push({ cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flight, flyingId })
     return true
   }
 
@@ -748,20 +773,41 @@ function FreeCellScreenInner() {
   // against something else changing state during that gap by snapshotting stateRef before the
   // await and bailing if it no longer matches after.
   async function firePlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
+    startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
-    if (!origin || stateRef.current !== stateAtStart) return
+    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current) {
+      settleFlight()
+      return
+    }
     cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: !opts.sweep, sweep: opts.sweep })) {
       flight.hide()
+      settleFlight()
     }
   }
 
+  // Drag-and-drop's own entry point into flight bookkeeping (see activeFlightCountRef's doc
+  // comment above) - claimed synchronously here, before the `hitTest` await, purely so undo (the
+  // only thing that still waits for activeFlightCountRef to hit 0 - see PATTERN_OVERLAP_GATE) sees
+  // this drop as in-flight for its whole duration, not just once completeMove lands one. Also
+  // rejects outright if undo is currently running (undo holds full mutual exclusion, not just a
+  // one-way wait - see undoBusyRef's own doc comment) - the drag's own ghost (already shown by
+  // PileView/DraggableCard well before this runs) just snaps back, same as "no legal target".
   async function attemptDrop(from: PileRef, count: number, absoluteX: number, absoluteY: number, anchorCardId: string, flight: DragFlightHandle): Promise<boolean> {
+    if (undoBusyRef.current) return false
+    startFlights(1)
     const target = await dropZones.hitTest(absoluteX, absoluteY)
-    if (!target) return false
-    return completeMove(from, target, count, anchorCardId, flight)
+    if (!target || undoBusyRef.current) {
+      settleFlight()
+      return false
+    }
+    if (!completeMove(from, target, count, anchorCardId, flight)) {
+      settleFlight()
+      return false
+    }
+    return true
   }
 
   // A card whose own coherent run (indexFromTop + 1 cards) is longer than what the current
@@ -770,11 +816,16 @@ function FreeCellScreenInner() {
   // rejects any count over maxSupermoveCount). -1 as the destIndex asks for the best-case cap
   // (not knowing the eventual destination yet), same as tryMove would apply for a non-empty
   // destination column - the common case, and consistent with this dimming already being a
-  // coarse "would this always fail" check rather than a full destination-aware oracle.
+  // coarse "would this always fail" check rather than a full destination-aware oracle. Reads
+  // stateRef.current (not the render closure's `state`) - this can be queried mid-drag-gesture,
+  // right after some other concurrent action just committed a newer board but before this
+  // component has re-rendered, and a stale read here could dim/undim a run against the wrong
+  // freecell/column occupancy.
   function tableauRunCount(colIndex: number, indexFromTop: number): number {
-    if (!state) return 0
-    const runLen = runCountFrom(state.tableau[colIndex], indexFromTop, isDescendingAltColor)
-    if (runLen > 1 && runLen > maxSupermoveCount(state, -1)) return 0
+    const current = stateRef.current
+    if (!current) return 0
+    const runLen = runCountFrom(current.tableau[colIndex], indexFromTop, isDescendingAltColor)
+    if (runLen > 1 && runLen > maxSupermoveCount(current, -1)) return 0
     return runLen
   }
 
@@ -793,7 +844,7 @@ function FreeCellScreenInner() {
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)
-              const isFlyingHere = !!flying && flying.to.zone === 'foundation' && flying.to.index === i
+              const isFlyingHere = flying.some((f) => f.to.zone === 'foundation' && f.to.index === i)
               return (
                 <DropZone key={i} registry={dropZones} pileRef={{ zone: 'foundation', index: i }} style={[styles.foundationSlot, { width: cardWidth }]}>
                   <FoundationCell
@@ -819,7 +870,7 @@ function FreeCellScreenInner() {
               // for a tableau destination (its own hiddenCardIds prop below); FreecellCell has no
               // such prop of its own, so this folds it into the same isFlyingHere-driven hide/freeze
               // this cell already does for the single-ghost `flying` case.
-              const isFlyingHere = (!!flying && flying.to.zone === 'freecell' && flying.to.index === i) || (!!card && dealHiddenIds.has(card.id))
+              const isFlyingHere = flying.some((f) => f.to.zone === 'freecell' && f.to.index === i) || (!!card && dealHiddenIds.has(card.id))
               // The far-right freecell doubles as the deal's flight origin while dealing (see
               // dealOriginRef/DECK_PLACEHOLDER_CARD above) - freecells are never touched by the
               // initial deal itself, so `card` is guaranteed still null underneath for the whole
@@ -847,9 +898,23 @@ function FreeCellScreenInner() {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
               getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
-              onDrop: (to, count, anchorCardId, flight) => completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)
+              // Claims a flight slot (see activeFlightCountRef's doc comment above) purely so undo
+              // sees this drop as in-flight for its whole duration, not just once completeMove
+              // lands one - PileView.tsx (shared, not ours to edit) already ran its own hitTest
+              // await before invoking this callback, so this is the earliest point FreeCellScreen
+              // gets a look-in. Rejects outright if undo is running (see attemptDrop's identical
+              // comment on why undo holds full mutual exclusion, not just a one-way wait).
+              onDrop: (to, count, anchorCardId, flight) => {
+                if (undoBusyRef.current) return false
+                startFlights(1)
+                if (!completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)) {
+                  settleFlight()
+                  return false
+                }
+                return true
+              }
             }
-            const hiddenCount = flying && flying.to.zone === 'tableau' && flying.to.index === colIndex ? flying.count : 0
+            const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === colIndex).reduce((sum, f) => sum + f.count, 0)
             return (
               <DropZone key={colIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: colIndex }} style={[styles.tableauColumn, { width: cardWidth }]}>
                 <PileView cards={col} onPressCard={(card, indexFromTop, measure) => handleCardTap({ zone: 'tableau', index: colIndex }, card.id, measure, indexFromTop)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} dimUnplayable={settings.dimUnplayable} shakeCardId={shake?.cardId} shakeCount={shake?.count} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} />

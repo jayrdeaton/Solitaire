@@ -1,4 +1,4 @@
-import { InlineColorPicker, usePopoverHost } from '@tastic/hud'
+import { InlineColorPicker, PopoverHost } from '@tastic/hud'
 import { ProfilePicker } from '@tastic/profile'
 import { useRouter } from 'expo-router'
 import { StyleSheet, View } from 'react-native'
@@ -7,14 +7,21 @@ import { useTheme } from 'react-native-paper'
 import { DEFAULT_SEED_COLOR, previewCardBack } from '@/components/theme'
 import { useProfiles } from '@/stores/profiles'
 
+interface ProfilePanelProps {
+  // Owned by the caller (Home) rather than this component, so Home can also render a full-screen
+  // @tastic/hud PressAwayOverlay keyed off the same host - the same "host lives with the screen,
+  // panel just consumes it" shape the fleet's split-screen loadout/lobby screens use for their own
+  // player panels, scaled down to Solitaire's single, non-split zone.
+  host: PopoverHost
+}
+
 // Single-seat profile picker + color override for the main screen - Solitaire's simpler
 // counterpart to the fleet's per-seat loadout panels (no takenId/takenValue/allowSwapTaken, since
 // there's no second seat to conflict with here).
-export function ProfilePanel() {
+export function ProfilePanel({ host }: ProfilePanelProps) {
   const router = useRouter()
   const { dark, colors: paperColors } = useTheme()
   const { profiles, activeProfileId, selectProfile, tableColorOverride, setTableColorOverride } = useProfiles()
-  const host = usePopoverHost()
 
   const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? null
   // Must be the raw seed, not useTableColors()'s derived colors.cardBack - InlineColorPicker

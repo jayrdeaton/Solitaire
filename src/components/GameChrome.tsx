@@ -1,13 +1,11 @@
 import { IconButton, Pressable, useHoldToRepeat } from '@rific/feedback-press'
-import { type TableColors } from '@tastic/cards'
 import { rotateInsets, useRotation } from '@tastic/core'
 import { ConfirmDialog, ContentGutter, CornerActionButtons } from '@tastic/hud'
 import { useRouter } from 'expo-router'
-import { ReactNode, useEffect, useId, useMemo, useState } from 'react'
+import { ReactNode, useEffect, useState } from 'react'
 import { Pressable as RNPressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import Svg, { Defs, RadialGradient, Rect, Stop } from 'react-native-svg'
 
 import { computeScore } from '@/engine/score'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
@@ -15,7 +13,8 @@ import { useLastActiveGame } from '@/stores/lastActiveGame'
 import { CARD_GAP_MIN } from './cardLayout'
 import { RulesDialog } from './RulesDialog'
 import { SettingsDialog } from './SettingsDialog'
-import { CHROME_FG, useTableColors } from './theme'
+import { TableBackground } from './TableBackground'
+import { CHROME_FG } from './theme'
 import { CARD_FONT_FAMILY } from './useFontsPreload'
 
 export function formatTime(totalSeconds: number): string {
@@ -149,11 +148,6 @@ interface GameChromeProps {
    * below via RulesDialog. Owned by each screen, same as settingsContent, rather than GameChrome
    * looking a gameId up itself. */
   rules: string[]
-  /** Renders a soft radial vignette over the felt - brighter through the middle, gently dimmed
-   * toward the edges - instead of the plain flat `tableFelt` fill. Opt-in per screen while the
-   * look is still being evaluated (only Klondike passes this today); every other game keeps the
-   * flat fill until it's confirmed worth rolling out everywhere. */
-  showVignette?: boolean
   /** The game board itself - foundations/tableau/stock, whatever shape a given game needs. Scrolls
    * if it doesn't fit (Pyramid's triangle + stock row can exceed a short viewport). */
   children: ReactNode
@@ -175,7 +169,7 @@ interface GameChromeProps {
  * Previously each of the four game screens hand-rolled its own version of this row (and Pyramid's
  * had drifted to a bottom button row entirely) - unifying it here means a layout tweak (like this
  * one, and the header/footer regrouping that followed it) only has to happen once. */
-export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, hintDisabled, won, hasProgress, getElapsedSeconds, clockRunning, movesCount, settingsContent, rules, showVignette, children }: GameChromeProps) {
+export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, hintDisabled, won, hasProgress, getElapsedSeconds, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
   const router = useRouter()
   // rotateInsets/toRotationStyle (passed to RulesDialog/ConfirmDialog below) are exact identities
   // at rotation 0 (the only state for any screen with no OrientationProvider ancestor - see the
@@ -183,14 +177,6 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   // rotated wrapper.
   const rotation = useRotation()
   const insets = rotateInsets(useSafeAreaInsets(), rotation)
-  const colors = useTableColors()
-  const styles = useMemo(() => makeStyles(colors), [colors])
-  // React Navigation on web keeps a popped screen mounted (hidden, not unmounted) across a stack
-  // pop rather than unmounting it - see .claude/CLAUDE.md's ProfilesManager finding - so more than
-  // one GameChrome (each with its own vignette <RadialGradient>) can genuinely coexist in the DOM
-  // at once there. A shared literal id would make every one of them resolve to whichever instance's
-  // <Defs> happens to come first in the document, same failure mode as CardSheen's own gradient id.
-  const vignetteGradientId = useId()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [rulesOpen, setRulesOpen] = useState(false)
   const [confirmNewGameVisible, setConfirmNewGameVisible] = useState(false)
@@ -233,10 +219,20 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   const footerAnimatedStyle = useAnimatedStyle(() => ({ opacity: footerOpacity.value, transform: [{ translateY: footerTranslateY.value }] }))
 
   // Slides the moves/timer row down to fill the footer's own spot once it's hidden, rather than
-  // leaving it stranded above an empty gap - moves/timer itself never fades (see toggleFooter),
-  // only repositions, so this is a plain translateY with no matching opacity value of its own.
+  // leaving it stranded above an empty gap - the row itself never fades as a whole (see
+  // toggleFooter), only repositions; its two internal layers (compact vs captioned, see
+  // captionOpacity below) crossfade independently of this translateY.
   const movesTimerTranslateY = useSharedValue(0)
   const movesTimerAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ translateY: movesTimerTranslateY.value }] }))
+
+  // Crossfades the moves/timer row's two layers (see statsStack below) - 0 shows the bare
+  // "12 · 45 · 0:33" quick-glance line (footer visible, controls close by), 1 shows the
+  // small-captioned "MOVES/SCORE/TIME" breakdown (footer hidden, player has room to read it).
+  // Both layers stay mounted the whole time, absolutely stacked on top of each other, so this is
+  // a plain opacity crossfade rather than a mount/unmount swap.
+  const captionOpacity = useSharedValue(0)
+  const compactAnimatedStyle = useAnimatedStyle(() => ({ opacity: 1 - captionOpacity.value }))
+  const captionedAnimatedStyle = useAnimatedStyle(() => ({ opacity: captionOpacity.value }))
 
   function toggleFooter() {
     const next = !footerVisible
@@ -248,24 +244,15 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
     footerOpacity.value = withTiming(next ? 1 : 0, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
     footerTranslateY.value = withTiming(next ? 0 : 24, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
     movesTimerTranslateY.value = withTiming(next ? 0 : MOVES_TIMER_BOTTOM - FOOTER_BOTTOM, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
+    captionOpacity.value = withTiming(next ? 0 : 1, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
     /* eslint-enable react-hooks/immutability */
   }
 
   return (
     <View style={styles.screen}>
-      {showVignette ? (
-        <Svg pointerEvents='none' style={styles.vignette} width='100%' height='100%'>
-          <Defs>
-            <RadialGradient id={vignetteGradientId} cx='50%' cy='50%' rx='75%' ry='75%'>
-              <Stop offset='55%' stopColor={colors.tableFeltDark} stopOpacity={0} />
-              <Stop offset='100%' stopColor={colors.tableFeltDark} stopOpacity={0.55} />
-            </RadialGradient>
-          </Defs>
-          <Rect x={0} y={0} width='100%' height='100%' fill={`url(#${vignetteGradientId})`} />
-        </Svg>
-      ) : null}
+      <TableBackground />
       <ContentGutter maxContentWidth={GAME_CONTENT_MAX_WIDTH} style={styles.gutterRow}>
-        <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: GAME_CONTENT_TOP_PADDING + insets.top, paddingBottom: GAME_CONTENT_BOTTOM_PADDING + insets.bottom }]}>
+        <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: GAME_CONTENT_TOP_PADDING + insets.top }]}>
           {/* Plain RN Pressable, not @rific/feedback-press's - a background tap toggling the
           footer isn't a button and shouldn't trigger haptic/sound feedback (same reasoning as
           DealLayer's screen-wide skip-tap overlay). Wrapping {children} rather than sitting
@@ -273,8 +260,19 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
           from whichever nested view claims it first (every card already nests its own Pressable
           for tap-to-move, which claims its own taps), so a card tap never reaches this outer
           onPress - a sibling overlay instead risks a ScrollView or a plain layout View eating
-          the tap via native z-order hit-testing before it ever reaches a handler. */}
-          <RNPressable onPress={toggleFooter} style={styles.tableTapCatcher}>
+          the tap via native z-order hit-testing before it ever reaches a handler.
+
+          The bottom reserve (GAME_CONTENT_BOTTOM_PADDING, where the moves/timer row and footer
+          visually float) lives on THIS Pressable's own paddingBottom, not on `content`'s - a
+          parent's padding sits outside its child's box, so putting it on `content` (as it used to
+          be, alongside paddingTop) left that entire strip permanently untappable no matter how
+          tall flexGrow made this Pressable: confirmed live, taps there never reached toggleFooter
+          even though the felt looks identical to the rest of the tappable board. Self-padding, by
+          contrast, is still inside the Pressable's own hit box - same visual reservation for
+          {children} below, now actually tappable. paddingTop stays on `content` since only the
+          bottom strip was ever reported/reachable-by-nothing-else; the top band already has its
+          own always-present touch targets (title, corner buttons). */}
+          <RNPressable onPress={toggleFooter} style={[styles.tableTapCatcher, { paddingBottom: GAME_CONTENT_BOTTOM_PADDING + insets.bottom }]}>
             {children}
           </RNPressable>
         </ScrollView>
@@ -331,12 +329,39 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
       (movesTimerAnimatedStyle), rather than sitting stranded above an empty gap. Hidden entirely
       once `won`, alongside the footer below - see GameChromeProps' own doc comment on `won`: the
       win dialog already shows the same three numbers, so this would just be a stale duplicate
-      sitting behind it. */}
+      sitting behind it.
+
+      Plain bare numbers while the footer (Undo/New Game/Hint/Rules) is still on screen - that's
+      the "quick glance mid-play" state, and a caption on every tick would just be noise next to
+      those buttons. Once the felt is tapped to hide the footer, this row inherits its spot and a
+      player has deliberately chosen to focus on the board over the numbers - small captions above
+      each value then earn their keep, without ever competing with the footer for attention. Both
+      layers below stay mounted throughout and crossfade via captionOpacity (see toggleFooter)
+      rather than swapping instantly, so the transition reads as one row relabeling itself, not a
+      flicker between two unrelated ones. */}
       {!won && (
         <Animated.View style={[styles.movesTimerWrap, { bottom: MOVES_TIMER_BOTTOM + insets.bottom }, movesTimerAnimatedStyle]} pointerEvents='none'>
-          <Text style={styles.timerText} numberOfLines={1}>
-            {movesCount} · {computeScore(movesCount, displayedElapsed)} · {formatTime(displayedElapsed)}
-          </Text>
+          <View style={styles.statsStack}>
+            <Animated.View style={[styles.statsLayer, compactAnimatedStyle]}>
+              <Text style={styles.timerText} numberOfLines={1}>
+                {movesCount} · {computeScore(movesCount, displayedElapsed)} · {formatTime(displayedElapsed)}
+              </Text>
+            </Animated.View>
+            <Animated.View style={[styles.statsLayer, styles.statsRow, captionedAnimatedStyle]}>
+              <View style={styles.statBlock}>
+                <Text style={styles.statCaption}>Moves</Text>
+                <Text style={styles.statValue}>{movesCount}</Text>
+              </View>
+              <View style={styles.statBlock}>
+                <Text style={styles.statCaption}>Score</Text>
+                <Text style={styles.statValue}>{computeScore(movesCount, displayedElapsed)}</Text>
+              </View>
+              <View style={styles.statBlock}>
+                <Text style={styles.statCaption}>Time</Text>
+                <Text style={styles.statValue}>{formatTime(displayedElapsed)}</Text>
+              </View>
+            </Animated.View>
+          </View>
         </Animated.View>
       )}
 
@@ -407,133 +432,159 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   )
 }
 
-function makeStyles(colors: TableColors) {
-  return StyleSheet.create({
-    content: {
-      // Centers any top-level child narrower than the available content width (e.g. a board once
-      // genuinely narrower than GAME_CONTENT_MAX_WIDTH's own cap) instead of leaving it
-      // default-stretched full-width and therefore left-anchored.
-      alignItems: 'center',
-      // Without this, a vertical ScrollView's content container shrink-wraps to its actual content
-      // height - shorter than the screen on every board that doesn't fill it (most of them, most of
-      // the time) - leaving a dead band of table felt below the board that tableTapCatcher's own
-      // Pressable (nested inside this container) can't reach either, since it inherits the same
-      // shrink-wrapped height. flexGrow:1 makes this container at least as tall as the ScrollView's
-      // own viewport when content is shorter (harmless when content is taller - flexGrow can't
-      // shrink it below that, so a tall board like Pyramid's still scrolls exactly as before).
-      flexGrow: 1,
-      paddingHorizontal: GAME_CONTENT_PADDING
-    },
-    // The title wrap, the moves/timer band, the footer, and the corner buttons themselves are
-    // all absolutely positioned siblings of the scrolling content - on web, a later positioned
-    // sibling wins pointer-event hit-testing over an earlier one by DOM order alone unless
-    // elevated explicitly (see PileView's identical stacking-context note), so every chrome layer
-    // needs its own zIndex to reliably sit above the board and receive taps regardless of source
-    // order.
-    cornerButtons: {
-      left: 0,
-      position: 'absolute',
-      right: 0,
-      top: 0,
-      zIndex: 10
-    },
-    // Undo/New Game/Hint, floating bottom-center - no bar/background, matching the minimal look
-    // the rest of this chrome already has. Hidden/shown by GameChrome's own footerVisible state
-    // (see footerAnimatedStyle) rather than unmounting, so the fade/slide has something to animate.
-    footerWrap: {
-      alignItems: 'center',
-      flexDirection: 'row',
-      gap: 16,
-      justifyContent: 'center',
-      left: 0,
-      position: 'absolute',
-      right: 0,
-      zIndex: 10
-    },
-    // ContentGutter's own row needs this to consume `screen`'s full remaining height - the same
-    // flex:1 that used to govern the ScrollView directly against `screen`, one level further in -
-    // so its two gutters (and anything a game optionally renders into them) run the full vertical
-    // extent of the play area, not just as tall as the board happens to be.
-    gutterRow: {
-      flex: 1
-    },
-    // Centered full-width, matching footerWrap's own centering below - reads as one visually
-    // related pair (status line + the controls that act on it) even though only the footer
-    // actually hides.
-    movesTimerWrap: {
-      alignItems: 'center',
-      left: 0,
-      position: 'absolute',
-      right: 0,
-      zIndex: 10
-    },
-    screen: {
-      backgroundColor: colors.tableFelt,
-      flex: 1
-    },
-    // Without an explicit style here (contentContainerStyle alone isn't enough), a vertical
-    // ScrollView's cross-axis (width) sizes to its content instead of its parent - harmless for
-    // content narrower than the screen, but a wider board (Spider's 10 columns) just grows the
-    // whole page instead of being constrained and clipped/scrollable within the viewport.
-    scroll: {
-      flex: 1
-    },
-    // Wraps {children} as the table-tap-to-hide-footer catcher (see where it's rendered) -
-    // reproduces `content`'s own alignItems: 'center' so wrapping it doesn't change how a board
-    // narrower than the available width lays out (Spider's board is several top-level siblings,
-    // not one, so this can't be left to the default alignItems: 'stretch'). flexGrow:1 makes this
-    // Pressable itself fill `content`'s own (now flexGrow:1) height, the same reasoning as
-    // `content`'s own comment - without it, this Pressable would still shrink-wrap around
-    // {children} even once its taller parent gave it room to grow, leaving that same dead band of
-    // untappable felt one level further in.
-    tableTapCatcher: {
-      alignItems: 'center',
-      flexGrow: 1,
-      width: '100%'
-    },
-    timerText: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      fontVariant: ['tabular-nums']
-    },
-    titleText: {
-      color: '#fff',
-      // Shrinks rather than overflowing titleWrap's own right bound - numberOfLines={1} truncation
-      // still applies within whatever width that leaves it.
-      flexShrink: 1,
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      fontWeight: '700'
-    },
-    titleWrap: {
-      // Left-aligned (hugging the Back button, like a standard nav-bar title), not centered in
-      // its own left/right band - that band is sized to clear the Settings gear, which isn't the
-      // same as being centered on the screen.
-      //
-      // Fixed height matching Home/Settings' own 40px touchable box (react-native-paper's MD3
-      // IconButton: 24px icon + 8px padding each side - see its own PADDING constant), at the same
-      // top offset those buttons render at - so centering titleText within this box via
-      // justifyContent lands it on the exact same vertical center as the icon row beside it,
-      // rather than a content-sized box (title's own ~19px line height) whose center sits several
-      // px higher and reads as visibly uncentered against them. Confirmed against live
-      // getBoundingClientRect() measurements, not just the nominal `top: 8` CornerActionButtons
-      // itself renders with - IconButton's own default margin pushes its real box a few px further
-      // than that alone would suggest.
-      height: 40,
-      justifyContent: 'center',
-      position: 'absolute',
-      zIndex: 10
-    },
-    // No zIndex (unlike cornerButtons/footerWrap/movesTimerWrap above) - deliberately the first
-    // child under `screen` (see the JSX above) so every other layer paints over it in source order
-    // alone, on both native and web.
-    vignette: {
-      bottom: 0,
-      left: 0,
-      position: 'absolute',
-      right: 0,
-      top: 0
-    }
-  })
-}
+const styles = StyleSheet.create({
+  content: {
+    // Centers any top-level child narrower than the available content width (e.g. a board once
+    // genuinely narrower than GAME_CONTENT_MAX_WIDTH's own cap) instead of leaving it
+    // default-stretched full-width and therefore left-anchored.
+    alignItems: 'center',
+    // Without this, a vertical ScrollView's content container shrink-wraps to its actual content
+    // height - shorter than the screen on every board that doesn't fill it (most of them, most of
+    // the time) - leaving a dead band of table felt below the board that tableTapCatcher's own
+    // Pressable (nested inside this container) can't reach either, since it inherits the same
+    // shrink-wrapped height. flexGrow:1 makes this container at least as tall as the ScrollView's
+    // own viewport when content is shorter (harmless when content is taller - flexGrow can't
+    // shrink it below that, so a tall board like Pyramid's still scrolls exactly as before).
+    flexGrow: 1,
+    paddingHorizontal: GAME_CONTENT_PADDING
+  },
+  // The title wrap, the moves/timer band, the footer, and the corner buttons themselves are
+  // all absolutely positioned siblings of the scrolling content - on web, a later positioned
+  // sibling wins pointer-event hit-testing over an earlier one by DOM order alone unless
+  // elevated explicitly (see PileView's identical stacking-context note), so every chrome layer
+  // needs its own zIndex to reliably sit above the board and receive taps regardless of source
+  // order.
+  cornerButtons: {
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    zIndex: 10
+  },
+  // Undo/New Game/Hint, floating bottom-center - no bar/background, matching the minimal look
+  // the rest of this chrome already has. Hidden/shown by GameChrome's own footerVisible state
+  // (see footerAnimatedStyle) rather than unmounting, so the fade/slide has something to animate.
+  footerWrap: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 16,
+    justifyContent: 'center',
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    zIndex: 10
+  },
+  // ContentGutter's own row needs this to consume `screen`'s full remaining height - the same
+  // flex:1 that used to govern the ScrollView directly against `screen`, one level further in -
+  // so its two gutters (and anything a game optionally renders into them) run the full vertical
+  // extent of the play area, not just as tall as the board happens to be.
+  gutterRow: {
+    flex: 1
+  },
+  // Centered full-width, matching footerWrap's own centering below - reads as one visually
+  // related pair (status line + the controls that act on it) even though only the footer
+  // actually hides.
+  movesTimerWrap: {
+    alignItems: 'center',
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    zIndex: 10
+  },
+  screen: {
+    flex: 1
+  },
+  // Without an explicit style here (contentContainerStyle alone isn't enough), a vertical
+  // ScrollView's cross-axis (width) sizes to its content instead of its parent - harmless for
+  // content narrower than the screen, but a wider board (Spider's 10 columns) just grows the
+  // whole page instead of being constrained and clipped/scrollable within the viewport.
+  scroll: {
+    flex: 1
+  },
+  statBlock: {
+    alignItems: 'center'
+  },
+  statCaption: {
+    color: 'rgba(255, 255, 255, 0.65)',
+    fontFamily: CARD_FONT_FAMILY,
+    fontSize: 10,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase'
+  },
+  statValue: {
+    color: '#fff',
+    fontFamily: CARD_FONT_FAMILY,
+    fontSize: 16,
+    fontVariant: ['tabular-nums']
+  },
+  // Both the compact line and the captioned row render into one of these, absolutely filling
+  // statsStack below, so they can crossfade in place via opacity alone rather than one pushing
+  // the other around as it fades.
+  statsLayer: {
+    alignItems: 'center',
+    bottom: 0,
+    justifyContent: 'center',
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 20
+  },
+  // Needs a real height of its own - unlike a plain shrink-wrapping View, a box whose only
+  // children are position:'absolute' (statsLayer) has no content to size itself from, and would
+  // otherwise collapse to zero and hide both layers entirely.
+  statsStack: {
+    height: 34,
+    width: '100%'
+  },
+  // Wraps {children} as the table-tap-to-hide-footer catcher (see where it's rendered) -
+  // reproduces `content`'s own alignItems: 'center' so wrapping it doesn't change how a board
+  // narrower than the available width lays out (Spider's board is several top-level siblings,
+  // not one, so this can't be left to the default alignItems: 'stretch'). flexGrow:1 makes this
+  // Pressable itself fill `content`'s own (now flexGrow:1) height, the same reasoning as
+  // `content`'s own comment - without it, this Pressable would still shrink-wrap around
+  // {children} even once its taller parent gave it room to grow, leaving that same dead band of
+  // untappable felt one level further in.
+  tableTapCatcher: {
+    alignItems: 'center',
+    flexGrow: 1,
+    width: '100%'
+  },
+  timerText: {
+    color: '#fff',
+    fontFamily: CARD_FONT_FAMILY,
+    fontSize: 16,
+    fontVariant: ['tabular-nums']
+  },
+  titleText: {
+    color: '#fff',
+    // Shrinks rather than overflowing titleWrap's own right bound - numberOfLines={1} truncation
+    // still applies within whatever width that leaves it.
+    flexShrink: 1,
+    fontFamily: CARD_FONT_FAMILY,
+    fontSize: 16,
+    fontWeight: '700'
+  },
+  titleWrap: {
+    // Left-aligned (hugging the Back button, like a standard nav-bar title), not centered in
+    // its own left/right band - that band is sized to clear the Settings gear, which isn't the
+    // same as being centered on the screen.
+    //
+    // Fixed height matching Home/Settings' own 40px touchable box (react-native-paper's MD3
+    // IconButton: 24px icon + 8px padding each side - see its own PADDING constant), at the same
+    // top offset those buttons render at - so centering titleText within this box via
+    // justifyContent lands it on the exact same vertical center as the icon row beside it,
+    // rather than a content-sized box (title's own ~19px line height) whose center sits several
+    // px higher and reads as visibly uncentered against them. Confirmed against live
+    // getBoundingClientRect() measurements, not just the nominal `top: 8` CornerActionButtons
+    // itself renders with - IconButton's own default margin pushes its real box a few px further
+    // than that alone would suggest.
+    height: 40,
+    justifyContent: 'center',
+    position: 'absolute',
+    zIndex: 10
+  }
+})
