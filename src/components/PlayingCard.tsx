@@ -1,16 +1,18 @@
 import { Pressable } from '@rific/feedback-press'
 import { CardBack, CardFace, DecoratedCardBack, type TableColors, useCardSize } from '@tastic/cards'
 import React from 'react'
-import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
-import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
-import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg'
+import { Image, StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
+import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
 
 import { Card, Rank, Suit } from '@/engine/types'
 import { useProfiles } from '@/stores/profiles'
 import { useSettings } from '@/stores/settings'
 
-import { startHintPulse, stopHintPulse } from './hintAnimation'
+import { startHintPulse } from './hintAnimation'
 import { CARD_RADIUS, cardRadiusForWidth, useTableColors } from './theme'
+
+const SHEEN_SOURCE = require('../../assets/card-sheen.png')
+const sheenStyles = StyleSheet.create({ sheen: { bottom: 0, left: 0, pointerEvents: 'none', position: 'absolute', right: 0, top: 0 } })
 
 interface PlayingCardProps {
   card: Card
@@ -40,16 +42,12 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, onPress,
   const { settings } = useSettings()
   const { width, height } = useCardSize()
   const cardRadius = cardRadiusForWidth(width)
-  const styles = React.useMemo(() => makeStyles(colors, settings.invertDarkModeColors, cardRadius), [colors, settings.invertDarkModeColors, cardRadius])
+  const styles = stylesFor(colors, settings.invertDarkModeColors, cardRadius)
   const cardSize = { width, height }
-  const hintOpacity = useSharedValue(1)
-  const hintAnimatedStyle = useAnimatedStyle(() => ({ opacity: hintOpacity.value }))
-  React.useEffect(() => {
-    if (hinted) startHintPulse(hintOpacity)
-    else stopHintPulse(hintOpacity)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hinted])
-  const borderOverlay = selected ? <View pointerEvents='none' style={styles.selectedRing} /> : hinted ? <Animated.View pointerEvents='none' style={[styles.hintRing, hintAnimatedStyle]} /> : <View pointerEvents='none' style={styles.border} />
+  // The pulsing hint ring is its own component, mounted only while this card is actually hinted: it owns a shared
+  // value, an animated-style mapper and a looping animation, none of which ~every card on the board (almost never
+  // hinted) should pay for at mount.
+  const borderOverlay = selected ? <View pointerEvents='none' style={styles.selectedRing} /> : hinted ? <HintRing style={styles.hintRing} /> : <View pointerEvents='none' style={styles.border} />
   const dimOverlay = dimmed ? <View pointerEvents='none' style={styles.dim} /> : null
 
   if (!card.faceUp) {
@@ -89,35 +87,38 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, onPress,
   )
 }
 
+/** The hint feature's pulsing ring (see hintAnimation.ts) - mounted only while a card is hinted, so it starts each pulse
+ * at full opacity and its shared value/animated style/animation are torn down with it when the hint ends. */
+function HintRing({ style }: { style: StyleProp<ViewStyle> }) {
+  const opacity = useSharedValue(1)
+  const animatedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }))
+  React.useEffect(() => {
+    startHintPulse(opacity)
+    return () => cancelAnimation(opacity)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  return <Animated.View pointerEvents='none' style={[style, animatedStyle]} />
+}
+
 /** A faint diagonal gloss over the card's own flat face/back fill, like light catching glossy
- * cardstock - the same static gradient for every card regardless of suit/rank/colors (no props),
- * so it's one cheap shared element tree rather than something recomputed per card. Lives inside
- * `clip` (see both call sites above), which already clips its children to the card's own rounded
- * radius, so this doesn't need its own corner rounding. */
+ * cardstock - the same static gradient for every card regardless of suit/rank/colors (no props).
+ * Lives inside `clip` (see both call sites above), which already clips its children to the card's own
+ * rounded radius, so this doesn't need its own corner rounding.
+ *
+ * A single Image of a pre-baked 64x64 gradient (assets/card-sheen.png), stretched over the card, rather
+ * than the per-card react-native-svg tree it used to be (Svg + Defs + LinearGradient + 3 Stops + Rect,
+ * ~7 native views on EVERY card). The PNG is the exact same gradient the SVG drew (objectBoundingBox
+ * vector (0,0)->(0.65,0.85), white at 24% -> 7% at 28% -> 0% at 50%), so a non-uniform stretch of it
+ * reproduces the SVG's look; every card shares the one decoded bitmap. That's roughly a quarter of a
+ * card's view count gone, times every card on the board (and again for each ghost during a deal). */
 const CardSheen = React.memo(function CardSheen() {
-  // Every card mounts its own CardSheen instance (dozens at once, on web literally the same real
-  // DOM <svg> id-lookup semantics as any other document) - a shared literal id here would make
-  // every card's fill="url(#...)" resolve to whichever instance's <Defs> happens to be first in
-  // the document, silently working today only because every instance's gradient is byte-identical.
-  const gradientId = React.useId()
-  return (
-    <Svg pointerEvents='none' style={StyleSheet.absoluteFill} width='100%' height='100%'>
-      <Defs>
-        <LinearGradient id={gradientId} x1='0%' y1='0%' x2='65%' y2='85%'>
-          <Stop offset='0%' stopColor='#FFFFFF' stopOpacity={0.24} />
-          <Stop offset='28%' stopColor='#FFFFFF' stopOpacity={0.07} />
-          <Stop offset='50%' stopColor='#FFFFFF' stopOpacity={0} />
-        </LinearGradient>
-      </Defs>
-      <Rect x={0} y={0} width='100%' height='100%' fill={`url(#${gradientId})`} />
-    </Svg>
-  )
+  return <Image source={SHEEN_SOURCE} style={sheenStyles.sheen} resizeMode='stretch' />
 })
 
 export function EmptySlot({ onPress, hinted, style, children, testID }: { onPress?: () => void; hinted?: boolean; style?: StyleProp<ViewStyle>; children?: React.ReactNode; testID?: string }) {
   const colors = useTableColors()
   const { width, height } = useCardSize()
-  const styles = React.useMemo(() => makeStyles(colors), [colors])
+  const styles = stylesFor(colors)
   return (
     // disabled when there's nothing to press - otherwise this Pressable still claims the tap (just
     // does nothing with it), silently blocking taps meant for whatever's behind it (e.g. GameChrome's
@@ -156,6 +157,25 @@ export function FoundationSlot({ suit, rank = 1, onPress, hinted, style }: Found
       <CardFace card={{ id: 'foundation-hint', suit, rank, faceUp: true }} colors={colors} width={width} height={height} muted cardStyle={settings.cardStyle} invertDarkModeColors={settings.invertDarkModeColors} />
     </EmptySlot>
   )
+}
+
+// Every card on a board (and every ghost during a deal) resolves to the same handful of styles - one per theme colors
+// object, invert setting and radius - so build each set once and share it, instead of running StyleSheet.create in
+// every card instance (~50 of them per board mount). `colors` is a stable reference until the theme itself changes.
+const stylesCache = new WeakMap<TableColors, Map<string, ReturnType<typeof makeStyles>>>()
+function stylesFor(colors: TableColors, invertDarkModeColors?: boolean, radius: number = CARD_RADIUS) {
+  let byKey = stylesCache.get(colors)
+  if (!byKey) {
+    byKey = new Map()
+    stylesCache.set(colors, byKey)
+  }
+  const key = `${invertDarkModeColors ? 1 : 0}-${radius}`
+  let styles = byKey.get(key)
+  if (!styles) {
+    styles = makeStyles(colors, invertDarkModeColors, radius)
+    byKey.set(key, styles)
+  }
+  return styles
 }
 
 function makeStyles(colors: TableColors, invertDarkModeColors?: boolean, radius: number = CARD_RADIUS) {

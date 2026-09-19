@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react'
 
+import { flushGameInProgress } from '@/stores/gameInProgress'
+
 // While a deal is active, re-persists it at this cadence even with no new move, so a player who
 // leaves the board open and then closes/kills the app still resumes close to how long they
 // actually had it open - see useGameSession.ts's own doc comment for why the per-move save effect
@@ -25,4 +27,9 @@ export function useSaveInProgressBackstop(active: boolean, save: () => void) {
     const id = setInterval(() => saveRef.current(), BACKSTOP_INTERVAL_MS)
     return () => clearInterval(id)
   }, [active])
+
+  // Saves are coalesced (see stores/gameInProgress.ts), so leaving the screen - Home, or any other way the
+  // screen unmounts - must write whatever is still waiting out its debounce, or the last move or two
+  // would not be there on the next visit. Every game screen mounts this hook.
+  useEffect(() => () => void flushGameInProgress(), [])
 }

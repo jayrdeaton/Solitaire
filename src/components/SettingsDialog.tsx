@@ -2,6 +2,7 @@ import { useAutoPaperTheme } from '@rific/auto-paper'
 import { TouchableRipple } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { CardBack, CardFace, DecoratedCardBack } from '@tastic/cards'
+import { type ViewRotation } from '@tastic/core'
 import { BaseSettingsDialog } from '@tastic/hud'
 import { ReactNode } from 'react'
 import { StyleSheet, View } from 'react-native'
@@ -68,22 +69,26 @@ interface SettingsDialogProps {
   // section below. Omitted entirely by the home screen and by FreeCell/Pyramid, which have no
   // game-specific settings today.
   children?: ReactNode
+  // Forwarded to BaseSettingsDialog's own `rotation` override. GameChrome passes 0 because it renders
+  // this inside its own Portal.Host, i.e. already inside the rotated frame (see GameChrome); the home
+  // screen omits it and gets the ambient live rotation like before.
+  rotation?: ViewRotation
 }
 
 // Thin adapter over @tastic/hud's shared settings shell, matching the rest of the fleet's own
 // SettingsDialog.tsx convention. No deferBottomEdgeGestures - Solitaire has no edge-anchored swipe
-// controls, so there's nothing for that one to guard against (unlike lockOrientation, now wired up
-// below - see the rotation plan). Check for Updates is left showing (its own Platform.OS check
+// controls, so there's nothing for that one to guard against (unlike lockOrientation, wired up below
+// - see lockableDeviceMotion.ts for how the lock actually takes effect). Check for Updates is left showing (its own Platform.OS check
 // already hides it on web) - the root layout's UpdateDialog handles the autoCheck/autoPrompt flow,
 // this just adds the manual "Check for Updates" button/version row.
-export function SettingsDialog({ visible, onDismiss, children }: SettingsDialogProps) {
+export function SettingsDialog({ visible, onDismiss, children, rotation }: SettingsDialogProps) {
   const { settings, updateSettings } = useSettings()
   const colors = useTableColors()
   const { colors: paperColors } = useAutoPaperTheme()
   const { error } = useToast()
 
   return (
-    <BaseSettingsDialog visible={visible} onDismiss={onDismiss} version={release.otaVersion} onUpdateError={(message) => error('Update check failed', message)} lockOrientation={settings.lockOrientation} onLockOrientationChange={(value) => updateSettings({ lockOrientation: value })}>
+    <BaseSettingsDialog visible={visible} onDismiss={onDismiss} rotation={rotation} version={release.otaVersion} onUpdateError={(message) => error('Update check failed', message)} lockOrientation={settings.lockOrientation} onLockOrientationChange={(value) => updateSettings({ lockOrientation: value })}>
       {children}
       <SettingsSection>
         {/* Same bare-row shape as BaseSettingsDialog's own Sound/Haptics rows (an icon badge whose

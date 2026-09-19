@@ -9,7 +9,6 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
-import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 
@@ -19,7 +18,8 @@ import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
-import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
@@ -51,6 +51,7 @@ import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 import { useSettings } from '@/stores/settings'
 
+import { BOARD_MODEL } from './boardModel'
 import { buildFortyThievesDealSequence } from './dealSequence'
 import { FortyThievesSettingsSection } from './FortyThievesSettingsSection'
 import { createFortyThievesController, findFoundationSlot, FortyThievesState, isFullyAutoCompletableWithDraws, nextAutoCompleteMoveWithDraws } from './rules'
@@ -122,11 +123,14 @@ function FortyThievesScreenInner() {
   // alongside the undo stack in startNewGame/restoreGame below.
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
-  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
-  // with plain useWindowDimensions() otherwise, see the rotation plan.
-  const { width: winWidth } = useRotatedWindowDimensions()
-  const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
+  // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
+  // layout; the plain window width (capped) in portrait. See gameLayout.ts.
+  const { contentWidth, isWide } = useGameLayout()
+  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
+  // The width-derived size in portrait (unchanged); in the wide layout also shrunk until the whole board
+  // (top row + the tallest starting column) fits the window's short axis - see boardModel.ts.
+  const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
+  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
   const deal = useDealAnimator()
@@ -626,7 +630,10 @@ function FortyThievesScreenInner() {
   return (
     <CardSizeProvider width={cardWidth}>
       <GameChrome title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
-        <View style={styles.topRow}>
+        {/* Portrait keeps topRow's own fixed 18pt gap between the foundations and the stock/waste pair (as it
+        always had); only the wide layout swaps in the card gap, so the row lines up with the fitted (and
+        gap-spread) tableau grid below it. */}
+        <View style={[styles.topRow, isWide && { gap }]}>
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)

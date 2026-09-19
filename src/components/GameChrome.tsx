@@ -1,6 +1,6 @@
 import { IconButton, Pressable, useHoldToRepeat } from '@rific/feedback-press'
 import { rotateInsets, useRotation } from '@tastic/core'
-import { ConfirmDialog, ContentGutter, CornerActionButtons } from '@tastic/hud'
+import { ConfirmDialog, CornerActionButtons } from '@tastic/hud'
 import { useRouter } from 'expo-router'
 import { ReactNode, useEffect, useState } from 'react'
 import { Pressable as RNPressable, ScrollView, StyleSheet, Text, View } from 'react-native'
@@ -10,7 +10,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { computeScore } from '@/engine/score'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
 
-import { CARD_GAP_MIN } from './cardLayout'
+import { GAME_CONTENT_BOTTOM_PADDING, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GAME_CONTENT_TOP_PADDING, useGameLayout } from './gameLayout'
+import { RotatedContentGutter } from './RotatedContentGutter'
 import { RulesDialog } from './RulesDialog'
 import { SettingsDialog } from './SettingsDialog'
 import { TableBackground } from './TableBackground'
@@ -40,7 +41,7 @@ export function formatTime(totalSeconds: number): string {
  * threading each game's own render-scoped `gap` into this shared, cross-game constant, which only
  * matters on a wide enough window that a low-column game's cards have already maxed out, a case
  * this app's real (mobile-first) usage rarely reaches. */
-export const GAME_CONTENT_PADDING = CARD_GAP_MIN
+export { GAME_CONTENT_PADDING }
 
 /** Upper bound on the board's own content width on a wide desktop/web window - past this, the
  * leftover horizontal space becomes empty, symmetric gutters (see `ContentGutter` below) instead
@@ -54,7 +55,7 @@ export const GAME_CONTENT_PADDING = CARD_GAP_MIN
  * monitor. Every game screen's own `cardLayoutForRow` call must run its raw window width through
  * `computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)` first - same as GAME_CONTENT_PADDING
  * above, one true shared value, not a per-game guess. */
-export const GAME_CONTENT_MAX_WIDTH = 1040
+export { GAME_CONTENT_MAX_WIDTH }
 
 /** The ScrollView's own top/bottom content padding (see `contentContainerStyle` below), i.e. how
  * much vertical space the title/corner-icon band and the timer band each reserve above/below the
@@ -62,11 +63,11 @@ export const GAME_CONTENT_MAX_WIDTH = 1040
  * with inline rather than baked in here. Exported so a game screen's own tableau-height budget
  * (useTableauMaxHeight) can subtract the exact same two numbers this component actually renders
  * with, instead of guessing at them independently. */
-export const GAME_CONTENT_TOP_PADDING = 56
+export { GAME_CONTENT_TOP_PADDING }
 // 8 (footer's own bottom offset) + 40 (an IconButton's touch size, size=24 + 2*8 padding) + 8 (gap
 // up to the moves/timer row sitting right above it) + ~20 (that row's own text line) + 12 of actual
 // breathing room above that, so the last row of board content doesn't sit flush against either row.
-export const GAME_CONTENT_BOTTOM_PADDING = 88
+export { GAME_CONTENT_BOTTOM_PADDING }
 
 /** zIndex for a screen-level win/loss dialog (WinBanner/LossBanner, or a game's own custom banner
  * like Spider's/Pyramid's) - comfortably above every other explicit zIndex anywhere in this app
@@ -97,6 +98,16 @@ const UNDO_HOLD_REPEAT_MS = 250
 // footer's own spot once it's hidden (see toggleFooter's movesTimerTranslateY).
 const FOOTER_BOTTOM = 8
 const MOVES_TIMER_BOTTOM = 56
+
+// Wide (landscape) layout only - the footer and the readout live in the side gutters GameLayout
+// reserves (see gameLayout.ts), never over the board. The 8pt margins keep both columns off the
+// gutter's own outer edge / the safe-area inset, and 40 is an IconButton's touch size (24 icon + 2*8
+// padding), so the footer column is exactly one button wide.
+const WIDE_FOOTER_RIGHT_MARGIN = 8
+const WIDE_FOOTER_BUTTON_WIDTH = 40
+const WIDE_FOOTER_GAP = 8
+const WIDE_STATS_LEFT_MARGIN = 8
+const WIDE_STATS_GAP = 10
 
 interface GameChromeProps {
   /** Shown top-left, next to Back - which game is currently in play. */
@@ -153,6 +164,33 @@ interface GameChromeProps {
   children: ReactNode
 }
 
+/** Owns the once-a-second tick that keeps the moves/score/time readout live, so ONLY the readout
+ * re-renders each second. The tick used to be state on GameChrome itself, which re-rendered the whole
+ * chrome (footer, hidden dialogs, settings content, every animated style) once a second for as long as
+ * a deal was in progress - measured at ~140ms of JS per tick, i.e. a busy thread ~14% of the time
+ * exactly while the player is dragging cards. Unmounted while `won` (its caller only renders it then),
+ * so a fresh New Game after a win remounts it and re-reads the clock instead of showing the frozen
+ * time of the deal that just ended. */
+function ElapsedClock({ getElapsedSeconds, clockRunning, children }: { getElapsedSeconds: () => number; clockRunning: boolean; children: (displayedElapsed: number) => ReactNode }) {
+  const [displayedElapsed, setDisplayedElapsed] = useState(getElapsedSeconds)
+  // Resyncs the instant clockRunning flips (deal starts/resumes), rather than waiting up to a second
+  // for the interval below - e.g. resuming an in-progress deal would otherwise flash "0:00" for up to
+  // a second before its first tick. Setting state directly during render (React's documented "adjust
+  // state when a prop changes" pattern) re-renders immediately, before paint, instead of the extra
+  // committed-then-corrected frame a same-effect setState would cost.
+  const [prevClockRunning, setPrevClockRunning] = useState(clockRunning)
+  if (clockRunning !== prevClockRunning) {
+    setPrevClockRunning(clockRunning)
+    setDisplayedElapsed(getElapsedSeconds())
+  }
+  useEffect(() => {
+    if (!clockRunning) return
+    const id = setInterval(() => setDisplayedElapsed(getElapsedSeconds()), 1000)
+    return () => clearInterval(id)
+  }, [clockRunning, getElapsedSeconds])
+  return <>{children(displayedElapsed)}</>
+}
+
 /** Shared top/bottom chrome for every game screen. Left corner: Back paired with a title showing
  * which game (and variant, where one exists) is in play, like a standard nav-bar back+title pair.
  * Right corner: Settings, unchanged from where it's always lived (also top-right on the main menu -
@@ -171,48 +209,17 @@ interface GameChromeProps {
  * one, and the header/footer regrouping that followed it) only has to happen once. */
 export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, hintDisabled, won, hasProgress, getElapsedSeconds, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
   const router = useRouter()
-  // rotateInsets/toRotationStyle (passed to RulesDialog/ConfirmDialog below) are exact identities
-  // at rotation 0 (the only state for any screen with no OrientationProvider ancestor - see the
-  // rotation plan), so all of this is a no-op everywhere except a screen actually rendered inside a
-  // rotated wrapper.
+  // The safe-area insets remapped onto the rotated frame's own edges (a no-op at rotation 0). The dialogs
+  // below need no rotation of their own - see the Portal.Host in withGameProviders.
   const rotation = useRotation()
   const insets = rotateInsets(useSafeAreaInsets(), rotation)
+  const { isWide, windowWidth, leftGutter, topPadding, bottomPadding } = useGameLayout()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [rulesOpen, setRulesOpen] = useState(false)
   const [confirmNewGameVisible, setConfirmNewGameVisible] = useState(false)
   const [footerVisible, setFooterVisible] = useState(true)
   const { clearLastActiveGame } = useLastActiveGame()
   const undoHold = useHoldToRepeat(onUndo, UNDO_HOLD_REPEAT_MS)
-
-  // The only thing in this whole screen that re-renders once a second while a deal is in progress
-  // - not the parent game screen (and therefore not the board it renders as `children`), which no
-  // longer has any per-second-ticking state of its own to force that (see useGameSession.ts).
-  const [displayedElapsed, setDisplayedElapsed] = useState(getElapsedSeconds)
-  // Resyncs displayedElapsed the instant clockRunning flips (deal starts/resumes/wins), rather than
-  // waiting up to a second for the interval below to get around to it - e.g. resuming an
-  // in-progress deal would otherwise flash "0:00" for up to a second before its first tick. Setting
-  // state directly during render (React's documented pattern for "adjust state when a prop
-  // changes") re-renders immediately, before paint, instead of the extra committed-then-corrected
-  // frame a same-effect setState would cost - see the interval effect below, which only manages
-  // truly external state now (a timer subscription).
-  //
-  // Also resyncs on `won` flipping true->false: New Game from the WinBanner takes clockRunning
-  // false (frozen at the win) straight to false again (the fresh deal's clock hasn't started until
-  // the first move), so the clockRunning check alone never fires here and this row would reappear
-  // still showing the just-finished deal's frozen time/score for up to a second, or indefinitely if
-  // the player never moves. `won` genuinely toggles across exactly that transition.
-  const [prevClockRunning, setPrevClockRunning] = useState(clockRunning)
-  const [prevWon, setPrevWon] = useState(won)
-  if (clockRunning !== prevClockRunning || won !== prevWon) {
-    setPrevClockRunning(clockRunning)
-    setPrevWon(won)
-    setDisplayedElapsed(getElapsedSeconds())
-  }
-  useEffect(() => {
-    if (!clockRunning) return
-    const id = setInterval(() => setDisplayedElapsed(getElapsedSeconds()), 1000)
-    return () => clearInterval(id)
-  }, [clockRunning, getElapsedSeconds])
 
   const footerOpacity = useSharedValue(1)
   const footerTranslateY = useSharedValue(0)
@@ -248,11 +255,42 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
     /* eslint-enable react-hooks/immutability */
   }
 
+  const footerButtons = (
+    <>
+      <IconButton icon='undo' iconColor={CHROME_FG} size={24} disabled={undoDisabled} onPress={onUndo} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={UNDO_LONG_PRESS_MS} accessibilityLabel='Undo' />
+
+      <IconButton
+        icon='cards-playing-outline'
+        iconColor={CHROME_FG}
+        size={24}
+        onPress={() => {
+          // Nothing to lose yet - deal immediately, no warning. Otherwise, dealing a new game
+          // abandons the one in progress (counted as a loss - see stores/gameStats.tsx), so confirm
+          // first rather than losing the player's board to a stray tap - see the ConfirmDialog
+          // below, which owns the actual prompt.
+          if (!hasProgress) {
+            onNewGame()
+            return
+          }
+          setConfirmNewGameVisible(true)
+        }}
+        accessibilityLabel='New Game'
+      />
+
+      <IconButton icon='lightbulb-on-outline' iconColor={CHROME_FG} size={24} disabled={hintDisabled} onPress={onHint} accessibilityLabel='Hint' />
+
+      <IconButton icon='information-outline' iconColor={CHROME_FG} size={24} onPress={() => setRulesOpen(true)} accessibilityLabel='Rules' />
+    </>
+  )
+
+  // The dialogs below (Settings, Rules, the New Game confirm) portal into the Portal.Host that
+  // withGameProviders mounts INSIDE the rotated frame - so they lay out against the rotated size and
+  // need no transform of their own (rotation={0}). See withGameProviders for why it lives there.
   return (
     <View style={styles.screen}>
       <TableBackground />
-      <ContentGutter maxContentWidth={GAME_CONTENT_MAX_WIDTH} style={styles.gutterRow}>
-        <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: GAME_CONTENT_TOP_PADDING + insets.top }]}>
+      <RotatedContentGutter maxContentWidth={GAME_CONTENT_MAX_WIDTH} style={styles.gutterRow}>
+        <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: (isWide ? topPadding : GAME_CONTENT_TOP_PADDING) + insets.top }]}>
           {/* Plain RN Pressable, not @rific/feedback-press's - a background tap toggling the
           footer isn't a button and shouldn't trigger haptic/sound feedback (same reasoning as
           DealLayer's screen-wide skip-tap overlay). Wrapping {children} rather than sitting
@@ -272,11 +310,13 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
           {children} below, now actually tappable. paddingTop stays on `content` since only the
           bottom strip was ever reported/reachable-by-nothing-else; the top band already has its
           own always-present touch targets (title, corner buttons). */}
-          <RNPressable onPress={toggleFooter} style={[styles.tableTapCatcher, { paddingBottom: GAME_CONTENT_BOTTOM_PADDING + insets.bottom }]}>
+          {/* Wide layout: no tap-to-hide - the footer sits in a gutter, not over the board, so there is
+          nothing to declutter. */}
+          <RNPressable onPress={isWide ? undefined : toggleFooter} style={[styles.tableTapCatcher, { paddingBottom: (isWide ? bottomPadding : GAME_CONTENT_BOTTOM_PADDING) + insets.bottom }]}>
             {children}
           </RNPressable>
         </ScrollView>
-      </ContentGutter>
+      </RotatedContentGutter>
 
       {/* Paired with the reserved Back button on the left, like a standard nav-bar title - still
       the rules trigger (tapping it opens the same dialog the footer's own Rules icon does below),
@@ -286,11 +326,16 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
       them) renders nothing extra at all rather than an empty caption slot. This band has plenty of
       width for it now that neither the info glyph nor the moves/timer readout shares it anymore
       (see GameChromeProps' own doc comment on `title`/`subtitle`). */}
-      <Pressable onPress={() => setRulesOpen(true)} style={[styles.titleWrap, { top: 14 + insets.top, left: 60 + insets.left, right: 56 + insets.right }]} accessibilityLabel={`${title}${subtitle ? ` ${subtitle}` : ''} rules`}>
-        <Text style={styles.titleText} numberOfLines={1}>
-          {subtitle ? `${title} · ${subtitle}` : title}
-        </Text>
-      </Pressable>
+      {/* Wide layout: the title is not rendered at all - there is no band above the board for it
+      (the board takes ~all of the height), and the corner buttons already fill the only free
+      spots beside it. The Rules icon in the footer column still opens the same dialog. */}
+      {!isWide && (
+        <Pressable onPress={() => setRulesOpen(true)} style={[styles.titleWrap, { top: 14 + insets.top, left: 60 + insets.left, right: 56 + insets.right }]} accessibilityLabel={`${title}${subtitle ? ` ${subtitle}` : ''} rules`}>
+          <Text style={styles.titleText} numberOfLines={1}>
+            {subtitle ? `${title} · ${subtitle}` : title}
+          </Text>
+        </Pressable>
+      )}
 
       {/* box-none: this box spans the full screen width (left:0/right:0) to place Home and Settings
       at its two far ends, but the dead space between them isn't a button - box-none lets a tap
@@ -309,9 +354,13 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
             // always "go home," not "undo the last navigation" - router.back() depended on real
             // history existing (it errors with "GO_BACK was not handled" whenever this screen was
             // reached directly, e.g. a deep link, a dev reload straight into /klondike, or the
-            // cold-launch redirect in app/index.tsx). replace() ignores history entirely and always
-            // lands on the menu, and - unlike push() - doesn't grow the stack on repeated round trips.
-            router.replace('/')
+            // cold-launch redirect in app/index.tsx). dismissTo() pops back to the Home that's
+            // already in the stack beneath this game (same instance, no remount - the menu is still
+            // exactly as it was), and only falls back to replace semantics when there is no Home
+            // beneath (a deep link / cold-launch resume). replace('/') did NOT do this: it mounted a
+            // brand-new Home on top of the old one, so every round trip leaked one more live Home
+            // (each rebuilding ~370 SVG preview cards on the next tap) and going Home got slower each time.
+            router.dismissTo('/')
           }}
           onSettings={() => setSettingsOpen(true)}
           fg={CHROME_FG}
@@ -339,30 +388,63 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
       layers below stay mounted throughout and crossfade via captionOpacity (see toggleFooter)
       rather than swapping instantly, so the transition reads as one row relabeling itself, not a
       flicker between two unrelated ones. */}
-      {!won && (
-        <Animated.View style={[styles.movesTimerWrap, { bottom: MOVES_TIMER_BOTTOM + insets.bottom }, movesTimerAnimatedStyle]} pointerEvents='none'>
-          <View style={styles.statsStack}>
-            <Animated.View style={[styles.statsLayer, compactAnimatedStyle]}>
-              <Text style={styles.timerText} numberOfLines={1}>
-                {movesCount} · {computeScore(movesCount, displayedElapsed)} · {formatTime(displayedElapsed)}
-              </Text>
-            </Animated.View>
-            <Animated.View style={[styles.statsLayer, styles.statsRow, captionedAnimatedStyle]}>
-              <View style={styles.statBlock}>
+      {!won && isWide && (
+        // Leading (local left) gutter, left-aligned inside [insets.left + 8, leftGutter] and vertically
+        // centred in the safe area. Always the captioned form (there is room for it and no footer to
+        // compete with) and never animated - see the footer's own wide branch below.
+        <ElapsedClock getElapsedSeconds={getElapsedSeconds} clockRunning={clockRunning}>
+          {(displayedElapsed) => (
+            <View style={[styles.wideStatsWrap, { left: insets.left + WIDE_STATS_LEFT_MARGIN, right: windowWidth - leftGutter, top: insets.top, bottom: insets.bottom }]} pointerEvents='none'>
+              <View style={styles.wideStatBlock}>
                 <Text style={styles.statCaption}>Moves</Text>
-                <Text style={styles.statValue}>{movesCount}</Text>
+                <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+                  {movesCount}
+                </Text>
               </View>
-              <View style={styles.statBlock}>
+              <View style={styles.wideStatBlock}>
                 <Text style={styles.statCaption}>Score</Text>
-                <Text style={styles.statValue}>{computeScore(movesCount, displayedElapsed)}</Text>
+                <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+                  {computeScore(movesCount, displayedElapsed)}
+                </Text>
               </View>
-              <View style={styles.statBlock}>
+              <View style={styles.wideStatBlock}>
                 <Text style={styles.statCaption}>Time</Text>
-                <Text style={styles.statValue}>{formatTime(displayedElapsed)}</Text>
+                <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+                  {formatTime(displayedElapsed)}
+                </Text>
+              </View>
+            </View>
+          )}
+        </ElapsedClock>
+      )}
+      {!won && !isWide && (
+        <ElapsedClock getElapsedSeconds={getElapsedSeconds} clockRunning={clockRunning}>
+          {(displayedElapsed) => (
+            <Animated.View style={[styles.movesTimerWrap, { bottom: MOVES_TIMER_BOTTOM + insets.bottom }, movesTimerAnimatedStyle]} pointerEvents='none'>
+              <View style={styles.statsStack}>
+                <Animated.View style={[styles.statsLayer, compactAnimatedStyle]}>
+                  <Text style={styles.timerText} numberOfLines={1}>
+                    {movesCount} · {computeScore(movesCount, displayedElapsed)} · {formatTime(displayedElapsed)}
+                  </Text>
+                </Animated.View>
+                <Animated.View style={[styles.statsLayer, styles.statsRow, captionedAnimatedStyle]}>
+                  <View style={styles.statBlock}>
+                    <Text style={styles.statCaption}>Moves</Text>
+                    <Text style={styles.statValue}>{movesCount}</Text>
+                  </View>
+                  <View style={styles.statBlock}>
+                    <Text style={styles.statCaption}>Score</Text>
+                    <Text style={styles.statValue}>{computeScore(movesCount, displayedElapsed)}</Text>
+                  </View>
+                  <View style={styles.statBlock}>
+                    <Text style={styles.statCaption}>Time</Text>
+                    <Text style={styles.statValue}>{formatTime(displayedElapsed)}</Text>
+                  </View>
+                </Animated.View>
               </View>
             </Animated.View>
-          </View>
-        </Animated.View>
+          )}
+        </ElapsedClock>
       )}
 
       {/* Undo/New Game/Hint/Rules - the controls reached for far less often than anything
@@ -374,7 +456,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
       once `won` (see the moves/timer row's own comment just above) - the win dialog's "New Game"
       button already covers that one control, and there's nothing left to Undo/Hint/check Rules for
       on a finished board. */}
-      {!won && (
+      {!won && !isWide && (
         // box-none (not 'auto') while visible: footerWrap's own box spans the full screen width
         // (left:0/right:0), wider than the centered icon row it actually contains, so plain 'auto'
         // silently swallowed every tap in that empty side margin - never reaching a handler,
@@ -382,37 +464,26 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
         // otherwise harmless. box-none lets only the icons themselves (and their own touch targets)
         // claim a tap, same idiom WinBanner/LossBanner already use for their own full-screen overlay.
         <Animated.View style={[styles.footerWrap, { bottom: FOOTER_BOTTOM + insets.bottom }, footerAnimatedStyle]} pointerEvents={footerVisible ? 'box-none' : 'none'}>
-          <IconButton icon='undo' iconColor={CHROME_FG} size={24} disabled={undoDisabled} onPress={onUndo} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={UNDO_LONG_PRESS_MS} accessibilityLabel='Undo' />
-
-          <IconButton
-            icon='cards-playing-outline'
-            iconColor={CHROME_FG}
-            size={24}
-            onPress={() => {
-              // Nothing to lose yet - deal immediately, no warning. Otherwise, dealing a new game
-              // abandons the one in progress (counted as a loss - see stores/gameStats.tsx), so confirm
-              // first rather than losing the player's board to a stray tap - see the ConfirmDialog
-              // below, which owns the actual prompt.
-              if (!hasProgress) {
-                onNewGame()
-                return
-              }
-              setConfirmNewGameVisible(true)
-            }}
-            accessibilityLabel='New Game'
-          />
-
-          <IconButton icon='lightbulb-on-outline' iconColor={CHROME_FG} size={24} disabled={hintDisabled} onPress={onHint} accessibilityLabel='Hint' />
-
-          <IconButton icon='information-outline' iconColor={CHROME_FG} size={24} onPress={() => setRulesOpen(true)} accessibilityLabel='Rules' />
+          {footerButtons}
         </Animated.View>
       )}
 
-      <SettingsDialog visible={settingsOpen} onDismiss={() => setSettingsOpen(false)}>
+      {/* Wide layout: the same four buttons as a vertical column in the trailing (local right) gutter -
+      where the thumb is in a landscape hold - vertically centred in the safe area. Always visible and
+      never animated: tap-to-hide is a portrait feature (there the footer floats over the board, so tucking
+      it away frees room); here it sits in a gutter, so hiding it would give the board nothing back. The
+      wrapper is box-none so only the icons claim taps; the rest falls through to the board. */}
+      {!won && isWide && (
+        <View style={[styles.wideFooterWrap, { right: insets.right + WIDE_FOOTER_RIGHT_MARGIN, top: insets.top, bottom: insets.bottom }]} pointerEvents='box-none'>
+          {footerButtons}
+        </View>
+      )}
+
+      <SettingsDialog visible={settingsOpen} onDismiss={() => setSettingsOpen(false)} rotation={0}>
         {settingsContent}
       </SettingsDialog>
 
-      <RulesDialog visible={rulesOpen} onDismiss={() => setRulesOpen(false)} title={title} rules={rules} rotation={rotation} />
+      <RulesDialog visible={rulesOpen} onDismiss={() => setRulesOpen(false)} title={title} rules={rules} compact={isWide} />
 
       <ConfirmDialog
         visible={confirmNewGameVisible}
@@ -421,7 +492,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
         confirmLabel='New Game'
         cancelLabel='Cancel'
         icon='alert-circle-outline'
-        rotation={rotation}
+        rotation={0}
         onConfirm={() => {
           setConfirmNewGameVisible(false)
           onNewGame()
@@ -583,6 +654,33 @@ const styles = StyleSheet.create({
     // itself renders with - IconButton's own default margin pushes its real box a few px further
     // than that alone would suggest.
     height: 40,
+    justifyContent: 'center',
+    position: 'absolute',
+    zIndex: 10
+  },
+  // Wide layout footer column: `width` is exactly one IconButton so alignItems centres each button on
+  // the column's own axis.
+  // column-reverse: the buttons are declared Undo..Rules (the portrait row's left-to-right order), which as a
+  // column would put Undo on top; in landscape the info button is wanted at the top and Undo at the bottom
+  // (nearest the thumb's natural rest) - so the same children just stack the other way.
+  wideFooterWrap: {
+    alignItems: 'center',
+    flexDirection: 'column-reverse',
+    gap: WIDE_FOOTER_GAP,
+    justifyContent: 'center',
+    position: 'absolute',
+    width: WIDE_FOOTER_BUTTON_WIDTH,
+    zIndex: 10
+  },
+  // maxWidth so a value that outgrows the (narrow) gutter - a 3-digit-minutes TIME like 103:24 - shrinks
+  // via adjustsFontSizeToFit instead of ellipsizing.
+  wideStatBlock: {
+    alignItems: 'flex-start',
+    maxWidth: '100%'
+  },
+  wideStatsWrap: {
+    alignItems: 'flex-start',
+    gap: WIDE_STATS_GAP,
     justifyContent: 'center',
     position: 'absolute',
     zIndex: 10

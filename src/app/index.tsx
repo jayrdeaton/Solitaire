@@ -27,7 +27,9 @@ import { buildScorpionPreview } from '@/games/scorpion/previewLayout'
 import { buildSpiderPreview } from '@/games/spider/previewLayout'
 import { buildTriPeaksPreview } from '@/games/tripeaks/previewLayout'
 import { buildYukonPreview } from '@/games/yukon/previewLayout'
+import { preloadGameInProgress } from '@/stores/gameInProgress'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
+import { SolitaireGameId } from '@/stores/statsTypes'
 
 interface GameEntry {
   href: '/klondike' | '/spider' | '/freecell' | '/pyramid' | '/yukon' | '/golf' | '/tripeaks' | '/canfield' | '/scorpion' | '/fortythieves' | '/acesup'
@@ -66,7 +68,12 @@ export default function Home() {
   const styles = useMemo(() => makeStyles(colors, dark, paperColors), [colors, dark, paperColors])
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [rulesFor, setRulesFor] = useState<GameEntry | null>(null)
-  const { lastActiveGame } = useLastActiveGame()
+  const { consumeResumeGame } = useLastActiveGame()
+  // A one-shot cold-launch decision, read exactly once at this instance's mount (see
+  // stores/lastActiveGame.tsx) - never a live value this screen re-renders from. Reading it live made
+  // every Home in the stack swap its whole menu for a Redirect while a game was on top and rebuild it
+  // (all ~370 preview cards) the moment Home was tapped, which is what made going Home take seconds.
+  const [resumeGame] = useState(consumeResumeGame)
   // Owns the profile row's popover state so a full-screen @tastic/hud PressAwayOverlay can be
   // rendered here, at the screen root, below (see the early-sibling render order right after
   // TableBackground) every real control - Solitaire has just the one, unscoped zone (no
@@ -90,9 +97,9 @@ export default function Home() {
 
   // A cold launch/relaunch while a game was in progress drops the player straight back onto it,
   // skipping this menu entirely - it only reappears once they explicitly back out of that game
-  // (see stores/lastActiveGame.ts). Redirects as soon as this mounts, before the menu below ever
-  // paints, since lastActiveGame is already resolved by _layout.tsx's splash-gate pre-load.
-  if (lastActiveGame) return <Redirect href={`/${lastActiveGame}`} />
+  // (see stores/lastActiveGame.tsx). Redirects as soon as this mounts, before the menu below ever
+  // paints, since the persisted value is already resolved by _layout.tsx's splash-gate pre-load.
+  if (resumeGame) return <Redirect href={`/${resumeGame}`} />
 
   return (
     <View style={styles.screen}>
@@ -123,7 +130,7 @@ export default function Home() {
         <View style={styles.grid}>
           {GAMES.map((g) => (
             <Link key={g.href} href={g.href} asChild>
-              <Pressable style={styles.card}>
+              <Pressable style={styles.card} onPressIn={() => preloadGameInProgress(g.href.slice(1) as SolitaireGameId)}>
                 <GamePreview placements={previewsRevealed ? g.placements : []} colors={colors} style={styles.preview} />
                 <View style={styles.cardText}>
                   <Text style={styles.cardTitle}>{g.title}</Text>

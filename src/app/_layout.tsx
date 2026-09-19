@@ -5,6 +5,7 @@ import { OrientationProvider, useThemedRootBackground } from '@tastic/core'
 import { Stack } from 'expo-router'
 import { DeviceMotion } from 'expo-sensors'
 import * as SplashScreen from 'expo-splash-screen'
+import { StatusBar } from 'expo-status-bar'
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { StyleSheet } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
@@ -13,6 +14,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { Provider as ReduxProvider, useDispatch, useSelector } from 'react-redux'
 import { PersistGate } from 'redux-persist/integration/react'
 
+import { createLockableDeviceMotion } from '@/components/lockableDeviceMotion'
 import { DEFAULT_SEED_COLOR, previewCardBack, useTableColors } from '@/components/theme'
 import { UpdateDialog } from '@/components/UpdateDialog'
 import { useCardSoundPlayers } from '@/components/useCardSounds'
@@ -38,22 +40,31 @@ function ThemedStack() {
   // hook's own default (false) - this Stack had no prior gestureEnabled setting to preserve.
   const screenOptions = useThemedRootBackground(true, false)
   return (
-    <Stack screenOptions={screenOptions}>
-      <Stack.Screen name='index' options={{ title: 'Solitaire Suite' }} />
-      <Stack.Screen name='klondike' options={{ title: 'Klondike' }} />
-      <Stack.Screen name='spider' options={{ title: 'Spider' }} />
-      <Stack.Screen name='freecell' options={{ title: 'FreeCell' }} />
-      <Stack.Screen name='pyramid' options={{ title: 'Pyramid' }} />
-      <Stack.Screen name='yukon' options={{ title: 'Yukon' }} />
-      <Stack.Screen name='golf' options={{ title: 'Golf' }} />
-      <Stack.Screen name='tripeaks' options={{ title: 'TriPeaks' }} />
-      <Stack.Screen name='canfield' options={{ title: 'Canfield' }} />
-      <Stack.Screen name='fortythieves' options={{ title: 'Forty Thieves' }} />
-      <Stack.Screen name='scorpion' options={{ title: 'Scorpion' }} />
-      <Stack.Screen name='acesup' options={{ title: 'Aces Up' }} />
-      <Stack.Screen name='achievements' options={{ title: 'Achievements' }} />
-      <Stack.Screen name='profiles' options={{ title: 'Profiles' }} />
-    </Stack>
+    <>
+      {/* Explicitly light, not the default `auto`: every screen here sits on the dark-toned felt in
+      every appearance mode (see theme.ts), so `auto` flips to dark status-bar text in a light-mode
+      system and reads poorly against it. Mounted here, next to the Stack, rather than once at the
+      very root - confirmed live on iOS that a root-level instance never took effect (the bar stayed
+      dark on the menu) while this one does. Game screens layer their own rotation-aware hide on top -
+      see GameStatusBar. */}
+      <StatusBar style='light' />
+      <Stack screenOptions={screenOptions}>
+        <Stack.Screen name='index' options={{ title: 'Solitaire Suite' }} />
+        <Stack.Screen name='klondike' options={{ title: 'Klondike' }} />
+        <Stack.Screen name='spider' options={{ title: 'Spider' }} />
+        <Stack.Screen name='freecell' options={{ title: 'FreeCell' }} />
+        <Stack.Screen name='pyramid' options={{ title: 'Pyramid' }} />
+        <Stack.Screen name='yukon' options={{ title: 'Yukon' }} />
+        <Stack.Screen name='golf' options={{ title: 'Golf' }} />
+        <Stack.Screen name='tripeaks' options={{ title: 'TriPeaks' }} />
+        <Stack.Screen name='canfield' options={{ title: 'Canfield' }} />
+        <Stack.Screen name='fortythieves' options={{ title: 'Forty Thieves' }} />
+        <Stack.Screen name='scorpion' options={{ title: 'Scorpion' }} />
+        <Stack.Screen name='acesup' options={{ title: 'Aces Up' }} />
+        <Stack.Screen name='achievements' options={{ title: 'Achievements' }} />
+        <Stack.Screen name='profiles' options={{ title: 'Profiles' }} />
+      </Stack>
+    </>
   )
 }
 
@@ -102,15 +113,22 @@ function ProfileThemeSync() {
 
 /** Mounted once, wrapping every route via ThemedStack below - every game screen's own
  * withGameProviders() wrapper (see games/shared/withGameProviders.tsx) reads the live rotation this
- * provides via @tastic/core's useRotation()/FakeLandscapeView. Only needs useSettings() (the plain
+ * provides via @tastic/core's useRotation()/RotatedGameView. Only needs useSettings() (the plain
  * Context store, not Redux) for the persisted Lock Orientation setting, so - unlike FeedbackBridge -
  * it has no dependency on ReduxProvider/PersistGate/ProfilesProvider and doesn't need to nest inside
  * any of them; wraps ThemedStack alone (not ThemedToaster/UpdateDialog, which aren't rotated game
  * content) to keep this addition as narrowly scoped as the feature it's for. */
 function OrientationBridge({ children }: { children: ReactNode }) {
   const { settings, updateSettings } = useSettings()
+  // Lock Orientation works by withholding sensor samples from the provider while locked - see
+  // createLockableDeviceMotion for why that (rather than passing `locked` to each useRotation()/
+  // useOrientationState() call site) is what freezes every consumer consistently.
+  const [{ deviceMotion, setLocked }] = useState(() => createLockableDeviceMotion(DeviceMotion, settings.lockOrientation))
+  useEffect(() => {
+    setLocked(settings.lockOrientation)
+  }, [settings.lockOrientation, setLocked])
   return (
-    <OrientationProvider deviceMotion={DeviceMotion} lockInitialValue={{ locked: settings.lockOrientation }} onLockChange={(next) => updateSettings({ lockOrientation: next.locked })}>
+    <OrientationProvider deviceMotion={deviceMotion} lockInitialValue={{ locked: settings.lockOrientation }} onLockChange={(next) => updateSettings({ lockOrientation: next.locked })}>
       {children}
     </OrientationProvider>
   )

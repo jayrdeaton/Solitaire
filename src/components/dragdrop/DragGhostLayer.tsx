@@ -1,11 +1,11 @@
-import { CardSizeProvider } from '@tastic/cards'
-import { useRotatedWindowDimensions } from '@tastic/core'
-import React, { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
+import React, { createContext, memo, useCallback, useContext, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
-import Animated, { makeMutable, SharedValue, useAnimatedStyle, useSharedValue, withSpring, WithSpringConfig } from 'react-native-reanimated'
+import Animated, { makeMutable, SharedValue, useAnimatedStyle, withSpring, WithSpringConfig } from 'react-native-reanimated'
 
 import { Card } from '@/engine/types'
 
+import { OverlayFrame, toLocal, useOverlayFrame } from '../overlayFrame'
 import { PlayingCard } from '../PlayingCard'
 import { useCardSoundEffects } from '../useCardSounds'
 import { CardRegistry, useCardRegistry } from './CardRegistry'
@@ -97,19 +97,22 @@ interface FlightGhostCardProps {
   originY: SharedValue<number>
   dx: SharedValue<number>
   dy: SharedValue<number>
-  containerOffsetX: SharedValue<number>
-  containerOffsetY: SharedValue<number>
+  frame: OverlayFrame
 }
 
 // Memoized: several of these can be mounted at once (see DragGhostProvider's `flights`), and every
 // still-flying entry's own props here stay referentially stable across a sibling landing (content
-// is only ever set once at creation; the shared values and containerOffsetX/Y never change
+// is only ever set once at creation; the shared values and `frame` never change
 // identity) - without this, every remaining ghost would re-render whenever any sibling's own
 // landing removed it from `flights`, same reasoning as DealLayer.tsx's DealGhostCard.
-const FlightGhostCard = memo(function FlightGhostCard({ content, originX, originY, dx, dy, containerOffsetX, containerOffsetY }: FlightGhostCardProps) {
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: originX.value + dx.value - containerOffsetX.value }, { translateY: originY.value + dy.value - containerOffsetY.value }]
-  }))
+const FlightGhostCard = memo(function FlightGhostCard({ content, originX, originY, dx, dy, frame }: FlightGhostCardProps) {
+  const cardHeight = content.cardWidth / CARD_ASPECT
+  const animatedStyle = useAnimatedStyle(() => {
+    // originX/Y + dx/dy is the ghost's live screen-space position (see toLocal for how that becomes a
+    // position inside this overlay, which lives in the rotated frame under a landscape hold).
+    const p = toLocal(originX.value + dx.value, originY.value + dy.value, content.cardWidth, cardHeight, frame)
+    return { transform: [{ translateX: p.x }, { translateY: p.y }] }
+  })
   return (
     <CardSizeProvider width={content.cardWidth}>
       <Animated.View style={[styles.ghostLayer, animatedStyle]}>
@@ -140,31 +143,16 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
   const { playInvalidSound, hapticInvalid } = useCardSoundEffects()
   const [flights, setFlights] = useState<FlightEntry[]>([])
   const cardRegistry = useCardRegistry()
-  const overlayRef = useRef<View>(null)
+  const { overlayRef, frame } = useOverlayFrame()
   const nextIdRef = useRef(0)
   // originX/Y and flyTo's targetX/Y are all screen-space (measureInWindow/Reanimated's own
-  // measure(), both viewport-relative on web - see CardRegistry.ts/PileView.tsx). But this
-  // overlay - a screen-level sibling of {children}, not a descendant - isn't necessarily
-  // anchored at the true viewport origin itself: it renders whichever containing block wraps
-  // this whole screen, which can sit below a native header. Confirmed live: an absolutely
-  // positioned probe planted at this exact DOM position rendered at viewport y=64 for top:0, not
-  // y=0, on this app's web target. Left uncorrected, every screen-space coordinate above lands
-  // that same amount too low - "flies to a spot below the real target, then snaps up" once the
-  // real card (in normal flow, unaffected by this) is revealed. Measured once the overlay is
-  // mounted (and re-measured if the window resizes) rather than assumed zero.
-  const containerOffsetX = useSharedValue(0)
-  const containerOffsetY = useSharedValue(0)
-  // Rotation-aware: winWidth/winHeight themselves swap when rendered inside a rotated wrapper (see
-  // the rotation plan), so this still only re-measures when the overlay's real footprint actually
-  // changes - exact identity with plain useWindowDimensions() for any screen with no such wrapper.
-  const { width: winWidth, height: winHeight } = useRotatedWindowDimensions()
-  useEffect(() => {
-    overlayRef.current?.measureInWindow((x, y) => {
-      containerOffsetX.value = x
-      containerOffsetY.value = y
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [winWidth, winHeight])
+  // measure(), both viewport-relative on web - see CardRegistry.ts/PileView.tsx), but this overlay
+  // - a screen-level sibling of {children}, not a descendant - isn't necessarily anchored at the true
+  // viewport origin (it can sit below a native header on this app's web target - confirmed live), and
+  // under a landscape hold it lives inside RotatedGameView's rotated frame, so a screen-space point
+  // isn't a valid position inside it as-is. useOverlayFrame measures the overlay once mounted (and
+  // again on resize/rotation) and toLocal converts each ghost's screen-space position accordingly -
+  // see overlayFrame.ts.
 
   const removeFlight = useCallback((id: number) => {
     setFlights((prev) => prev.filter((f) => f.id !== id))
@@ -295,12 +283,12 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
   return (
     <DragGhostContext.Provider value={controller}>
       {children}
-      {/* Always mounted (regardless of `flights`) so containerOffsetX/Y above can measure its real
+      {/* Always mounted (regardless of `flights`) so `frame` above can measure its real
       position - a card's own screen-space origin is only correct once this measurement lands,
       which needs the view to already exist. */}
       <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
         {flights.map((flight) => (
-          <FlightGhostCard key={flight.id} content={flight.content} originX={flight.originX} originY={flight.originY} dx={flight.dx} dy={flight.dy} containerOffsetX={containerOffsetX} containerOffsetY={containerOffsetY} />
+          <FlightGhostCard key={flight.id} content={flight.content} originX={flight.originX} originY={flight.originY} dx={flight.dx} dy={flight.dy} frame={frame} />
         ))}
       </View>
     </DragGhostContext.Provider>

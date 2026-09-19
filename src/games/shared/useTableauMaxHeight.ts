@@ -1,14 +1,6 @@
 import { CARD_ASPECT } from '@tastic/cards'
-import { rotateInsets, useRotatedWindowDimensions, useRotation } from '@tastic/core'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
-import { GAME_CONTENT_BOTTOM_PADDING, GAME_CONTENT_TOP_PADDING } from '@/components/GameChrome'
-
-// topRow's own marginBottom and tableauRow's own paddingBottom - identical across every game
-// screen this hook is used from (Klondike/Yukon/FreeCell/Canfield/Golf), so budgeted here rather
-// than threaded in as params. Update both places together if a screen's own styles ever diverge.
-const TOP_ROW_MARGIN_BOTTOM = 16
-const TABLEAU_ROW_PADDING_BOTTOM = 20
+import { TABLEAU_ROW_PADDING_BOTTOM, TOP_ROW_MARGIN_BOTTOM, useGameLayout } from '@/components/gameLayout'
 
 /**
  * Computes how tall a tableau column's card fan is allowed to grow before PileView starts
@@ -27,18 +19,25 @@ const TABLEAU_ROW_PADDING_BOTTOM = 20
  * - avoiding the onLayout-vs-mount-commit race the deal animation elsewhere in this app had to
  * work around for a very different reason (see this app's CLAUDE.md).
  *
- * Reads useRotatedWindowDimensions()/rotateInsets() (both from @tastic/core) rather than raw
- * useWindowDimensions()/useSafeAreaInsets() directly, so a screen rendered inside a rotated
- * ancestor (see the rotation plan) gets a height budget for its own actual, post-rotation
- * footprint - provably a no-op for every screen with no such ancestor (the only case today):
- * useRotation() falls back to its Context's static default (rotation 0) with no OrientationProvider
- * mounted anywhere above, at which point both calls are exact identities.
+ * Reads useGameLayout() (rotated window dimensions + rotated insets + the portrait/wide chrome
+ * reservation - see gameLayout.ts), so a screen rendered inside a rotated ancestor gets a height
+ * budget for its own actual, post-rotation footprint - and, unchanged, the plain portrait numbers
+ * everywhere else.
  */
-export function useTableauMaxHeight(cardWidth: number, floor: number): number {
-  const { height: winHeight } = useRotatedWindowDimensions()
-  const rotation = useRotation()
-  const insets = rotateInsets(useSafeAreaInsets(), rotation)
-  const topRowHeight = cardWidth / CARD_ASPECT
-  const available = winHeight - insets.top - insets.bottom - GAME_CONTENT_TOP_PADDING - GAME_CONTENT_BOTTOM_PADDING - topRowHeight - TOP_ROW_MARGIN_BOTTOM - TABLEAU_ROW_PADDING_BOTTOM
-  return Math.max(floor, available)
+export function tableauMaxHeightFor(availableHeight: number, cardWidth: number, topRowCards = 1): number {
+  const topRowHeight = topRowCards * (cardWidth / CARD_ASPECT)
+  const topRowMargin = topRowCards > 0 ? TOP_ROW_MARGIN_BOTTOM : 0
+  return availableHeight - topRowHeight - topRowMargin - TABLEAU_ROW_PADDING_BOTTOM
+}
+
+/** `opts.topRowCards` (default 1 = every existing caller, unchanged): how many card-heights tall the
+ * row above the tableau is - 0 for a board that draws none (Scorpion's wide layout). */
+export function useTableauMaxHeight(cardWidth: number, floor: number, opts?: { topRowCards?: number }): number {
+  const { isWide, availableHeight } = useGameLayout()
+  const available = tableauMaxHeightFor(availableHeight, cardWidth, opts?.topRowCards ?? 1)
+  // The wide (landscape) layout has no floor: `floor` is each game's portrait-tuned lower bound
+  // (~300-460pt), and a landscape window is only ~402pt tall in total - honouring it there is exactly
+  // what pushed the playable bottom cards off the edge of the screen. There the cards are sized to fit
+  // (see fitCardWidthToHeight), and a column that still runs long compresses like any other.
+  return isWide ? Math.max(0, available) : Math.max(floor, available)
 }

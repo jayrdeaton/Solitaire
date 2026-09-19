@@ -12,7 +12,6 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
-import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 
@@ -22,7 +21,8 @@ import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
-import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { PlayingCard } from '@/components/PlayingCard'
 import { fireworksColors } from '@/components/theme'
@@ -50,6 +50,7 @@ import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 import { useSettings } from '@/stores/settings'
 
+import { BOARD_MODEL } from './boardModel'
 import { buildScorpionDealSequence } from './dealSequence'
 import { createScorpionController, ScorpionState } from './rules'
 import { ScorpionSettingsSection } from './ScorpionSettingsSection'
@@ -106,12 +107,19 @@ function ScorpionScreenInner() {
   // setup already proves lint-clean.
   const [assistedStock, setAssistedStock] = useState(settings.scorpionAssistedStock)
   const controller = useMemo(() => createScorpionController(assistedStock), [assistedStock])
-  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
-  // with plain useWindowDimensions() otherwise, see the rotation plan.
-  const { width: winWidth } = useRotatedWindowDimensions()
-  const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
-  const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
+  // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
+  // layout; the plain window width (capped) in portrait. See gameLayout.ts.
+  const { contentWidth, isWide } = useGameLayout()
+  // Wide layout: the stock packet sits one gap past column 7 while the tableau stays centred on its own,
+  // so the row must have room for a packet-sized column on BOTH sides of it: the width-derived size/gap
+  // budget 7 + 2 columns there. Portrait keeps its 7 (the packet is in the top row).
+  const widthColumns = isWide ? TABLEAU_COLUMNS + 2 : TABLEAU_COLUMNS
+  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, widthColumns)
+  // The width-derived size in portrait (unchanged); in the wide layout also capped so the tallest
+  // starting column still fits the ~400pt of height - see boardModel.ts.
+  const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
+  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, widthColumns)
+  const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT, { topRowCards: isWide ? 0 : 1 })
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCountRef, and undoBusyRef - see
   // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
   // exclusion with everything else; tap/drag/stock-draw can all run concurrently with each other -
@@ -686,48 +694,60 @@ function ScorpionScreenInner() {
   return (
     <CardSizeProvider width={cardWidth}>
       <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
-        <View style={styles.topRow}>{state.stock.length > 0 && <StockPacket onPress={handleDrawStock} highlighted={activeHint?.kind === 'drawStock'} />}</View>
+        {/* Portrait: the stock packet lives in a card-tall top row at the right, as always. Wide layout: no
+        top row (zero height, no margin) - the packet is absolutely positioned beside the tableau below. */}
+        <View style={[styles.topRow, isWide && styles.topRowWide]}>{!isWide && state.stock.length > 0 && <StockPacket onPress={handleDrawStock} highlighted={activeHint?.kind === 'drawStock'} />}</View>
 
-        <View style={[styles.tableauRow, { gap }]}>
-          {state.tableau.map((col, colIndex) => {
-            const dragConfig: PileDragConfig = {
-              registry: dropZones,
-              getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
-              // Claims a flight slot (see activeFlightCountRef's doc comment) purely so undo sees
-              // this drop as in-flight for its whole duration, not just once completeMove lands one
-              // - PileView.tsx (shared, not ours to edit) already ran its own hitTest await before
-              // invoking this callback, so this is the earliest point ScorpionScreen gets a look-in.
-              // Rejects outright if undo is currently running (undo holds full mutual exclusion, not
-              // just a one-way wait - see undoBusyRef's own doc comment).
-              onDrop: (to, count, anchorCardId, flight) => {
-                if (undoBusyRef.current) return false
-                startFlights(1)
-                if (!completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)) {
-                  settleFlight()
-                  return false
+        {/* Full-width wrapper (a tap outside a parent's bounds never reaches an absolutely positioned child
+        on iOS, so the packet must stay inside it): the tableau centres itself, the packet hangs one gap
+        past its last column (left 50% + half the tableau + gap) and is top-aligned with it. */}
+        <View style={isWide ? styles.wideBoard : undefined}>
+          {isWide && state.stock.length > 0 && (
+            <View style={[styles.widePacket, { marginLeft: (cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1)) / 2 + gap }]}>
+              <StockPacket onPress={handleDrawStock} highlighted={activeHint?.kind === 'drawStock'} />
+            </View>
+          )}
+          <View style={[styles.tableauRow, { gap }, isWide && styles.tableauRowWide]}>
+            {state.tableau.map((col, colIndex) => {
+              const dragConfig: PileDragConfig = {
+                registry: dropZones,
+                getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
+                // Claims a flight slot (see activeFlightCountRef's doc comment) purely so undo sees
+                // this drop as in-flight for its whole duration, not just once completeMove lands one
+                // - PileView.tsx (shared, not ours to edit) already ran its own hitTest await before
+                // invoking this callback, so this is the earliest point ScorpionScreen gets a look-in.
+                // Rejects outright if undo is currently running (undo holds full mutual exclusion, not
+                // just a one-way wait - see undoBusyRef's own doc comment).
+                onDrop: (to, count, anchorCardId, flight) => {
+                  if (undoBusyRef.current) return false
+                  startFlights(1)
+                  if (!completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)) {
+                    settleFlight()
+                    return false
+                  }
+                  return true
                 }
-                return true
               }
-            }
-            const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === colIndex).reduce((sum, f) => sum + f.count, 0)
-            // Hidden entirely once won - at that point every column is either already empty or a
-            // complete run (see rules.ts's isWon), and the win cascade owns displaying those cards
-            // now (see runWinCascade), the same way Spider's own completed-sequence slots go blank
-            // once their cascade takes over.
-            const cards = won ? [] : col
-            return (
-              <DropZone key={colIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: colIndex }} style={[styles.tableauColumn, { width: cardWidth }]}>
-                <View
-                  ref={(el) => {
-                    tableauColumnRefs.current[colIndex] = el
-                  }}
-                  collapsable={false}
-                >
-                  <PileView cards={cards} onPressCard={(card, indexFromTop, measure) => handleCardTap(colIndex, card, indexFromTop, measure)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} shakeCardId={shake?.cardId} shakeCount={shake?.count} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} />
-                </View>
-              </DropZone>
-            )
-          })}
+              const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === colIndex).reduce((sum, f) => sum + f.count, 0)
+              // Hidden entirely once won - at that point every column is either already empty or a
+              // complete run (see rules.ts's isWon), and the win cascade owns displaying those cards
+              // now (see runWinCascade), the same way Spider's own completed-sequence slots go blank
+              // once their cascade takes over.
+              const cards = won ? [] : col
+              return (
+                <DropZone key={colIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: colIndex }} style={[styles.tableauColumn, { width: cardWidth }]}>
+                  <View
+                    ref={(el) => {
+                      tableauColumnRefs.current[colIndex] = el
+                    }}
+                    collapsable={false}
+                  >
+                    <PileView cards={cards} onPressCard={(card, indexFromTop, measure) => handleCardTap(colIndex, card, indexFromTop, measure)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} shakeCardId={shake?.cardId} shakeCount={shake?.count} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} />
+                  </View>
+                </DropZone>
+              )
+            })}
+          </View>
         </View>
       </GameChrome>
       {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
@@ -756,9 +776,24 @@ function makeStyles(colors: TableColors) {
       flexDirection: 'row',
       paddingBottom: 20
     },
+    tableauRowWide: {
+      alignSelf: 'center'
+    },
     topRow: {
       alignSelf: 'flex-end',
       marginBottom: 16
+    },
+    topRowWide: {
+      marginBottom: 0
+    },
+    wideBoard: {
+      alignSelf: 'stretch'
+    },
+    widePacket: {
+      left: '50%',
+      position: 'absolute',
+      top: 0,
+      zIndex: 1
     }
   })
 }

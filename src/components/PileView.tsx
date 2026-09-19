@@ -1,5 +1,5 @@
 import { faceUpFanOffset, useCardSize } from '@tastic/cards'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import Animated, { measure, runOnJS, SharedValue, useAnimatedRef, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
@@ -75,7 +75,10 @@ interface DraggableTableauCardProps {
   selected: boolean
   hinted: boolean
   dimmed: boolean
-  cardStyle: StyleProp<ViewStyle>
+  /** The card's fan position within its column. Primitives, not a `cardStyle` object built per render: a fresh object
+   * every render would defeat this component's React.memo (see below). */
+  top: number
+  zIndex: number
   runCount: number
   indexFromTop: number
   isHidden: boolean
@@ -100,10 +103,18 @@ interface DraggableTableauCardProps {
   originY: SharedValue<number>
   dx: SharedValue<number>
   dy: SharedValue<number>
+  /** Pointer position at drag start - per column like the four above, since only one card of a column can be
+   * mid-drag at a time (so a card allocating its own pair was pure per-card overhead). */
+  startAbsX: SharedValue<number>
+  startAbsY: SharedValue<number>
 }
 
 /**
- * One card within a pile, wearing a memoized (stable-identity) Gesture.Pan(). PileView's parent
+ * One card within a pile, wearing a memoized (stable-identity) Gesture.Pan(). Itself React.memo'd, with every
+ * prop a primitive or a stable identity (see PileView's `latest`-ref callbacks), so when a screen re-renders -
+ * once per card landing during a deal, on every flight, hint or selection - only the cards whose own props
+ * actually changed re-render, instead of every card's whole wrapper chain (GestureDetector, Animated.View,
+ * PlayingCard, Pressable...) in every column. PileView's parent
  * screens re-render every second (the elapsed-time timer), which would otherwise recreate a fresh
  * Gesture.Pan() on every render; react-native-gesture-handler tears down and rebuilds the native
  * handler whenever the gesture object identity changes, which orphans a drag that's still in
@@ -121,7 +132,8 @@ interface DraggableTableauCardProps {
  * screen-level auto-move handlers that call `ghost.cardRegistry.measure(cardId)` after applying a
  * move.
  */
-function DraggableTableauCard({ card, selected, hinted, dimmed, cardStyle, runCount, indexFromTop, isHidden, shakeToken, onPress, onDragStart, onDragEnd, originX, originY, dx, dy }: DraggableTableauCardProps) {
+const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected, hinted, dimmed, top, zIndex, runCount, indexFromTop, isHidden, shakeToken, onPress, onDragStart, onDragEnd, originX, originY, dx, dy, startAbsX, startAbsY }: DraggableTableauCardProps) {
+  const cardStyle = useMemo(() => ({ position: 'absolute' as const, top, left: 0, zIndex }), [top, zIndex])
   const viewRef = useAnimatedRef<Animated.View>()
   const ghost = useDragGhost()
   const shakeX = useSharedValue(0)
@@ -143,8 +155,6 @@ function DraggableTableauCard({ card, selected, hinted, dimmed, cardStyle, runCo
   // translationX/Y can report a stale 0 for an entire gesture on web while absoluteX/Y keeps
   // updating correctly, so deriving our own delta from the value that's actually reliable avoids
   // depending on that.
-  const startAbsX = useSharedValue(0)
-  const startAbsY = useSharedValue(0)
   const cardRegistry = ghost.cardRegistry
   // React Native Web's Pressable can still fire its own native click on the same release a Pan
   // gesture above it already claimed as a drag (confirmed live: a completed drag - moved past
@@ -240,7 +250,7 @@ function DraggableTableauCard({ card, selected, hinted, dimmed, cardStyle, runCo
       </Animated.View>
     </GestureDetector>
   )
-}
+})
 
 /** A vertical fanned stack, used for tableau/reserve columns across every game. */
 export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard, onPressEmpty, faceDownOffset, faceUpOffset, maxHeight, style, drag, hiddenCount = 0, hiddenCardIds, dimUnplayable = false, shakeCardId, shakeCount = 1, shakeToken }: PileViewProps) {
@@ -266,23 +276,39 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
   const originY = useSharedValue(0)
   const dx = useSharedValue(0)
   const dy = useSharedValue(0)
+  const startAbsX = useSharedValue(0)
+  const startAbsY = useSharedValue(0)
   // This column's own current flight, if any - set at drag-start, read at drag-end (to snap back
   // or hand off to `drag.onDrop`) and by nothing else, since only one drag can ever be in progress
   // from this column at a time.
   const flightRef = useRef<DragFlightHandle | null>(null)
 
-  function handleDragStart(indexFromTop: number, runCount: number) {
-    const runCards = cards.slice(cards.length - runCount)
-    flightRef.current = ghost.showLive({ cards: runCards, offsetStep: resolvedFaceUpOffset, cardWidth }, { originX, originY, dx, dy })
-    playCardSound()
-    setActiveDrag({ indexFromTop, count: runCount })
-  }
+  // Read through a ref (refreshed after every render, like DraggableTableauCard's own `latest`) so the three
+  // callbacks handed to every card are STABLE - closing over `cards`/`drag`/`onPressCard` directly would give them a
+  // new identity every render and defeat DraggableTableauCard's React.memo. They only ever run later, from a
+  // gesture or press, never during render, so they always see the committed values.
+  const latest = useRef({ cards, drag, onPressCard, resolvedFaceUpOffset, cardWidth })
+  useEffect(() => {
+    latest.current = { cards, drag, onPressCard, resolvedFaceUpOffset, cardWidth }
+  })
 
-  function handleDragEnd(absoluteX: number, absoluteY: number, count: number, anchorCardId: string) {
+  const handleDragStart = useCallback(
+    (indexFromTop: number, runCount: number) => {
+      const { cards: current, resolvedFaceUpOffset: offsetStep, cardWidth: width } = latest.current
+      const runCards = current.slice(current.length - runCount)
+      flightRef.current = ghost.showLive({ cards: runCards, offsetStep, cardWidth: width }, { originX, originY, dx, dy })
+      playCardSound()
+      setActiveDrag({ indexFromTop, count: runCount })
+    },
+    [ghost, playCardSound, originX, originY, dx, dy]
+  )
+
+  const handleDragEnd = useCallback((absoluteX: number, absoluteY: number, count: number, anchorCardId: string) => {
     ;(async () => {
-      const target = drag ? await drag.registry.hitTest(absoluteX, absoluteY) : null
+      const { drag: currentDrag } = latest.current
+      const target = currentDrag ? await currentDrag.registry.hitTest(absoluteX, absoluteY) : null
       const flight = flightRef.current
-      const applied = target && drag && flight ? await drag.onDrop(target, count, anchorCardId, flight) : false
+      const applied = target && currentDrag && flight ? await currentDrag.onDrop(target, count, anchorCardId, flight) : false
       if (applied) {
         // Don't hide the ghost here - it's still sitting wherever the pointer released it, not
         // yet at the destination's exact fanned position. The caller's onDrop (mirroring
@@ -294,7 +320,12 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
         flight?.snapBack(() => setActiveDrag(null))
       }
     })()
-  }
+  }, [])
+
+  const handleCardPress = useCallback((card: Card, indexFromTop: number, measureOrigin: () => Promise<{ x: number; y: number }>) => latest.current.onPressCard?.(card, indexFromTop, measureOrigin), [])
+  // Only pressable at all when the screen gave this column a press handler (a Pressable with none would still
+  // swallow taps meant for whatever is behind it) - a boolean, so this stays the same identity across renders.
+  const pressHandler = onPressCard ? handleCardPress : undefined
 
   if (cards.length === 0) {
     return (
@@ -356,9 +387,8 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
         // can't tell "not a legal move source" apart from "legal but stuck" and shook both the
         // same way; only the latter should ever shake (or react to a tap) at all.
         const isPressable = runCount > 0
-        const cardStyle = { position: 'absolute' as const, top: offsets[i] * scale, left: 0, zIndex: i }
 
-        return <DraggableTableauCard key={card.id} card={card} selected={isSelected} hinted={isHinted} dimmed={isDimmed} cardStyle={cardStyle} runCount={runCount} indexFromTop={indexFromTop} isHidden={isCardHidden(card, indexFromTop)} shakeToken={shakeStartIndexFromTop !== null && indexFromTop <= shakeStartIndexFromTop && indexFromTop > shakeStartIndexFromTop - shakeCount ? shakeToken : undefined} onPress={isPressable ? onPressCard : undefined} onDragStart={handleDragStart} onDragEnd={handleDragEnd} originX={originX} originY={originY} dx={dx} dy={dy} />
+        return <DraggableTableauCard key={card.id} card={card} selected={isSelected} hinted={isHinted} dimmed={isDimmed} top={offsets[i] * scale} zIndex={i} runCount={runCount} indexFromTop={indexFromTop} isHidden={isCardHidden(card, indexFromTop)} shakeToken={shakeStartIndexFromTop !== null && indexFromTop <= shakeStartIndexFromTop && indexFromTop > shakeStartIndexFromTop - shakeCount ? shakeToken : undefined} onPress={isPressable ? pressHandler : undefined} onDragStart={handleDragStart} onDragEnd={handleDragEnd} originX={originX} originY={originY} dx={dx} dy={dy} startAbsX={startAbsX} startAbsY={startAbsY} />
       })}
       {allCardsHidden && (
         <View style={StyleSheet.absoluteFill} pointerEvents='none'>

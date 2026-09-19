@@ -1,11 +1,10 @@
 import { Pressable, useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, faceUpFanOffset, type TableColors, useCardSize } from '@tastic/cards'
-import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
+import { CARD_ASPECT, CardSizeProvider, faceUpFanOffset, type TableColors, useCardSize } from '@tastic/cards'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
-import Animated, { SharedValue, useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
+import Animated, { useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
@@ -14,7 +13,9 @@ import { measureView, ScreenPoint } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { autoMoveSpringFor } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
-import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { TABLEAU_ROW_PADDING_BOTTOM, useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { OverlayFrame, toLocal, useOverlayFrame } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
 import { fireworksColors } from '@/components/theme'
@@ -42,6 +43,7 @@ import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 import { useSettings } from '@/stores/settings'
 
+import { BOARD_MODEL } from './boardModel'
 import { buildSpiderDealSequence } from './dealSequence'
 import { createSpiderController, SpiderState } from './rules'
 import { SpiderSettingsSection } from './SpiderSettingsSection'
@@ -132,7 +134,8 @@ interface SequenceFlightInstance {
  * so stacking switches to reflect ARRIVAL order instead, letting each card land visibly on top of
  * the ones before it, exactly like a real pile building up, without the two phases (natural fan,
  * then arrival order) ever fighting each other. Otherwise mirrors Pyramid's own FlyingPairCard. */
-function FlyingSequenceCard({ card, from, to, delayMs, containerOffsetX, containerOffsetY, onDealt, onLanded }: { card: Card; from: ScreenPoint; to: ScreenPoint; delayMs: number; containerOffsetX: SharedValue<number>; containerOffsetY: SharedValue<number>; onDealt: () => void; onLanded: () => void }) {
+function FlyingSequenceCard({ card, from, to, delayMs, frame, cardWidth, onDealt, onLanded }: { card: Card; from: ScreenPoint; to: ScreenPoint; delayMs: number; frame: OverlayFrame; cardWidth: number; onDealt: () => void; onLanded: () => void }) {
+  const cardHeight = cardWidth / CARD_ASPECT
   const tx = useSharedValue(from.x)
   const ty = useSharedValue(from.y)
   const zIndex = useSharedValue(0)
@@ -159,10 +162,10 @@ function FlyingSequenceCard({ card, from, to, delayMs, containerOffsetX, contain
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const style = useAnimatedStyle(() => ({
-    zIndex: zIndex.value,
-    transform: [{ translateX: tx.value - containerOffsetX.value }, { translateY: ty.value - containerOffsetY.value }]
-  }))
+  const style = useAnimatedStyle(() => {
+    const p = toLocal(tx.value, ty.value, cardWidth, cardHeight, frame)
+    return { zIndex: zIndex.value, transform: [{ translateX: p.x }, { translateY: p.y }] }
+  })
 
   return (
     <Animated.View style={[sequenceFlightStyles.ghostCard, style]}>
@@ -188,23 +191,12 @@ const sequenceFlightStyles = StyleSheet.create({
  * PairFlightGhosts already use. Always mounted (only `flights`'s contents are conditional) so its
  * own offset-correction effect can measure a real position at all times. */
 function SequenceFlightGhosts({ flights, onCardLanded }: { flights: SequenceFlightInstance[]; onCardLanded: (id: number, cardId: string) => void }) {
-  const overlayRef = useRef<View>(null)
-  const containerOffsetX = useSharedValue(0)
-  const containerOffsetY = useSharedValue(0)
-  // Rotation-aware, same reasoning as DragGhostLayer/DealLayer's identical overlay-offset pattern.
-  const { width: winWidth, height: winHeight } = useRotatedWindowDimensions()
+  // Same overlay-placement pattern as DragGhostLayer/DealLayer - see overlayFrame.ts.
+  const { overlayRef, frame } = useOverlayFrame()
   // Own instance, same as StockPacket's own useDragGhost() call above - this is a screen-level
   // sibling component, not nested under SpiderScreenInner, so it needs its own hook call to reach
   // these rather than having them threaded down as props.
   const { playCardSound, hapticCard } = useCardSoundEffects()
-
-  useEffect(() => {
-    overlayRef.current?.measureInWindow((x, y) => {
-      containerOffsetX.value = x
-      containerOffsetY.value = y
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [winWidth, winHeight])
 
   return (
     <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
@@ -217,8 +209,8 @@ function SequenceFlightGhosts({ flights, onCardLanded }: { flights: SequenceFlig
               from={from}
               to={to}
               delayMs={delayMs}
-              containerOffsetX={containerOffsetX}
-              containerOffsetY={containerOffsetY}
+              frame={frame}
+              cardWidth={flight.cardWidth}
               onDealt={() => {
                 playCardSound()
                 hapticCard()
@@ -270,11 +262,14 @@ function SpiderScreenInner() {
   const session = useGameSession()
   const [message, setMessage] = useState<string | null>(null)
 
-  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
-  // with plain useWindowDimensions() otherwise, see the rotation plan.
-  const { width: winWidth } = useRotatedWindowDimensions()
-  const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
+  // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
+  // layout; the plain window width (capped) in portrait. See gameLayout.ts.
+  const { contentWidth, isWide } = useGameLayout()
+  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
+  // The width-derived size in portrait (unchanged); in the wide layout also capped so the tallest
+  // starting column still fits the ~400pt of height - see boardModel.ts.
+  const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
+  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   // Was a fixed 420 literal - now adapts to real window height the same way every other
   // PileView-using game already does (see useTableauMaxHeight's own doc comment), 420 kept as the
   // floor so a short/cramped screen never gets less generous than it did before.
@@ -1432,11 +1427,16 @@ function SpiderScreenInner() {
             })}
           </View>
           <StockFan count={state.stock.length} onPress={handleDrawStock} hinted={activeHint?.kind === 'drawStock'} />
+          {/* Wide layout: the same message, but laid over the topRow's own marginBottom band instead of
+          in the flow. The board has no vertical slack to spare there - useTableauMaxHeight hands the
+          columns every last point of the window - so a message in the flow (line height + 4) would push
+          the tableau's bottom edge off the screen for as long as it's showing. */}
+          {message && isWide ? <Text style={[styles.message, styles.messageWide]}>{message}</Text> : null}
         </View>
 
-        {message ? <Text style={styles.message}>{message}</Text> : null}
+        {message && !isWide ? <Text style={styles.message}>{message}</Text> : null}
 
-        <View style={[styles.tableauRow, { gap }]}>
+        <View style={[styles.tableauRow, isWide && styles.tableauRowWide, { gap }]}>
           {state.tableau.map((col, colIndex) => {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
@@ -1566,9 +1566,23 @@ function makeStyles(colors: TableColors) {
       marginBottom: 4,
       textAlign: 'center'
     },
+    // See the wide-layout message in the JSX: pinned just below the topRow (whose own height is one
+    // card), inside the 16pt marginBottom gap it leaves above the tableau.
+    messageWide: {
+      left: 0,
+      position: 'absolute',
+      right: 0,
+      top: '100%'
+    },
     tableauRow: {
       flexDirection: 'row',
       paddingBottom: 24
+    },
+    // useTableauMaxHeight budgets the shared 20 for this padding (every other column game's own
+    // value), not Spider's 24 - in portrait the 4pt difference disappears into that hook's generous
+    // floor, but the wide layout has no floor and no slack, so it uses the budgeted value there.
+    tableauRowWide: {
+      paddingBottom: TABLEAU_ROW_PADDING_BOTTOM
     },
     // width is set inline (cardWidth * TABLEAU_COLUMNS + gaps) rather than left to stretch - on a
     // wide-enough screen, cardLayoutForRow clamps cardWidth at its max, so the tableau row below

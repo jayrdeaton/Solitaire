@@ -1,7 +1,8 @@
 import { CardBack, DecoratedCardBack, type TableColors } from '@tastic/cards'
-import { useEffect } from 'react'
+import { useIsFocused } from 'expo-router'
+import { useEffect, useRef } from 'react'
 import { AppState, StyleSheet, View } from 'react-native'
-import Animated, { Easing, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withRepeat, withSequence, withSpring, WithSpringConfig, withTiming } from 'react-native-reanimated'
+import Animated, { cancelAnimation, Easing, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withRepeat, withSequence, withSpring, WithSpringConfig, withTiming } from 'react-native-reanimated'
 
 import { useProfiles } from '@/stores/profiles'
 import { useSettings } from '@/stores/settings'
@@ -106,15 +107,28 @@ function startBumpLoop(bump: SharedValue<number>, spec: HeroCardSpec, leadInMs: 
 function HeroCard({ spec, colors, tag, cardBackStyle, invertDarkModeColors }: { spec: HeroCardSpec; colors: TableColors; tag?: string; cardBackStyle: 'geometric' | 'ornate' | 'plain'; invertDarkModeColors?: boolean }) {
   const lift = useSharedValue(0)
   const bump = useSharedValue(0)
+  const hasStartedLoop = useRef(false)
+
+  // Home stays mounted underneath a game (or Achievements/Profiles) once navigated away from, so an
+  // unfocused hero would otherwise keep 5 forever-running loops alive for as long as that other
+  // screen is open - all wasted, since none of it is on screen. Pausing them costs nothing on return:
+  // the loop simply restarts from rest.
+  const focused = useIsFocused()
 
   useEffect(() => {
     lift.value = withDelay(spec.delayMs, withSpring(1, HERO_ENTRANCE_SPRING))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (!focused) return
 
     // The loop's first-ever cycle waits for the whole fan to actually land (HERO_ENTRANCE_TOTAL_MS)
     // plus its own rest beat, rather than starting mid-entrance - otherwise the earliest cards'
     // bumps would overlap their own entrance motion instead of the fan getting a beat to settle
-    // first.
-    startBumpLoop(bump, spec, HERO_ENTRANCE_TOTAL_MS + HERO_BUMP_REST_MS)
+    // first. A restart after coming back to the screen skips that (the fan is long since landed).
+    startBumpLoop(bump, spec, hasStartedLoop.current ? HERO_BUMP_REST_MS : HERO_ENTRANCE_TOTAL_MS + HERO_BUMP_REST_MS)
+    hasStartedLoop.current = true
 
     // Browsers pause or heavily throttle a hidden tab's render loop - and Reanimated's timers with
     // it - so 5 independently-running loops can each "catch up" to a different point once the tab
@@ -131,9 +145,15 @@ function HeroCard({ spec, colors, tag, cardBackStyle, invertDarkModeColors }: { 
       startBumpLoop(bump, spec, HERO_BUMP_REST_MS)
     })
 
-    return () => subscription.remove()
+    return () => {
+      subscription.remove()
+      // Blurred (or unmounting): stop the forever-loop and rest the card, so nothing keeps ticking
+      // on the UI thread for a screen that isn't visible.
+      cancelAnimation(bump)
+      bump.value = 0
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [focused])
 
   const animatedStyle = useAnimatedStyle(() => ({
     opacity: lift.value,

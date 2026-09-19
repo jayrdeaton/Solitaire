@@ -9,7 +9,7 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
-import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
+import { useRotation } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 
@@ -20,7 +20,9 @@ import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
-import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { wasteFanScreenShift } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
 import { StockWaste } from '@/components/StockWaste'
@@ -54,6 +56,7 @@ import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 import { useSettings } from '@/stores/settings'
 
+import { BOARD_MODEL } from './boardModel'
 import { CanfieldSettingsSection } from './CanfieldSettingsSection'
 import { buildCanfieldDealSequence } from './dealSequence'
 import { CanfieldState, createCanfieldController, findSafeAutoPlay, isDescendingAltColorCyclic, isFoundationStarterCard } from './rules'
@@ -157,13 +160,17 @@ function CanfieldScreenInner() {
   // the undo stack in startNewGame/restoreGame below.
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
-  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
-  // with plain useWindowDimensions() otherwise, see the rotation plan.
-  const { width: winWidth } = useRotatedWindowDimensions()
-  const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TOP_ROW_UNITS)
+  // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
+  // layout; the plain window width (capped) in portrait. See gameLayout.ts.
+  const { contentWidth } = useGameLayout()
+  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TOP_ROW_UNITS)
+  // Portrait keeps the width-derived size untouched; the wide layout is only ~400pt tall, so there the
+  // cards shrink until a tableau column with room to grow fits (see boardModel.ts).
+  const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
+  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TOP_ROW_UNITS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
+  const rotation = useRotation()
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
@@ -418,11 +425,12 @@ function CanfieldScreenInner() {
         const n = p.drawnCards.length
         const entries: DealCardSpec[] = p.drawnCards.map((card, i) => {
           const distanceFromTop = n - 1 - i // i=0 is the oldest/farthest card, i=n-1 is the new top
+          const shift = wasteFanScreenShift(fanOffset * distanceFromTop, rotation)
           return {
             cardId: card.id,
             card: { ...card, faceUp: true },
             from: origin,
-            to: { x: topPos.x - fanOffset * distanceFromTop, y: topPos.y },
+            to: { x: topPos.x + shift.x, y: topPos.y + shift.y },
             delayMs: i * DEAL_STAGGER_MS
           }
         })
@@ -549,13 +557,16 @@ function CanfieldScreenInner() {
         const entries: DealCardSpec[] = movingCards
           .slice()
           .reverse() // newest/top (last dealt) first
-          .map((card, i) => ({
-            cardId: card.id,
-            card: { ...card, faceUp: true },
-            from: { x: topPos.x - fanOffset * i, y: topPos.y },
-            to: stockDest,
-            delayMs: i * DEAL_STAGGER_MS
-          }))
+          .map((card, i) => {
+            const shift = wasteFanScreenShift(fanOffset * i, rotation)
+            return {
+              cardId: card.id,
+              card: { ...card, faceUp: true },
+              from: { x: topPos.x + shift.x, y: topPos.y + shift.y },
+              to: stockDest,
+              delayMs: i * DEAL_STAGGER_MS
+            }
+          })
         commitState(prevState)
         deal.start(
           entries,

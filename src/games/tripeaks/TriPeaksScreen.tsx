@@ -10,19 +10,19 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CARD_ASPECT, CardSizeProvider, type TableColors } from '@tastic/cards'
-import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
+import { useRotation } from '@tastic/core'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
-import { FACE_UP_OFFSET_RATIO } from '@/components/CardSizeContext'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
-import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { useGameLayout } from '@/components/gameLayout'
 import { PlayingCard } from '@/components/PlayingCard'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
@@ -37,7 +37,6 @@ import { top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
-import { clampCardWidthForHeight } from '@/games/shared/clampCardWidthForHeight'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
@@ -51,49 +50,9 @@ import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/game
 import { useSettings } from '@/stores/settings'
 
 import { buildTriPeaksDealSequence } from './dealSequence'
-import { cardAt, childIndices, createTriPeaksController, flatIndex, isExposed, ROW_WIDTHS, rowColOf, TriPeaksState } from './rules'
+import { BASE_WIDTH, boardHeight, boardWidth, buildCardPositions, CONTROL_ROW_MARGIN_BOTTOM, peaksCardScreenPoint, tripeaksCardWidth } from './geometry'
+import { cardAt, createTriPeaksController, isExposed, rowColOf, TriPeaksState } from './rules'
 import { TriPeaksSettingsSection } from './TriPeaksSettingsSection'
-
-// The base row (rules.ts's ROW_WIDTHS[3]) is the board's widest row and sets its overall width
-// unit - same idea as Pyramid's own TRIANGLE_WIDTH_UNITS = ROWS.
-const BASE_WIDTH = ROW_WIDTHS[3]
-
-function boardWidth(cardWidth: number, gap: number): number {
-  return cardWidth * BASE_WIDTH + gap * (BASE_WIDTH - 1)
-}
-
-function boardHeight(cardHeight: number): number {
-  // 3 = the deepest row index (rows 0-3) - same cascading-rows idea as Pyramid's own triangle height.
-  return 3 * cardHeight * FACE_UP_OFFSET_RATIO + cardHeight
-}
-
-/**
- * One {left, top} position per flat tableau index (see rules.ts's flatIndex/rowColOf), relative to
- * the board container's own top-left corner. Computed bottom-up:
- *   - Row 3 (the base, 10 cards): fixed, non-overlapping slots spanning the full board width - same
- *     idea as Pyramid's own bottom row.
- *   - Rows 2, 1, 0: each card's horizontal center is the exact midpoint between its own two
- *     childIndices cards' centers (already computed one row down) - reusing rules.ts's childIndices
- *     directly (not a second, independently-derived copy of the same peak adjacency) guarantees
- *     every card visually sits centered on the two cards it actually rests on, which is what makes
- *     the 3-peak shape read correctly instead of collapsing into one flat triangle.
- * Vertical offset cascades the same way Pyramid's own cardPosition does (row * cardHeight *
- * FACE_UP_OFFSET_RATIO), so each row peeks out from under the row above it.
- */
-function buildCardPositions(cardWidth: number, cardHeight: number, gap: number): { left: number; top: number }[] {
-  const positions: { left: number; top: number }[] = new Array(28)
-  for (let col = 0; col < ROW_WIDTHS[3]; col++) {
-    positions[flatIndex(3, col)] = { left: col * (cardWidth + gap), top: 3 * cardHeight * FACE_UP_OFFSET_RATIO }
-  }
-  for (let row = 2; row >= 0; row--) {
-    for (let col = 0; col < ROW_WIDTHS[row]; col++) {
-      const [a, b] = childIndices(row, col)!
-      const center = (positions[a].left + positions[b].left) / 2 + cardWidth / 2
-      positions[flatIndex(row, col)] = { left: center - cardWidth / 2, top: row * cardHeight * FACE_UP_OFFSET_RATIO }
-    }
-  }
-  return positions
-}
 
 export default withGameProviders(TriPeaksScreenInner)
 
@@ -110,17 +69,16 @@ function TriPeaksScreenInner() {
   // setup already proves lint-clean.
   const [tripeaksRankWrap, setTripeaksRankWrap] = useState(settings.tripeaksRankWrap)
   const controller = useMemo(() => createTriPeaksController(tripeaksRankWrap), [tripeaksRankWrap])
-  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
-  // with plain useWindowDimensions() otherwise, see the rotation plan.
-  const { width: winWidth } = useRotatedWindowDimensions()
-  const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
+  // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
+  // layout; the plain window width (capped) in portrait. See gameLayout.ts.
+  const { contentWidth, isWide, availableHeight: layoutAvailableHeight } = useGameLayout()
+  const rotation = useRotation()
   const { cardWidth: widthCardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, BASE_WIDTH)
-  // Same two-axis clamp as Pyramid's own (see clampCardWidthForHeight's own doc comment) - TriPeaks
-  // has the identical "no PileView/height-budget concept, board height is a pure function of
-  // cardWidth" shape, just with boardHeight's own N=3 (deepest row index) in place of Pyramid's
-  // N=(ROWS-1).
-  const availableHeight = useTableauMaxHeight(widthCardWidth, 0)
-  const cardWidth = clampCardWidthForHeight(widthCardWidth, availableHeight, 3, FACE_UP_OFFSET_RATIO, CARD_ASPECT)
+  // Portrait: the same two-axis clamp as Pyramid's own (see clampCardWidthForHeight's doc comment) fed
+  // by the column-game height budget, exactly as before. Wide: the real board (stock row + peaks) fitted
+  // to the layout's height - see geometry.ts's tripeaksCardWidth.
+  const tableauMaxHeight = useTableauMaxHeight(widthCardWidth, 0)
+  const cardWidth = tripeaksCardWidth(widthCardWidth, isWide, layoutAvailableHeight, tableauMaxHeight)
   const cardHeight = cardWidth / CARD_ASPECT
   // Owns state/stateRef/commitState, the `flying` array, and undoBusyRef - see
   // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
@@ -151,10 +109,10 @@ function TriPeaksScreenInner() {
   const ghost = useDragGhost()
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
-  // Wraps the whole StockWaste component (not just its wasteArea child) - StockWaste's wasteArea is
-  // its own first, unpadded/unmargined flex child, so this measures to the same top-left corner as
-  // the waste slot itself (see Golf's own wasteViewRef doc comment). Used as the win cascade's single
-  // chain origin, since the waste/build pile is TriPeaks' only "foundation-equivalent" pile, same as
+  // The waste slot itself (StockWaste's wasteRef) - exactly card-sized, so its measured bounding box is
+  // the card's own footprint at any rotation. (Measuring the whole StockWaste wrapper instead, as this
+  // once did, is wider than a card: fine at 0deg where the top-left coincides, wrong once rotated.) Used
+  // as the win cascade's single chain origin, since the waste/build pile is TriPeaks' only "foundation-equivalent" pile, same as
   // Golf - the real waste top card is hidden once won (wasteTopCard below).
   const wasteViewRef = useRef<View>(null)
   // The 28-cell board container - tableau destinations resolve as pure math against this origin
@@ -259,6 +217,9 @@ function TriPeaksScreenInner() {
     }
 
     const positions = buildCardPositions(cardWidth, cardHeight, gap)
+    // The peaks container's own local size - what it renders with (see the JSX below).
+    const peaksWidth = boardWidth(cardWidth, gap)
+    const peaksHeight = boardHeight(cardHeight)
     const entries: DealCardSpec[] = []
     sequence.forEach((step) => {
       if (step.index === -1) {
@@ -287,7 +248,7 @@ function TriPeaksScreenInner() {
       // face-down flight for a card whose real state isn't face-up-from-the-start. Row 3 (the base)
       // is exposed from the start, so it flies showing its real face.
       const card = row === 3 ? step.card : { ...step.card, faceUp: false }
-      entries.push({ cardId: step.cardId, card, from: stockOrigin, to: { x: boardOrigin.x + left, y: boardOrigin.y + cardTop }, delayMs: step.visitOrder * DEAL_STAGGER_MS })
+      entries.push({ cardId: step.cardId, card, from: stockOrigin, to: peaksCardScreenPoint(boardOrigin, peaksWidth, peaksHeight, left, cardTop, cardWidth, rotation), delayMs: step.visitOrder * DEAL_STAGGER_MS })
     })
     if (entries.length === 0) {
       setDealHiddenIds(new Set())
@@ -595,7 +556,7 @@ function TriPeaksScreenInner() {
     <CardSizeProvider width={cardWidth}>
       <GameChrome title='TriPeaks' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<TriPeaksSettingsSection />} rules={TRIPEAKS_RULES}>
         <View style={styles.board}>
-          <View ref={wasteViewRef} collapsable={false} style={styles.controlRow}>
+          <View style={styles.controlRow}>
             <StockWaste
               dropZones={dropZones}
               stockTopCard={top(state.stock)}
@@ -612,6 +573,7 @@ function TriPeaksScreenInner() {
               onWastePress={() => {}}
               onWasteDrop={() => false}
               stockRef={stockViewRef}
+              wasteRef={wasteViewRef}
               // Undoing a stock draw flies a ghost back from the waste toward the stock slot (see
               // handleUndo's `viaStock` branch) - freeze the stock slot's prior look (the
               // empty/recycle-hint placeholder, if the stock was empty) until that ghost actually
@@ -674,7 +636,7 @@ function makeStyles(colors: TableColors) {
       // matching controlRow) - this used to sit centered below the peaks instead. Now first in
       // the board (see the JSX above), so the gap is a marginBottom, not marginTop.
       alignSelf: 'flex-end',
-      marginBottom: 20
+      marginBottom: CONTROL_ROW_MARGIN_BOTTOM
     },
     hiddenCard: {
       opacity: 0

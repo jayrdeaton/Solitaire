@@ -1,11 +1,14 @@
-import { CardSizeProvider } from '@tastic/cards'
-import { useRotatedWindowDimensions } from '@tastic/core'
+import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
+import { rotateInsets, useRotation } from '@tastic/core'
 import { createContext, memo, ReactNode, Ref, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Pressable, StyleSheet, View } from 'react-native'
-import Animated, { cancelAnimation, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
+import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { Card } from '@/engine/types'
 
+import { GAME_CONTENT_TOP_PADDING } from '../gameLayout'
+import { OverlayFrame, toLocal, useOverlayFrame } from '../overlayFrame'
 import { PlayingCard } from '../PlayingCard'
 import { useCardSoundEffects } from '../useCardSounds'
 import { DEAL_SPRING } from './dealSpring'
@@ -31,6 +34,14 @@ export interface DealAnimator {
 
 const DealContext = createContext<DealAnimator | null>(null)
 
+// A deal used to mount a ghost for EVERY card up front (a second full copy of the board - ~640 views for
+// Klondike, ~1,200-1,500 for the 50-card games - with all their shared values and gesture-free-but-still-
+// registered animated styles) although only a handful are ever mid-flight at once and each waits invisibly at
+// opacity 0 until its own turn. Now a ghost mounts LOOKAHEAD_MS before its flight begins (re-checked every
+// MOUNT_TICK_MS, so it lands 150-250ms early - plenty for its mount + effects) and unmounts as it lands.
+const LOOKAHEAD_MS = 250
+const MOUNT_TICK_MS = 100
+
 export function useDealAnimator(): DealAnimator {
   const ctx = useContext(DealContext)
   if (!ctx) throw new Error('useDealAnimator must be used within a DealProvider')
@@ -50,11 +61,13 @@ interface DealGhostCardProps {
    * for it to land. */
   onDealt: () => void
   onLanded: (cardId: string) => void
-  /** The overlay's own on-screen offset (see DealProvider's containerOffsetX/Y) - subtracted from
-   * spec.from/to so a card lands exactly where it was measured, regardless of where this
-   * screen-level overlay itself happens to sit relative to the true viewport origin. */
-  containerOffsetX: SharedValue<number>
-  containerOffsetY: SharedValue<number>
+  /** The overlay's own placement (see DealProvider's useOverlayFrame) - converts spec.from/to from
+   * screen space into the overlay's own space so a card lands exactly where it was measured,
+   * regardless of where this screen-level overlay itself happens to sit relative to the true
+   * viewport origin, or how far it's rotated under a landscape hold. */
+  frame: OverlayFrame
+  /** The deal's card width - the ghost's own footprint for that conversion. */
+  cardWidth: number
   ref?: Ref<DealGhostHandle>
 }
 
@@ -65,7 +78,8 @@ interface DealGhostCardProps {
 // useCallbacks; shared values never change identity), so without this, every remaining ghost
 // re-rendered on every single sibling's landing - up to ~50 wasted re-renders per deal for the
 // last card alone.
-const DealGhostCard = memo(function DealGhostCard({ spec, onDealt, onLanded, containerOffsetX, containerOffsetY, ref }: DealGhostCardProps) {
+const DealGhostCard = memo(function DealGhostCard({ spec, onDealt, onLanded, frame, cardWidth, ref }: DealGhostCardProps) {
+  const cardHeight = cardWidth / CARD_ASPECT
   const tx = useSharedValue(spec.from.x)
   const ty = useSharedValue(spec.from.y)
   // Every ghost for the whole deal mounts at once (see DealProvider's single setActive(entries)
@@ -142,10 +156,10 @@ const DealGhostCard = memo(function DealGhostCard({ spec, onDealt, onLanded, con
     }
   }))
 
-  const style = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-    transform: [{ translateX: tx.value - containerOffsetX.value }, { translateY: ty.value - containerOffsetY.value }]
-  }))
+  const style = useAnimatedStyle(() => {
+    const p = toLocal(tx.value, ty.value, cardWidth, cardHeight, frame)
+    return { opacity: opacity.value, transform: [{ translateX: p.x }, { translateY: p.y }] }
+  })
 
   return (
     <Animated.View style={[styles.ghostCard, style]}>
@@ -161,8 +175,21 @@ const DealGhostCard = memo(function DealGhostCard({ spec, onDealt, onLanded, con
  * overlay, real card content, spring-driven flight" idioms to N simultaneous ghosts instead. */
 export function DealProvider({ children }: { children: ReactNode }) {
   const { playCardSound, hapticCard } = useCardSoundEffects()
-  const [active, setActive] = useState<DealCardSpec[]>([])
+  // Same rotated-frame safe-area top GameChrome positions its corner buttons from, plus that band's height.
+  const topChromeBand = rotateInsets(useSafeAreaInsets(), useRotation()).top + GAME_CONTENT_TOP_PADDING
+  // Ghosts currently mounted - NOT every card of the deal. See LOOKAHEAD_MS: a ghost only mounts shortly before
+  // its own flight begins, and unmounts as it lands (handleLanded), so at most a couple of dozen exist at once
+  // instead of one full copy of every dealt card.
+  const [mounted, setMounted] = useState<DealCardSpec[]>([])
+  // Whether a deal is in flight at all (drives the skip-tap layer) - `mounted` alone can't say, since it is empty
+  // both before the first ghost mounts and after the last lands.
+  const [dealing, setDealing] = useState(false)
   const [cardWidth, setCardWidth] = useState(0)
+  // Specs not yet mounted, in ascending delayMs order, plus the deal's start time and the pending mount timer.
+  // Only ever touched from start()/timer/skip callbacks, never during render.
+  const queueRef = useRef<DealCardSpec[]>([])
+  const startedAtRef = useRef(0)
+  const mountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const handles = useRef(new Map<string, DealGhostHandle>())
   const landedIds = useRef(new Set<string>())
   const callbacksRef = useRef<{ onCardLanded: (cardId: string) => void; onAllLanded: () => void } | null>(null)
@@ -178,28 +205,17 @@ export function DealProvider({ children }: { children: ReactNode }) {
   // isn't allowed - the increment already sits alongside setCardWidth/setActive in start(), so
   // routing it through its own setState doesn't add a render that wasn't already happening here.
   const [generation, setGeneration] = useState(0)
-  const overlayRef = useRef<View>(null)
+  const { overlayRef, frame } = useOverlayFrame()
   // spec.from/to are screen-space (measureView/CardRegistry.measure, both viewport-relative on
   // web). But this overlay - a screen-level sibling of {children}, not a descendant - isn't
   // necessarily anchored at the true viewport origin: it renders wherever the containing block
   // wrapping this whole screen sits, which can be below a native header (confirmed live on this
-  // app's web target - see DragGhostLayer.tsx's identical fix). Left uncorrected, every dealt
-  // card lands that same amount too low - "flies to a spot below its pile, then snaps up" once
-  // the real, correctly-flowed destination card is revealed. Measured once the overlay mounts
-  // (and re-measured on resize) rather than assumed zero.
-  const containerOffsetX = useSharedValue(0)
-  const containerOffsetY = useSharedValue(0)
-  // Rotation-aware: winWidth/winHeight themselves swap when rendered inside a rotated wrapper (see
-  // the rotation plan), so this still only re-measures when the overlay's real footprint actually
-  // changes - exact identity with plain useWindowDimensions() for any screen with no such wrapper.
-  const { width: winWidth, height: winHeight } = useRotatedWindowDimensions()
-  useEffect(() => {
-    overlayRef.current?.measureInWindow((x, y) => {
-      containerOffsetX.value = x
-      containerOffsetY.value = y
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [winWidth, winHeight])
+  // app's web target - see DragGhostLayer.tsx's identical fix), and under a landscape hold it sits
+  // inside RotatedGameView's rotated frame. Left uncorrected, every dealt card lands somewhere
+  // other than where it was measured - "flies to a spot below its pile, then snaps up" once the
+  // real, correctly-flowed destination card is revealed. useOverlayFrame measures the overlay once
+  // it mounts (and again on resize/rotation) and toLocal converts each ghost's position - see
+  // overlayFrame.ts.
 
   // Each card's own click+buzz, fired the instant it's dealt out (see DealGhostCard's onDealt) -
   // deliberately not per-card-gated here the way handleLanded is below, since DealGhostCard's own
@@ -220,12 +236,35 @@ export function DealProvider({ children }: { children: ReactNode }) {
     // deal finishes - the real destination card underneath is revealed on this same per-card
     // schedule (see the caller's onCardLanded), so leaving every earlier ghost mounted until the
     // last card lands would double-render each of them for the rest of the deal.
-    setActive((prev) => prev.filter((spec) => spec.cardId !== cardId))
+    setMounted((prev) => prev.filter((spec) => spec.cardId !== cardId))
     if (landedIds.current.size >= totalRef.current) {
+      setDealing(false)
       callbacksRef.current?.onAllLanded()
       callbacksRef.current = null
     }
   }, [])
+
+  // Mounts every queued ghost whose flight starts within LOOKAHEAD_MS, with its delay re-based onto its own mount
+  // time (a ghost's timers/springs all start when it mounts), then reschedules itself while any remain.
+  const mountDue = useCallback(function mountDue() {
+    mountTimerRef.current = null
+    const elapsed = Date.now() - startedAtRef.current
+    const queue = queueRef.current
+    const due: DealCardSpec[] = []
+    while (queue.length > 0 && queue[0].delayMs - LOOKAHEAD_MS <= elapsed) {
+      const spec = queue.shift()!
+      due.push({ ...spec, delayMs: Math.max(0, spec.delayMs - elapsed) })
+    }
+    if (due.length > 0) setMounted((prev) => [...prev, ...due])
+    if (queue.length > 0) mountTimerRef.current = setTimeout(mountDue, MOUNT_TICK_MS)
+  }, [])
+
+  useEffect(
+    () => () => {
+      if (mountTimerRef.current) clearTimeout(mountTimerRef.current)
+    },
+    []
+  )
 
   const controller = useMemo<DealAnimator>(
     () => ({
@@ -236,38 +275,56 @@ export function DealProvider({ children }: { children: ReactNode }) {
         totalRef.current = entries.length
         callbacksRef.current = { onCardLanded, onAllLanded }
         setCardWidth(width)
+        if (mountTimerRef.current) clearTimeout(mountTimerRef.current)
+        mountTimerRef.current = null
+        queueRef.current = []
+        setMounted([])
         if (entries.length === 0) {
           callbacksRef.current = null
+          setDealing(false)
           onAllLanded()
           return
         }
-        setActive(entries)
+        setDealing(true)
+        queueRef.current = [...entries].sort((a, b) => a.delayMs - b.delayMs)
+        startedAtRef.current = Date.now()
+        mountDue()
       }
     }),
-    []
+    [mountDue]
   )
 
   function handleSkipTap() {
+    // Ghosts still queued never mounted, so there is nothing to fast-forward - just land them, with the same
+    // one sound/haptic each that a mounted ghost's completeNow gives a card whose turn hadn't come yet.
+    if (mountTimerRef.current) clearTimeout(mountTimerRef.current)
+    mountTimerRef.current = null
+    const unmounted = queueRef.current
+    queueRef.current = []
     Array.from(handles.current.values()).forEach((handle) => handle.completeNow())
+    unmounted.forEach((spec) => {
+      handleDealt()
+      handleLanded(spec.cardId)
+    })
   }
 
   return (
     <DealContext.Provider value={controller}>
       {children}
-      {/* Always mounted (regardless of `active`) so containerOffsetX/Y above can measure its real
+      {/* Always mounted (regardless of `active`) so `frame` above can measure its real
       position - a card's own screen-space destination is only correct once this measurement
       lands, which needs the view to already exist. */}
       <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
-        {active.length > 0 && (
+        {mounted.length > 0 && (
           <CardSizeProvider width={cardWidth}>
-            {active.map((spec) => (
+            {mounted.map((spec) => (
               <DealGhostCard
                 key={`${generation}-${spec.cardId}`}
                 spec={spec}
                 onDealt={handleDealt}
                 onLanded={handleLanded}
-                containerOffsetX={containerOffsetX}
-                containerOffsetY={containerOffsetY}
+                frame={frame}
+                cardWidth={cardWidth}
                 ref={(handle) => {
                   if (handle) handles.current.set(spec.cardId, handle)
                   else handles.current.delete(spec.cardId)
@@ -277,12 +334,16 @@ export function DealProvider({ children }: { children: ReactNode }) {
           </CardSizeProvider>
         )}
       </View>
-      {active.length > 0 && (
+      {dealing && (
         // A plain react-native Pressable, not @rific/feedback-press's - a screen-wide "get me
         // there faster" tap during a deal isn't a button and shouldn't trigger haptic/sound
-        // feedback. Covers the whole screen, including the New Game/Undo buttons underneath, which
-        // also happens to be exactly what prevents a second deal from starting mid-flight.
-        <Pressable style={StyleSheet.absoluteFill} onPress={handleSkipTap} />
+        // feedback. Covers the board and the footer buttons underneath, which also happens to be
+        // exactly what prevents a second deal from starting mid-flight. It deliberately stops short of
+        // the top chrome band (Home, Settings, the title): a deal runs 0.4-2.1s, and when that band was
+        // covered too, the first tap on Home during it only skipped the deal - reading as "Home is
+        // slow to respond" - instead of leaving. Leaving is safe mid-deal (each ghost clears its own
+        // timers on unmount).
+        <Pressable testID='deal-skip-layer' style={[StyleSheet.absoluteFill, { top: topChromeBand }]} onPress={handleSkipTap} />
       )}
     </DealContext.Provider>
   )

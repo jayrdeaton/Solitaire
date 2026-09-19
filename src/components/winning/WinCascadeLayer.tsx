@@ -1,12 +1,13 @@
 import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
-import { useRotatedWindowDimensions } from '@tastic/core'
+import { useRotatedWindowDimensions, useRotation } from '@tastic/core'
 import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { StyleSheet, View } from 'react-native'
+import { StyleSheet, useWindowDimensions, View } from 'react-native'
 import Animated, { SharedValue, useAnimatedStyle, useFrameCallback, useSharedValue } from 'react-native-reanimated'
 
 import { Card } from '@/engine/types'
 
 import { ScreenPoint } from '../dealing/measureView'
+import { screenToLocalPoint } from '../overlayFrame'
 import { PlayingCard } from '../PlayingCard'
 import { BOUNCE_APEX_CONSERVATIVE_FRACTION, BOUNCE_FLOOR_MARGIN_PX, BOUNCE_H_HALF_PERIOD_MAX_MS, BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_H_MARGIN_PX, BOUNCE_MIN_SPAN_PX, BOUNCE_TOP_MARGIN_PX, BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, CHAIN_SEGMENT_DELAY_MS } from './winCascadeMotion'
 
@@ -229,13 +230,21 @@ type CascadeState = { mode: 'idle' } | { mode: 'chains'; chains: ResolvedChain[]
 export function WinCascadeProvider({ children }: { children: ReactNode }) {
   const [cascade, setCascade] = useState<CascadeState>({ mode: 'idle' })
   const [generation, setGeneration] = useState(0)
-  // Rotation-aware: winWidth/winHeight swap when rendered inside a rotated wrapper (see the
-  // rotation plan), so the cascade bounces within the screen's real, post-rotation footprint -
+  // Rotation-aware: winWidth/winHeight swap when rendered inside a rotated wrapper (see
+  // RotatedGameView), so the cascade bounces within the screen's real, post-rotation footprint -
   // exact identity with plain useWindowDimensions() for any screen with no such wrapper.
   const { width: winWidth, height: winHeight } = useRotatedWindowDimensions()
   // Read at startChains-call time via the ref (not the useMemo's own deps) so the controller
   // identity stays stable across resizes, the same way useDealAnimator's does.
   const boundsRef = useRef({ width: winWidth, height: winHeight })
+  // The real (unrotated) window and the current rotation, for converting each chain's screen-space
+  // origin into the rotated frame the bounce path itself lives in (see startChains below).
+  const rotation = useRotation()
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions()
+  const screenRef = useRef({ rotation, width: screenWidth, height: screenHeight })
+  useEffect(() => {
+    screenRef.current = { rotation, width: screenWidth, height: screenHeight }
+  }, [rotation, screenWidth, screenHeight])
   useEffect(() => {
     // useRotatedWindowDimensions() can transiently report a degenerate 0x0 size (e.g. right after a fresh
     // web navigation, before the viewport has settled) - guard against ever computing a chain's
@@ -261,8 +270,13 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
         // chain's raw half-period in isolation, is what actually guarantees the height spread.
         const hHalfPeriods = chains.map(() => randomBetween(BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_H_HALF_PERIOD_MAX_MS))
         const { floorY, apexYs } = computeCascadeVerticals(hHalfPeriods, boundsRef.current, cardHeight)
+        // chain.origin is a screen-space measurement, but boundsRef above is the ROTATED footprint
+        // (that's the frame the ghosts render and bounce in under a landscape hold), so an origin
+        // measured on a rotated board has to be converted into it first. A no-op at rotation 0, where
+        // WinCascadeGhosts' own overlay-offset subtraction already handles screen -> overlay space.
+        const { rotation: rot, width: sw, height: sh } = screenRef.current
         const resolved: ResolvedChain[] = chains.map((chain, chainIndex) => ({
-          path: buildChainPath(chain.origin, boundsRef.current, cardWidth, chainIndex, hHalfPeriods[chainIndex], floorY, apexYs[chainIndex]),
+          path: buildChainPath(rot === 0 ? chain.origin : screenToLocalPoint(chain.origin.x, chain.origin.y, cardWidth, cardHeight, rot, sw, sh), boundsRef.current, cardWidth, chainIndex, hHalfPeriods[chainIndex], floorY, apexYs[chainIndex]),
           cards: chain.cards.map((card, i) => ({ card, delayMs: chain.entranceDelayMs + i * CHAIN_SEGMENT_DELAY_MS })).reverse()
         }))
         setCascade({ mode: 'chains', chains: resolved, cardWidth })

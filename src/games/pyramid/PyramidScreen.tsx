@@ -4,13 +4,12 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CARD_ASPECT, CardSizeProvider, type TableColors } from '@tastic/cards'
-import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
+import { useRotation } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
-import Animated, { SharedValue, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
+import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
-import { FACE_UP_OFFSET_RATIO } from '@/components/CardSizeContext'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView, ScreenPoint } from '@/components/dealing/measureView'
@@ -18,7 +17,9 @@ import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { autoMoveSpringFor } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
-import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { useGameLayout } from '@/components/gameLayout'
+import { OverlayFrame, toLocal, useOverlayFrame } from '@/components/overlayFrame'
 import { PlayingCard } from '@/components/PlayingCard'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
@@ -32,7 +33,6 @@ import { findHint, hintCountFor, HintResult } from '@/engine/hint'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
-import { clampCardWidthForHeight } from '@/games/shared/clampCardWidthForHeight'
 import { DiscardCell } from '@/games/shared/DiscardCell'
 import { MoveInfo } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
@@ -46,9 +46,8 @@ import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 
 import { buildPyramidDealSequence } from './dealSequence'
+import { cardPosition, pyramidCardWidth, pyramidCellScreenPoint, ROWS, triangleHeight, triangleWidth } from './geometry'
 import { cardAt, isExposed, PyramidController, PyramidState, rowColOf } from './rules'
-
-const ROWS = 7
 
 /** One card's original spot, recorded so undoing a pairing/King removal can fly it back there
  * (see handleUndo's undoRemoval branch) instead of just reappearing there instantly. ref.zone is
@@ -92,7 +91,8 @@ interface PairFlightState {
  * Settlement is a plain timer matching the spring's own duration rather than the spring's
  * completion callback - confirmed elsewhere in this codebase (DragGhostLayer.tsx/DealLayer.tsx)
  * not to reliably fire on this app's web target. */
-function FlyingPairCard({ card, from, to, containerOffsetX, containerOffsetY, onLanded }: { card: Card; from: ScreenPoint; to: ScreenPoint; containerOffsetX: SharedValue<number>; containerOffsetY: SharedValue<number>; onLanded: () => void }) {
+function FlyingPairCard({ card, from, to, frame, cardWidth, onLanded }: { card: Card; from: ScreenPoint; to: ScreenPoint; frame: OverlayFrame; cardWidth: number; onLanded: () => void }) {
+  const cardHeight = cardWidth / CARD_ASPECT
   const tx = useSharedValue(from.x)
   const ty = useSharedValue(from.y)
   const notified = useRef(false)
@@ -110,9 +110,10 @@ function FlyingPairCard({ card, from, to, containerOffsetX, containerOffsetY, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const style = useAnimatedStyle(() => ({
-    transform: [{ translateX: tx.value - containerOffsetX.value }, { translateY: ty.value - containerOffsetY.value }]
-  }))
+  const style = useAnimatedStyle(() => {
+    const p = toLocal(tx.value, ty.value, cardWidth, cardHeight, frame)
+    return { transform: [{ translateX: p.x }, { translateY: p.y }] }
+  })
 
   return (
     <Animated.View style={[pairFlightStyles.ghostCard, style]}>
@@ -141,26 +142,15 @@ const pairFlightStyles = StyleSheet.create({
  * so its own offset-correction effect can measure a real position at all times, same reasoning as
  * those two. */
 function PairFlightGhosts({ flight, onCardLanded }: { flight: PairFlightState | null; onCardLanded: (gen: number, cardId: string) => void }) {
-  const overlayRef = useRef<View>(null)
-  const containerOffsetX = useSharedValue(0)
-  const containerOffsetY = useSharedValue(0)
-  // Rotation-aware, same reasoning as DragGhostLayer/DealLayer's identical overlay-offset pattern.
-  const { width: winWidth, height: winHeight } = useRotatedWindowDimensions()
-
-  useEffect(() => {
-    overlayRef.current?.measureInWindow((x, y) => {
-      containerOffsetX.value = x
-      containerOffsetY.value = y
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [winWidth, winHeight])
+  // Same overlay-placement pattern as DragGhostLayer/DealLayer - see overlayFrame.ts.
+  const { overlayRef, frame } = useOverlayFrame()
 
   return (
     <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
       {flight && (
         <CardSizeProvider width={flight.cardWidth}>
           {flight.cards.map(({ card, from, to }) => (
-            <FlyingPairCard key={`${flight.gen}-${card.id}`} card={card} from={from} to={to} containerOffsetX={containerOffsetX} containerOffsetY={containerOffsetY} onLanded={() => onCardLanded(flight.gen, card.id)} />
+            <FlyingPairCard key={`${flight.gen}-${card.id}`} card={card} from={from} to={to} frame={frame} cardWidth={flight.cardWidth} onLanded={() => onCardLanded(flight.gen, card.id)} />
           ))}
         </CardSizeProvider>
       )}
@@ -172,44 +162,25 @@ function PairFlightGhosts({ flight, onCardLanded }: { flight: PairFlightState | 
 // cardWidthForRow's clamping/fit math as a plain "row of ROWS columns" with a real gap.
 const TRIANGLE_WIDTH_UNITS = ROWS
 
-function triangleWidth(cardWidth: number, gap: number): number {
-  return cardWidth * ROWS + gap * (ROWS - 1)
-}
-
-// gap: the render-scoped value from this file's own cardLayoutForRow call - horizontal gap between
-// cards within a row (no overlap, so corner pips stay visible), same floor as every other game's
-// tableau/pile row (see components/cardLayout.ts).
-function cardPosition(row: number, col: number, cardWidth: number, cardHeight: number, gap: number): { left: number; top: number } {
-  const width = triangleWidth(cardWidth, gap)
-  const rowWidth = cardWidth * (row + 1) + gap * row
-  const rowLeftStart = (width - rowWidth) / 2
-  const left = rowLeftStart + col * (cardWidth + gap)
-  // Rows cascade vertically like a FreeCell cascade - same offset ratio, so only the row below
-  // (drawn on top, per its higher zIndex) overlaps the bottom of the row above.
-  const top = row * (cardHeight * FACE_UP_OFFSET_RATIO)
-  return { left, top }
-}
-
 export default withGameProviders(PyramidScreenInner)
 
 function PyramidScreenInner() {
   const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
-  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
-  // with plain useWindowDimensions() otherwise, see the rotation plan.
-  const { width: winWidth } = useRotatedWindowDimensions()
-  const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
+  // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
+  // layout; the plain window width (capped) in portrait. See gameLayout.ts.
+  const { contentWidth, isWide, availableHeight: layoutAvailableHeight } = useGameLayout()
+  // The screen is visually rotated by RotatedGameView, so every measured container origin below is a
+  // rotated bounding box - see geometry.ts's pyramidCellScreenPoint.
+  const rotation = useRotation()
   const { cardWidth: widthCardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TRIANGLE_WIDTH_UNITS)
   // Pyramid has no PileView/height-budget concept - the triangle's own height is a pure function of
-  // cardWidth (see `height` below), so a landscape hold's much wider available width could otherwise
-  // drive cardWidth (and therefore triangle height) taller than the now-shorter viewport can fit.
-  // Clamps cardWidth by BOTH axes: reuses useTableauMaxHeight's own "how much vertical room is
-  // there" budget (built for PileView's maxHeight, but the underlying available-height question is
-  // the same one) to back-solve the largest cardWidth whose resulting triangle height still fits,
-  // fed the width-derived cardWidth since the correction term it needs (topRowHeight) only matters
-  // at second order here.
-  const availableHeight = useTableauMaxHeight(widthCardWidth, 0)
-  const cardWidth = clampCardWidthForHeight(widthCardWidth, availableHeight, ROWS - 1, FACE_UP_OFFSET_RATIO, CARD_ASPECT)
+  // cardWidth, so a wider window could otherwise drive cardWidth taller than the viewport fits. Portrait
+  // keeps its original clamp against useTableauMaxHeight's budget (a second-order approximation, fed
+  // the width-derived cardWidth); the wide layout instead solves Pyramid's real board height (control
+  // row + triangle + margins - see geometry.ts's PYRAMID_BOARD_MODEL) against the layout's height.
+  const portraitAvailableHeight = useTableauMaxHeight(widthCardWidth, 0)
+  const cardWidth = pyramidCardWidth(widthCardWidth, isWide, layoutAvailableHeight, portraitAvailableHeight)
   const cardHeight = cardWidth / CARD_ASPECT
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
   // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
@@ -340,8 +311,7 @@ function PyramidScreenInner() {
     if (ref.zone === 'pyramid') {
       if (!triangleOrigin) return Promise.resolve(null)
       const { row, col } = rowColOf(ref.index)
-      const { left, top } = cardPosition(row, col, cardWidth, cardHeight, gap)
-      return Promise.resolve({ x: triangleOrigin.x + left, y: triangleOrigin.y + top })
+      return Promise.resolve(pyramidCellScreenPoint(triangleOrigin, row, col, cardWidth, gap, rotation))
     }
     return ghost.cardRegistry.measure(cardId)
   }
@@ -534,12 +504,11 @@ function PyramidScreenInner() {
     const sequence = buildPyramidDealSequence(s.pyramid)
     const entries: DealCardSpec[] = sequence.map((step) => {
       const { row, col } = rowColOf(step.index)
-      const { left, top } = cardPosition(row, col, cardWidth, cardHeight, gap)
       return {
         cardId: step.cardId,
         card: step.card,
         from: stockOrigin,
-        to: { x: triangleOrigin.x + left, y: triangleOrigin.y + top },
+        to: pyramidCellScreenPoint(triangleOrigin, row, col, cardWidth, gap, rotation),
         delayMs: step.visitOrder * DEAL_STAGGER_MS
       }
     })
@@ -1165,7 +1134,7 @@ function PyramidScreenInner() {
   }
 
   const width = triangleWidth(cardWidth, gap)
-  const height = (ROWS - 1) * cardHeight * FACE_UP_OFFSET_RATIO + cardHeight
+  const height = triangleHeight(cardWidth)
   const wasteTop = state.waste[state.waste.length - 1]
 
   return (

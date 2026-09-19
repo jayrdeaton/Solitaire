@@ -7,7 +7,6 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CardSizeProvider, type TableColors } from '@tastic/cards'
-import { computeContentBounds, useRotatedWindowDimensions } from '@tastic/core'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 
@@ -17,7 +16,8 @@ import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
-import { GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
+import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
@@ -43,6 +43,7 @@ import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 import { useSettings } from '@/stores/settings'
 
+import { BOARD_MODEL } from './boardModel'
 import { buildGolfDealSequence } from './dealSequence'
 import { GolfSettingsSection } from './GolfSettingsSection'
 import { createGolfController, GolfState } from './rules'
@@ -75,11 +76,14 @@ function GolfScreenInner() {
   // lint-clean.
   const [golfRankWrap, setGolfRankWrap] = useState(settings.golfRankWrap)
   const controller = useMemo(() => createGolfController(golfRankWrap), [golfRankWrap])
-  // Rotation-aware (swaps width/height when rendered inside a rotated wrapper) - exact identity
-  // with plain useWindowDimensions() otherwise, see the rotation plan.
-  const { width: winWidth } = useRotatedWindowDimensions()
-  const { contentWidth } = computeContentBounds(winWidth, GAME_CONTENT_MAX_WIDTH)
-  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
+  // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
+  // layout; the plain window width (capped) in portrait. See gameLayout.ts.
+  const { contentWidth, isWide } = useGameLayout()
+  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
+  // The width-derived size in portrait (unchanged); in the wide layout also shrunk until the whole board
+  // (top row + the tallest starting column) fits the window's short axis - see boardModel.ts.
+  const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
+  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
   // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
@@ -112,12 +116,12 @@ function GolfScreenInner() {
   const ghost = useDragGhost()
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
-  // components/StockWaste.tsx is used unmodified and exposes no ref for the waste zone specifically
-  // (only stockRef, for the deal's stock-side origin below) - but wasteArea is StockWaste's own
-  // first, unpadded/unmargined flex child within its row layout, so wrapping the whole component in
-  // a plain view measures to the same top-left corner as the waste slot itself. Used as the win
-  // cascade's single chain origin (see runWinCascade) - the real waste top card is hidden once won
-  // (wasteTopCard below), same as every other game's own foundation/discard pile during its cascade.
+  // The waste slot itself (StockWaste's wasteRef) - exactly card-sized, which matters under a rotated
+  // (landscape) board: a measured bounding box is only convertible into the overlay's frame when it has
+  // the card's own footprint (see overlayFrameMath's toLocal), and wrapping the whole two-card stock/waste
+  // pair instead would measure to the wrong corner at +/-90deg. Used as the win cascade's single chain
+  // origin (see runWinCascade) - the real waste top card is hidden once won (wasteTopCard below), same
+  // as every other game's own foundation/discard pile during its cascade.
   const wasteViewRef = useRef<View>(null)
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
   const dealTokenRef = useRef(0)
@@ -536,7 +540,11 @@ function GolfScreenInner() {
         {/* No foundation row at all (unlike Klondike/FreeCell/Yukon) - Golf has no suit-based
         foundation, just the stock/waste pair. Narrower than the tableau below, so it's centered
         above it by GameChrome's own content styling rather than stretched/pinned to an edge. */}
-        <View ref={wasteViewRef} collapsable={false} style={styles.topRow}>
+        {/* Wide layout: cards shrink to fit the window's height (see boardModel.ts), so the tableau row can
+        end up narrower than the content column, and `alignSelf: 'flex-end'` would then pin the stock/waste
+        to the column's edge instead of the tableau's. There the row is given the tableau row's exact width
+        (centered like it) with the pair right-aligned inside it - portrait keeps the plain flex-end row. */}
+        <View style={[styles.topRow, isWide && styles.topRowWide, isWide && { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <StockWaste
             dropZones={dropZones}
             stockTopCard={top(state.stock)}
@@ -556,6 +564,7 @@ function GolfScreenInner() {
             onWastePress={() => {}}
             onWasteDrop={() => false}
             stockRef={stockViewRef}
+            wasteRef={wasteViewRef}
           />
         </View>
 
@@ -632,10 +641,17 @@ function makeStyles(colors: TableColors) {
       // Right-aligned to land on the tableau's own right edge below - Klondike/Spider/Canfield
       // all put their stock pile at that same right edge, and Golf's own waste+stock pair (with
       // no foundations to balance against on the left, unlike Klondike) previously just centered
-      // under the tableau instead of matching them.
+      // under the tableau instead of matching them. Only right while the tableau row spans the whole
+      // content column (portrait) - the wide layout overrides it inline, see the topRow JSX.
       alignSelf: 'flex-end',
       flexDirection: 'row',
       marginBottom: 16
+    },
+    // Wide layout: same row, but centered like the tableau row and given that row's width inline (it
+    // depends on the fitted card size), with the stock/waste pair right-aligned inside it.
+    topRowWide: {
+      alignSelf: 'center',
+      justifyContent: 'flex-end'
     }
   })
 }

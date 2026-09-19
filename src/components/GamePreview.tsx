@@ -1,11 +1,13 @@
-import { CardBack, CardFace, type TableColors } from '@tastic/cards'
+import { cardColor, type TableColors } from '@tastic/cards'
 import React from 'react'
-import { LayoutChangeEvent, StyleSheet, View, ViewStyle } from 'react-native'
+import { StyleSheet, View, ViewStyle } from 'react-native'
+import Svg, { Path, Rect } from 'react-native-svg'
 
 import { Card } from '@/engine/types'
 import { useSettings } from '@/stores/settings'
 
 import { FACE_DOWN_OFFSET_RATIO, FACE_UP_OFFSET_RATIO } from './CardSizeContext'
+import { buildMergedPreview, type MergedPreview, SUIT_PIP_PATHS } from './previewGeometry'
 import { CARD_HEIGHT, CARD_WIDTH } from './theme'
 
 /** Fixed seed every game's previewLayout.ts deals from, so the home screen's starting-deal
@@ -90,51 +92,85 @@ interface GamePreviewProps {
   style?: ViewStyle
 }
 
+const PIP_SCALE = 0.85
+const PIP_INSET_X = 3.2
+// Small enough that a pip sits entirely inside the strip of a covered face-up card (FACE_UP_OFFSET_RATIO of the
+// card's height, ~10.7 design units) - the strip is all that shows of a card once the next one overlaps it.
+const PIP_INSET_Y = 1.8
+const CARD_RX = 2.6
+const BACK_FRAME = 1.4
+const BACK_MEDALLION_HALF = 6
+// One diamond in the middle of a back - just enough of the real back's medallion to read as "the same card back".
+const BACK_MEDALLION = `M${PREVIEW_CARD_WIDTH / 2} ${PREVIEW_CARD_HEIGHT / 2 - BACK_MEDALLION_HALF} L${PREVIEW_CARD_WIDTH / 2 + BACK_MEDALLION_HALF} ${PREVIEW_CARD_HEIGHT / 2} L${PREVIEW_CARD_WIDTH / 2} ${PREVIEW_CARD_HEIGHT / 2 + BACK_MEDALLION_HALF} L${PREVIEW_CARD_WIDTH / 2 - BACK_MEDALLION_HALF} ${PREVIEW_CARD_HEIGHT / 2} Z`
+
+const METRICS = { cardWidth: PREVIEW_CARD_WIDTH, cardHeight: PREVIEW_CARD_HEIGHT }
+const STYLE_CONSTANTS = { cardRadius: CARD_RX, backFrame: BACK_FRAME, pipScale: PIP_SCALE, pipInsetX: PIP_INSET_X, pipInsetY: PIP_INSET_Y, medallionHalf: BACK_MEDALLION_HALF }
+
+// Theme-independent, so built once per placements array (each game's is a module-level constant on Home) and
+// reused for every theme change, re-render and remount.
+const mergedCache = new WeakMap<PreviewCardPlacement[], MergedPreview | null>()
+function mergedFor(placements: PreviewCardPlacement[]): MergedPreview | null {
+  if (!mergedCache.has(placements)) mergedCache.set(placements, buildMergedPreview(placements, METRICS, STYLE_CONSTANTS))
+  return mergedCache.get(placements) ?? null
+}
+
 /** Renders a small, static, non-interactive snapshot of a game's starting deal for the home
- * screen's game list - real card art at a fixed miniature size, laid out per-game by each game's
- * own previewLayout.ts (built from that game's own newGame(PREVIEW_SEED), so it can never drift
- * out of sync with how the game actually deals). */
-export function GamePreview({ placements, colors, style }: GamePreviewProps) {
+ * screen's game list, laid out per-game by each game's own previewLayout.ts (built from that game's
+ * own newGame(PREVIEW_SEED), so it can never drift out of sync with how the game actually deals).
+ *
+ * Drawn as ONE Svg per tile - deliberately NOT the real @tastic/cards CardFace/CardBack. Those are the
+ * full-detail cards used in play (court-card figures alone are ~200KB of SVG path text each), and a menu of
+ * eleven such decks is ~370 of them drawn about 7pt wide: several thousand native nodes and megabytes of path
+ * strings, which measured at 1.3-1.5s of blocked JS thread on a fast Mac in a production bundle (2.6s in dev)
+ * every time Home was mounted. At this size no rank or figure is legible anyway, so this keeps everything that
+ * is (the face/back split, suit colors, the theme's card-back color, invert-dark-mode) at a small fraction of the
+ * cost. Every react-native-svg element is a real native view, so node count is what matters: a column layout
+ * (everything but Pyramid/TriPeaks) is merged into at most five Paths by drawing only each card's VISIBLE strip
+ * (see previewGeometry.ts - with strips nothing overlaps, so shapes of the same kind can share one Path), while
+ * the two overlapping layouts draw a Rect (+ pip Path) per card. Also needs no onLayout round trip: the Svg
+ * scales its own viewBox to whatever size the tile gives it, so the very first frame already shows cards.
+ *
+ * Memoized: `placements` are module-level constants and `colors` is a stable reference until the theme
+ * changes, so an unrelated Home re-render (a setting, a profile change) never re-walks eleven decks. */
+export const GamePreview = React.memo(function GamePreview({ placements, colors, style }: GamePreviewProps) {
   const { settings } = useSettings()
-  // Home's one call site always passes a fixed pixel `width` (see index.tsx's `preview` style) -
-  // seeding from it lets card art render in this component's very first frame instead of always
-  // waiting on a native onLayout round-trip, which otherwise guarantees at least one empty/green
-  // frame before any cards can appear, no matter how fast the device is. Falls back to the old
-  // onLayout-measured 0 (and the loading gate below) if a future caller passes a percentage/flex
-  // width instead, where the pixel width genuinely isn't knowable up front.
-  const initialWidth = React.useMemo(() => {
-    const flat = StyleSheet.flatten(style)
-    return typeof flat?.width === 'number' ? flat.width : 0
-  }, [style])
-  const [canvasWidth, setCanvasWidth] = React.useState(initialWidth)
-  const onLayout = React.useCallback((e: LayoutChangeEvent) => setCanvasWidth(e.nativeEvent.layout.width), [])
-  // Card art needs real pixel width/height (it sizes an inner SVG viewBox, not a percentage) -
-  // only known once the canvas itself has been laid out once, hence the empty first frame.
-  const cardWidth = (canvasWidth * PREVIEW_CARD_WIDTH) / PREVIEW_CANVAS_WIDTH
-  const cardHeight = (canvasWidth * PREVIEW_CARD_HEIGHT) / PREVIEW_CANVAS_WIDTH
+  const invert = settings.invertDarkModeColors
+  const faceFill = invert ? colors.cardFaceInverted : '#FFFFFF'
+  const faceStroke = invert ? colors.textBlackInverted : '#000000'
+  const blackInk = invert ? colors.textBlackInverted : colors.textBlack
+  const patternColor = invert ? colors.cardBackPatternInverted : colors.cardBackPattern
+  const merged = mergedFor(placements)
 
   return (
-    <View onLayout={onLayout} style={[styles.canvas, style]}>
-      {canvasWidth > 0 &&
-        placements.map((p, i) => (
-          <View
-            key={i}
-            style={[
-              styles.cardWrap,
-              {
-                height: `${(PREVIEW_CARD_HEIGHT / PREVIEW_CANVAS_HEIGHT) * 100}%`,
-                left: `${(p.x / PREVIEW_CANVAS_WIDTH) * 100}%`,
-                top: `${(p.y / PREVIEW_CANVAS_HEIGHT) * 100}%`,
-                width: `${(PREVIEW_CARD_WIDTH / PREVIEW_CANVAS_WIDTH) * 100}%`
-              }
-            ]}
-          >
-            {p.faceUp && p.card ? <CardFace card={p.card} colors={colors} width={cardWidth} height={cardHeight} cardStyle={settings.cardStyle} invertDarkModeColors={settings.invertDarkModeColors} /> : <CardBack colors={colors} width={cardWidth} height={cardHeight} invertDarkModeColors={settings.invertDarkModeColors} />}
-          </View>
-        ))}
+    <View style={[styles.canvas, style]}>
+      <Svg width='100%' height='100%' viewBox={`0 0 ${PREVIEW_CANVAS_WIDTH} ${PREVIEW_CANVAS_HEIGHT}`}>
+        {merged ? (
+          <>
+            {merged.backs !== '' && <Path d={merged.backs} fill={colors.cardBack} stroke={faceFill} strokeWidth={BACK_FRAME} />}
+            {merged.medallions !== '' && <Path d={merged.medallions} fill={patternColor} opacity={0.6} />}
+            {merged.faces !== '' && <Path d={merged.faces} fill={faceFill} stroke={faceStroke} strokeWidth={0.8} />}
+            {merged.redPips !== '' && <Path d={merged.redPips} fill={colors.textRed} />}
+            {merged.blackPips !== '' && <Path d={merged.blackPips} fill={blackInk} />}
+          </>
+        ) : (
+          placements.map((p, i) =>
+            p.faceUp && p.card ? (
+              <React.Fragment key={i}>
+                <Rect x={p.x} y={p.y} width={PREVIEW_CARD_WIDTH} height={PREVIEW_CARD_HEIGHT} rx={CARD_RX} fill={faceFill} stroke={faceStroke} strokeWidth={0.8} />
+                <Path d={SUIT_PIP_PATHS[p.card.suit]} transform={`translate(${p.x + PIP_INSET_X} ${p.y + PIP_INSET_Y}) scale(${PIP_SCALE})`} fill={cardColor(p.card.suit) === 'red' ? colors.textRed : blackInk} />
+              </React.Fragment>
+            ) : (
+              <React.Fragment key={i}>
+                <Rect x={p.x + BACK_FRAME / 2} y={p.y + BACK_FRAME / 2} width={PREVIEW_CARD_WIDTH - BACK_FRAME} height={PREVIEW_CARD_HEIGHT - BACK_FRAME} rx={CARD_RX} fill={colors.cardBack} stroke={faceFill} strokeWidth={BACK_FRAME} />
+                <Path d={BACK_MEDALLION} transform={`translate(${p.x} ${p.y})`} fill={patternColor} opacity={0.6} />
+              </React.Fragment>
+            )
+          )
+        )}
+      </Svg>
     </View>
   )
-}
+})
 
 const styles = StyleSheet.create({
   canvas: {
@@ -142,10 +178,5 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     position: 'relative',
     width: '100%'
-  },
-  cardWrap: {
-    borderRadius: 2,
-    overflow: 'hidden',
-    position: 'absolute'
   }
 })
