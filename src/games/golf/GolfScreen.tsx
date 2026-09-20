@@ -6,23 +6,23 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, type TableColors } from '@tastic/cards'
+import { CardSizeProvider } from '@tastic/cards'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
-import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
+import { dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
-import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { useGameSession } from '@/components/useGameSession'
 import { useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { GOLF_RULES } from '@/constants/gameRules'
@@ -38,6 +38,7 @@ import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -91,7 +92,7 @@ function GolfScreenInner() {
   // PATTERN_OVERLAP_GATE, same as Klondike's own KlondikeScreen.tsx). Destructured below so every
   // existing reference to `state`, `commitState`, `flying`, `startFlights`, `settleFlight`,
   // `undoBusyRef`, etc. keeps working unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<GolfState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<GolfState>()
   // Unlike Klondike (whose stock-draw undo entries carry move: null for a recycle - "nothing card-
   // shaped to fly") and Pyramid (same null convention for its pairing moves, which use a totally
   // different removedCards field instead of MoveInfo), every Golf move - a tableau card onto the
@@ -120,8 +121,8 @@ function GolfScreenInner() {
   // (landscape) board: a measured bounding box is only convertible into the overlay's frame when it has
   // the card's own footprint (see overlayFrameMath's toLocal), and wrapping the whole two-card stock/waste
   // pair instead would measure to the wrong corner at +/-90deg. Used as the win cascade's single chain
-  // origin (see runWinCascade) - the real waste top card is hidden once won (wasteTopCard below), same
-  // as every other game's own foundation/discard pile during its cascade.
+  // origin (see runWinCascade) - the real waste top card is hidden once the win is revealed
+  // (wasteTopCard below), same as every other game's own foundation/discard pile during its cascade.
   const wasteViewRef = useRef<View>(null)
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
   const dealTokenRef = useRef(0)
@@ -131,6 +132,22 @@ function GolfScreenInner() {
   // useState, same as Pyramid/Spider (not Klondike/FreeCell's useFoundationWinCheck) - Golf has no
   // suit-based foundation for a "won" flag to hang off, just "every tableau column is empty".
   const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, 'golf', session, dealTokenRef, recordDealWon, hintsUsedRef)
+  // Nothing animating and the initial deal finished - what the win celebration waits for (see
+  // useWinReveal). activeFlightCount covers every ghost flight (tap, drag, stock draw, undo all
+  // claim one via startFlights before their first await), dealHiddenIds the initial deal.
+  const settled = activeFlightCount === 0 && dealHiddenIds.size === 0
+  // `won` is game state (clock, stat, save, undo/hint gating) and flips with the winning move; the
+  // celebration - the waste pile giving way to the win cascade, fireworks, banner - waits until the
+  // last card has flown onto the waste and landed. Hiding the waste top on `won` used to unregister
+  // the very card the winning flight was measuring to land on, so that flight could not fly at all
+  // and the card simply appeared (see the [state] flight effect below).
+  const winRevealed = useWinReveal(won, settled)
+  // The board the win cascade has taken over from (set together with startChains, see runWinCascade): once it IS the
+  // current state, and the win is revealed, the real waste top blanks - not a moment earlier. Blanking on winRevealed
+  // alone left the waste slot EMPTY for the few frames it takes runWinCascade to measure and mount the ghosts (the
+  // pile teleported away, then the ghosts appeared). Compared by identity (state is replaced wholesale on every
+  // change) so an undo or a New Game un-blanks the pile with no reset to remember.
+  const [cascadeHandoffFor, setCascadeHandoffFor] = useState<GolfState | null>(null)
   /** Flights awaiting their post-commit measurement + ghost.flyTo, queued by tap-to-move
    * (handleCardTap), drawing from the stock (handleDrawStock), and undo - a list (not a single
    * slot), since these can now genuinely overlap (see useFlightConcurrency's own
@@ -141,10 +158,11 @@ function GolfScreenInner() {
    * `flying` entry once it lands - see the [state]-effect below. `viaStock` measures via
    * stockViewRef (a plain View, not per-card) instead of CardRegistry - only undoing a stock draw
    * flies back toward the stock; a tableau-bound undo flies back to a real per-card-registered
-   * pile. `gen` guards against a "New Game" tapped mid-flight replacing the deal this flight was
-   * measuring against (card ids are shuffle-independent and reused across deals - see
-   * engine/deck.ts). */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
+   * pile. `viaWaste` (a forward move or a draw) falls back to wasteViewRef when the card has no
+   * registry entry of its own - see the [state]-effect below. `gen` guards against a "New Game"
+   * tapped mid-flight replacing the deal this flight was measuring against (card ids are
+   * shuffle-independent and reused across deals - see engine/deck.ts). */
+  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; viaWaste?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
   // Which card (if any) should play its "nowhere to go" shake right now - see handleCardTap and
@@ -235,20 +253,36 @@ function GolfScreenInner() {
     }
 
     const entries: DealCardSpec[] = []
+    // A card whose destination can't be measured never enters `entries`, so it would never reach the
+    // onCardLanded callback that clears it from dealHiddenIds - stuck invisible for the whole hand (and
+    // holding the win celebration back to its max wait). Unhide it instead, same fallback FreeCell's
+    // runDeal/TriPeaks' starter use.
+    const unresolvedIds: string[] = []
     sequence.forEach((step, i) => {
       const dest = destinations[i]
-      if (!dest) return
+      if (!dest) {
+        unresolvedIds.push(step.cardId)
+        return
+      }
       entries.push({
         cardId: step.cardId,
         card: step.card,
         from: origin,
         to: { x: dest.x, y: dest.y },
-        delayMs: step.visitOrder * DEAL_STAGGER_MS
+        delayMs: step.visitOrder * dealStaggerMs(sequence.length)
       })
     })
     if (entries.length === 0) {
       setDealHiddenIds(new Set())
       return
+    }
+    if (unresolvedIds.length > 0) {
+      setDealHiddenIds((ids) => {
+        if (unresolvedIds.every((id) => !ids.has(id))) return ids
+        const next = new Set(ids)
+        unresolvedIds.forEach((id) => next.delete(id))
+        return next
+      })
     }
 
     deal.start(
@@ -271,25 +305,32 @@ function GolfScreenInner() {
   // whole 35 cards plus the starter, in the order they arrived - the only "foundation-equivalent"
   // pile Golf has), reversed so the most-recently-placed (currently on top of the physical pile)
   // leads the chain, same convention as Pyramid's discard-pile cascade. Origin is wasteViewRef (see
-  // its own doc comment above) rather than a per-card CardRegistry lookup, since the real waste top
-  // card is hidden the instant `won` flips true (wasteTopCard below) and therefore unregistered.
+  // its own doc comment above) - always mounted and card-sized whether or not the real top card is
+  // drawn - rather than a per-card CardRegistry lookup. The measurement runs while the real waste top
+  // is STILL on screen and the pile blanks only afterwards, in the SAME commit that mounts the ghosts
+  // (cascadeHandoffFor, set right beside startChains - React batches the two into one commit from this
+  // async continuation): blanking first left the waste empty until the ghosts arrived. If no chain can
+  // start (an unmeasurable slot), the pile simply stays up under the banner instead of vanishing.
   // Same dealTokenRef guard as every other async measurement here.
   async function runWinCascade(s: GolfState, gen: number) {
     const origin = await measureView(wasteViewRef.current)
     if (dealTokenRef.current !== gen || !origin || s.waste.length === 0) return
     winCascade.startChains([{ cards: s.waste.slice().reverse(), origin, entranceDelayMs: 0 }], cardWidth)
+    setCascadeHandoffFor(s)
   }
 
   // Same race as the deal effect above: measuring CardRegistry/a view ref synchronously inside
   // checkWin itself would find state from before the winning move's own registration effects have
-  // run. Deferring to a [state]-keyed effect guarantees everything has already committed.
+  // run. Deferring to a [state]-keyed effect guarantees everything has already committed. Also waits
+  // for winRevealed (the last card has landed and the finished board has held a beat) - the cascade
+  // replaces the waste pile's real cards, so it must not start while the winning card is in the air.
   useEffect(() => {
     const pending = pendingWinCascadeRef.current
-    if (!pending || !state) return
+    if (!pending || !state || !winRevealed) return
     pendingWinCascadeRef.current = null
     runWinCascade(state, pending.gen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
+  }, [state, winRevealed])
 
   // Same race documented in this repo's own CLAUDE.md: measuring CardRegistry synchronously right
   // after the setState in applyMove/handleDrawStock would find the still-mounted SOURCE card (the
@@ -303,7 +344,11 @@ function GolfScreenInner() {
     pendingFlightRef.current = []
     pending.forEach((p) => {
       ;(async () => {
-        const landed = p.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(p.cardId)
+        // A forward move's/draw's registered waste top card is the usual landing spot, but a card that
+        // is no longer the top by the time it is measured (a second move landed on it in the same
+        // commit) has no registry entry - the waste slot itself is card-sized and always there, so fly
+        // to that rather than hiding the ghost and letting the card simply appear.
+        const landed = p.viaStock ? await measureView(stockViewRef.current) : ((await ghost.cardRegistry.measure(p.cardId)) ?? (p.viaWaste ? await measureView(wasteViewRef.current) : null))
         if (dealTokenRef.current !== p.gen || !landed) {
           p.flight.hide()
           endFlying(p.flyingId)
@@ -393,11 +438,11 @@ function GolfScreenInner() {
     // this needs whatever the board actually is right now, not whatever it was at this render.
     const current = stateRef.current
     const movingCard = current ? top(current.waste) : undefined
-    // While won, the winning card's DraggableCard is deliberately unmounted (see wasteTopCard
-    // below), so it has no CardRegistry entry - measure the waste slot's plain view ref instead
-    // (the same technique runWinCascade above already uses for this exact reason), rather than a
-    // per-card CardRegistry lookup that would silently return null and skip the flight.
-    const origin = movingCard && movingCard.id === move.anchorCardId ? (won ? await measureView(wasteViewRef.current) : await ghost.cardRegistry.measure(move.anchorCardId)) : null
+    // Once the win is revealed, the winning card's DraggableCard is deliberately unmounted (see
+    // wasteTopCard below), so it has no CardRegistry entry - fall back to the waste slot's plain view
+    // ref (the same technique runWinCascade above already uses for this exact reason), rather than a
+    // registry lookup that would return null and skip the flight (the card would just reappear).
+    const origin = movingCard && movingCard.id === move.anchorCardId ? ((await ghost.cardRegistry.measure(move.anchorCardId)) ?? (await measureView(wasteViewRef.current))) : null
 
     setUndoStack((stack) => stack.slice(0, -1))
 
@@ -436,7 +481,7 @@ function GolfScreenInner() {
   function completeMove(from: PileRef, to: PileRef, anchorCardId: string, flight: DragFlightHandle): boolean {
     if (!applyMove(from, to, anchorCardId)) return false
     const flyingId = beginFlying(to, 1)
-    pendingFlightRef.current.push({ cardId: anchorCardId, gen: dealTokenRef.current, flyingId, flight })
+    pendingFlightRef.current.push({ cardId: anchorCardId, viaWaste: true, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 
@@ -473,7 +518,7 @@ function GolfScreenInner() {
 
     pushUndo(current, move)
     commitState(result)
-    pendingFlightRef.current.push({ cardId: drawnCard.id, gen: dealTokenRef.current, flyingId, flight })
+    pendingFlightRef.current.push({ cardId: drawnCard.id, viaWaste: true, gen: dealTokenRef.current, flyingId, flight })
   }
 
   // Tapping a tableau column's top card sends it to the waste pile if legal - Golf has exactly one
@@ -516,15 +561,13 @@ function GolfScreenInner() {
     }
   }
 
-  if (!state) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.loadingText}>Loading...</Text>
-      </View>
-    )
-  }
+  if (!state) return <GameLoading />
 
-  const wasteTopCard = won ? undefined : top(state.waste)
+  // Hidden only once the win is REVEALED, not the moment it is won - the winning card is still flying
+  // onto this pile until then, and its flight measures the registered waste top to land on - AND the
+  // cascade has taken over (cascadeHandoffFor === state): its ghosts mount in the very commit this
+  // blanks, so the pile is never seen empty. Not on winRevealed alone: runWinCascade measures first.
+  const wasteTopCard = winRevealed && cascadeHandoffFor === state ? undefined : top(state.waste)
   // Combines two independent reasons the waste top slot might need to stay visually covered by a
   // ghost a beat longer than the real state already shows: the initial deal's starter card (still in
   // dealHiddenIds until its own deal ghost lands - see startNewGame) and an ordinary post-deal flight
@@ -611,27 +654,15 @@ function GolfScreenInner() {
       (see WinCascadeGhosts' own doc comment for why nesting depth alone can't do this) - the win
       banner comes last of all three so it's the one thing guaranteed to sit on top of the animation,
       not buried under it. */}
-      {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
+      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
     </CardSizeProvider>
   )
 }
 
-function makeStyles(colors: TableColors) {
+function makeStyles() {
   return StyleSheet.create({
-    container: {
-      backgroundColor: colors.tableFelt,
-      flex: 1,
-      padding: 12
-    },
-    loadingText: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      marginTop: 40,
-      textAlign: 'center'
-    },
     tableauColumn: {},
     tableauRow: {
       flexDirection: 'row',

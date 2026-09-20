@@ -1,30 +1,29 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
+import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { useEffect, useRef, useState } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
-import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
+import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
 import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
-import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
 import { useGameSession } from '@/components/useGameSession'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { FREECELL_RULES } from '@/constants/gameRules'
-import { AutoCompleteStep, findSafeAutoPlay, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
 import { isDescendingAltColor, runCountFrom, top } from '@/engine/pile'
@@ -34,6 +33,7 @@ import { Card, SUITS } from '@/engine/types'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
+import { useAutoFinish } from '@/games/shared/useAutoFinish'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
@@ -41,19 +41,33 @@ import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 import { useSettings } from '@/stores/settings'
 
+import { allowsFinish, armsSafeCascade, canAutoFinish, nextFinishMove, nextSafeCascadeStep } from './autoPlay'
 import { BOARD_MODEL } from './boardModel'
 import { buildFreeCellDealSequence } from './dealSequence'
-import { countEmptyFreecells, countEmptyTableauColumns, FreeCellController, FreeCellState, maxSupermoveCount } from './rules'
+import { countEmptyFreecells, countEmptyTableauColumns, FreeCellController, FreeCellState, maxSupermoveCount, moveHeadCard } from './rules'
 
 // Floor for useTableauMaxHeight below, not a fixed height anymore - a short screen never fans out
 // less generously than this, but a screen with real headroom to spare now gets more of it.
 const TABLEAU_MIN_HEIGHT = 460
 const TABLEAU_COLUMNS = 8
+// Gap between one finish card leaving and the next (see useAutoFinish) - each flight is only
+// 40-90ms (dragSpring.ts's winSweepSpringFor), so a few overlap at once, and the whole sweep reads
+// as one quick stream instead of a card per full flight round trip. Also just above
+// useCascadeFeedback's floor, so every card still gets its own sound/haptic tick.
+const FINISH_STAGGER_MS = 60
+const DECK_SIZE = 52
+function foundationCount(s: FreeCellState | null): number {
+  return s ? s.foundation.reduce((n, pile) => n + pile.length, 0) : 0
+}
+// A finish's LAST card waits (up to this long) for every earlier flight to land first, so the win
+// cascade doesn't start over foundation cards that are still mid-air.
+const FINISH_LAST_CARD_WAIT_MS = 600
 // FreeCell has no stock pile of its own to visually deal from (rules.ts's newGame deals straight
 // into the tableau; freecells start, and stay, empty throughout the deal) - the far-right freecell
 // doubles as the deck the deal animation flies out of instead, showing this face-down placeholder
@@ -157,7 +171,7 @@ function FreeCellScreenInner() {
   // `isUndo` (Klondike has no equivalent - see its own `viaStock`) no longer distinguishes anything
   // here: the old finishOneUndoAnimation-vs-undoBusyRef split this flag used to pick between has
   // collapsed into a single settleFlight() call for every flight, undo or not.
-  const pendingAutoMoveCardIdRef = useRef<{ cardId: string; fast?: boolean; sweep?: boolean; gen: number; flight: DragFlightHandle; flyingId: number }[]>([])
+  const pendingAutoMoveCardIdRef = useRef<{ cardId: string; to: PileRef; fast?: boolean; sweep?: boolean; gen: number; flight: DragFlightHandle; flyingId: number }[]>([])
   // A silently auto-played cascade being reversed by handleUndo (see FreeCellUndoMove above) -
   // measured/flown by its own [state]-effect below, independently of and concurrently with the
   // primary move's own flight(s) (pendingAutoMoveCardIdRef's effect). Stays a single nullable slot
@@ -178,10 +192,25 @@ function FreeCellScreenInner() {
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
   const { won, setWon, recordedWinRef, pendingWinCascadeRef, checkWin } = useFoundationWinCheck(FreeCellController, 'freecell', session, dealTokenRef, recordDealWon, hintsUsedRef)
+  // Nothing animating and the initial deal finished - what the auto-play hooks below wait for, and
+  // what the win celebration waits for too (see useWinReveal).
+  const settled = activeFlightCount === 0 && dealHiddenIds.size === 0
+  // `won` is game state (clock, stat, save, undo/hint gating) and flips with the winning move; the
+  // celebration - foundations giving way to the win cascade, fireworks, banner - waits until the
+  // last card has flown in and landed, so it is never hidden mid-flight (which used to make it
+  // simply appear) and the finished board reads for a beat first.
+  const winRevealed = useWinReveal(won, settled)
+  // The board the win cascade has taken over from, and which suits' piles it took (set together with startChains, see
+  // runWinCascade): once that state IS the current one, and the win is revealed, those piles' real cards blank - not a
+  // moment earlier, or the piles would sit empty for the frames between the reveal commit and the commit that mounts the
+  // cascade's ghosts. Compared by identity (state is replaced wholesale on every change) so an undo or a New Game
+  // un-blanks the piles with nothing to reset, and a re-win after an undo (which never relaunches the cascade) can
+  // never blank piles with no ghosts. A suit whose chain could not start keeps its real card showing.
+  const [cascadeHandoff, setCascadeHandoff] = useState<{ state: FreeCellState; suits: ReadonlySet<number> } | null>(null)
   /** One ref per foundation slot's own container (see FoundationCell's slotRef) - measured
-   * independently of CardRegistry so the win cascade can still find each pile's screen position
-   * after its real King has been hidden (won-gated, see the foundation row below), at which point
-   * that card is no longer CardRegistry-registered at all. */
+   * independently of CardRegistry so the win cascade can find each pile's screen position whether
+   * or not its real King is drawn (the container is card-sized and always mounted; the piles only
+   * blank once the cascade has taken over, see cascadeHandoff in runWinCascade). */
   const foundationSlotRefs = useRef<(View | null)[]>(new Array(4).fill(null))
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
@@ -259,7 +288,7 @@ function FreeCellScreenInner() {
         card: step.card,
         from: origin,
         to: { x: dest.x, y: dest.y },
-        delayMs: step.visitOrder * DEAL_STAGGER_MS
+        delayMs: step.visitOrder * dealStaggerMs(sequence.length)
       })
     })
     if (unresolvedIds.length > 0) {
@@ -311,21 +340,31 @@ function FreeCellScreenInner() {
 
   // Foundation piles are guaranteed full (13 cards each, Ace..King) the instant isWon() is true -
   // measures each pile's own slot container (see foundationSlotRefs/FoundationCell's slotRef),
-  // not the King via CardRegistry, since the real King is hidden (and therefore unregistered) the
-  // instant `won` flips true, in the same commit this effect reacts to. Chains that whole pile
-  // King-first/head down to Ace-last/tail (foundation arrays are built bottom-up, Ace pushed
-  // first, so reversing gives the right order). Same dealTokenRef guard as every other async
+  // not the King via CardRegistry (a container is measurable whether or not the pile's real card
+  // is drawn). Chains that whole pile King-first/head down to Ace-last/tail (foundation arrays are
+  // built bottom-up, Ace pushed first, so reversing gives the right order).
+  //
+  // This runs while the real foundation cards are STILL on screen: the piles blank only afterwards,
+  // in the SAME commit that mounts the cascade's ghosts (cascadeHandoff, set right beside
+  // startChains - React batches the two, being one async continuation). Blanking on winRevealed
+  // alone left every pile empty for the frames this measurement takes (~140ms in a dev bundle)
+  // before the ghosts appeared. A suit whose slot measurement failed (rare) gets no chain and so
+  // keeps its real card, rather than vanishing with nothing to replace it; if no chain can start the
+  // piles simply stay up under the banner. Same dealTokenRef guard as every other async
   // measurement here, for the same "New Game tapped mid-measurement" reason.
   async function runWinCascade(s: FreeCellState, gen: number) {
     const origins = await Promise.all(foundationSlotRefs.current.map((view) => measureView(view)))
     if (dealTokenRef.current !== gen) return
     const chains: ChainSpec[] = []
+    const handedOff = new Set<number>()
     s.foundation.forEach((pile, suit) => {
       const origin = origins[suit]
       if (!origin || pile.length === 0) return
       chains.push({ cards: pile.slice().reverse(), origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
+      handedOff.add(suit)
     })
     winCascade.startChains(chains, cardWidth)
+    if (handedOff.size > 0) setCascadeHandoff({ state: s, suits: handedOff })
   }
 
   // Measuring CardRegistry synchronously right after the commitState in applyMove would find the
@@ -339,7 +378,10 @@ function FreeCellScreenInner() {
     pendingAutoMoveCardIdRef.current = []
     pending.forEach((p) => {
       ;(async () => {
-        const landed = await ghost.cardRegistry.measure(p.cardId)
+        // A foundation's registered top card is the usual landing spot, but if it can't be found
+        // the pile's own slot container is card-sized and always there - fly to that rather than
+        // hiding the ghost and letting the card simply appear.
+        const landed = (await ghost.cardRegistry.measure(p.cardId)) ?? (p.to.zone === 'foundation' ? await measureView(foundationSlotRefs.current[p.to.index]) : null)
         // A new game can start while the measurement above is in flight (e.g. tapping "New Game"
         // mid auto-play-cascade - see maybeAutoPlay). `landed`, if it resolved at all, would then be
         // measuring an unrelated card in the NEW deal (ids are shuffle-independent and reused across
@@ -443,28 +485,41 @@ function FreeCellScreenInner() {
   // effects haven't necessarily run yet in that same commit.
   useEffect(() => {
     const pending = pendingWinCascadeRef.current
-    if (!pending || !state) return
+    if (!pending || !state || !winRevealed) return
     pendingWinCascadeRef.current = null
     runWinCascade(state, pending.gen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
+  }, [state, winRevealed])
 
-  // Auto-play-to-foundation: only ever fires as a direct consequence of the player's own move -
-  // see useAutoFoundationCascade for the trigger model (armFromForwardMove/armFromAceEvent, called
-  // from applyMove below), and engine/autoFoundation.ts for the two mechanisms computeNextStep
-  // composes. FreeCell has no stock, so armFromAceEvent is never called here at all - there's no
-  // draw/reveal moment to reward, only the player's own foundation moves ever start a cascade.
+  // Auto-play-to-foundation has two independent halves, both only ever started by the player's own
+  // move - see autoPlay.ts for the full policy. The safe-card cascade (this hook) starts ONLY from a
+  // tap that tap-to-move sent to a foundation (applyMove's armsSafeCascade), never from a drag.
+  // FreeCell has no stock, so armFromAceEvent is never called here at all.
   const cascade = useAutoFoundationCascade<FreeCellState>({
     state,
-    settled: activeFlightCount === 0 && dealHiddenIds.size === 0,
+    settled,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
-    computeNextStep,
+    computeNextStep: nextSafeCascadeStep,
     firePlay
+  })
+  // The finish: the moment every remaining card can go up on its own, sweep them all up at once,
+  // whatever kind of move (tap, drag, to a column or a freecell) made the board finishable.
+  const finish = useAutoFinish<FreeCellState>({
+    state,
+    settled,
+    enabled: () => settings.autoMoveToFoundation,
+    isBusy: () => undoBusyRef.current,
+    getState: () => stateRef.current,
+    canFinish: canAutoFinish,
+    fireNext: fireFinishStep,
+    staggerMs: FINISH_STAGGER_MS
   })
 
   function startNewGame() {
     const myToken = ++dealTokenRef.current
+    finish.suppress()
+    cascade.disarm()
     const s = FreeCellController.newGame(randomSeed())
     setUndoStack([])
     setHint(null)
@@ -491,6 +546,8 @@ function FreeCellScreenInner() {
   // existed - see SavedGame's own doc comment).
   function restoreGame(saved: SavedGame<FreeCellState, UndoEntry<FreeCellState, FreeCellUndoMove>>) {
     ++dealTokenRef.current
+    finish.suppress()
+    cascade.disarm()
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
     hintsUsedRef.current = false
@@ -550,6 +607,11 @@ function FreeCellScreenInner() {
   async function handleUndo() {
     if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
+    // Undoing lands on an earlier board that may itself be finishable - it must not immediately
+    // re-fire the cards the player just took back (see useAutoFinish's suppress), and likewise a
+    // still-armed safe-card cascade must not replay the tap this undo is reverting.
+    finish.suppress()
+    cascade.disarm()
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition - the only move available once it's true is New Game), so any undo reachable while
     // won must be undoing the winning move itself. Clears the "You Won!" banner and stops the
@@ -606,7 +668,7 @@ function FreeCellScreenInner() {
       const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
       const flyingId = beginFlying(primary.from, primary.count)
       commitState(prevState)
-      pendingAutoMoveCardIdRef.current.push({ cardId: primary.anchorCardId, gen, flight, flyingId })
+      pendingAutoMoveCardIdRef.current.push({ cardId: primary.anchorCardId, to: primary.from, gen, flight, flyingId })
     } else {
       commitState(prevState)
       settleFlight()
@@ -617,13 +679,18 @@ function FreeCellScreenInner() {
   // auto-played card isn't a player decision, so it skips the undo stack entirely (one Undo press
   // reverts the whole triggering move plus any cascade it set off, in one step) and doesn't count
   // toward the moves/score the player is judged on.
-  function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean }) {
+  function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean; viaTap?: boolean }) {
     // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
     // closure's `state` - two actions can now be triggered back-to-back before React re-renders
     // (see PATTERN_OVERLAP_GATE), and each must build its own tryMove on top of whatever the OTHER's
     // commitState just did, not the same stale board both closures captured.
     const current = stateRef.current
     if (!current) return false
+    // The card flying is the card the player grabbed (or the auto-play chose); tryMove only knows
+    // positions, so if the board moved on since - an auto-play took that very card between the grab
+    // and the drop - it would move whatever now sits there while the ghost shows a different card.
+    // Refuse instead, so a card never moves without its own flight.
+    if (moveHeadCard(current, from, count)?.id !== anchorCardId) return false
     const result = FreeCellController.tryMove(current, { from, to, count })
     if (result) {
       const moveInfo: MoveInfo = { from, to, count, anchorCardId }
@@ -644,7 +711,11 @@ function FreeCellScreenInner() {
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
-      if (!opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
+      // Tap vs drag matters here: only a tap sent to a foundation starts the safe-card cascade,
+      // but ANY player move may let the finish start (see autoPlay.ts).
+      // (Never armed while auto-move is off: the cascade could then fire later, after it's back on.)
+      if (settings.autoMoveToFoundation && armsSafeCascade(to, opts ?? {})) cascade.armFromForwardMove()
+      if (allowsFinish(opts ?? {})) finish.allow()
       return true
     }
     return false
@@ -719,7 +790,7 @@ function FreeCellScreenInner() {
     hapticCard()
     const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
 
-    if (!completeMove(move.from, move.to, move.count, cardId, flight)) {
+    if (!completeMove(move.from, move.to, move.count, cardId, flight, { viaTap: true })) {
       flight.hide()
       settleFlight()
     }
@@ -729,7 +800,7 @@ function FreeCellScreenInner() {
   // drag's drop) - applies the move, then marks the destination "incoming" and stashes the
   // anchor card id for the [state]-effect above to measure and fly the ghost onto, instead of it
   // just vanishing/appearing at the destination instantly.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; viaTap?: boolean; fast?: boolean; sweep?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) {
       // tableauRunCount's dimming only rules out a run that could NEVER move anywhere (the
       // best-case cap, assuming a non-empty destination - see its own comment). A run that passed
@@ -756,18 +827,8 @@ function FreeCellScreenInner() {
       return false
     }
     const flyingId = beginFlying(to, count)
-    pendingAutoMoveCardIdRef.current.push({ cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flight, flyingId })
+    pendingAutoMoveCardIdRef.current.push({ cardId: anchorCardId, to, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flight, flyingId })
     return true
-  }
-
-  // Composes engine/autoFoundation.ts's two mechanisms into the shared cascade hook's step shape -
-  // mechanism B (a guaranteed full clear) takes priority and, once true, ignores mechanism A's
-  // caution entirely since there's no longer any player decision left to protect. FreeCell has no
-  // stock, so there's no draws-aware variant to reach for and every step here is always 'play'.
-  function computeNextStep(s: FreeCellState): AutoCompleteStep | null {
-    if (!FreeCellController.accessibleCards) return null
-    const entry = isFullyAutoCompletable(FreeCellController, s) ? nextAutoCompleteMove(FreeCellController, s) : findSafeAutoPlay(FreeCellController.accessibleCards(s), s.foundation)
-    return entry ? { kind: 'play', entry, to: { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) } } : null
   }
 
   // Mirrors handleCardTap's tail, but there's no tap event to supply an origin - it has to measure
@@ -776,20 +837,41 @@ function FreeCellScreenInner() {
   // handleUndo - captures everything it needs from the pre-move state synchronously first). Guard
   // against something else changing state during that gap by snapshotting stateRef before the
   // await and bailing if it no longer matches after.
-  async function firePlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
+  async function firePlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }): Promise<boolean> {
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
     if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current) {
       settleFlight()
-      return
+      return false
     }
     cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: !opts.sweep, sweep: opts.sweep })) {
       flight.hide()
       settleFlight()
+      return false
     }
+    return true
+  }
+
+  // One card of the finish (see useAutoFinish/autoPlay.ts's canAutoFinish): the same flight as a
+  // cascade step, at sweep pace. Resolves once the move is COMMITTED - not landed - which is what
+  // lets the next card leave before this one arrives. The board's last card is the exception: it
+  // first waits for every earlier flight to land, so the win cascade (which starts the moment the
+  // winning move commits) doesn't begin over foundation cards still in the air.
+  async function fireFinishStep(): Promise<boolean> {
+    if (foundationCount(stateRef.current) === DECK_SIZE - 1) {
+      const deadline = Date.now() + FINISH_LAST_CARD_WAIT_MS
+      while (activeFlightCountRef.current > 0 && Date.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 16))
+    }
+    // Re-check AFTER the wait: an undo, a new game, a settings flip or an unmount may have landed
+    // while it ran, and the loop's own checks are already behind us. Also re-read the board - the
+    // player may have moved.
+    if (!finish.isAllowed() || !settings.autoMoveToFoundation || undoBusyRef.current) return false
+    const current = stateRef.current
+    const step = current && nextFinishMove(current)
+    return step ? firePlay(step.entry, step.to, { sweep: true }) : false
   }
 
   // Drag-and-drop's own entry point into flight bookkeeping (see activeFlightCountRef's doc
@@ -833,13 +915,7 @@ function FreeCellScreenInner() {
     return runLen
   }
 
-  if (!state) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.loadingText}>Loading...</Text>
-      </View>
-    )
-  }
+  if (!state) return <GameLoading />
 
   return (
     <CardSizeProvider width={cardWidth}>
@@ -848,12 +924,16 @@ function FreeCellScreenInner() {
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)
-              const isFlyingHere = flying.some((f) => f.to.zone === 'foundation' && f.to.index === i)
+              // How many of this pile's cards are still in the air: the finish overlaps flights, so
+              // several can be headed here at once (see FoundationCell's settledCard).
+              const flightsInAir = flying.filter((f) => f.to.zone === 'foundation' && f.to.index === i).reduce((sum, f) => sum + f.count, 0)
+              const isFlyingHere = flightsInAir > 0
               return (
                 <DropZone key={i} registry={dropZones} pileRef={{ zone: 'foundation', index: i }} style={[styles.foundationSlot, { width: cardWidth }]}>
                   <FoundationCell
-                    card={won ? undefined : t}
+                    card={winRevealed && cascadeHandoff?.state === state && cascadeHandoff.suits.has(i) ? undefined : t}
                     isFlyingHere={isFlyingHere}
+                    settledCard={pile[pile.length - 1 - flightsInAir] ?? null}
                     suit={SUITS[i]}
                     highlighted={hintCountFor(activeHint, { zone: 'foundation', index: i }) > 0}
                     slotRef={(el) => {
@@ -931,20 +1011,15 @@ function FreeCellScreenInner() {
     (see WinCascadeGhosts' own doc comment for why nesting depth alone can't do this) - the win
     banner comes last of all three so it's the one thing guaranteed to sit on top of the animation,
     not buried under it. */}
-      {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }
 
-function makeStyles(colors: TableColors) {
+function makeStyles() {
   return StyleSheet.create({
-    container: {
-      backgroundColor: colors.tableFelt,
-      flex: 1,
-      padding: 12
-    },
     foundationSlot: {},
     foundationsGroup: {
       flexDirection: 'row'
@@ -952,13 +1027,6 @@ function makeStyles(colors: TableColors) {
     freecellSlot: {},
     freecellsGroup: {
       flexDirection: 'row'
-    },
-    loadingText: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      marginTop: 40,
-      textAlign: 'center'
     },
     tableauColumn: {},
     tableauRow: {

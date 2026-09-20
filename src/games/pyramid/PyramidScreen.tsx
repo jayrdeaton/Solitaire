@@ -3,15 +3,15 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CARD_ASPECT, CardSizeProvider, type TableColors } from '@tastic/cards'
+import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
-import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
+import { dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView, ScreenPoint } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
@@ -19,14 +19,15 @@ import { autoMoveSpringFor } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useGameLayout } from '@/components/gameLayout'
+import { GameLoading } from '@/components/GameLoading'
 import { OverlayFrame, toLocal, useOverlayFrame } from '@/components/overlayFrame'
 import { PlayingCard } from '@/components/PlayingCard'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
-import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { useGameSession } from '@/components/useGameSession'
 import { useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
+import { chainSegmentDelayMs } from '@/components/winning/winCascadeMotion'
 import { PYRAMID_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
@@ -41,6 +42,7 @@ import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -57,10 +59,37 @@ interface RemovedCardRef {
   ref: PileRef
 }
 
+/** A deferred action (a tap on a card still flying onto the waste, a draw waiting out a recycle flight) never waits longer than this
+ * for the flight it is waiting on: a flight that never reports back must cost the player a moment, not the tap. A flight is at most
+ * ~320ms of spring plus a measurement or two, so this is several times what a healthy one needs. */
+const DEFER_MAX_WAIT_MS = 1000
+
+/** A pile blanks this long AFTER its last card takes off in the win sweep (the deal layer's onCardDealt): the departing ghost is
+ * drawn exactly over the pile's top card at take-off, so a blank a frame late is hidden under it, while one a frame EARLY would
+ * flash an empty slot. */
+const SWEEP_PILE_BLANK_LAG_MS = 20
+
+/** The wait budget of ONE deferred action: a clock started when it first has to wait, read by every re-check of its gate (see
+ * PyramidScreenInner's whenLanded). One budget for the whole wait - not a fresh DEFER_MAX_WAIT_MS per resume, which a flight that keeps
+ * being re-checked without ever clearing the gate would stretch without end. Module level (not inline at the call sites) because the
+ * clock read is impure, which the React Compiler lint rejects inside the component. */
+function startDeferBudget(): { left: () => number } {
+  const deadline = Date.now() + DEFER_MAX_WAIT_MS
+  return { left: () => deadline - Date.now() }
+}
+
+/** How long a won game may wait for its flights before the celebration starts anyway. Longer than useWinReveal's default because the
+ * winning move here starts a whole sequence the reveal must wait for: the last removal's flight (up to ~350ms with its measurements),
+ * then the sweep of up to ~24 leftover stock/waste cards onto the discard (dealStaggerMs(24) = 35ms apart + the 280ms deal spring
+ * = ~1.1s), then the 400ms hold - ~1.9s nominal, against the default 2.5s: too little margin for a slow phone's JS stalls (a 24-card
+ * deal was measured at ~+0.8s of lag there), and cutting the sweep short with the fallback timer is exactly what this is meant to
+ * avoid. Only a flight that never lands waits this long. */
+const SWEEP_WIN_REVEAL_MAX_WAIT_MS = 4000
+
 interface UndoEntry {
   state: PyramidState
   /** Non-null for a stock draw (the only MoveInfo-shaped move this game has - see handleUndo's
-   * `viaStock` branch). Mutually exclusive with `removedCards` below - a stock draw and a
+   * draw branch). Mutually exclusive with `removedCards` below - a stock draw and a
    * pairing/King removal are never the same move. */
   move: MoveInfo | null
   /** Non-null for a pairing/King removal - always 1 (a solo King) or 2 (a pair) entries, since
@@ -71,17 +100,105 @@ interface UndoEntry {
 /** Each card's own leg gets its own origin AND destination - unlike the forward (removal) flight,
  * where every card shares one destination (the discard pile), an undo-of-removal flight has every
  * card share one ORIGIN (the discard pile) but fly to its own distinct destination instead. Both
- * shapes fit the same per-card {from, to} spec - see flyPairIndependently vs. undoRemoval below. */
+ * shapes fit the same per-card {from, to} spec - see attemptMove vs. undoRemoval below. */
 interface PairFlightCardSpec {
   card: Card
   from: ScreenPoint
   to: ScreenPoint
 }
 
+/** One airborne pair flight. `cards` shrinks as each card lands (a landed card's ghost is removed
+ * the moment it lands, not when its partner does) and the flight goes when it is empty. Several of
+ * these are in the air at once when the player removes pairs faster than a flight lasts - see
+ * PyramidScreenInner's pairFlights. */
 interface PairFlightState {
   gen: number
   cardWidth: number
   cards: PairFlightCardSpec[]
+}
+
+/** What one airborne pair flight still owes: the cards that have not landed yet, the `flying` entry
+ * (a waste-bound undo-of-removal only) to end, and the claim on activeFlightCount to settle. The claim
+ * is settled exactly once, when the flight's own last card lands, whatever any other flight is doing;
+ * the `flying` entry ends with ITS card (`flying.cardId` - the one restored to the waste), not with
+ * the flight: the other card of the pair can take longer, and the waste's real card must not stay
+ * hidden - the landed card visible nowhere - until it arrives. */
+interface PairFlightLedger {
+  pending: Set<string>
+  flying: { id: number; cardId: string } | null
+  settle: () => void
+}
+
+/** What the board shows while a won game's leftover stock/waste cards are dealt onto the discard (see PyramidScreenInner's sweep) -
+ * everything render needs, keyed to the exact won board (`state`, compared by identity like cascadeHandoff, so an undo or a New Game
+ * makes it inert with nothing to reset). `view` is the pre-sweep piles: rules.ts folds the leftovers into the discard on the winning
+ * move itself, so without this the stock and waste would be empty from that instant with nothing having left them. `wasteGone` /
+ * `stockGone` flip when that pile's last card has departed. `flies` is false when the discard could not be measured at the winning
+ * move (so no flight exists, before or after): the board then simply stays as the finished board showed it. */
+interface SweepUi {
+  state: PyramidState
+  view: WinHoldView
+  flies: boolean
+  wasteGone: boolean
+  stockGone: boolean
+}
+
+/** The imperative half of a sweep (what does not belong in render): its claim on activeFlightCount, whether it has started, and its
+ * pending pile-blanking timers (armed as each pile's last card takes off). `cards` is in landing order - the order rules.ts appended
+ * them to the discard (waste bottom-to-top, then stock bottom-to-top) - the first `wasteCount` of them from the waste, the rest from
+ * the stock. */
+interface SweepRun {
+  state: PyramidState
+  gen: number
+  cards: Card[]
+  wasteCount: number
+  settle: () => void
+  started: boolean
+  dealing: boolean
+  timers: ReturnType<typeof setTimeout>[]
+}
+
+/** Something waiting for a flight to land (see PyramidScreenInner's whenLanded). */
+interface LandWaiter {
+  done: () => boolean
+  resolve: () => void
+}
+
+/** The topmost card of `cards` that is not one of the `inAir` ids - what the discard pile actually
+ * shows once every card still flying to it is discounted (null: nothing has landed on it, so the
+ * empty slot). It stays right however the flights land: a pair's two cards can arrive in either
+ * order, and a later removal's cards can be in the air while an earlier one's have landed. */
+export function topLandedCard(cards: Card[], inAir: ReadonlySet<string>): Card | null {
+  for (let i = cards.length - 1; i >= 0; i--) if (!inAir.has(cards[i].id)) return cards[i]
+  return null
+}
+
+/** What a WON board looked like just before rules.ts's sweepRemainderOnWin folded whatever was still
+ * in the stock/waste into the discard - the winning move's own removal record carries the pre-move
+ * state, and the sweep only ever appends (waste bottom-to-top, then stock bottom-to-top), so
+ * `discard` splits back into the three piles cleanly. The screen keeps showing THESE piles (see
+ * SweepUi) while their cards are dealt onto the discard one by one, instead of the swept board:
+ * the stock and waste must not simply vanish the instant the last pair is removed, they must
+ * visibly empty as their cards fly to the discard. Null when the record can't account for every
+ * discarded card (no removal record, an unexpected count): the caller then falls back to the
+ * swept board as-is. */
+export interface WinHoldView {
+  /** The discard as the last removal flight leaves it - everything but the swept remainder. */
+  discardCards: Card[]
+  /** Swept from the waste, bottom-to-top; the last one is the waste top the board was showing. */
+  wasteCards: Card[]
+  /** Swept from the stock, bottom-to-top; the last one is the stock top the board was showing. */
+  stockCards: Card[]
+}
+
+export function winHoldView(won: PyramidState, entry: { state: PyramidState; removedCards: RemovedCardRef[] | null } | undefined): WinHoldView | null {
+  if (!entry || !entry.removedCards) return null
+  const before = entry.state
+  // A pair (or King) taken from the waste consumed its top before the sweep, so that card is not part of what got swept.
+  const wasteSwept = entry.removedCards.some((r) => r.ref.zone === 'waste') ? before.waste.length - 1 : before.waste.length
+  const kept = before.discard.length + entry.removedCards.length
+  if (won.discard.length !== kept + wasteSwept + before.stock.length) return null
+  return { discardCards: won.discard.slice(0, kept), wasteCards: won.discard.slice(kept, kept + wasteSwept), stockCards: won.discard.slice(kept + wasteSwept) }
 }
 
 /** One card's independent leg of a pair's removal flight (see PairFlightGhosts) - its own spring,
@@ -133,27 +250,28 @@ const pairFlightStyles = StyleSheet.create({
   }
 })
 
-/** Renders Pyramid's pair-removal flight: "first" and "second" travel to the discard pile
+/** Renders Pyramid's pair-removal flights: "first" and "second" travel to the discard pile
  * independently, each from its own real position, rather than through the single shared `ghost`
  * (DragGhostLayer), which only ever animates one origin/delta for its whole group at a time - see
- * PyramidScreenInner's flyPairIndependently. Same "N independent simultaneous ghosts" idiom
+ * PyramidScreenInner's startPairFlight. Same "N independent simultaneous ghosts" idiom
  * DealLayer/WinCascadeLayer already use, for the same reason the single-slot drag ghost can't do
- * it (see DealLayer.tsx's doc comment). Always mounted (only `flight`'s presence is conditional)
- * so its own offset-correction effect can measure a real position at all times, same reasoning as
- * those two. */
-function PairFlightGhosts({ flight, onCardLanded }: { flight: PairFlightState | null; onCardLanded: (gen: number, cardId: string) => void }) {
+ * it (see DealLayer.tsx's doc comment). Renders EVERY flight in `flights` - a fast player's next
+ * pair takes off while the last one is still in the air, and each must keep flying. Always mounted
+ * (only the flights' presence is conditional) so its own offset-correction effect can measure a
+ * real position at all times, same reasoning as those two. */
+function PairFlightGhosts({ flights, onCardLanded }: { flights: PairFlightState[]; onCardLanded: (gen: number, cardId: string) => void }) {
   // Same overlay-placement pattern as DragGhostLayer/DealLayer - see overlayFrame.ts.
   const { overlayRef, frame } = useOverlayFrame()
 
   return (
     <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
-      {flight && (
-        <CardSizeProvider width={flight.cardWidth}>
+      {flights.map((flight) => (
+        <CardSizeProvider key={flight.gen} width={flight.cardWidth}>
           {flight.cards.map(({ card, from, to }) => (
             <FlyingPairCard key={`${flight.gen}-${card.id}`} card={card} from={from} to={to} frame={frame} cardWidth={flight.cardWidth} onLanded={() => onCardLanded(flight.gen, card.id)} />
           ))}
         </CardSizeProvider>
-      )}
+      ))}
     </View>
   )
 }
@@ -161,6 +279,9 @@ function PairFlightGhosts({ flight, onCardLanded }: { flight: PairFlightState | 
 // The triangle's widest row is the base: ROWS cards laid out with no overlap, so it reuses
 // cardWidthForRow's clamping/fit math as a plain "row of ROWS columns" with a real gap.
 const TRIANGLE_WIDTH_UNITS = ROWS
+
+// A stable empty pile for the sweep/hand-off display (a fresh literal per render would change identity every time).
+const NO_CARDS: Card[] = []
 
 export default withGameProviders(PyramidScreenInner)
 
@@ -222,56 +343,229 @@ function PyramidScreenInner() {
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const ghost = useDragGhost()
   // True while the stock slot's real content is mid-flight elsewhere (a stock recycle, either
-  // direction - see handleDrawStock's recycle branch / undoRecycle) and should stay frozen on its
+  // direction - see handleDrawStock's recycle branch / undoRecycle - or a draw being undone, whose
+  // card is flying back to it) and should stay frozen on its
   // pre-flight appearance instead of instantly revealing the new one - see StockWaste's own
   // `stockHidden` doc comment.
   const [stockHidden, setStockHidden] = useState(false)
-  /** Flights awaiting their post-commit measurement + ghost.flyTo (see the effect below) - queued by
-   * handleDrawStock once the drawn card's own render has been committed, or by handleUndo when
-   * reversing a draw. A list (not a single slot) since these can now genuinely overlap (see
-   * PATTERN_OVERLAP_GATE): rapid stock-draw taps can each still be awaiting their own measurement
-   * when the next one starts, so a single ref slot would let a later entry clobber an earlier one,
-   * permanently stranding it - see stateRef's own doc comment for the identical rapid-tap race this
-   * mirrors. `viaStock` measures via stockViewRef (a plain View, not per-card) instead of
-   * CardRegistry - only undoing a draw flies back toward the stock; drawing itself flies to the
-   * real per-card-registered waste slot. `gen` is the dealTokenRef value captured at the moment
-   * this flight was queued - re-checked once the async measurement below resolves, so a flight
-   * queued against a game that's since been replaced by "New Game" doesn't measure/land against
-   * the new deal's DOM (card ids are shuffle-independent and reused across deals - see deck.ts).
-   * `flyingId` removes exactly this entry's own `flying` array entry once it lands. Mirrors
-   * Klondike's own pendingFlightRef exactly. */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
+  /** Draw flights awaiting their post-commit measurement + ghost.flyTo (see the effect below) - queued by
+   * handleDrawStock once the drawn card's own render has been committed. A list (not a single slot) since
+   * these can now genuinely overlap (see PATTERN_OVERLAP_GATE): rapid stock-draw taps can each still be
+   * awaiting their own measurement when the next one starts, so a single ref slot would let a later entry
+   * clobber an earlier one, permanently stranding it - see stateRef's own doc comment for the identical
+   * rapid-tap race this mirrors. Only a DRAW needs this deferral (its destination is the drawn card's own
+   * registration, which exists only once that card has mounted in the waste): every reverse flight - an
+   * undone draw included - measures both its endpoints from always-mounted containers before it commits
+   * (see handleUndo). `gen` is the dealTokenRef value captured at the moment this flight was queued -
+   * re-checked once the async measurement below resolves, so a flight queued against a game that's since
+   * been replaced by "New Game" doesn't measure/land against the new deal's DOM (card ids are
+   * shuffle-independent and reused across deals - see deck.ts). `flyingId` removes exactly this entry's own
+   * `flying` array entry once it lands, and `settle` is this flight's own claim on activeFlightCount (see
+   * claimFlight). Mirrors Klondike's own pendingFlightRef. */
+  const pendingFlightRef = useRef<{ cardId: string; gen: number; flyingId: number; flight: DragFlightHandle; settle: () => void }[]>([])
   const winCascade = useWinCascade()
   // Derived from `state` every render (see useDerivedWinCheck) rather than mirrored into its own
   // useState: it's a pure function of state, so Undo-ing out of a won position correctly drops the
   // win banner immediately, rather than leaving it stuck showing.
   const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(PyramidController, state, 'pyramid', session, dealTokenRef, recordDealWon, hintsUsedRef)
-  /** Pyramid's pair-removal flight - both cards travel to the discard pile independently, each
-   * from its own real position (see flyPairIndependently/PairFlightGhosts below), rather than
-   * through the single shared `ghost` above, which can only ever animate one origin/delta for its
-   * whole group and so can't have two cards converge from different starting points at once. */
-  const [pairFlight, setPairFlight] = useState<PairFlightState | null>(null)
+  // Nothing in the air (every removal/draw/undo flight, pair flights included, is counted by
+  // startFlights/settleFlight) and no card still waiting on the initial deal - what the win
+  // celebration waits for (see useWinReveal).
+  const settled = activeFlightCount === 0 && pyramidHiddenIds.size === 0
+  // `won` is game state (clock, stat, save, hint/undo gating) and flips with the winning move; the
+  // celebration - the discard giving way to the win cascade, fireworks, banner - waits until the last
+  // card has flown to the discard and landed AND the leftover stock/waste cards have been dealt onto it (the win
+  // sweep, which holds its own claim on the flight count), so the finished pile reads for a beat first and nothing
+  // hides while a card is still travelling to it.
+  const winRevealed = useWinReveal(won, settled, SWEEP_WIN_REVEAL_MAX_WAIT_MS)
+  // The board the win cascade has taken over from (set together with startChains, see runWinCascade): once state IS the
+  // current state, and the win is revealed, the discard's real top blanks - not a moment earlier. Blanking on winRevealed
+  // alone left the discard EMPTY for the few frames it takes runWinCascade to measure and mount the ghosts (the pile
+  // teleported away, then the ghosts appeared), so the cascade's ghosts mount in the very commit that blanks it. Compared
+  // by identity (state is replaced wholesale on every change) so an undo or a New Game un-blanks the pile with no reset to
+  // remember. By then the win sweep has dealt the stock and waste onto the discard, so the discard is the only pile with
+  // anything left to hand over - one chain, one hand-off.
+  const [cascadeHandoff, setCascadeHandoff] = useState<{ state: PyramidState } | null>(null)
+  // The win sweep's display state (see SweepUi) and its imperative half (see SweepRun).
+  const [sweepUi, setSweepUi] = useState<SweepUi | null>(null)
+  const sweepRef = useRef<SweepRun | null>(null)
+  /** Pyramid's pair-removal flights - both cards of a pair travel to the discard pile
+   * independently, each from its own real position (see startPairFlight/PairFlightGhosts below),
+   * rather than through the single shared `ghost` above, which can only ever animate one
+   * origin/delta for its whole group and so can't have two cards converge from different starting
+   * points at once. A LIST, and the ledger beside it keyed by each flight's own gen: a fast player
+   * completes the next pair while the last one's two ghosts are still in the air (see
+   * PATTERN_OVERLAP_GATE), and a single slot let the new flight replace the old one - its ghosts
+   * vanished mid-air, its landing was dropped, and its claim on activeFlightCount was never settled
+   * (undo stayed disabled for the rest of the game, the win celebration waited out its max wait). */
+  const [pairFlights, setPairFlights] = useState<PairFlightState[]>([])
   const pairFlightGenRef = useRef(0)
-  const pairFlightTotalRef = useRef(0)
-  const pairFlightLandedRef = useRef(0)
-  /** The `flying` array entry id (if any) covering the CURRENT pair-flight generation, set by
-   * whichever direction started it (startPairFlight's own `flyingId` param) - a forward
-   * (discard-bound) flight always has one; an undo-of-removal flight only has one when a removed
-   * card is headed back to the waste (see undoRemoval's `wasteFlyingId`). Read once, in
-   * handlePairFlightLanded's all-landed branch, to end that entry - null-checked there since a
-   * pyramid-only undo-of-removal never creates one. */
-  const pairFlightFlyingIdRef = useRef<number | null>(null)
-  /** Stashed by handleUndo's undoRemoval, resolved by the effect below once prevState has actually
-   * committed - mirrors pendingFlightRef's own shape, but deliberately stays a single slot (not a
-   * list): undo itself is still fully serialized (undoBusyRef/activeFlightCountRef - see
-   * PATTERN_OVERLAP_GATE), so at most one of these is ever pending at a time, the same reasoning
-   * Klondike's own pendingCascadeUndoRef documents. Every removed card resolves through this same
-   * deferred path, even a pyramid-cell destination whose position is pure math not dependent on the
-   * commit - a card that came from the waste genuinely needs it (CardRegistry can only measure a
-   * card once it's actually mounted there), and keeping both kinds on one path is simpler than
-   * splitting an immediate case out from a deferred one. `wasteFlyingId` is the `flying` array entry
-   * (if any) covering a waste-bound restoration - see undoRemoval. */
-  const pendingRemovalUndoRef = useRef<{ removed: RemovedCardRef[]; discardOrigin: ScreenPoint; gen: number; wasteFlyingId: number | null } | null>(null)
+  const pairFlightLedgerRef = useRef(new Map<number, PairFlightLedger>())
+  /** Ids of the cards still flying TO the discard pile (a solo King's ghost or either card of a
+   * pair) - the real discard top stays hidden while any are (see DiscardCell), and the pile shows
+   * the topmost card NOT in this set underneath (topLandedCard) so it is right as each of several
+   * overlapping flights lands, not just after the last. Set in the same commit as the removal, and
+   * cleared per card when its own ghost lands. A winning removal also marks every leftover stock/waste
+   * card the win folded into the discard: they are dealt onto it one by one (see the win sweep) and
+   * the pile shows only what has landed. */
+  const [discardInAir, setDiscardInAir] = useState<ReadonlySet<string>>(() => new Set())
+  /** Ids of the cards drawn from the stock whose ghosts are still flying to the waste - the waste's own counterpart of
+   * discardInAir. The real waste top stays hidden while any is (wasteHiddenCount), and the slot shows the topmost waste card
+   * NOT in this set underneath (settledWasteTop), so it stays right as each of several overlapping draws lands rather than
+   * showing the card from before the whole stream. The ref is what handlers read (a tap, a drop, a recycle deciding whether to
+   * wait), the state copy what render reads; both are updated together (markWasteInAir/markWasteLanded). */
+  const [wasteInAir, setWasteInAir] = useState<ReadonlySet<string>>(() => new Set())
+  const wasteInAirRef = useRef(new Set<string>())
+  /** True while a recycle's group ghost is flying waste -> stock: a draw must not start from the stock slot while it is frozen
+   * on its pre-flight (empty) look. */
+  const recycleAirRef = useRef(false)
+  /** Actions parked until some flight has landed (see whenLanded). */
+  const landWaitersRef = useRef<LandWaiter[]>([])
+  /** Every flight on the shared ghost layer that is still in the air (a King's, a draw's, a recycle's, an undo's), so a New Game
+   * can retire them: they would otherwise keep flying across the freshly dealt board. */
+  const airborneFlightsRef = useRef(new Set<DragFlightHandle>())
+
+  // One claim on activeFlightCount for the board generation it was made in, settled at most once.
+  // Every flight-starting action takes it SYNCHRONOUSLY (before its first await) and settles it on
+  // EVERY exit path, so undo (which waits on the count) and the win celebration (which waits for
+  // it to hit 0) see the action for as long as it is genuinely outstanding - including its
+  // measurement awaits. Once a New Game/restore has replaced the board, resetFlightConcurrency has
+  // already zeroed the count, so a late settle from the old game must do nothing: it would
+  // otherwise eat a claim the NEW game just made and re-enable undo while a flight is in the air.
+  function claimFlight(): () => void {
+    const gen = dealTokenRef.current
+    startFlights(1)
+    let settled = false
+    return () => {
+      if (settled) return
+      settled = true
+      if (dealTokenRef.current === gen) settleFlight()
+    }
+  }
+
+  function markDiscardInAir(ids: string[]) {
+    setDiscardInAir((air) => new Set([...air, ...ids]))
+  }
+
+  function markDiscardLanded(cardId: string) {
+    setDiscardInAir((air) => {
+      if (!air.has(cardId)) return air
+      const next = new Set(air)
+      next.delete(cardId)
+      return next
+    })
+  }
+
+  function markWasteInAir(cardId: string) {
+    wasteInAirRef.current.add(cardId)
+    setWasteInAir(new Set(wasteInAirRef.current))
+  }
+
+  function markWasteLanded(cardId: string) {
+    if (!wasteInAirRef.current.delete(cardId)) return
+    setWasteInAir(new Set(wasteInAirRef.current))
+    notifyLanded()
+  }
+
+  // Registers a shared-ghost flight as airborne until its landing callback un-registers it (untrackFlight), so a New Game can
+  // retire whatever is still in the air (hideAirborneFlights). Returns the handle for chaining.
+  function trackFlight(flight: DragFlightHandle): DragFlightHandle {
+    airborneFlightsRef.current.add(flight)
+    return flight
+  }
+
+  function untrackFlight(flight: DragFlightHandle) {
+    airborneFlightsRef.current.delete(flight)
+  }
+
+  // Retires every shared-ghost flight still in the air. hide() also fires a flight's own pending completion (see
+  // DragGhostLayer's flushPendingSettle), which is why a New Game bumps dealTokenRef FIRST: every completion here is
+  // generation-guarded, so none of them touches the new board.
+  function hideAirborneFlights() {
+    const flights = [...airborneFlightsRef.current]
+    airborneFlightsRef.current.clear()
+    flights.forEach((flight) => flight.hide())
+  }
+
+  // Parks an action until `done()` holds - re-checked every time a flight lands (notifyLanded) - or `maxWaitMs` has passed,
+  // whichever comes first. What the fast player would otherwise get is a tap silently ignored or a card emerging from a slot
+  // that is frozen mid-flight; what they get instead is a moment's delay, the card visibly arriving, and THEN the move.
+  //
+  // Being resumed is NOT proof that `done()` still holds: a landing resolves EVERY waiter whose predicate held at that instant
+  // (notifyLanded), but their continuations then run one after another, and the first to run can undo the condition for the rest
+  // (a recycle committed by the first waiter freezes the stock again for the second). So every call site is a LOOP -
+  // `while (!done() && before the deadline) await whenLanded(done, remaining)` - whose condition is re-evaluated by the very
+  // continuation that then acts, in the same synchronous stretch (no await between the last check and the commit it guards). It
+  // must stay inline at the call site: a helper that loops inside an async function would hand the answer back across a
+  // microtask boundary, in which a sibling waiter's continuation can already have changed it. The deadline is ONE budget for the
+  // whole wait, not one per resume (startDeferBudget, DEFER_MAX_WAIT_MS), and `maxWaitMs` is what is left of it.
+  function whenLanded(done: () => boolean, maxWaitMs: number = DEFER_MAX_WAIT_MS): Promise<void> {
+    if (done()) return Promise.resolve()
+    return new Promise((resolve) => {
+      const waiter: LandWaiter = { done, resolve: () => {} }
+      const timer = setTimeout(() => {
+        landWaitersRef.current = landWaitersRef.current.filter((w) => w !== waiter)
+        resolve()
+      }, maxWaitMs)
+      waiter.resolve = () => {
+        clearTimeout(timer)
+        resolve()
+      }
+      landWaitersRef.current.push(waiter)
+    })
+  }
+
+  function notifyLanded() {
+    const waiting = landWaitersRef.current
+    landWaitersRef.current = []
+    for (const waiter of waiting) {
+      if (waiter.done()) waiter.resolve()
+      else landWaitersRef.current.push(waiter)
+    }
+  }
+
+  // Whether none of these cards is still flying onto the waste. A tap or drop on a card whose draw ghost is still travelling
+  // would otherwise measure the real (hidden) card at the waste slot and start its own flight from there while the drawn card
+  // is not there yet - the card shown twice, once per ghost. So such an action waits (whenLanded) for this to hold. Pyramid cells
+  // are never in the set, so passing them is a no-op. Callers check it BEFORE awaiting, so the common case (nothing in the air)
+  // does not even yield.
+  function onWaste(...cardIds: string[]): boolean {
+    return cardIds.every((id) => !wasteInAirRef.current.has(id))
+  }
+
+  // Forgets every airborne discard-bound card, pair flight, shared-ghost flight and win sweep - for a New Game/restore, whose new
+  // board must not inherit (or be settled by) anything the old one had in the air. Callers bump dealTokenRef first. The
+  // unmounted pair ghosts' landing timers die with them, and any callback that still arrives finds no ledger entry.
+  function dropAirborneFlights() {
+    pairFlightLedgerRef.current.clear()
+    setPairFlights([])
+    setDiscardInAir(new Set())
+    hideAirborneFlights()
+    wasteInAirRef.current.clear()
+    setWasteInAir(new Set())
+    recycleAirRef.current = false
+    cancelSweep()
+    setSweepUi(null)
+    notifyLanded()
+  }
+
+  // Where the card at `ref` sits on screen right now: its own registered view when it has one, else the
+  // slot it occupies - the waste slot's card-sized container, or the triangle cell's analytic position
+  // (the same math the deal and undo flights use). A flight's origin/destination that fails to resolve
+  // would otherwise make the card simply appear/vanish with no ghost, when its slot is always there to
+  // measure.
+  async function measureCardOrigin(ref: PileRef, cardId: string): Promise<ScreenPoint | null> {
+    const registered = await ghost.cardRegistry.measure(cardId)
+    if (registered) return registered
+    if (ref.zone === 'waste') return measureView(wasteViewRef.current)
+    if (ref.zone === 'pyramid') {
+      const triangleOrigin = await measureView(triangleViewRef.current)
+      if (!triangleOrigin) return null
+      const { row, col } = rowColOf(ref.index)
+      return pyramidCellScreenPoint(triangleOrigin, row, col, cardWidth, gap, rotation)
+    }
+    return null
+  }
 
   // Same race documented for Klondike's deal/tap-move fixes: measuring CardRegistry synchronously
   // right after the setState in handleDrawStock would find the still-mounted PREVIOUS waste card
@@ -284,145 +578,223 @@ function PyramidScreenInner() {
     pendingFlightRef.current = []
     pending.forEach((p) => {
       ;(async () => {
-        const landed = p.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(p.cardId)
+        // A draw's card lands in the waste - if its own view isn't registered yet/any more, fly to the
+        // waste slot rather than hiding the ghost (which would just make the card appear there).
+        const landed = await measureCardOrigin({ zone: 'waste', index: 0 }, p.cardId)
         // A new game can start while the measurement above is in flight - `landed`, if it resolved
         // at all, would then be measuring an unrelated card in the NEW deal (ids are
         // shuffle-independent and reused across deals - see deck.ts), so drop this flight instead of
-        // landing on a nonsensical position.
-        if (dealTokenRef.current !== p.gen || !landed) {
+        // landing on a nonsensical position. (The New Game itself already retired the ghost and the
+        // waste bookkeeping - see dropAirborneFlights - so only a failed measurement has cleanup to do.)
+        if (dealTokenRef.current !== p.gen) {
+          p.settle()
+          return
+        }
+        if (!landed) {
+          untrackFlight(p.flight)
           p.flight.hide()
+          markWasteLanded(p.cardId)
           endFlying(p.flyingId)
-          settleFlight()
+          p.settle()
           return
         }
         p.flight.flyTo(landed.x, landed.y, () => {
+          untrackFlight(p.flight)
+          if (dealTokenRef.current === p.gen) markWasteLanded(p.cardId)
           endFlying(p.flyingId)
-          settleFlight()
+          p.settle()
         })
       })()
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // Both declared here, before the effect below that calls them, purely so the effect's references
-  // to them aren't "accessed before declared" (react-hooks/immutability) - function declarations
-  // hoist at runtime regardless of source position, so this reorder is a no-op behaviorally.
-  function resolveUndoDestination(ref: PileRef, cardId: string, triangleOrigin: ScreenPoint | null): Promise<ScreenPoint | null> {
-    if (ref.zone === 'pyramid') {
-      if (!triangleOrigin) return Promise.resolve(null)
-      const { row, col } = rowColOf(ref.index)
-      return Promise.resolve(pyramidCellScreenPoint(triangleOrigin, row, col, cardWidth, gap, rotation))
-    }
-    return ghost.cardRegistry.measure(cardId)
-  }
-
   // Shared primitive behind both directions of Pyramid's independent-card-flight overlay: a
   // forward (removal) flight's cards each already carry their own origin and share one destination
-  // (the discard pile - see flyPairIndependently below); an undo-of-removal flight's cards share
-  // one origin (the discard pile) but each carries its own destination (see undoRemoval). Either
-  // way, by the time this runs every card's full {from, to} is already resolved.
-  function startPairFlight(cards: PairFlightCardSpec[], flyingId: number | null) {
-    pairFlightGenRef.current += 1
-    pairFlightTotalRef.current = cards.length
-    pairFlightLandedRef.current = 0
-    pairFlightFlyingIdRef.current = flyingId
-    setPairFlight({ gen: pairFlightGenRef.current, cardWidth, cards })
+  // (the discard pile - see attemptMove/attemptDrop); an undo-of-removal flight's cards share one
+  // origin (the discard pile) but each carries its own destination (see undoRemoval). Either way,
+  // by the time this runs every card's full {from, to} is already resolved. Each call adds an
+  // INDEPENDENT flight with its own ledger entry - it never touches one already in the air - and
+  // `settle` (the caller's claim on activeFlightCount) is settled by handlePairFlightLanded when
+  // this flight's own last card lands.
+  function startPairFlight(cards: PairFlightCardSpec[], flying: { id: number; cardId: string } | null, settle: () => void) {
+    const gen = ++pairFlightGenRef.current
+    pairFlightLedgerRef.current.set(gen, { pending: new Set(cards.map((c) => c.card.id)), flying, settle })
+    setPairFlights((flights) => [...flights, { gen, cardWidth, cards }])
   }
 
-  // Resolves each removed card's real fly-back destination once prevState has actually committed
-  // (see pendingRemovalUndoRef and undoRemoval below), then starts their independent flight. A
-  // card whose destination fails to resolve (a rare measurement failure) is un-hidden instead of
-  // left stuck invisible forever - only a landed flight clears pyramidHiddenIds/flying (see
-  // handlePairFlightLanded), and a card with no flight never gets one.
-  useEffect(() => {
-    const pending = pendingRemovalUndoRef.current
-    if (!pending || !state) return
-    pendingRemovalUndoRef.current = null
-    if (dealTokenRef.current !== pending.gen) {
-      // New Game was tapped before this undo's card destinations could be resolved - bail rather
-      // than fly stale ghosts onto the freshly-dealt board. Deliberately does NOT touch
-      // pyramidHiddenIds here (unlike the resolved path below) - these removed cards' ids are
-      // shuffle-independent (see deck.ts) and could collide with the NEW deal's own in-flight
-      // hidden set, so mutating it here risks un-hiding an unrelated card that just happens to
-      // share an id with one of these. startNewGame/restoreGame already reset the flight
-      // concurrency bookkeeping for the new board; only clear this entry's own flying id and
-      // undoBusyRef here too, for the (rarer) case this fires first. No startFlights was ever
-      // claimed for this pending entry (only the resolved path below claims one, right before
-      // startPairFlight), so there's nothing to settleFlight - undoBusyRef clears directly.
-      if (pending.wasteFlyingId !== null) endFlying(pending.wasteFlyingId)
-      undoBusyRef.current = false
+  // ---------------------------------------------------------------------------------------------------------------
+  // The win sweep. rules.ts folds whatever is left in the stock and waste into the discard ON the winning move (so a won
+  // game's discard is all 52 cards), which used to happen with nothing flying anywhere: the piles just emptied. Now those
+  // leftover cards are DEALT onto the discard, one after another with the same stagger, spring, sound and skip-tap as the
+  // initial deal (the deal layer, not a flight layer of its own), and only when the last has landed does the celebration
+  // start - so all 52 cards are in ONE pile when the win cascade takes off from it. Landing order is the discard array's
+  // order (waste bottom-to-top, then stock bottom-to-top), which is also the cascade chain's order, so the pile's top is
+  // always the card that just arrived and nothing swaps at the hand-off.
+  //
+  // Timeline: the winning removal commits and claims the sweep (beginWinSweep) in the same synchronous stretch, so
+  // `settled` (and with it useWinReveal) never blips true between the last removal landing and the sweep starting; the sweep
+  // starts once every OTHER flight has landed (activeFlightCount is down to the sweep's own claim); it settles its claim
+  // when the deal reports every card landed (or the whole deal was skipped) - exactly once, on every exit path.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  // Called from the winning removal's commit stretch. Records what the board must keep showing (SweepUi) and, when the discard
+  // could be measured (`flies` - the same condition the removal's own flight needs), marks the leftovers as in the air (so the
+  // discard shows only the cards that have landed) and claims the flight.
+  function beginWinSweep(prev: PyramidState, next: PyramidState, removedCards: RemovedCardRef[], flies: boolean) {
+    const view = winHoldView(next, { state: prev, removedCards })
+    if (!view) return
+    const cards = [...view.wasteCards, ...view.stockCards]
+    if (cards.length === 0) return
+    setSweepUi({ state: next, view, flies, wasteGone: false, stockGone: false })
+    if (!flies) return
+    markDiscardInAir(cards.map((c) => c.id))
+    sweepRef.current = { state: next, gen: dealTokenRef.current, cards, wasteCount: view.wasteCards.length, settle: claimFlight(), started: false, dealing: false, timers: [] }
+  }
+
+  function markPileGone(run: SweepRun, pile: 'waste' | 'stock') {
+    setSweepUi((ui) => (ui && ui.state === run.state ? { ...ui, [pile === 'waste' ? 'wasteGone' : 'stockGone']: true } : ui))
+  }
+
+  // Every leftover has landed (or the deal was skipped, which lands them all at once): both piles are empty, the discard holds
+  // everything, and the claim is released - which is what lets the reveal's hold start.
+  function finishSweep(run: SweepRun) {
+    if (sweepRef.current !== run) return
+    sweepRef.current = null
+    run.timers.forEach(clearTimeout)
+    markPileGone(run, 'waste')
+    markPileGone(run, 'stock')
+    run.settle()
+  }
+
+  // Cuts a sweep short: a New Game replaced the board, or the reveal's fallback timer fired first (a flight that never landed) and
+  // the celebration goes ahead regardless. Silences the deal (an empty start() retires its ghosts and drops its callbacks - the
+  // deal layer has no cancel of its own), takes the leftovers back out of the air so the discard is whole, and releases the claim
+  // (a no-op after a New Game - see claimFlight).
+  function cancelSweep() {
+    const run = sweepRef.current
+    if (!run) return
+    sweepRef.current = null
+    run.timers.forEach(clearTimeout)
+    if (run.dealing)
+      deal.start(
+        [],
+        cardWidth,
+        () => {},
+        () => {}
+      )
+    const ids = new Set(run.cards.map((c) => c.id))
+    setDiscardInAir((air) => new Set([...air].filter((id) => !ids.has(id))))
+    run.settle()
+  }
+
+  async function runSweep(run: SweepRun) {
+    const [discardPos, wastePos, stockPos] = await Promise.all([measureView(discardViewRef.current), measureView(wasteViewRef.current), measureView(stockViewRef.current)])
+    // A New Game (or the reveal's fallback) ended this sweep while it measured.
+    if (sweepRef.current !== run || dealTokenRef.current !== run.gen) return
+
+    const stagger = dealStaggerMs(run.cards.length)
+    const entries: DealCardSpec[] = []
+    const grounded: string[] = []
+    // The last card of each pile that actually flies (entries are in take-off order, so it is the last one taken off).
+    let lastWasteId: string | null = null
+    let lastStockId: string | null = null
+    run.cards.forEach((card, i) => {
+      const fromWaste = i < run.wasteCount
+      // A pile whose own view cannot be measured deals from the other one rather than not at all - no card teleports while any
+      // origin exists. Only when there is no origin (or no discard) at all does a card simply land: the deal below never sees it.
+      // Every swept card is face-up already (rules.ts flips them into the discard), so a stock card - face-down on the board -
+      // flies face-up from take-off: the deal layer cannot turn a card over in flight, and it must fly, not appear.
+      const from = fromWaste ? (wastePos ?? stockPos) : (stockPos ?? wastePos)
+      if (!discardPos || !from) {
+        grounded.push(card.id)
+        return
+      }
+      const delayMs = entries.length * stagger
+      entries.push({ cardId: card.id, card, from, to: discardPos, delayMs })
+      if (fromWaste) lastWasteId = card.id
+      else lastStockId = card.id
+    })
+    if (grounded.length > 0) setDiscardInAir((air) => new Set([...air].filter((id) => !grounded.includes(id))))
+    if (entries.length === 0) {
+      finishSweep(run)
       return
     }
-    ;(async () => {
-      const needsTriangle = pending.removed.some((r) => r.ref.zone === 'pyramid')
-      const triangleOrigin = needsTriangle ? await measureView(triangleViewRef.current) : null
 
-      const specs: PairFlightCardSpec[] = []
-      for (const entry of pending.removed) {
-        const card = cardAt(state, entry.ref)
-        const to = card ? await resolveUndoDestination(entry.ref, entry.cardId, triangleOrigin) : null
-        if (card && to) specs.push({ card, from: pending.discardOrigin, to })
-      }
+    // A pile is empty from the moment its last card takes off - and "takes off" is the deal layer's own signal (onCardDealt),
+    // not a timer of ours. A timer armed here, from the scheduled delays, runs on the wrong clock: the deal's clock only starts
+    // once its ghost pool has rendered and mounted (several frames on a phone), and a card's real departure is that clock plus its
+    // re-based delay plus the render of its launch - so the timer ran AHEAD of the last card's actual take-off and the pile sat
+    // empty, its top card gone and no ghost drawn yet, until the ghost popped in (worst for a pile whose last card leaves at
+    // delay 0). Keyed by the pile's last card; a pile none of whose cards flew (grounded above) is emptied at once.
+    const blankWhenTakenOff = new Map<string, 'waste' | 'stock'>()
+    for (const [pile, lastId, count] of [
+      ['waste', lastWasteId, run.wasteCount],
+      ['stock', lastStockId, run.cards.length - run.wasteCount]
+    ] as const) {
+      if (count === 0) continue
+      if (lastId === null) markPileGone(run, pile)
+      else blankWhenTakenOff.set(lastId, pile)
+    }
 
-      const resolvedIds = new Set(specs.map((s) => s.card.id))
-      const unresolved = pending.removed.filter((r) => !resolvedIds.has(r.cardId))
-      if (unresolved.length > 0) {
-        setPyramidHiddenIds((ids) => {
-          const next = new Set(ids)
-          unresolved.forEach((r) => next.delete(r.cardId))
-          return next
-        })
-        // endFlying is idempotent (a no-op once the id is already gone) - safe to call here even
-        // if the OTHER removed card still resolves below and re-passes this same id into
-        // startPairFlight (rare: only possible when one of a pair's two cards fails to measure
-        // while the other succeeds).
-        if (unresolved.some((r) => r.ref.zone === 'waste') && pending.wasteFlyingId !== null) endFlying(pending.wasteFlyingId)
+    run.dealing = true
+    deal.start(
+      entries,
+      cardWidth,
+      (cardId) => {
+        if (sweepRef.current === run) markDiscardLanded(cardId)
+      },
+      () => finishSweep(run),
+      (cardId) => {
+        const pile = blankWhenTakenOff.get(cardId)
+        // The lag covers the ghost's own first frame (its opacity flips on the UI thread, a beat after the JS-side take-off), so
+        // the real top card is never removed a frame before the ghost that replaces it is drawn. On the run's timers, so a
+        // New Game / the reveal's fallback (cancelSweep) or a finished sweep clears it.
+        if (pile && sweepRef.current === run) run.timers.push(setTimeout(() => markPileGone(run, pile), SWEEP_PILE_BLANK_LAG_MS))
       }
-      // Claimed here, right before the pair-flight actually starts (see
-      // useFlightConcurrency.startFlights's own doc comment) - not any earlier, since specs may
-      // turn out empty (nothing to fly) below, in which case nothing is ever claimed at all.
-      if (specs.length > 0) {
-        startFlights(1)
-        startPairFlight(specs, pending.wasteFlyingId)
-      } else {
-        undoBusyRef.current = false
-      }
-    })()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
-
-  // state.discard always holds all 52 cards by the time isWon() is true (rules.ts's
-  // sweepRemainderOnWin folds in whatever was left in stock/waste on the winning move), in true
-  // removal order - reversed here so the most-recently-removed (currently on top of the physical
-  // pile) leads the chain. Origin reuses discardViewRef, the same plain-view measurement the
-  // pair/King fly-to-discard flight above already does. Same dealTokenRef guard as every other
-  // async measurement in this file, for the same "New Game tapped mid-measurement" reason.
-  async function runWinCascade(s: PyramidState, gen: number) {
-    const origin = await measureView(discardViewRef.current)
-    if (dealTokenRef.current !== gen || !origin) return
-    winCascade.startChains([{ cards: s.discard.slice().reverse(), origin, entranceDelayMs: 0 }], cardWidth)
+    )
   }
 
+  // Starts a claimed sweep once nothing but the sweep itself is still in the air (the winning removal's own flights, and any draw
+  // or recycle that was flying when it committed, have landed): the count includes the sweep's own claim, so 1 is "alone".
+  useEffect(() => {
+    const run = sweepRef.current
+    if (!run || run.started || run.state !== state || activeFlightCount > 1) return
+    run.started = true
+    runSweep(run)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, activeFlightCount])
+
+  // By the time isWon() is true state.discard holds all 52 cards (rules.ts's sweepRemainderOnWin), in true removal order -
+  // reversed here so the most-recently-arrived (the card on top of the physical pile) leads the chain. The sweep has already
+  // dealt every leftover onto the discard, so ONE chain from the discard's own container carries all of them, and the pile blanks
+  // (cascadeHandoff, set right beside startChains) only in the commit that mounts the ghosts - React batches the two from this
+  // async continuation - so it is never empty before the ghosts arrive. A 52-card chain at the usual 42ms per card would trail
+  // its head by ~2.1s, more than two bounce half-periods, and split into a wave: segmentDelayMs caps the whole chain's span (see
+  // chainSegmentDelayMs). If the sweep is somehow still running (the reveal's fallback timer fired first) it is cut short first
+  // and the chain simply carries every card. If no chain can start (an unmeasurable discard), nothing blanks and the finished
+  // board stays up under the banner instead of vanishing. Same dealTokenRef guard as every other async measurement in this file,
+  // for the same "New Game tapped mid-measurement" reason.
+  async function runWinCascade(s: PyramidState, gen: number) {
+    cancelSweep()
+    const discardOrigin = await measureView(discardViewRef.current)
+    if (dealTokenRef.current !== gen || !discardOrigin) return
+    const cards = s.discard.slice().reverse()
+    winCascade.startChains([{ cards, origin: discardOrigin, entranceDelayMs: 0, segmentDelayMs: chainSegmentDelayMs(cards.length) }], cardWidth)
+    setCascadeHandoff({ state: s })
+  }
+
+  // Starts once the win is REVEALED (winRevealed - which waits for the winning removal's flight(s) AND the sweep to land and
+  // then holds a beat, see useWinReveal), not on the winning commit itself: the winning pair/King's own flight is still
+  // travelling to the discard pile then, and state.discard already includes it, so starting now would show that same card twice
+  // at once - mid-flight via PairFlightGhosts/the shared ghost AND already bouncing at the discard via WinCascadeGhosts.
   useEffect(() => {
     const pending = pendingWinCascadeRef.current
-    if (!pending || !state) return
-    // The winning pair/King's own removal flight (flyPairIndependently/flyToDiscardPile) is still
-    // travelling to the discard pile on this exact commit - state.discard already includes it
-    // (rules.ts's sweepRemainderOnWin), so starting the cascade now would render that same card
-    // twice at once: once mid-flight via PairFlightGhosts/the shared ghost, once already bouncing
-    // at the discard pile via WinCascadeGhosts (whose head-of-chain card gets a zero entrance
-    // delay). Wait for every in-flight completion to settle (handlePairFlightLanded/flyToDiscardPile's
-    // own callback, via settleFlight) before capturing state.discard, so the cascade only ever shows
-    // a card once it's actually landed for real. Checks activeFlightCountRef (not the `flying`
-    // array) since this is really asking "is anything still animating," not specifically about the
-    // discard/waste zone `flying` tracks - activeFlightCount (the state mirror) drives the
-    // dependency array so this effect re-runs once the ref's value actually changes (see
-    // useFlightConcurrency's own doc comment on why both exist).
-    if (activeFlightCountRef.current > 0) return
+    if (!pending || !state || !winRevealed) return
     pendingWinCascadeRef.current = null
     runWinCascade(state, pending.gen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, activeFlightCount])
+  }, [state, winRevealed])
 
   function pushUndo(prev: PyramidState, move: MoveInfo | null, removedCards: RemovedCardRef[] | null = null) {
     setUndoStack((stack) => [...stack, { state: prev, move, removedCards }])
@@ -436,8 +808,11 @@ function PyramidScreenInner() {
     setHint(null)
     hintsUsedRef.current = false
     resetFlightConcurrency()
+    dropAirborneFlights()
+    // Queued draw flights have their ghosts on the shared layer already (ghost.show ran before they were queued): every one of
+    // them is registered as airborne, so dropAirborneFlights above has just hidden it - dropping the entry alone would leave that
+    // ghost mounted over the new board for good.
     pendingFlightRef.current = []
-    pendingRemovalUndoRef.current = null
     setStockHidden(false)
     session.reset()
     recordedWinRef.current = false
@@ -460,8 +835,11 @@ function PyramidScreenInner() {
     setHint(null)
     hintsUsedRef.current = false
     resetFlightConcurrency()
+    dropAirborneFlights()
+    // Queued draw flights have their ghosts on the shared layer already (ghost.show ran before they were queued): every one of
+    // them is registered as airborne, so dropAirborneFlights above has just hidden it - dropping the entry alone would leave that
+    // ghost mounted over the new board for good.
     pendingFlightRef.current = []
-    pendingRemovalUndoRef.current = null
     setStockHidden(false)
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
@@ -509,7 +887,7 @@ function PyramidScreenInner() {
         card: step.card,
         from: stockOrigin,
         to: pyramidCellScreenPoint(triangleOrigin, row, col, cardWidth, gap, rotation),
-        delayMs: step.visitOrder * DEAL_STAGGER_MS
+        delayMs: step.visitOrder * dealStaggerMs(sequence.length)
       }
     })
     if (entries.length === 0) {
@@ -566,10 +944,11 @@ function PyramidScreenInner() {
   })
 
   // Mirrors handleDrawStock's forward flight, just in reverse: the drawn card is still sitting in
-  // the waste (`move.to`) - measure its real current position before reverting (the
-  // pendingFlightRef effect above can only measure a DESTINATION once it's committed and
-  // re-rendered, so the ORIGIN has to be captured here, synchronously against the still-current
-  // state), then revert and fly it back toward the stock (see pendingFlightRef's `viaStock`).
+  // the waste (`move.to`) - measure its real current position AND the stock pile it flies back to,
+  // both before reverting (the ORIGIN has to be captured against the still-current state, and the
+  // destination is a plain always-mounted container), then revert, mount the ghost, hide the stock
+  // slot and start the flight in ONE synchronous stretch: the returning card is never nowhere, and
+  // the stock pile does not show it as landed before the ghost gets there.
   async function handleUndo() {
     if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
@@ -580,6 +959,7 @@ function PyramidScreenInner() {
     // stop on its own - it only ever stops via winCascade.clear() (see startNewGame), so without
     // this it would keep animating over a board that's already reverted underneath it.
     if (won) winCascade.clear()
+    const myGen = dealTokenRef.current
     const entry = undoStack[undoStack.length - 1]
     const { move, removedCards, state: prevState } = entry
 
@@ -611,22 +991,38 @@ function PyramidScreenInner() {
     // stateRef.current idiom (see useFlightConcurrency's own doc comment on why).
     const current = stateRef.current
     const movingCard = current?.waste[current.waste.length - 1]
-    const origin = movingCard && movingCard.id === move.anchorCardId ? await ghost.cardRegistry.measure(move.anchorCardId) : null
+    // Claimed up front, before this function's own awaits, like undoRecycle's: the count stays accurate for as long as this undo
+    // is genuinely outstanding.
+    const settle = claimFlight()
+    const [origin, stockPos] = await Promise.all([movingCard && movingCard.id === move.anchorCardId ? measureCardOrigin(move.to, move.anchorCardId) : null, measureView(stockViewRef.current)])
+    // A New Game tapped mid-measurement already replaced the board, the undo stack and undoBusyRef
+    // - committing prevState now would overwrite the fresh deal with the old game's board.
+    if (dealTokenRef.current !== myGen) {
+      settle()
+      return
+    }
 
     setUndoStack((stack) => stack.slice(0, -1))
     setSelected(null)
 
-    if (origin && movingCard) {
+    if (origin && stockPos && movingCard) {
       playCardSound()
       hapticCard()
-      const flight = ghost.show({ cards: [movingCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-      startFlights(1)
+      const flight = trackFlight(ghost.show({ cards: [movingCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y }))
       const flyingId = beginFlying(move.from, move.count)
+      // The card is on its way back to the stock: the slot keeps its pre-flight look (frozen, see StockWaste's stockHidden) until
+      // the ghost lands, instead of showing the returned card the instant the state reverts.
+      setStockHidden(true)
       commitState(prevState)
-      pendingFlightRef.current.push({ cardId: move.anchorCardId, viaStock: true, gen: dealTokenRef.current, flyingId, flight })
+      flight.flyTo(stockPos.x, stockPos.y, () => {
+        untrackFlight(flight)
+        setStockHidden(false)
+        endFlying(flyingId)
+        settle()
+      })
     } else {
       commitState(prevState)
-      undoBusyRef.current = false
+      settle()
     }
   }
 
@@ -643,17 +1039,16 @@ function PyramidScreenInner() {
     // PATTERN_OVERLAP_GATE protects everywhere else (an undo already holds undoBusyRef, so nothing
     // else can start meanwhile, but the claim keeps activeFlightCountRef accurate for as long as
     // this flight is genuinely outstanding).
-    startFlights(1)
+    const settle = claimFlight()
     const [stockOrigin, wasteDest] = await Promise.all([measureView(stockViewRef.current), measureView(wasteViewRef.current)])
 
     if (dealTokenRef.current !== myGen) {
       // New Game was tapped mid-measurement - drop this stale undo-of-recycle entirely rather than
-      // overwrite whatever startNewGame already applied (same reasoning as pendingRemovalUndoRef's
-      // mismatch branch below). Deliberately skip setUndoStack/setSelected/setState here too -
-      // startNewGame already reset the undo stack, selection, and board for the new game; only
-      // settleFlight (which clears undoBusyRef once the count reaches 0) needs calling here too,
-      // for the rarer case this fires first.
-      settleFlight()
+      // overwrite whatever startNewGame already applied (same reasoning as handleUndo's own
+      // mismatch branch). Deliberately skip setUndoStack/setSelected/setState here too -
+      // startNewGame already reset the undo stack, selection, board, claims and undoBusyRef for
+      // the new game - settle is a no-op for this stale claim (see claimFlight), just call it.
+      settle()
       return
     }
 
@@ -662,7 +1057,7 @@ function PyramidScreenInner() {
 
     if (!stockOrigin || !wasteDest) {
       commitState(prevState)
-      settleFlight()
+      settle()
       return
     }
 
@@ -672,54 +1067,80 @@ function PyramidScreenInner() {
     const cards = prevState.waste
     playCardSound()
     hapticCard()
-    const flight = ghost.show({ cards, offsetStep: 0, cardWidth }, { x: stockOrigin.x, y: stockOrigin.y })
+    const flight = trackFlight(ghost.show({ cards, offsetStep: 0, cardWidth }, { x: stockOrigin.x, y: stockOrigin.y }))
     const flyingId = beginFlying({ zone: 'waste', index: 0 }, move.count)
     setStockHidden(true)
     commitState(prevState)
     flight.flyTo(wasteDest.x, wasteDest.y, () => {
+      untrackFlight(flight)
       setStockHidden(false)
       endFlying(flyingId)
-      settleFlight()
+      settle()
     })
   }
 
   // Undoing a pairing/King removal: each removed card flies independently from the discard pile
   // (where it currently, physically sits) back to its own original spot - the mirror image of the
   // forward removal flight (which shares one destination but starts from independent origins;
-  // this shares one origin but ends at independent destinations - see PairFlightCardSpec). The
-  // discard pile itself doesn't move, so its origin is measured immediately; each card's actual
-  // destination is resolved afterward, once prevState has committed (see pendingRemovalUndoRef).
-  // Hiding the restored card(s) has to be batched into the SAME commit as prevState (React batches
-  // same-tick setState calls into one render) - setting it after the fact would let a restored
-  // card flash fully visible for a frame before the flight starts covering it, same reasoning
-  // startNewGame's setPyramidHiddenIds(dealtIds) already relies on for the initial deal.
+  // this shares one origin but ends at independent destinations - see PairFlightCardSpec).
+  //
+  // EVERY endpoint is resolved BEFORE anything commits, and the revert, the hide flags and the
+  // ghosts then land in ONE synchronous stretch (one React commit): the discard pile's origin and
+  // the triangle container are plain always-mounted views, a pyramid cell's spot is pure math from
+  // the triangle, and a waste-bound card's spot is the waste slot's own container (the same place
+  // its registration would say - there is one waste slot). Resolving them after the commit, as this
+  // used to, left the restored cards visible NOWHERE for a frame or two - the discard already
+  // showing its older top, the cards hidden, their ghosts not mounted yet - and then popped the
+  // ghosts in. Hiding the restored card(s) shares that commit for the same reason as always: a
+  // restored card must never flash fully visible before its ghost covers it (startNewGame's
+  // setPyramidHiddenIds(dealtIds) relies on the same batching for the initial deal).
   async function undoRemoval(removed: RemovedCardRef[], prevState: PyramidState) {
-    const discardOrigin = await measureView(discardViewRef.current)
+    const myGen = dealTokenRef.current
+    // Claimed up front, before the awaits, like undoRecycle's.
+    const settle = claimFlight()
+    const needsTriangle = removed.some((r) => r.ref.zone === 'pyramid')
+    const needsWaste = removed.some((r) => r.ref.zone === 'waste')
+    const [discardOrigin, triangleOrigin, wasteOrigin] = await Promise.all([measureView(discardViewRef.current), needsTriangle ? measureView(triangleViewRef.current) : null, needsWaste ? measureView(wasteViewRef.current) : null])
+    // A New Game tapped mid-measurement already replaced the board, the undo stack and undoBusyRef
+    // (see handleUndo) - applying prevState now would overwrite the fresh deal.
+    if (dealTokenRef.current !== myGen) {
+      settle()
+      return
+    }
 
     setUndoStack((stack) => stack.slice(0, -1))
     setSelected(null)
 
-    if (!discardOrigin) {
-      // No flight was ever claimed for this attempt (that only happens once the deferred effect
-      // below actually starts the pair-flight) - nothing to settleFlight, so undoBusyRef clears
-      // directly, same as the original code.
+    // A card whose spot cannot be resolved (a rare measurement failure) simply has no ghost and is not hidden: it reappears where
+    // it belongs rather than being left invisible waiting for a flight that will never exist.
+    const specs: PairFlightCardSpec[] = []
+    if (discardOrigin) {
+      for (const entry of removed) {
+        const card = cardAt(prevState, entry.ref)
+        let to: ScreenPoint | null = wasteOrigin
+        if (entry.ref.zone === 'pyramid') {
+          const { row, col } = rowColOf(entry.ref.index)
+          to = triangleOrigin ? pyramidCellScreenPoint(triangleOrigin, row, col, cardWidth, gap, rotation) : null
+        }
+        if (card && to) specs.push({ card, from: discardOrigin, to })
+      }
+    }
+    if (specs.length === 0) {
       commitState(prevState)
-      undoBusyRef.current = false
+      settle()
       return
     }
 
     playCardSound()
     hapticCard()
 
-    const pyramidIds = removed.filter((r) => r.ref.zone === 'pyramid').map((r) => r.cardId)
+    const flownIds = new Set(specs.map((spec) => spec.card.id))
+    const pyramidIds = removed.filter((r) => r.ref.zone === 'pyramid' && flownIds.has(r.cardId)).map((r) => r.cardId)
     if (pyramidIds.length > 0) setPyramidHiddenIds((ids) => new Set([...ids, ...pyramidIds]))
-    // Only a waste-bound restoration needs a `flying` entry (hiding the real waste card until the
-    // ghost lands there) - a pyramid-bound one is already covered by pyramidHiddenIds above. Stashed
-    // on the pending ref (not just a local variable) so the deferred effect below - and, on
-    // failure, handlePairFlightLanded/the dealTokenRef-mismatch branch - can find and end it later.
-    const wasteFlyingId = removed.some((r) => r.ref.zone === 'waste') ? beginFlying({ zone: 'waste', index: 0 }, 1) : null
-
-    pendingRemovalUndoRef.current = { removed, discardOrigin, gen: dealTokenRef.current, wasteFlyingId }
+    // Only a waste-bound restoration needs a `flying` entry (hiding the real waste card until the ghost lands there) - a
+    // pyramid-bound one is already covered by pyramidHiddenIds above. handlePairFlightLanded ends it with the flight.
+    const wasteCard = removed.find((r) => r.ref.zone === 'waste' && flownIds.has(r.cardId))
+    startPairFlight(specs, wasteCard ? { id: beginFlying({ zone: 'waste', index: 0 }, 1), cardId: wasteCard.cardId } : null, settle)
     commitState(prevState)
   }
 
@@ -787,95 +1208,105 @@ function PyramidScreenInner() {
     attemptMove(selected, ref, measure)
   }
 
-  // Shared tail for the solo (King) paths below: flies whichever single card `flight` is
-  // currently showing on to the discard pile's real position. Counted exactly like any other
-  // Klondike-style single-ghost flight - the caller claims startFlights(1)/beginFlying before
-  // calling this, and this settles it in whichever way the flight actually ends.
-  async function flyToDiscardPile(flight: DragFlightHandle, flyingId: number) {
-    const discardPos = await measureView(discardViewRef.current)
-    if (discardPos) {
-      flight.flyTo(discardPos.x, discardPos.y, () => {
-        endFlying(flyingId)
-        settleFlight()
-      })
-    } else {
-      flight.hide()
-      endFlying(flyingId)
-      settleFlight()
-    }
-  }
-
   // Each flying card reports here as its own independent flight settles (see
-  // PairFlightGhosts/FlyingPairCard) - if it was hidden while restoring to a pyramid cell (undo of
-  // a removal - see undoRemoval), un-hide it now that the real card is covered by nothing else;
-  // this is a no-op for a forward (discard-bound) flight, whose cards were never in
-  // pyramidHiddenIds to begin with. Once every card in the flight has landed, it's done: clear it
-  // and reveal whichever destination pile was hidden meanwhile (`flying`). Guarded on `gen` so a
-  // straggling callback from a flight a newer one already superseded (see startPairFlight) can't
-  // fire this early.
+  // PairFlightGhosts/FlyingPairCard). It settles ONLY its own flight: the card's ghost is removed
+  // at once (a landed card must not sit on top of the pile until its partner arrives), it is
+  // counted as landed on the discard (forward flight) or un-hidden on its pyramid cell (undo of a
+  // removal - see undoRemoval; a no-op in the other direction, whose cards were never in
+  // pyramidHiddenIds) or un-hidden on the waste (the `flying` entry of a waste-bound undo ends with
+  // ITS card, not with the pair), and once THIS flight's last card has landed it settles its own
+  // claim - never another flight's. A callback for a flight the ledger no longer knows (a New Game
+  // replaced the board) does nothing.
   function handlePairFlightLanded(gen: number, cardId: string) {
-    if (gen !== pairFlightGenRef.current) return
+    const entry = pairFlightLedgerRef.current.get(gen)
+    if (!entry || !entry.pending.delete(cardId)) return
+    setPairFlights((flights) => flights.flatMap((f) => (f.gen !== gen ? [f] : f.cards.length === 1 ? [] : [{ ...f, cards: f.cards.filter((c) => c.card.id !== cardId) }])))
     setPyramidHiddenIds((ids) => {
       if (!ids.has(cardId)) return ids
       const next = new Set(ids)
       next.delete(cardId)
       return next
     })
-    pairFlightLandedRef.current += 1
-    if (pairFlightLandedRef.current >= pairFlightTotalRef.current) {
-      setPairFlight(null)
-      // Ends whichever `flying` entry (if any) this generation's start (flyPairIndependently, or
-      // the pendingRemovalUndoRef effect's own undo-of-removal start) stashed via startPairFlight -
-      // a pyramid-only undo-of-removal never creates one, hence the null check.
-      if (pairFlightFlyingIdRef.current !== null) {
-        endFlying(pairFlightFlyingIdRef.current)
-        pairFlightFlyingIdRef.current = null
-      }
-      // Replaces the direct undoBusyRef clear this used to do - settleFlight() clears it once
-      // every outstanding completion (this pair-flight's own startFlights(1) claim, from whichever
-      // direction started it) has reported in.
-      settleFlight()
-    }
+    markDiscardLanded(cardId)
+    if (entry.flying?.cardId === cardId) endFlying(entry.flying.id)
+    if (entry.pending.size > 0) return
+    pairFlightLedgerRef.current.delete(gen)
+    // clears undoBusyRef once every outstanding completion (this flight's own claim, from whichever
+    // direction started it) has reported in.
+    entry.settle()
   }
 
-  // Pair-removal flight: both cards travel to the discard pile independently, each from its own
-  // real position - something the single-origin shared `ghost` can't do (it only ever animates
-  // one origin/delta for its whole group) - so this hands off to PairFlightGhosts's own small "N
-  // simultaneous ghosts" overlay instead (same idiom DealLayer/WinCascadeLayer use, and the same
-  // reason - see DealLayer.tsx's doc comment). Claims startFlights(1) itself, right before its own
-  // await (see useFlightConcurrency's own doc comment) - the pair as a whole counts as ONE
-  // outstanding completion, matching how Klondike counts its own multi-card recycle/cascade
-  // flights as one. `flyingId` is the caller's own `flying` array entry (covering the discard
-  // pile's incoming-card hidden state for the whole pair) - ended here on failure, or later by
-  // handlePairFlightLanded once every card has actually landed.
-  async function flyPairIndependently(cards: { card: Card; from: ScreenPoint }[], flyingId: number) {
-    startFlights(1)
-    const discardPos = await measureView(discardViewRef.current)
-    if (!discardPos) {
-      endFlying(flyingId)
-      settleFlight()
-      return
-    }
-    startPairFlight(
-      cards.map((c) => ({ ...c, to: discardPos })),
-      flyingId
-    )
+  // A card that flew to the discard pile on a shared ghost (a solo King) lands: count it, then
+  // release the flight's claim. `gen` guards the count only - see claimFlight for the claim.
+  function flyToDiscardPile(flight: DragFlightHandle, cardId: string, discardPos: ScreenPoint, gen: number, settle: () => void) {
+    trackFlight(flight)
+    flight.flyTo(discardPos.x, discardPos.y, () => {
+      untrackFlight(flight)
+      if (dealTokenRef.current === gen) markDiscardLanded(cardId)
+      settle()
+    })
+  }
+
+  // Re-checks a removal against the board as it is NOW, after the awaits (measurements) that sit
+  // between deciding on a move and committing it. Everything else that can commit meanwhile - another
+  // tap, a stock draw, a drop, all allowed to overlap by PATTERN_OVERLAP_GATE - builds on
+  // stateRef.current, so a `result` computed BEFORE the awaits would silently overwrite it (a card
+  // reappears, a draw vanishes) or, for a double-tap on a King, commit the same removal twice. The
+  // move's own cards must still be exactly where they were (a bare tryMove could succeed with
+  // whatever card now sits at a `waste` ref), and the move must still be legal; null means abort -
+  // nothing has been committed, the caller just settles its claim.
+  function replayMove(from: PileRef, to: PileRef, fromId: string, toId: string): { prev: PyramidState; next: PyramidState } | null {
+    const prev = stateRef.current
+    if (!prev || cardAt(prev, from)?.id !== fromId || cardAt(prev, to)?.id !== toId) return null
+    const next = PyramidController.tryMove(prev, { from, to, count: 1 })
+    return next ? { prev, next } : null
+  }
+
+  // The synchronous commit stretch every removal ends in (no await between reading the board and
+  // committing it): the move is counted, recorded for undo against the board it was really made
+  // on, and the cards about to fly to the discard are marked in the air in the SAME commit as the
+  // move, so the pile never flashes its new top before the ghosts arrive. A removal that WINS also
+  // claims the win sweep here (beginWinSweep), while its own claim is still held, so nothing settles
+  // in between and the celebration cannot start before the leftover cards have been dealt.
+  function commitRemoval(prev: PyramidState, next: PyramidState, removedCards: RemovedCardRef[], inAir: string[]) {
+    session.registerMove()
+    pushUndo(prev, null, removedCards)
+    // A selection made while this move was deferred (its action clears the selection up front, then may park behind a draw flight
+    // for a while, and taps in that window are handled normally) can name a card this very commit removes - typically the
+    // waste ref: {waste, 0} means "whatever is on top", so once the top is gone it would silently point at the card that was
+    // UNDER it, highlight it, and pair it on the next tap: a move the player never chose. Such a selection is dropped; an
+    // unrelated one (another pyramid card, a waste card that stays) is kept.
+    setSelected((sel) => (sel && removedCards.some((r) => refsEqual(r.ref, sel)) ? null : sel))
+    if (inAir.length > 0) markDiscardInAir(inAir)
+    commitState(next)
+    playCardSound()
+    hapticCard()
+    if (PyramidController.isWon(next)) beginWinSweep(prev, next, removedCards, inAir.length > 0)
   }
 
   // Tap-completed pairing/King removal. The real state change applies immediately (game logic
   // never waits on an animation, same as every other move in this app) - the ghost is purely a
   // visual overlay catching up to an already-true reality, hiding the discard pile's real new top
-  // card (via `flying`/DiscardCell's isFlyingHere) until it visually arrives.
-  async function attemptMove(from: PileRef, to: PileRef, measureOrigin: () => Promise<{ x: number; y: number }>) {
+  // card (via discardInAir/DiscardCell's isFlyingHere) until it visually arrives.
+  //
+  // Shape, for fast play: decide on the move against the board as it is when tapped (a plain
+  // illegal pairing shakes at once, with no measuring); claim the flight and clear the selection
+  // synchronously, so undo and any further tap see this move as underway; MEASURE everything (the
+  // tapped card, "first" via the registry, the discard pile) in one await; then re-validate the
+  // move against the board as it is by then (replayMove) and commit it in one synchronous stretch
+  // that ends by starting the flight. Any other tap, draw or drop can commit during the awaits, so
+  // committing the pre-await result would overwrite it - a move that no longer applies (the King
+  // already removed by a double-tap, "first" consumed by another pair) aborts cleanly instead:
+  // no commit, no undo entry, no move counted, no sound, no ghost.
+  async function attemptMove(from: PileRef, to: PileRef, measureOrigin: () => Promise<ScreenPoint>) {
     if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
-    const current = stateRef.current
-    if (!current) return
+    const board = stateRef.current
+    if (!board) return
     const isSolo = refsEqual(from, to)
-    const fromCard = cardAt(current, from)
-    const toCard = isSolo ? fromCard : cardAt(current, to)
+    const fromCard = cardAt(board, from)
+    const toCard = isSolo ? fromCard : cardAt(board, to)
 
-    const result = PyramidController.tryMove(current, { from, to, count: 1 })
-    if (!result) {
+    if (!PyramidController.tryMove(board, { from, to, count: 1 }) || !fromCard || !toCard) {
       // Illegal pairing: swap the selection to the newly tapped card instead
       // of just clearing it, so the user doesn't have to tap twice again. Shake the
       // just-tapped card (not the previously-selected one) so the rejection reads as "that
@@ -891,65 +1322,68 @@ function PyramidScreenInner() {
       return
     }
 
-    const toOrigin = await measureOrigin()
-
-    if (isSolo) {
-      session.registerMove()
-      setSelected(null)
-      if (!fromCard) {
-        pushUndo(current, null)
-        commitState(result)
+    const settle = claimFlight()
+    const gen = dealTokenRef.current
+    setSelected(null)
+    // A card the player taps while its own draw ghost is still travelling to the waste (a King drawn and tapped a beat later)
+    // waits for that landing: the card arrives, THEN it flies on - measuring the hidden real card now would start this flight
+    // from a slot the drawn card has not reached yet, showing it twice. The claim above keeps undo out for the wait.
+    const landedOnWaste = () => onWaste(fromCard.id, toCard.id)
+    if (!landedOnWaste()) {
+      // A loop, re-checked after every resume (see whenLanded) - and given up on once a New Game has replaced the board.
+      const budget = startDeferBudget()
+      while (dealTokenRef.current === gen && !landedOnWaste() && budget.left() > 0) await whenLanded(landedOnWaste, budget.left())
+      if (dealTokenRef.current !== gen) {
+        settle()
         return
       }
-      pushUndo(current, null, [{ cardId: fromCard.id, ref: from }])
-      // toOrigin IS the King's own tap position here (from === to) - no registry measurement
-      // needed, unlike the pair case below where "first" was selected on a PREVIOUS tap. Counted
-      // exactly like any other Klondike-style single-ghost flight (startFlights(1) here, settled
-      // inside flyToDiscardPile once it actually lands).
-      startFlights(1)
-      const flyingId = beginFlying({ zone: 'discard', index: 0 }, 1)
-      commitState(result)
-      playCardSound()
-      hapticCard()
+    }
+    // All three measurements are started in this same tick, while the tapped views are certainly
+    // still mounted. toOrigin IS the King's own tap position when solo ("first" was selected on a
+    // PREVIOUS tap for a pair, so its position comes from the registry - and from its slot if it
+    // is not registered, see measureCardOrigin - not from this tap).
+    const [toOrigin, fromOrigin, discardPos] = await Promise.all([measureOrigin(), isSolo ? Promise.resolve(null) : measureCardOrigin(from, fromCard.id), measureView(discardViewRef.current)])
+
+    // A New Game tapped mid-measurement already replaced the board and dropped this claim.
+    const replay = dealTokenRef.current === gen ? replayMove(from, to, fromCard.id, toCard.id) : null
+    if (!replay) {
+      settle()
+      return
+    }
+
+    const kingRemoval: RemovedCardRef[] = [{ cardId: fromCard.id, ref: from }]
+    if (isSolo) {
+      commitRemoval(replay.prev, replay.next, kingRemoval, discardPos ? [fromCard.id] : [])
+      // Only an unmeasurable discard pile (a zero-size or detached view) leaves nothing to fly to.
+      if (!discardPos) {
+        settle()
+        return
+      }
       const flight = ghost.show({ cards: [{ ...fromCard, faceUp: true }], offsetStep: 0, cardWidth }, { x: toOrigin.x, y: toOrigin.y })
-      await flyToDiscardPile(flight, flyingId)
+      flyToDiscardPile(flight, fromCard.id, discardPos, gen, settle)
       return
     }
 
-    // Pair: "first" (from) was selected on a previous tap - measure its CURRENT position via the
-    // registry (same technique handleUndo uses) before setState unmounts it. "second" (to) is
-    // already in hand as toOrigin, from the tap that just completed the pair. Both then fly
-    // independently from those two real positions straight to the discard (see
-    // flyPairIndependently) - neither one visits the other first.
-    const fromOrigin = fromCard ? await ghost.cardRegistry.measure(fromCard.id) : null
-
-    session.registerMove()
-    setSelected(null)
-
-    if (!fromCard || !toCard || !fromOrigin) {
-      pushUndo(current, null)
-      commitState(result)
-      return
+    // Both cards then fly independently from their two real positions straight to the discard
+    // (see startPairFlight) - neither one visits the other first. A card whose position can't be
+    // resolved at all (neither its registration nor its slot is measurable) simply has no ghost;
+    // only an unmeasurable discard pile - nothing to fly to - commits the pair with no flight.
+    const specs: PairFlightCardSpec[] = []
+    if (discardPos) {
+      if (fromOrigin) specs.push({ card: { ...fromCard, faceUp: true }, from: fromOrigin, to: discardPos })
+      specs.push({ card: { ...toCard, faceUp: true }, from: toOrigin, to: discardPos })
     }
-
-    pushUndo(current, null, [
-      { cardId: fromCard.id, ref: from },
-      { cardId: toCard.id, ref: to }
-    ])
-    // The `flying` entry is created here (same commit as commitState, matching the original code's
-    // placement) - the activeFlightCount CLAIM itself is owned by flyPairIndependently, right
-    // before its own async measurement gap (see its own doc comment / PATTERN_OVERLAP_GATE).
-    const flyingId = beginFlying({ zone: 'discard', index: 0 }, 2)
-    commitState(result)
-    playCardSound()
-    hapticCard()
-    flyPairIndependently(
-      [
-        { card: { ...fromCard, faceUp: true }, from: fromOrigin },
-        { card: { ...toCard, faceUp: true }, from: toOrigin }
-      ],
-      flyingId
+    commitRemoval(
+      replay.prev,
+      replay.next,
+      [...kingRemoval, { cardId: toCard.id, ref: to }],
+      specs.map((spec) => spec.card.id)
     )
+    if (specs.length === 0) {
+      settle()
+      return
+    }
+    startPairFlight(specs, null, settle)
   }
 
   // Drag-completed pairing/King removal - same choreography as attemptMove above, just sourced
@@ -958,48 +1392,68 @@ function PyramidScreenInner() {
   // same DragFlightHandle in here as `flight` on a successful drop - see DraggableCard.tsx's
   // onDrop), so a solo (King) drop can fly it on to the discard as-is; a pair instead reads
   // "first"'s current position straight off that same flight, retires it, and hands both cards off
-  // to flyPairIndependently so they can travel to the discard on their own, independent paths.
-  async function attemptDrop(from: PileRef, absoluteX: number, absoluteY: number, flight: DragFlightHandle): Promise<boolean> {
+  // to startPairFlight so they can travel to the discard on their own, independent paths. `fromId`
+  // is the card this drop was rendered for (the one being dragged): a draw or removal that commits
+  // while the hit test is still resolving can change what a `waste` ref points at, and the move
+  // must still be that card's. Returning false snaps the dragged card back.
+  async function attemptDrop(from: PileRef, fromId: string | undefined, absoluteX: number, absoluteY: number, flight: DragFlightHandle): Promise<boolean> {
     if (undoBusyRef.current) return false // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
-    const current = stateRef.current
-    if (!current) return false
+    if (!stateRef.current) return false
     const target = await dropZones.hitTest(absoluteX, absoluteY)
     if (!target) return false
 
+    // From here to the claim below is one synchronous stretch (the hit test above is the only
+    // await before it), so undo cannot slip in between the board check and the claim.
+    if (undoBusyRef.current) return false
+    const board = stateRef.current
+    if (!board || !fromId) return false
     const isSolo = refsEqual(from, target)
-    const fromCard = cardAt(current, from)
-    const toCard = isSolo ? fromCard : cardAt(current, target)
+    const fromCard = cardAt(board, from)
+    const toCard = isSolo ? fromCard : cardAt(board, target)
+    if (!fromCard || !toCard || fromCard.id !== fromId || !PyramidController.tryMove(board, { from, to: target, count: 1 })) return false
 
-    const result = PyramidController.tryMove(current, { from, to: target, count: 1 })
-    if (!result) return false
-
-    session.registerMove()
+    const settle = claimFlight()
+    const gen = dealTokenRef.current
     setSelected(null)
+    // Same wait as attemptMove's: a card dragged (or dropped onto) while its own draw ghost is still travelling to the waste
+    // lets that flight land first. The dragged ghost simply rests at the drop point meanwhile.
+    const landedOnWaste = () => onWaste(fromCard.id, toCard.id)
+    if (!landedOnWaste()) {
+      const budget = startDeferBudget()
+      while (dealTokenRef.current === gen && !landedOnWaste() && budget.left() > 0) await whenLanded(landedOnWaste, budget.left())
+    }
+    // "second" (target)'s exact position isn't necessarily where the pointer released (anywhere
+    // within its drop-zone hit-box counts) - measure it via the registry (or its slot) before the
+    // commit unmounts it.
+    const [toOrigin, discardPos] = await Promise.all([isSolo ? Promise.resolve(null) : measureCardOrigin(target, toCard.id), measureView(discardViewRef.current)])
 
-    if (isSolo) {
-      if (!fromCard) {
-        pushUndo(current, null)
-        commitState(result)
-        flight.hide()
-        return true
-      }
-      pushUndo(current, null, [{ cardId: fromCard.id, ref: from }])
-      startFlights(1)
-      const flyingId = beginFlying({ zone: 'discard', index: 0 }, 1)
-      commitState(result)
-      await flyToDiscardPile(flight, flyingId)
+    if (dealTokenRef.current !== gen) {
+      // A New Game tapped mid-drop: the old board is gone, so there is nothing to land on or snap
+      // back to - retire the dragged ghost.
+      flight.hide()
+      settle()
       return true
     }
+    const replay = replayMove(from, target, fromCard.id, toCard.id)
+    if (!replay) {
+      settle()
+      return false
+    }
 
-    // "second" (target)'s exact position isn't necessarily where the pointer released (anywhere
-    // within its drop-zone hit-box counts) - measure it via the registry before setState unmounts
-    // it.
-    const toOrigin = toCard ? await ghost.cardRegistry.measure(toCard.id) : null
-
-    if (!fromCard || !toCard || !toOrigin) {
-      pushUndo(current, null)
-      commitState(result)
-      flight.hide()
+    const removed: RemovedCardRef[] = isSolo
+      ? [{ cardId: fromCard.id, ref: from }]
+      : [
+          { cardId: fromCard.id, ref: from },
+          { cardId: toCard.id, ref: target }
+        ]
+    if (isSolo) {
+      commitRemoval(replay.prev, replay.next, removed, discardPos ? [fromCard.id] : [])
+      if (!discardPos) {
+        flight.hide()
+        settle()
+        return true
+      }
+      flyToDiscardPile(flight, fromCard.id, discardPos, gen, settle)
       return true
     }
 
@@ -1008,38 +1462,69 @@ function PyramidScreenInner() {
     // before retiring that flight: from here the pair flies independently instead.
     const fromOrigin = { x: flight.originX.value + flight.dx.value, y: flight.originY.value + flight.dy.value }
     flight.hide()
-
-    pushUndo(current, null, [
-      { cardId: fromCard.id, ref: from },
-      { cardId: toCard.id, ref: target }
-    ])
-    const flyingId = beginFlying({ zone: 'discard', index: 0 }, 2)
-    commitState(result)
-    flyPairIndependently(
-      [
-        { card: { ...fromCard, faceUp: true }, from: fromOrigin },
-        { card: { ...toCard, faceUp: true }, from: toOrigin }
-      ],
-      flyingId
+    const specs: PairFlightCardSpec[] = []
+    if (discardPos) {
+      specs.push({ card: { ...fromCard, faceUp: true }, from: fromOrigin, to: discardPos })
+      if (toOrigin) specs.push({ card: { ...toCard, faceUp: true }, from: toOrigin, to: discardPos })
+    }
+    commitRemoval(
+      replay.prev,
+      replay.next,
+      removed,
+      specs.map((spec) => spec.card.id)
     )
+    if (specs.length === 0) {
+      settle()
+      return true
+    }
+    startPairFlight(specs, null, settle)
     return true
   }
 
   // Mirrors Klondike's handleDrawStock: a ghost copy of the newly-drawn card flies from the stock
   // pile to the waste slot, landing once the pendingFlightRef effect above measures its real
-  // (already re-rendered) position.
+  // (already re-rendered) position. The draw is decided on the board as tapped, but what is
+  // actually drawn - or recycled - is worked out from the board as it is once the measurements are
+  // back (see attemptMove for why): three rapid taps must draw three DIFFERENT cards, and a draw
+  // racing a removal must build on it instead of overwriting it.
   async function handleDrawStock() {
     if (won || !state) return
     if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
-    const current = stateRef.current
-    if (!current) return
-    const result = PyramidController.drawStock!(current)
-    if (!result) return
-    session.registerMove()
-    // Claimed up front, before either branch's own await, covering whichever one this draw turns
-    // out to be (recycle or plain draw) - exactly one outstanding completion either way, matching
+    const board = stateRef.current
+    if (!board || !PyramidController.drawStock!(board)) return
+    // Claimed up front, before the await, covering whichever branch this draw turns out to be
+    // (recycle or plain draw) - exactly one outstanding completion either way, matching
     // Klondike's own handleDrawStock.
-    startFlights(1)
+    const settle = claimFlight()
+    const gen = dealTokenRef.current
+
+    // Both containers are always mounted and card-sized, so they are measured whichever branch
+    // the re-validated draw below turns out to be.
+    const [stockPos, wastePos] = await Promise.all([measureView(stockViewRef.current), measureView(wasteViewRef.current)])
+    // A draw needs a quiet stock and waste. While a recycle's group ghost is still flying into the stock, the stock slot is frozen on
+    // its pre-flight (empty) look, so a card drawn now would emerge from an empty slot; and a recycle (stock already empty) taken
+    // while a drawn card is still flying to the waste would pick that card up twice, in the group ghost and in its own. Plain draws
+    // overlap each other freely - only these two pairings wait. Checked AFTER the measurement, not before: a second tap made while
+    // the first draw is still measuring has not seen that draw become a recycle yet, but by the time its own measurement is back
+    // the first has committed and flagged the flight (and the check does not yield when nothing is in the way, so an earlier tap's
+    // commit and flight start are never interleaved with a later one's). The claim above keeps undo out for the wait.
+    const quiet = () => !recycleAirRef.current && !(stateRef.current?.stock.length === 0 && wasteInAirRef.current.size > 0)
+    // A LOOP, re-checked after every resume (see whenLanded): `quiet` is not monotonic. Several taps parked on the same landing
+    // all resolve together, and the first to run may itself be a recycle - it flags recycleAirRef and freezes the stock - after
+    // which the next must wait again for THAT flight instead of drawing from the freshly recycled stock while the group ghost is
+    // still flying into it. (The reverse pairing - a recycle behind a draw still in the air - is the same predicate, so the same
+    // loop.) Checked in the same synchronous stretch as the draw/recycle below, which has no await before its commit.
+    const budget = startDeferBudget()
+    while (dealTokenRef.current === gen && !quiet() && budget.left() > 0) await whenLanded(quiet, budget.left())
+    // A New Game tapped mid-measurement already replaced the board and dropped this claim - drop
+    // this stale draw entirely rather than overwrite what startNewGame applied.
+    const latest = dealTokenRef.current === gen ? stateRef.current : null
+    const result = latest && PyramidController.drawStock!(latest)
+    if (!latest || !result) {
+      settle()
+      return
+    }
+    session.registerMove()
 
     const drawnCard = result.waste[result.waste.length - 1]
     if (!drawnCard) {
@@ -1048,65 +1533,52 @@ function PyramidScreenInner() {
       // one group-ghost flight from the waste slot to the stock slot (same idiom a dragged
       // multi-card run uses: one shared origin/destination for the whole clump), not a per-card
       // deal-style flight - see PATTERN_RECYCLE. Both endpoints are plain container refs, so no
-      // post-commit deferral is needed; guarded against a "New Game" tapped mid-measurement the
-      // same way runDeal/runWinCascade are elsewhere in this file.
-      const myGen = dealTokenRef.current
-      const recycledCards = current.waste.slice()
-      const [wasteOrigin, stockDest] = await Promise.all([measureView(wasteViewRef.current), measureView(stockViewRef.current)])
-      if (dealTokenRef.current !== myGen) {
-        // New Game was tapped mid-measurement - drop this stale recycle entirely rather than
-        // overwrite whatever startNewGame already applied (same reasoning as
-        // pendingRemovalUndoRef's mismatch branch above). Nothing here has touched
-        // flying/stockHidden/pushUndo/commitState yet, so there's nothing to unwind beyond
-        // settling the claim made above.
-        settleFlight()
-        return
-      }
-      if (!wasteOrigin || !stockDest || recycledCards.length === 0) {
-        pushUndo(current, null)
-        commitState(result)
-        setSelected(null)
-        settleFlight()
-        return
-      }
-
+      // post-commit deferral is needed.
+      const recycledCards = latest.waste.slice()
       const recycleMove: MoveInfo = { from: { zone: 'waste', index: 0 }, to: { zone: 'stock', index: 0 }, count: recycledCards.length, anchorCardId: recycledCards[0].id }
-
-      playCardSound()
-      hapticCard()
-      const flight = ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth }, { x: wasteOrigin.x, y: wasteOrigin.y })
-      const flyingId = beginFlying({ zone: 'stock', index: 0 }, recycledCards.length)
-      setStockHidden(true)
-
-      pushUndo(current, recycleMove)
+      // Recorded with its move even when nothing can fly, so undoing it can still animate (undoRecycle
+      // measures for itself).
+      pushUndo(latest, recycleMove)
       commitState(result)
       setSelected(null)
-      flight.flyTo(stockDest.x, stockDest.y, () => {
-        setStockHidden(false)
+      if (!wastePos || !stockPos) {
+        settle()
+        return
+      }
+      playCardSound()
+      hapticCard()
+      const flight = trackFlight(ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth }, { x: wastePos.x, y: wastePos.y }))
+      const flyingId = beginFlying({ zone: 'stock', index: 0 }, recycledCards.length)
+      setStockHidden(true)
+      recycleAirRef.current = true
+      flight.flyTo(stockPos.x, stockPos.y, () => {
+        untrackFlight(flight)
+        if (dealTokenRef.current === gen) {
+          recycleAirRef.current = false
+          setStockHidden(false)
+          notifyLanded()
+        }
         endFlying(flyingId)
-        settleFlight()
+        settle()
       })
       return
     }
     const move: MoveInfo = { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: 1, anchorCardId: drawnCard.id }
-    const origin = await measureView(stockViewRef.current)
-    if (!origin) {
-      pushUndo(current, move)
-      commitState(result)
-      setSelected(null)
-      settleFlight()
+    pushUndo(latest, move)
+    commitState(result)
+    setSelected(null)
+    if (!stockPos) {
+      // Only an unmeasurable stock pile (a zero-size or detached view) leaves nothing to fly from.
+      settle()
       return
     }
 
     playCardSound()
     hapticCard()
-    const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
+    const flight = trackFlight(ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: stockPos.x, y: stockPos.y }))
     const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
-
-    pushUndo(current, move)
-    commitState(result)
-    setSelected(null)
-    pendingFlightRef.current.push({ cardId: drawnCard.id, gen: dealTokenRef.current, flyingId, flight })
+    markWasteInAir(drawnCard.id)
+    pendingFlightRef.current.push({ cardId: drawnCard.id, gen, flyingId, flight, settle })
   }
 
   // Finds one legal move (a pairing/solo King) or a stock-draw suggestion to highlight - see
@@ -1125,25 +1597,38 @@ function PyramidScreenInner() {
     recordHintUsed('pyramid')
   }
 
-  if (!state) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.timer}>Loading...</Text>
-      </View>
-    )
-  }
+  if (!state) return <GameLoading />
 
   const width = triangleWidth(cardWidth, gap)
   const height = triangleHeight(cardWidth)
-  const wasteTop = state.waste[state.waste.length - 1]
+  // A won board's stock/waste were folded into the discard by the winning move itself (rules.ts's sweepRemainderOnWin), but
+  // the cards did not get there yet - they are dealt onto it one by one (see the win sweep above). Until each pile's last card
+  // has taken off, the board keeps showing that pile as it was before the fold (SweepUi.view): they empty as their cards leave,
+  // not the instant the last pair is removed. The discard shows the topmost card that has LANDED under the flying ones
+  // (discardInAir marks the winning removal's cards and every leftover from the winning commit, and each lands one by one), so
+  // its top is always a card that really arrived. When the discard could not be measured at the winning move nothing flies
+  // (`flies` false): the board then simply stays as the finished board showed it - the pre-fold discard and piles - under the
+  // banner. Once the cascade has taken over (cascadeHandoff, in the same commit its ghosts mount) the discard blanks too.
+  const handoff = winRevealed && cascadeHandoff?.state === state ? cascadeHandoff : null
+  const sweep = sweepUi && sweepUi.state === state ? sweepUi : null
+  const stockCards = handoff ? NO_CARDS : sweep ? (sweep.stockGone ? NO_CARDS : sweep.view.stockCards) : state.stock
+  const wasteCards = handoff ? NO_CARDS : sweep ? (sweep.wasteGone ? NO_CARDS : sweep.view.wasteCards) : state.waste
+  const discardCards = sweep && !sweep.flies ? sweep.view.discardCards : state.discard
+  const wasteTop = wasteCards[wasteCards.length - 1]
+  // While cards are still flying to the discard, the pile shows the topmost card that has landed
+  // under their ghosts, so it stays right as each of several overlapping flights arrives. The waste
+  // does the same while drawn cards are still flying to it - see StockWaste's settledWasteTop.
+  const discardFlying = discardInAir.size > 0
+  const discardSettled = discardFlying ? topLandedCard(discardCards, discardInAir) : undefined
+  const settledWasteTop = wasteInAir.size > 0 ? topLandedCard(wasteCards, wasteInAir) : undefined
 
   return (
     <CardSizeProvider width={cardWidth}>
       <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={PYRAMID_RULES}>
         <View style={styles.board}>
           <View style={[styles.controlRow, { width }]}>
-            <DiscardCell card={won ? undefined : state.discard[state.discard.length - 1]} isFlyingHere={flying.some((f) => f.to.zone === 'discard')} viewRef={discardViewRef} />
-            <StockWaste gap={gap} dropZones={dropZones} stockTopCard={state.stock[state.stock.length - 1]} wasteTop={wasteTop} wasteSelected={!!selected && selected.zone === 'waste'} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} wasteHiddenCount={flying.some((f) => f.to.zone === 'waste') ? 1 : 0} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} onDrawStock={handleDrawStock} onWastePress={handleSelectWaste} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, x, y, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
+            <DiscardCell card={handoff ? undefined : discardCards[discardCards.length - 1]} isFlyingHere={discardFlying} settledCard={discardSettled} viewRef={discardViewRef} />
+            <StockWaste gap={gap} dropZones={dropZones} stockTopCard={stockCards[stockCards.length - 1]} wasteTop={wasteTop} wasteSelected={!!selected && selected.zone === 'waste'} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} wasteHiddenCount={flying.some((f) => f.to.zone === 'waste') ? 1 : 0} settledWasteTop={settledWasteTop} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} onDrawStock={handleDrawStock} onWastePress={handleSelectWaste} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, state.waste[state.waste.length - 1]?.id, x, y, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
           </View>
 
           <View ref={triangleViewRef} collapsable={false} style={[styles.triangle, { width, height }]}>
@@ -1163,7 +1648,7 @@ function PyramidScreenInner() {
 
               return (
                 <DropZone key={card.id} registry={dropZones} pileRef={pileRef} style={cardStyle}>
-                  <DraggableCard card={card} selected={isSelected} hidden={isHidden} hinted={hintCountFor(activeHint, pileRef) > 0} onPress={(measure) => handleSelectPyramid(index, measure)} onDrop={(x, y, flight) => attemptDrop(pileRef, x, y, flight)} shakeToken={shake?.cardId === card.id ? shake.token : undefined} testID={`pyramid-${index}`} />
+                  <DraggableCard card={card} selected={isSelected} hidden={isHidden} hinted={hintCountFor(activeHint, pileRef) > 0} onPress={(measure) => handleSelectPyramid(index, measure)} onDrop={(x, y, flight) => attemptDrop(pileRef, card.id, x, y, flight)} shakeToken={shake?.cardId === card.id ? shake.token : undefined} testID={`pyramid-${index}`} />
                 </DropZone>
               )
             })}
@@ -1174,15 +1659,15 @@ function PyramidScreenInner() {
     (see WinCascadeGhosts' own doc comment for why nesting depth alone can't do this) - the win
     dialog comes last of all three so it's the one thing guaranteed to sit on top of the animation,
     not buried under it (also backstopped by WinBanner's own explicit zIndex). */}
-      {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
-      <PairFlightGhosts flight={pairFlight} onCardLanded={handlePairFlightLanded} />
+      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      <PairFlightGhosts flights={pairFlights} onCardLanded={handlePairFlightLanded} />
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }
 
-function makeStyles(colors: TableColors) {
+function makeStyles() {
   return StyleSheet.create({
     // GameChrome's own content area now centers a natural-width board itself (see GameChrome.tsx's
     // GAME_CONTENT_MAX_WIDTH/ContentGutter wiring) - board no longer needs width:'100%' to opt into
@@ -1191,12 +1676,6 @@ function makeStyles(colors: TableColors) {
     // width instead of an artificial full-window one.
     board: {
       alignItems: 'center'
-    },
-    container: {
-      alignItems: 'center',
-      backgroundColor: colors.tableFelt,
-      flex: 1,
-      padding: 16
     },
     controlRow: {
       // Spans the triangle's own full width (set inline via the `width` prop) and spaces its two
@@ -1213,12 +1692,6 @@ function makeStyles(colors: TableColors) {
     },
     pyramidCard: {
       position: 'absolute'
-    },
-    timer: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      fontWeight: '700'
     },
     // zIndex below (`row`) only stays scoped to this container if the container itself
     // establishes a stacking context - position:relative alone doesn't, without its own zIndex

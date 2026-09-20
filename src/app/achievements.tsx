@@ -6,7 +6,7 @@ import { StyleSheet, View } from 'react-native'
 import { Text, useTheme } from 'react-native-paper'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
-import { TableBackground } from '@/components/TableBackground'
+import { LoadingIndicator } from '@/components/GameLoading'
 import { CHROME_FG, CHROME_FG_MUTED, CHROME_SECTION_BG } from '@/components/theme'
 import { ACHIEVEMENT_CATALOG } from '@/stores/achievementCatalog'
 import { useGameStats } from '@/stores/gameStats'
@@ -62,9 +62,10 @@ export default function AchievementsScreen() {
   const bestScore = getBestScore(statsView)
 
   return (
-    // TableBackground behind a transparent BaseStatsScreen, same as every other top-level screen -
-    // see TableBackground's own doc comment. No accentColor/cardBg overrides (there used to be
-    // both, pinned to CHROME_FG/white and tableFeltDark respectively) - BaseStatsScreen's
+    // A transparent BaseStatsScreen over the app-wide felt (TableBackground, mounted once in
+    // _layout.tsx - see its own doc comment), same as every other top-level screen. No
+    // accentColor/cardBg overrides (there used to be both, pinned to CHROME_FG/white and
+    // tableFeltDark respectively) - BaseStatsScreen's
     // reset-confirm step now renders a real ConfirmDialog instance instead of its own hand-styled
     // lookalike, so it always looks exactly like every other confirm prompt in the app (including
     // this game's own "Start a new game?" dialogs) - same danger-red icon/title, same outlined
@@ -72,15 +73,14 @@ export default function AchievementsScreen() {
     // screen's own tinted felt bleeding into just this one dialog and making it look like a
     // different component (see this app's CLAUDE.md).
     <View style={styles.screen}>
-      <TableBackground />
       <BaseStatsScreen onBack={safeBack} insets={insets} onReset={resetAll} fg={CHROME_FG} bg='transparent'>
         {!loaded ? (
           // Stats load asynchronously from AsyncStorage (see useGameStats' own `loaded` doc comment) -
           // without this guard, this screen would render a full flash of zeroed-out "0 games played"
           // content for a beat before the real numbers pop in once the read resolves.
-          <Text variant='bodyMedium' style={[styles.loadingText, { color: CHROME_FG_MUTED }]}>
-            Loading...
-          </Text>
+          <View style={styles.loading}>
+            <LoadingIndicator />
+          </View>
         ) : (
           <>
             {profiles.length > 0 && <ProfilePicker idPrefix='achievements' host={profilePickerHost} profiles={profiles} selectedId={effectiveProfileId} color={CHROME_FG} dark={dark} guestLabel='All Profiles' nullLabel='All Profiles' nullIcon='account-group' onSelect={(profile) => setSelectedProfileId(profile?.id ?? null)} />}
@@ -138,9 +138,9 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
     marginTop: 8
   },
-  loadingText: {
-    marginTop: 24,
-    textAlign: 'center'
+  loading: {
+    alignItems: 'center',
+    marginTop: 24
   },
   screen: {
     flex: 1

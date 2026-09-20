@@ -21,25 +21,25 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, type TableColors } from '@tastic/cards'
+import { CardSizeProvider } from '@tastic/cards'
 import { useEffect, useRef, useState } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
-import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
+import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { PlayingCard } from '@/components/PlayingCard'
 import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
-import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { useGameSession } from '@/components/useGameSession'
-import { useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
+import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { ACESUP_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
@@ -57,6 +57,7 @@ import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -97,8 +98,9 @@ function AcesUpScreenInner() {
   // PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`, `commitState`,
   // `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working unchanged. Aces Up
   // has no foundation-by-suit auto-play, so (unlike Klondike) nothing here ever needs
-  // shrinkFlying/activeFlightCount themselves - only activeFlightCountRef, for handleUndo's guard.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<AcesUpState>()
+  // shrinkFlying - only activeFlightCountRef for handleUndo's guard, and activeFlightCount (the
+  // state mirror) for the win reveal's `settled` below.
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<AcesUpState>()
   const [undoStack, setUndoStack] = useState<UndoEntry<AcesUpState>[]>([])
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -123,16 +125,27 @@ function AcesUpScreenInner() {
   // No suit-based foundation, no separate "completed sequence" slot - won is a pure function of
   // state (every pile down to a single Ace, stock empty), same shape Golf/Spider/Scorpion use.
   const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(AcesUpController, state, 'acesup', session, dealTokenRef, recordDealWon, hintsUsedRef)
+  // Nothing in the air (every discard/move/round-deal/undo flight is counted by startFlights/
+  // settleFlight) and no card still waiting on a deal - what the win celebration waits for (see
+  // useWinReveal).
+  const settled = activeFlightCount === 0 && dealHiddenIds.size === 0
+  // `won` is game state (clock, stat, save, hint/undo gating) and flips with the winning discard; the
+  // celebration - the piles giving way to the win cascade, fireworks, banner - waits until that last
+  // card has flown to the discard pile and landed, so the finished board (the four Aces) reads for a
+  // beat first instead of the cascade starting over a card still in the air.
+  const winRevealed = useWinReveal(won, settled)
+  // The board the win cascade has taken over from, and WHICH piles it took over (set together with startChains, see the
+  // pendingWinCascadeRef effect below): once state IS the current state, and the win is revealed, exactly those piles'
+  // real Aces blank - not a moment earlier. Blanking on winRevealed alone left the four piles EMPTY for the few frames
+  // it takes the effect to measure and mount the ghosts (the Aces teleported away, then the ghosts appeared). Compared
+  // by identity (state is replaced wholesale on every change) so an undo or a New Game un-blanks the piles with no
+  // reset to remember; per pile so a pile whose chain could not start stays up instead of vanishing.
+  const [cascadeHandoff, setCascadeHandoff] = useState<{ state: AcesUpState; piles: ReadonlySet<number> } | null>(null)
   // The one screen in this app with a genuine loss condition - see useStuckLossCheck's own doc
   // comment for why this must be called (and therefore have its own internal effect fire) BEFORE
   // useDerivedWinCheck's effect above ever could race it; AcesUpController.isStuck's own
   // `!isWon(state)` guard is what actually keeps the two from double-firing on the same commit.
   const { stuck, recordedRef: recordedLossRef } = useStuckLossCheck(AcesUpController, state, 'acesup', recordDealAbandoned)
-  /** One ref per pile's own plain container - measured independently of CardRegistry so the win
-   * cascade can still find each pile's screen position after its real card has been hidden
-   * (won-gated, see the piles row below), at which point it's no longer CardRegistry-registered
-   * at all. Mirrors Canfield's own foundationSlotRefs/Scorpion's own tableauColumnRefs. */
-  const pileViewRefs = useRef<(View | null)[]>(new Array(NUM_PILES).fill(null))
   /** Flights (each carrying the DragFlightHandle already returned by the ghost.show() that started
    * it) awaiting their own post-commit measurement + flyTo, queued by tap-to-move-to-empty,
    * tap-to-discard, and undo of either - a list (not a single slot), since these can now genuinely
@@ -233,7 +246,7 @@ function AcesUpScreenInner() {
     sequence.forEach((step, i) => {
       const dest = destinations[i]
       if (!dest) return
-      entries.push({ cardId: step.cardId, card: step.card, from: origin, to: { x: dest.x, y: dest.y }, delayMs: step.visitOrder * DEAL_STAGGER_MS })
+      entries.push({ cardId: step.cardId, card: step.card, from: origin, to: { x: dest.x, y: dest.y }, delayMs: step.visitOrder * dealStaggerMs(sequence.length) })
     })
     if (entries.length === 0) {
       setDealHiddenIds(new Set())
@@ -258,23 +271,36 @@ function AcesUpScreenInner() {
 
   useEffect(() => {
     const pending = pendingWinCascadeRef.current
-    if (!pending || !state) return
+    // Only once the win is REVEALED (winRevealed - which waits for the winning discard's flight to land,
+    // then holds a beat, see useWinReveal), not on the winning commit: that discard is still travelling
+    // to the discard pile then.
+    if (!pending || !state || !winRevealed) return
     pendingWinCascadeRef.current = null
-    // The win cascade needs a real chain of cards - the 4 remaining Aces, one per pile. Each pile
-    // flies independently from its own plain view ref (see pileViewRefs above), not CardRegistry -
-    // the real Ace is hidden the instant `won` flips true (see the piles row below) and therefore
-    // unregistered by the time this runs.
+    // The win cascade needs a real chain of cards - the 4 remaining Aces, one per pile, each launching from
+    // the spot its own real Ace stands on. That spot is the Ace's own registered rect (CardRegistry): the
+    // pile's plain container is NOT usable - with a card in it PileView's container is as tall as the whole
+    // column (maxHeight), and a chain origin must be card-sized (the ghost overlay converts it through the card's
+    // centre when the board is rotated). The registry only knows cards that are still rendered, so this runs
+    // while the piles are STILL on screen and they blank only afterwards, in the SAME commit that mounts the
+    // ghosts (cascadeHandoff, set right beside startChains - React batches the two into one commit from this
+    // async continuation): blanking first left the four piles empty until the ghosts arrived. A pile whose Ace
+    // cannot be measured starts no chain and simply stays up under the banner instead of vanishing.
     ;(async () => {
-      const origins = await Promise.all(pileViewRefs.current.map((view) => measureView(view)))
+      const origins = await Promise.all(state.piles.map((pile) => (pile.length > 0 ? ghost.cardRegistry.measure(pile[0].id) : null)))
       if (dealTokenRef.current !== pending.gen) return
-      const chains = state.piles
-        .map((pile, i) => ({ pile, origin: origins[i] }))
-        .filter((entry) => entry.pile.length > 0 && entry.origin)
-        .map((entry) => ({ cards: entry.pile, origin: entry.origin!, entranceDelayMs: 0 }))
+      const started = new Set<number>()
+      const chains: ChainSpec[] = []
+      state.piles.forEach((pile, i) => {
+        const origin = origins[i]
+        if (pile.length === 0 || !origin) return
+        started.add(i)
+        chains.push({ cards: pile, origin: { x: origin.x, y: origin.y }, entranceDelayMs: 0 })
+      })
       winCascade.startChains(chains, cardWidth)
+      if (chains.length > 0) setCascadeHandoff({ state, piles: started })
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
+  }, [state, winRevealed])
 
   useEffect(() => {
     if (pendingFlightRef.current.length === 0 || !state) return
@@ -623,13 +649,7 @@ function AcesUpScreenInner() {
     commitState(result)
   }
 
-  if (!state) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.loadingText}>Loading...</Text>
-      </View>
-    )
-  }
+  if (!state) return <GameLoading />
 
   return (
     <CardSizeProvider width={cardWidth}>
@@ -644,10 +664,13 @@ function AcesUpScreenInner() {
         <View style={[styles.pilesRow, { gap }]}>
           {state.piles.map((pile, pileIndex) => {
             const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === pileIndex).reduce((sum, f) => sum + f.count, 0)
-            // Hidden entirely once won - the win cascade owns displaying these cards now (see the
-            // pendingWinCascadeRef effect above), the same way every other game's own final pile
-            // display goes blank once its cascade takes over.
-            const cards = won ? [] : pile
+            // Hidden entirely once the win is revealed AND the cascade has taken this pile over (see the
+            // pendingWinCascadeRef effect above) - the same way every other game's own final pile display
+            // goes blank once its cascade takes over. NOT on `won` itself: that flips with the winning
+            // discard, whose card is still flying, and the finished board should read for a beat first. And
+            // not on `winRevealed` alone either: the effect measures the still-rendered Aces first
+            // (cascadeHandoff), so the ghosts land in the very commit the piles blank.
+            const cards = winRevealed && cascadeHandoff?.state === state && cascadeHandoff.piles.has(pileIndex) ? [] : pile
             const dragConfig: PileDragConfig = {
               registry: dropZones,
               // Only ever the true top card (indexFromTop === 0) - Aces Up never moves more than
@@ -659,41 +682,22 @@ function AcesUpScreenInner() {
             }
             return (
               <DropZone key={pileIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: pileIndex }} style={[styles.pile, { width: cardWidth }]}>
-                <View
-                  ref={(el) => {
-                    pileViewRefs.current[pileIndex] = el
-                  }}
-                  collapsable={false}
-                >
-                  <PileView cards={cards} onPressCard={(card, _indexFromTop, measure) => handleCardTap(pileIndex, card, measure)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} shakeCardId={shake?.cardId} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: pileIndex })} />
-                </View>
+                <PileView cards={cards} onPressCard={(card, _indexFromTop, measure) => handleCardTap(pileIndex, card, measure)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} shakeCardId={shake?.cardId} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: pileIndex })} />
               </DropZone>
             )
           })}
         </View>
       </GameChrome>
-      {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
       {stuck && !won && <LossBanner colors={colors} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }
 
-function makeStyles(colors: TableColors) {
+function makeStyles() {
   return StyleSheet.create({
-    container: {
-      backgroundColor: colors.tableFelt,
-      flex: 1,
-      padding: 12
-    },
-    loadingText: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      marginTop: 40,
-      textAlign: 'center'
-    },
     pile: {},
     pilesRow: {
       flexDirection: 'row',

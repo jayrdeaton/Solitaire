@@ -1,23 +1,23 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
+import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
-import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
+import { dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { PlayingCard } from '@/components/PlayingCard'
 import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
-import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { useGameSession } from '@/components/useGameSession'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
@@ -39,6 +39,7 @@ import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -160,6 +161,19 @@ function YukonScreenInner() {
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
   const { won, setWon, recordedWinRef, pendingWinCascadeRef, checkWin } = useFoundationWinCheck(controller, 'yukon', session, dealTokenRef, recordDealWon, hintsUsedRef)
+  // Nothing animating and the initial deal finished - what the auto-play hook below waits for, and
+  // what the win celebration waits for too (see useWinReveal).
+  const settled = activeFlightCount === 0 && dealHiddenIds.size === 0
+  // `won` is game state (clock, stat, save, undo/hint gating) and flips with the winning move; the
+  // celebration - foundations giving way to the win cascade, fireworks, banner - waits until the
+  // last card has flown in and landed, so it is never hidden mid-flight (which used to make it
+  // simply appear) and the finished board reads for a beat first.
+  const winRevealed = useWinReveal(won, settled)
+  // The board the win cascade has taken over from, and which piles it took over (set together with startChains, see
+  // runWinCascade): once it IS the current state, and the win is revealed, exactly those piles blank their real cards -
+  // not a moment earlier. Compared by identity (state is replaced wholesale on every change), so an undo or a New Game
+  // un-blanks the piles with no reset to remember.
+  const [cascadeHandoff, setCascadeHandoff] = useState<{ state: YukonState; piles: ReadonlySet<number> } | null>(null)
   /** One ref per foundation slot's own container (see FoundationCell's slotRef) - measured
    * independently of CardRegistry so the win cascade can still find each pile's screen position
    * after its real King has been hidden (won-gated, see the foundation row below), at which point
@@ -177,8 +191,9 @@ function YukonScreenInner() {
    * at the moment this flight was queued - re-checked once the async measurement below resolves, so
    * a flight queued against a game that's since been replaced by "New Game" doesn't measure/land
    * against the new deal's DOM (card ids are shuffle-independent and reused across deals - see
-   * deck.ts). */
-  const pendingFlightRef = useRef<{ cardId: string; fast?: boolean; sweep?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
+   * deck.ts). `to` is the pile the card is headed for, so a foundation landing can fall back to that
+   * pile's own slot container when the card itself can't be measured. */
+  const pendingFlightRef = useRef<{ cardId: string; to: PileRef; fast?: boolean; sweep?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
   /** A cascade-undo return flight awaiting its post-commit per-card measurement, mirroring
    * pendingFlightRef's own deferral reasoning - see the [state]-effect below and
    * groupCascadedByFoundation's doc comment. Independent of pendingFlightRef: the primary card's
@@ -293,7 +308,7 @@ function YukonScreenInner() {
         card: step.rowIndex <= step.colIndex ? { ...step.card, faceUp: false } : step.card,
         from: origin,
         to: { x: dest.x, y: dest.y },
-        delayMs: step.visitOrder * DEAL_STAGGER_MS
+        delayMs: step.visitOrder * dealStaggerMs(sequence.length)
       })
     })
     if (entries.length === 0) {
@@ -336,22 +351,30 @@ function YukonScreenInner() {
   }
 
   // Foundation piles are guaranteed full (13 cards each, Ace..King) the instant isWon() is true -
-  // measures each pile's own slot container (see foundationSlotRefs/FoundationCell's slotRef), not
-  // the King via CardRegistry, since the real King is hidden (and therefore unregistered) the
-  // instant `won` flips true, in the same commit this effect reacts to. Chains that whole pile
+  // measures each pile's own slot container (see foundationSlotRefs/FoundationCell's slotRef), which is
+  // card-sized and always mounted, whether or not the pile's real cards are drawn. Chains that whole pile
   // King-first/head down to Ace-last/tail (foundation arrays are built bottom-up, Ace pushed first,
   // so reversing gives the right order). Same dealTokenRef guard as every other async measurement
   // here, for the same "New Game tapped mid-measurement" reason.
+  //
+  // The real cards blank only when the ghosts that replace them mount, in the SAME commit (cascadeHandoff, set right
+  // beside startChains - React batches the two): blanking them when the win is revealed instead, and starting the
+  // chains from the async continuation that follows, left every pile empty for the frames in between. A pile whose
+  // chain could not start (no measurable slot) keeps its real cards, and if no chain can start at all the piles simply
+  // stay up under the banner instead of vanishing.
   async function runWinCascade(s: YukonState, gen: number) {
     const origins = await Promise.all(foundationSlotRefs.current.map((view) => measureView(view)))
     if (dealTokenRef.current !== gen) return
     const chains: ChainSpec[] = []
+    const handedOff = new Set<number>()
     s.foundation.forEach((pile, suit) => {
       const origin = origins[suit]
       if (!origin || pile.length === 0) return
       chains.push({ cards: pile.slice().reverse(), origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
+      handedOff.add(suit)
     })
     winCascade.startChains(chains, cardWidth)
+    if (chains.length > 0) setCascadeHandoff({ state: s, piles: handedOff })
   }
 
   // Same race as the deal effect above: measuring CardRegistry synchronously right after the
@@ -365,7 +388,11 @@ function YukonScreenInner() {
     pendingFlightRef.current = []
     pending.forEach((p) => {
       ;(async () => {
-        const landed = await ghost.cardRegistry.measure(p.cardId)
+        // A foundation's registered top card is the usual landing spot, but if it can't be found (a
+        // later flight to the same pile already buried it) the pile's own slot container is
+        // card-sized and always there - fly to that rather than hiding the ghost and letting the card
+        // simply appear.
+        const landed = (await ghost.cardRegistry.measure(p.cardId)) ?? (p.to.zone === 'foundation' ? await measureView(foundationSlotRefs.current[p.to.index]) : null)
         // A new game can start while the measurement above is in flight (e.g. tapping "New Game"
         // mid auto-play-cascade - see maybeAutoPlay). `landed`, if it resolved at all, would then
         // be measuring an unrelated card in the NEW deal (ids are shuffle-independent and reused
@@ -415,7 +442,7 @@ function YukonScreenInner() {
   // is true), while dealTokenRef's own gen-check above/below drops this cascade-return's callbacks
   // harmlessly if a new deal ever did start anyway. No concrete case where retiring the separate ref
   // breaks anything was found - see YukonScreen's CLAUDE.md history for the analogous fix to
-  // DealGhostCard's own React key generation, which already makes overlapping deal.start() calls
+  // DealProvider's own React key generation (and per-deal stamp on every ghost slot), which already makes overlapping deal.start() calls
   // safe at the mechanism level.
   useEffect(() => {
     const pending = pendingCascadeUndoRef.current
@@ -504,14 +531,16 @@ function YukonScreenInner() {
 
   // Same deferral reasoning as the deal/flight effects above - never measure CardRegistry
   // synchronously inside checkWin itself, since the winning foundation cards' own registration
-  // effects haven't necessarily run yet in that same commit.
+  // effects haven't necessarily run yet in that same commit. Held back until the win is REVEALED
+  // (not merely won): the cascade takes over from the foundations' real cards, which must stay put
+  // until the last flight has landed on them.
   useEffect(() => {
     const pending = pendingWinCascadeRef.current
-    if (!pending || !state) return
+    if (!pending || !state || !winRevealed) return
     pendingWinCascadeRef.current = null
     runWinCascade(state, pending.gen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
+  }, [state, winRevealed])
 
   // Auto-play-to-foundation: only ever fires as a direct consequence of the player's own move - see
   // useAutoFoundationCascade for the trigger model (armFromForwardMove/armFromAceEvent, called from
@@ -556,7 +585,7 @@ function YukonScreenInner() {
 
   const cascade = useAutoFoundationCascade<YukonState>({
     state,
-    settled: activeFlightCount === 0 && dealHiddenIds.size === 0,
+    settled,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     computeNextStep,
@@ -658,9 +687,16 @@ function YukonScreenInner() {
     startFlights(cascadeGroups.length > 0 ? 2 : 1)
 
     const sourcePile = resolvePile(primary.to)
-    const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - primary.count) : []
+    // A foundation move's own card can sit BURIED under the cascaded auto-plays that landed on the
+    // same pile after it (they come back via their own flights below) - so it is found by id, not
+    // assumed to be on top.
+    const buriedAt = primary.to.zone === 'foundation' && sourcePile ? sourcePile.findIndex((c) => c.id === primary.anchorCardId) : -1
+    const movingCards = sourcePile ? (buriedAt >= 0 ? [sourcePile[buriedAt]] : sourcePile.slice(sourcePile.length - primary.count)) : []
     const offsetStep = primary.count > 1 ? faceUpFanOffset(cardWidth) : 0
-    const origin = movingCards.length > 0 ? await ghost.cardRegistry.measure(primary.anchorCardId) : null
+    // A buried card, or any foundation card once the win celebration has hidden the real ones, is not
+    // in CardRegistry (only a visible top card is) - the pile's own always-present slot container is
+    // where it sits, so it flies from there instead of simply reappearing.
+    const origin = movingCards.length > 0 ? ((await ghost.cardRegistry.measure(primary.anchorCardId)) ?? (primary.to.zone === 'foundation' ? await measureView(foundationSlotRefs.current[primary.to.index]) : null)) : null
 
     setUndoStack((stack) => stack.slice(0, -1))
 
@@ -687,7 +723,7 @@ function YukonScreenInner() {
       const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
       const flyingId = beginFlying(primary.from, primary.count)
       commitState(prevState)
-      pendingFlightRef.current.push({ cardId: primary.anchorCardId, gen, flyingId, flight })
+      pendingFlightRef.current.push({ cardId: primary.anchorCardId, to: primary.from, gen, flyingId, flight })
     } else {
       commitState(prevState)
       settleFlight() // primary: nothing to fly, settles immediately
@@ -754,7 +790,7 @@ function YukonScreenInner() {
   function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
     const flyingId = beginFlying(to, count)
-    pendingFlightRef.current.push({ cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
+    pendingFlightRef.current.push({ cardId: anchorCardId, to, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 
@@ -829,13 +865,7 @@ function YukonScreenInner() {
     }
   }
 
-  if (!state) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.loadingText}>Loading...</Text>
-      </View>
-    )
-  }
+  if (!state) return <GameLoading />
 
   return (
     <CardSizeProvider width={cardWidth}>
@@ -844,12 +874,26 @@ function YukonScreenInner() {
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)
-              const isFlyingHere = flying.some((f) => f.to.zone === 'foundation' && f.to.index === i) || cascadeFlyingFoundations.has(i)
+              // Several tap flights can be headed to one pile at once (they overlap), so count the cards still
+              // in the air. The pile keeps showing the top card that has already LANDED under the rest instead of
+              // reverting to the one from before the whole stream (see FoundationCell's settledCard).
+              //
+              // That applies to forward flights ONLY. The cascade-undo flag (the pile's only other reason to be
+              // hidden) leaves settledCard unset, so the cell keeps its frozen copy of what was on top before the
+              // undo - the departing card. The revert has already taken the departing cards off `pile`, but their
+              // return ghosts only start after the [state] effect has measured (slot, per-card destination) and the
+              // deal layer has mounted its slots, several frames later: showing what is UNDER them (settledCard)
+              // would let the departing card vanish for that whole gap before its ghost appears. It cannot
+              // coincide with a forward flight - undo waits for every flight and blocks new ones.
+              const flightsInAir = flying.filter((f) => f.to.zone === 'foundation' && f.to.index === i).reduce((sum, f) => sum + f.count, 0)
+              const isFlyingHere = flightsInAir > 0 || cascadeFlyingFoundations.has(i)
+              const cascadeTookOver = winRevealed && cascadeHandoff?.state === state && cascadeHandoff.piles.has(i)
               return (
                 <DropZone key={i} registry={dropZones} pileRef={{ zone: 'foundation', index: i }} style={[styles.foundationSlot, { width: cardWidth }]}>
                   <FoundationCell
-                    card={won ? undefined : t}
+                    card={cascadeTookOver ? undefined : t}
                     isFlyingHere={isFlyingHere}
+                    settledCard={flightsInAir > 0 ? (pile[pile.length - 1 - flightsInAir] ?? null) : undefined}
                     suit={SUITS[i]}
                     highlighted={hintCountFor(activeHint, { zone: 'foundation', index: i }) > 0}
                     slotRef={(el) => {
@@ -904,31 +948,19 @@ function YukonScreenInner() {
     (see WinCascadeGhosts' own doc comment for why nesting depth alone can't do this) - the win
     banner comes last of all three so it's the one thing guaranteed to sit on top of the animation,
     not buried under it. */}
-      {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }
 
-function makeStyles(colors: TableColors) {
+function makeStyles() {
   return StyleSheet.create({
-    container: {
-      backgroundColor: colors.tableFelt,
-      flex: 1,
-      padding: 12
-    },
     dealOriginSlot: {},
     foundationSlot: {},
     foundationsGroup: {
       flexDirection: 'row'
-    },
-    loadingText: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      marginTop: 40,
-      textAlign: 'center'
     },
     tableauColumn: {},
     tableauRow: {

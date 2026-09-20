@@ -32,12 +32,21 @@ interface FoundationCellProps {
    * own `hinted` prop. */
   highlighted?: boolean
   slotRef?: (el: View | null) => void
+  /** What to show under the incoming ghost(s) while `isFlyingHere`: the top card that has already
+   * LANDED (`null` = the empty slot). Omit it (every game but FreeCell's finish) to use the frozen
+   * copy of whatever was on top before the flight began, which is right for one flight at a time
+   * but goes stale once flights to the same pile OVERLAP: `isFlyingHere` never drops in between, so
+   * the frozen copy is never refreshed and every ghost that lands vanishes onto a pile still
+   * showing the card from before the whole stream. The caller derives it from the pile and how
+   * many of its cards are still in the air: `pile[pile.length - 1 - flightsInAir] ?? null`. */
+  settledCard?: Card | null
 }
 
-export function FoundationCell({ card, isFlyingHere, suit, rank, highlighted, slotRef }: FoundationCellProps) {
+export function FoundationCell({ card, isFlyingHere, suit, rank, highlighted, slotRef, settledCard }: FoundationCellProps) {
   const ghost = useDragGhost()
   const viewRef = useRef<View>(null)
-  const frozen = useFrozenWhileHidden(card, isFlyingHere)
+  const frozenCopy = useFrozenWhileHidden(card, isFlyingHere)
+  const frozen = settledCard === undefined ? frozenCopy : settledCard
 
   useEffect(() => {
     if (!card) return

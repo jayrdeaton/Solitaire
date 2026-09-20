@@ -54,6 +54,13 @@ interface StockWasteProps {
    * flight starts at 3 and counts down to 0 as each of its 3 ghosts lands, farthest-from-top
    * first - see KlondikeScreen's handleDrawStock. */
   wasteHiddenCount?: number
+  /** What the waste slot shows UNDER the flying card(s) while `wasteHiddenCount` > 0, when the caller knows better than the
+   * frozen copy of "whatever was on top before the flights began": the top card that has already LANDED (`null` = the empty
+   * slot) - the same optional prop DiscardCell/FoundationCell have, for the same reason. The frozen copy goes stale once draw
+   * flights OVERLAP (a fast player taps the stock again before the last card landed: the hidden count never drops in between,
+   * so it is never refreshed), and every ghost that lands vanishes onto the card from before the whole stream. Omit it (every
+   * other caller, and any flight that is not a stream of draws) to keep the frozen copy. */
+  settledWasteTop?: Card | null
   /** Bumped (to any new value) to play the waste card's "nowhere to go" shake - see
    * shakeAnimation.ts and each screen's handleCardTap. */
   wasteShakeToken?: number
@@ -91,7 +98,7 @@ interface StockWasteProps {
  * a stock pile. Waste sits first so the card players are about to act on lands next to the tableau,
  * with the draw pile as the secondary action beside it. When the stock runs out but the waste still
  * has cards, an empty stock slot shows a recycle hint - every game here allows unlimited recycling. */
-export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EMPTY_WASTE_BEHIND, onDrawStock, onWastePress, onWasteDrop, wasteSelected, wasteHinted, stockHinted, wasteHiddenCount = 0, wasteShakeToken, cardWidth, gap, style, stockRef, wasteRef, stockHidden = false }: StockWasteProps) {
+export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EMPTY_WASTE_BEHIND, onDrawStock, onWastePress, onWasteDrop, wasteSelected, wasteHinted, stockHinted, wasteHiddenCount = 0, settledWasteTop, wasteShakeToken, cardWidth, gap, style, stockRef, wasteRef, stockHidden = false }: StockWasteProps) {
   const colors = useTableColors()
   const styles = React.useMemo(() => makeStyles(colors), [colors])
   const wasteHasCards = !!wasteTop
@@ -114,6 +121,7 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
   const frozenBehind1 = useFrozenWhileHidden(behind1, behind1Hidden)
   const frozenBehind2 = useFrozenWhileHidden(behind2, behind2Hidden)
   const frozenStockTopCard = useFrozenWhileHidden(stockTopCard, stockHidden)
+  const underTop = settledWasteTop === undefined ? frozenWasteTop : settledWasteTop
   // Reuses faceUpFanOffset's fraction, tuned to clear PileView's vertical corner-row content -
   // this deck's corner row (rank left, suit pip right - see CardFace's cornerRow) spans nearly the
   // full card width, so the same fraction leaves enough horizontal peek to read a covered card's
@@ -138,7 +146,7 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
           {wasteTop ? <DraggableCard card={wasteTop} selected={wasteSelected} hinted={wasteHinted} hidden={topHidden} shakeToken={wasteShakeToken} emptyFallback={<EmptySlot />} onPress={onWastePress} onDrop={onWasteDrop} testID='waste-top' /> : <EmptySlot hinted={wasteHinted} />}
           {topHidden && (
             <View style={StyleSheet.absoluteFill} pointerEvents='none'>
-              {frozenWasteTop ? <PlayingCard card={frozenWasteTop} /> : <EmptySlot />}
+              {underTop ? <PlayingCard card={underTop} /> : <EmptySlot />}
             </View>
           )}
         </DropZone>

@@ -14,7 +14,6 @@ import { GAME_CONTENT_BOTTOM_PADDING, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDI
 import { RotatedContentGutter } from './RotatedContentGutter'
 import { RulesDialog } from './RulesDialog'
 import { SettingsDialog } from './SettingsDialog'
-import { TableBackground } from './TableBackground'
 import { CHROME_FG } from './theme'
 import { CARD_FONT_FAMILY } from './useFontsPreload'
 
@@ -288,7 +287,6 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   // need no transform of their own (rotation={0}). See withGameProviders for why it lives there.
   return (
     <View style={styles.screen}>
-      <TableBackground />
       <RotatedContentGutter maxContentWidth={GAME_CONTENT_MAX_WIDTH} style={styles.gutterRow}>
         <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: (isWide ? topPadding : GAME_CONTENT_TOP_PADDING) + insets.top }]}>
           {/* Plain RN Pressable, not @rific/feedback-press's - a background tap toggling the

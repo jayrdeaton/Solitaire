@@ -9,15 +9,27 @@ import { Card } from '@/engine/types'
 import { ScreenPoint } from '../dealing/measureView'
 import { screenToLocalPoint } from '../overlayFrame'
 import { PlayingCard } from '../PlayingCard'
-import { BOUNCE_APEX_CONSERVATIVE_FRACTION, BOUNCE_FLOOR_MARGIN_PX, BOUNCE_H_HALF_PERIOD_MAX_MS, BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_H_MARGIN_PX, BOUNCE_MIN_SPAN_PX, BOUNCE_TOP_MARGIN_PX, BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, CHAIN_SEGMENT_DELAY_MS } from './winCascadeMotion'
+import { BOUNCE_APEX_CONSERVATIVE_FRACTION, BOUNCE_FLOOR_MARGIN_PX, BOUNCE_H_HALF_PERIOD_MAX_MS, BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_H_MARGIN_PX, BOUNCE_MIN_SPAN_PX, BOUNCE_TOP_MARGIN_PX, BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, cardXAtElapsed, cardYAtElapsed, CHAIN_SEGMENT_DELAY_MS, ChainPath, isGhostVisible } from './winCascadeMotion'
 
 export interface ChainSpec {
   /** Head-to-tail order - index 0 leads the chain (e.g. a foundation pile's King, or Pyramid's
    * most-recently-discarded card). */
   cards: Card[]
   origin: ScreenPoint
+  /** Opt-in: where each card of `cards` really stands on screen (same screen-space as `origin`,
+   * aligned by index - e.g. a fanned column's cards, each at its own spot). A card with an entry
+   * waits there, visible, until its entrance, then falls onto the racked chain (see
+   * cardXAtElapsed); a card without one - or a chain with no `cardOrigins` at all - starts on
+   * `origin` exactly as it always did. Each entry must be card-sized, like `origin`: it goes through
+   * the same rotation conversion. */
+  cardOrigins?: ScreenPoint[]
   /** This chain's own launch delay relative to the cascade's other chains. */
   entranceDelayMs: number
+  /** Opt-in: this chain's own delay between successive cards (CHAIN_SEGMENT_DELAY_MS when omitted). A chain's total lag
+   * (cards * this) has to stay well under the bounce half-period or its tail lands in the opposite leg and the snake splits
+   * apart - fine at the default 42ms for the ~13-card chains that value was tuned on, not for a 52-card one (~2.1s). Pass
+   * chainSegmentDelayMs(cards.length) to cap the whole chain's span instead. */
+  segmentDelayMs?: number
 }
 
 export interface WinCascadeController {
@@ -45,33 +57,6 @@ export function useWinCascade(): WinCascadeController {
   const ctx = useContext(WinCascadeContext)
   if (!ctx) throw new Error('useWinCascade must be used within a WinCascadeProvider')
   return ctx.controller
-}
-
-/** One chain's bounce path - randomized once per chain (see buildChainPath), then shared by
- * reference across every card in that chain, which is what keeps a chain racked together forever
- * instead of each card drifting off on its own independent physics. */
-interface ChainPath {
-  origin: ScreenPoint
-  floorY: number
-  apexY: number
-  vHalfPeriodMs: number
-  /** Wall this chain heads toward on its one-time launch leg, then away from/back to forever after
-   * (see the coin flip below for why this isn't always the geometrically nearer wall). */
-  firstX: number
-  secondX: number
-  hHalfPeriodMs: number
-  initialLegMs: number
-  /** performance.now() at the instant this chain launched - the one shared "t=0" every card in
-   * the chain measures its own elapsed time against (elapsed = frameInfo.timestamp - chainStartMs
-   * - delayMs, see ChainGhostCard). frameInfo.timestamp comes from the SAME requestAnimationFrame
-   * timestamp Reanimated's frame-callback registry passes to every registered callback in a given
-   * tick (see FrameCallbackRegistryUI.ts's single shared rAF loop) - the same clock domain as
-   * performance.now() - so every card's position is a pure, stateless function of real elapsed
-   * time, computed fresh every frame. That's what makes two cards' relative offset exactly
-   * delayMs apart forever, with nothing to drift or coalesce - unlike the old design, where each
-   * card ran its own independent setTimeout chain and 20ms-apart chains could get coalesced by the
-   * browser's timer scheduler into firing at the same tick, locking pairs of cards together. */
-  chainStartMs: number
 }
 
 function randomBetween(min: number, max: number): number {
@@ -125,68 +110,19 @@ function buildChainPath(origin: ScreenPoint, bounds: { width: number; height: nu
   return { origin, floorY, apexY, vHalfPeriodMs, firstX, secondX, hHalfPeriodMs, initialLegMs, chainStartMs: performance.now() }
 }
 
-function easeInQuad(f: number): number {
-  'worklet'
-  return f * f
-}
-
-function easeOutQuad(f: number): number {
-  'worklet'
-  const g = 1 - f
-  return 1 - g * g
-}
-
-/** Pure function of elapsed time since a card's own launch (already delay-adjusted by the
- * caller) - no state, no scheduling, just math. Before the launch leg completes (elapsedMs <
- * vHalfPeriodMs), it's a straight accelerating fall from the real origin to the floor (see
- * ChainGhostCard's old doc comment on why this is always a fall, never the apex, and why it
- * always accelerates). After that, it's a forever-repeating rise-to-apex/fall-to-floor cycle,
- * each leg exactly vHalfPeriodMs long. Being pure is the whole point: two cards evaluate the
- * exact same function, just at elapsedMs values exactly delayMs apart, so their relative offset
- * can never drift or coalesce the way independently-scheduled timers could (see ChainPath's
- * chainStartMs doc comment). */
-function verticalYAtElapsed(path: ChainPath, elapsedMs: number): number {
-  'worklet'
-  if (elapsedMs <= 0) return path.origin.y
-  if (elapsedMs < path.vHalfPeriodMs) {
-    const frac = elapsedMs / path.vHalfPeriodMs
-    return path.origin.y + (path.floorY - path.origin.y) * easeInQuad(frac)
-  }
-  const cyclePos = (elapsedMs - path.vHalfPeriodMs) % (2 * path.vHalfPeriodMs)
-  if (cyclePos < path.vHalfPeriodMs) {
-    const frac = cyclePos / path.vHalfPeriodMs
-    return path.floorY + (path.apexY - path.floorY) * easeOutQuad(frac)
-  }
-  const frac = (cyclePos - path.vHalfPeriodMs) / path.vHalfPeriodMs
-  return path.apexY + (path.floorY - path.apexY) * easeInQuad(frac)
-}
-
-/** Same idea as verticalYAtElapsed, for the horizontal bounce - linear throughout (see
- * buildChainPath's firstX/secondX), so no easing curves needed, just a triangle wave. */
-function horizontalXAtElapsed(path: ChainPath, elapsedMs: number): number {
-  'worklet'
-  if (elapsedMs <= 0) return path.origin.x
-  if (elapsedMs < path.initialLegMs) {
-    const frac = elapsedMs / path.initialLegMs
-    return path.origin.x + (path.firstX - path.origin.x) * frac
-  }
-  const cyclePos = (elapsedMs - path.initialLegMs) % (2 * path.hHalfPeriodMs)
-  if (cyclePos < path.hHalfPeriodMs) {
-    const frac = cyclePos / path.hHalfPeriodMs
-    return path.firstX + (path.secondX - path.firstX) * frac
-  }
-  const frac = (cyclePos - path.hHalfPeriodMs) / path.hHalfPeriodMs
-  return path.secondX + (path.firstX - path.secondX) * frac
-}
-
-function ChainGhostCard({ card, path, delayMs, containerOffsetX, containerOffsetY }: { card: Card; path: ChainPath; delayMs: number; containerOffsetX: SharedValue<number>; containerOffsetY: SharedValue<number> }) {
-  const bx = useSharedValue(path.origin.x)
-  const by = useSharedValue(path.origin.y)
-  const opacity = useSharedValue(0)
+function ChainGhostCard({ card, path, delayMs, segmentDelayMs, offsetX, offsetY, alwaysVisible, containerOffsetX, containerOffsetY }: { card: Card; path: ChainPath; delayMs: number; segmentDelayMs: number; offsetX: number; offsetY: number; alwaysVisible: boolean; containerOffsetX: SharedValue<number>; containerOffsetY: SharedValue<number> }) {
+  // Parked where the real card stood until this card's own entrance - VISIBLE, not hidden until then:
+  // a screen blanks its real cards as the cascade takes over, so a ghost waiting invisible for its
+  // entrance (chain i enters i * CHAIN_ENTRANCE_STAGGER_MS late, a card 42ms after the one ahead of
+  // it) left the piles/slots/columns empty for up to ~1.5s with no card standing where one had just
+  // been. See isGhostVisible for which cards show while parked, and cardXAtElapsed for offsetX/Y.
+  const bx = useSharedValue(path.origin.x + offsetX)
+  const by = useSharedValue(path.origin.y + offsetY)
+  const opacity = useSharedValue(alwaysVisible ? 1 : 0)
 
   // Driven entirely by useFrameCallback rather than a chain of setTimeout-triggered withTiming
   // calls - every frame, this card's position is RECOMPUTED from scratch as a pure function of
-  // real elapsed time (see verticalYAtElapsed/horizontalXAtElapsed), not advanced incrementally
+  // real elapsed time (see cardXAtElapsed/cardYAtElapsed), not advanced incrementally
   // from wherever a previous scheduled callback left off. That statelessness is what makes it
   // immune to the bug the old per-card setTimeout chains had: 13 independent timers only
   // CHAIN_SEGMENT_DELAY_MS apart could get coalesced by the browser's scheduler into firing
@@ -194,9 +130,9 @@ function ChainGhostCard({ card, path, delayMs, containerOffsetX, containerOffset
   // coalesce - two cards' relative offset is exactly delayMs apart by construction, every frame.
   useFrameCallback((frameInfo) => {
     const elapsed = frameInfo.timestamp - path.chainStartMs - delayMs
-    opacity.value = elapsed > 0 ? 1 : 0
-    by.value = verticalYAtElapsed(path, elapsed)
-    bx.value = horizontalXAtElapsed(path, elapsed)
+    opacity.value = isGhostVisible(elapsed, alwaysVisible, segmentDelayMs) ? 1 : 0
+    by.value = cardYAtElapsed(path, elapsed, offsetY)
+    bx.value = cardXAtElapsed(path, elapsed, offsetX)
   })
 
   const style = useAnimatedStyle(() => ({
@@ -213,8 +149,13 @@ function ChainGhostCard({ card, path, delayMs, containerOffsetX, containerOffset
 
 interface ResolvedChain {
   path: ChainPath
-  /** Tail-to-head render order, so each chain's head card paints on top of its own tail. */
-  cards: { card: Card; delayMs: number }[]
+  /** The chain's own delay between successive cards (ChainSpec.segmentDelayMs, else CHAIN_SEGMENT_DELAY_MS). */
+  segmentDelayMs: number
+  /** Tail-to-head render order, so each chain's head card paints on top of its own tail. `offsetX/Y`
+   * are where the card really stood minus the chain's origin (0 without a cardOrigins entry, in the
+   * rotated frame the path lives in), `alwaysVisible` whether it shows while parked - see
+   * isGhostVisible. */
+  cards: { card: Card; delayMs: number; offsetX: number; offsetY: number; alwaysVisible: boolean }[]
 }
 
 type CascadeState = { mode: 'idle' } | { mode: 'chains'; chains: ResolvedChain[]; cardWidth: number }
@@ -275,10 +216,25 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
         // measured on a rotated board has to be converted into it first. A no-op at rotation 0, where
         // WinCascadeGhosts' own overlay-offset subtraction already handles screen -> overlay space.
         const { rotation: rot, width: sw, height: sh } = screenRef.current
-        const resolved: ResolvedChain[] = chains.map((chain, chainIndex) => ({
-          path: buildChainPath(rot === 0 ? chain.origin : screenToLocalPoint(chain.origin.x, chain.origin.y, cardWidth, cardHeight, rot, sw, sh), boundsRef.current, cardWidth, chainIndex, hHalfPeriods[chainIndex], floorY, apexYs[chainIndex]),
-          cards: chain.cards.map((card, i) => ({ card, delayMs: chain.entranceDelayMs + i * CHAIN_SEGMENT_DELAY_MS })).reverse()
-        }))
+        const toLocal = (point: ScreenPoint): ScreenPoint => (rot === 0 ? point : screenToLocalPoint(point.x, point.y, cardWidth, cardHeight, rot, sw, sh))
+        const resolved: ResolvedChain[] = chains.map((chain, chainIndex) => {
+          const origin = toLocal(chain.origin)
+          const segmentDelayMs = chain.segmentDelayMs ?? CHAIN_SEGMENT_DELAY_MS
+          return {
+            segmentDelayMs,
+            path: buildChainPath(origin, boundsRef.current, cardWidth, chainIndex, hHalfPeriods[chainIndex], floorY, apexYs[chainIndex]),
+            cards: chain.cards
+              .map((card, i) => {
+                // Converted with the same function as the chain's own origin, so the offset between them is the
+                // real (rotated-frame) distance between the two spots.
+                const own = chain.cardOrigins?.[i]
+                const local = own ? toLocal(own) : null
+                // The head (index 0) is the card the real pile showed; a card with a spot of its own stood there too.
+                return { card, delayMs: chain.entranceDelayMs + i * segmentDelayMs, offsetX: local ? local.x - origin.x : 0, offsetY: local ? local.y - origin.y : 0, alwaysVisible: i === 0 || !!local }
+              })
+              .reverse()
+          }
+        })
         setCascade({ mode: 'chains', chains: resolved, cardWidth })
       },
       clear() {
@@ -322,7 +278,7 @@ export function WinCascadeGhosts() {
 
   return (
     <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
-      {cascade.mode === 'chains' && <CardSizeProvider width={cascade.cardWidth}>{cascade.chains.flatMap((chain) => chain.cards.map(({ card, delayMs }) => <ChainGhostCard key={`${generation}-${card.id}`} card={card} path={chain.path} delayMs={delayMs} containerOffsetX={containerOffsetX} containerOffsetY={containerOffsetY} />))}</CardSizeProvider>}
+      {cascade.mode === 'chains' && <CardSizeProvider width={cascade.cardWidth}>{cascade.chains.flatMap((chain) => chain.cards.map(({ card, delayMs, offsetX, offsetY, alwaysVisible }) => <ChainGhostCard key={`${generation}-${card.id}`} card={card} path={chain.path} delayMs={delayMs} segmentDelayMs={chain.segmentDelayMs} offsetX={offsetX} offsetY={offsetY} alwaysVisible={alwaysVisible} containerOffsetX={containerOffsetX} containerOffsetY={containerOffsetY} />))}</CardSizeProvider>}
     </View>
   )
 }

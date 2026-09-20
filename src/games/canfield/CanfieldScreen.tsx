@@ -8,27 +8,27 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
+import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
-import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
+import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { GameLoading } from '@/components/GameLoading'
 import { wasteFanScreenShift } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
-import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
 import { useGameSession } from '@/components/useGameSession'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
@@ -51,6 +51,7 @@ import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -173,6 +174,8 @@ function CanfieldScreenInner() {
   const rotation = useRotation()
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
+  // The waste slot itself (StockWaste's wasteRef) - exactly card-sized, and where the top card sits.
+  const wasteViewRef = useRef<View>(null)
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
@@ -184,6 +187,19 @@ function CanfieldScreenInner() {
   // file. Canfield's draw count is a per-deal config (see controllerRef's own doc comment above),
   // the same reasoning KlondikeScreen's own controllerRef exists for.
   const { won, setWon, recordedWinRef, pendingWinCascadeRef, checkWin } = useFoundationWinCheck({ isWon: (s: CanfieldState) => controllerRef.current.isWon(s) }, 'canfield', session, dealTokenRef, recordDealWon, hintsUsedRef)
+  // Nothing animating and the initial deal finished - what the auto-play hook below waits for, and
+  // what the win celebration waits for too (see useWinReveal).
+  const settled = activeFlightCount === 0 && dealHiddenIds.size === 0
+  // `won` is game state (clock, stat, save, undo/hint gating) and flips with the winning move; the
+  // celebration - foundations giving way to the win cascade, fireworks, banner - waits until the
+  // last card has flown in and landed, so it is never hidden mid-flight (which used to make it
+  // simply appear) and the finished board reads for a beat first.
+  const winRevealed = useWinReveal(won, settled)
+  // The board the win cascade has taken over from, and which piles it took over (set together with startChains, see
+  // runWinCascade): once it IS the current state, and the win is revealed, exactly those piles blank their real cards -
+  // not a moment earlier. Compared by identity (state is replaced wholesale on every change), so an undo or a New Game
+  // un-blanks the piles with no reset to remember.
+  const [cascadeHandoff, setCascadeHandoff] = useState<{ state: CanfieldState; piles: ReadonlySet<number> } | null>(null)
   /** One ref per foundation slot's own container (see FoundationCell's slotRef) - measured
    * independently of CardRegistry so the win cascade can still find each pile's screen position
    * after its real top card has been hidden (won-gated, see the foundation row below), at which
@@ -205,8 +221,9 @@ function CanfieldScreenInner() {
    * value at the moment this flight was queued - re-checked once the async measurement below
    * resolves, so a flight queued against a game that's since been replaced by "New Game" doesn't
    * measure/land against the new deal's DOM (card ids are shuffle-independent and reused across
-   * deals - see deck.ts). */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; sweep?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
+   * deals - see deck.ts). `to` is the pile the card is headed for, so a foundation landing can fall
+   * back to that pile's own slot container when the card itself can't be measured. */
+  const pendingFlightRef = useRef<{ cardId: string; to: PileRef; viaStock?: boolean; fast?: boolean; sweep?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
   /** Draw-3 stock draws awaiting their post-commit measurement + deal.start() - a list for the same
    * overlapping-actions reason as pendingFlightRef above. Analogous shape, for the multi-card
    * deal-style flight (see the [state]-effect below and handleDrawStock) - drawnCards is
@@ -314,7 +331,7 @@ function CanfieldScreenInner() {
         card: step.card,
         from: origin,
         to: { x: dest.x, y: dest.y },
-        delayMs: step.visitOrder * DEAL_STAGGER_MS
+        delayMs: step.visitOrder * dealStaggerMs(sequence.length)
       })
     })
     if (entries.length === 0) {
@@ -340,22 +357,30 @@ function CanfieldScreenInner() {
 
   // Foundation piles are guaranteed full (13 cards each, starting at foundationRank and wrapping
   // all the way back around through a full cycle) the instant isWon() is true - measures each
-  // pile's own slot container (see foundationSlotRefs/FoundationCell's slotRef), not the top card
-  // via CardRegistry, since the real top card is hidden (and therefore unregistered) the instant
-  // `won` flips true, in the same commit this effect reacts to. Chains that whole pile top-first
-  // down to bottom-last (foundation arrays are built bottom-up, foundationRank's card pushed
-  // first, so reversing gives the right order - true regardless of which rank a given pile
+  // pile's own slot container (see foundationSlotRefs/FoundationCell's slotRef), which is card-sized
+  // and always mounted, whether or not the pile's real cards are drawn. Chains that whole pile
+  // top-first down to bottom-last (foundation arrays are built bottom-up, foundationRank's card
+  // pushed first, so reversing gives the right order - true regardless of which rank a given pile
   // actually started/ended at). Same dealTokenRef guard as every other async measurement here.
+  //
+  // The real cards blank only when the ghosts that replace them mount, in the SAME commit (cascadeHandoff, set right
+  // beside startChains - React batches the two): blanking them when the win is revealed instead, and starting the
+  // chains from the async continuation that follows, left every pile empty for the frames in between. A pile whose
+  // chain could not start (no measurable slot) keeps its real cards, and if no chain can start at all the piles simply
+  // stay up under the banner instead of vanishing.
   async function runWinCascade(s: CanfieldState, gen: number) {
     const origins = await Promise.all(foundationSlotRefs.current.map((view) => measureView(view)))
     if (dealTokenRef.current !== gen) return
     const chains: ChainSpec[] = []
+    const handedOff = new Set<number>()
     s.foundation.forEach((pile, suit) => {
       const origin = origins[suit]
       if (!origin || pile.length === 0) return
       chains.push({ cards: pile.slice().reverse(), origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
+      handedOff.add(suit)
     })
     winCascade.startChains(chains, cardWidth)
+    if (chains.length > 0) setCascadeHandoff({ state: s, piles: handedOff })
   }
 
   // Same race as the deal effect above: measuring CardRegistry synchronously right after the
@@ -370,7 +395,12 @@ function CanfieldScreenInner() {
     pendingFlightRef.current = []
     pending.forEach((p) => {
       ;(async () => {
-        const landed = p.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(p.cardId)
+        // A destination card's registered view is the usual landing spot, but if it can't be found (a
+        // foundation card buried under a later arrival, a waste card already covered by the next
+        // draw) the pile's own slot container is card-sized and always there - fly to that rather than
+        // hiding the ghost and letting the card simply appear. A tableau column has no such container
+        // (its card position depends on the fan), so that one still falls through to the hide.
+        const landed = p.viaStock ? await measureView(stockViewRef.current) : ((await ghost.cardRegistry.measure(p.cardId)) ?? (p.to.zone === 'foundation' ? await measureView(foundationSlotRefs.current[p.to.index]) : p.to.zone === 'waste' ? await measureView(wasteViewRef.current) : null))
         if (dealTokenRef.current !== p.gen || !landed) {
           p.flight.hide()
           endFlying(p.flyingId)
@@ -393,14 +423,16 @@ function CanfieldScreenInner() {
 
   // Same deferral reasoning as the deal/flight effects above - never measure CardRegistry
   // synchronously inside checkWin itself, since the winning foundation cards' own registration
-  // effects haven't necessarily run yet in that same commit.
+  // effects haven't necessarily run yet in that same commit. Held back until the win is REVEALED
+  // (not merely won): the cascade takes over from the foundations' real cards, which must stay put
+  // until the last flight has landed on them.
   useEffect(() => {
     const pending = pendingWinCascadeRef.current
-    if (!pending || !state) return
+    if (!pending || !state || !winRevealed) return
     pendingWinCascadeRef.current = null
     runWinCascade(state, pending.gen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
+  }, [state, winRevealed])
 
   // Draw-3's own version of the deal effect above: handleDrawStock already committed the new
   // state (so the real top waste card is mounted/registered) but kept the whole fan hidden via
@@ -415,7 +447,9 @@ function CanfieldScreenInner() {
     pendingDealDrawRef.current = []
     pending.forEach((p) => {
       ;(async () => {
-        const [origin, topPos] = await Promise.all([measureView(stockViewRef.current), ghost.cardRegistry.measure(p.topCardId)])
+        // The waste slot (where the top card sits) stands in if the top card itself can't be found, so
+        // the fan still flies out instead of every drawn card just appearing.
+        const [origin, topPos] = await Promise.all([measureView(stockViewRef.current), ghost.cardRegistry.measure(p.topCardId).then((rect) => rect ?? measureView(wasteViewRef.current))])
         if (dealTokenRef.current !== p.gen || !origin || !topPos) {
           endFlying(p.flyingId)
           settleFlight()
@@ -456,7 +490,7 @@ function CanfieldScreenInner() {
   // computeNextStep composes.
   const cascade = useAutoFoundationCascade<CanfieldState>({
     state,
-    settled: activeFlightCount === 0 && dealHiddenIds.size === 0,
+    settled,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     computeNextStep,
@@ -547,7 +581,7 @@ function CanfieldScreenInner() {
     if (move.from.zone === 'stock' && move.to.zone === 'waste' && move.count > 1) {
       const sourcePile = resolvePile(move.to)
       const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : [] // oldest -> newest/top
-      const topPos = movingCards.length > 0 ? await ghost.cardRegistry.measure(move.anchorCardId) : null
+      const topPos = movingCards.length > 0 ? ((await ghost.cardRegistry.measure(move.anchorCardId)) ?? (await measureView(wasteViewRef.current))) : null
       const stockDest = topPos ? await measureView(stockViewRef.current) : null
 
       setUndoStack((stack) => stack.slice(0, -1))
@@ -584,9 +618,16 @@ function CanfieldScreenInner() {
     }
 
     const sourcePile = resolvePile(move.to)
-    const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : []
+    // A foundation move's own card can sit BURIED under silent auto-plays that landed on the same
+    // pile after it (they are not on the undo stack) - so it is found by id, not assumed to be on
+    // top, or the ghost would carry the wrong card.
+    const buriedAt = move.to.zone === 'foundation' && sourcePile ? sourcePile.findIndex((c) => c.id === move.anchorCardId) : -1
+    const movingCards = sourcePile ? (buriedAt >= 0 ? [sourcePile[buriedAt]] : sourcePile.slice(sourcePile.length - move.count)) : []
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
-    const origin = movingCards.length > 0 ? await ghost.cardRegistry.measure(move.anchorCardId) : null
+    // A buried card, or any foundation card once the win celebration has hidden the real ones, is not
+    // in CardRegistry (only a visible top card is) - the pile's own always-present slot container is
+    // where it sits, so it flies from there instead of simply reappearing.
+    const origin = movingCards.length > 0 ? ((await ghost.cardRegistry.measure(move.anchorCardId)) ?? (move.to.zone === 'foundation' ? await measureView(foundationSlotRefs.current[move.to.index]) : null)) : null
 
     setUndoStack((stack) => stack.slice(0, -1))
 
@@ -596,7 +637,7 @@ function CanfieldScreenInner() {
       const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
       const flyingId = beginFlying(move.from, move.count)
       commitState(prevState)
-      pendingFlightRef.current.push({ cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen, flyingId, flight })
+      pendingFlightRef.current.push({ cardId: move.anchorCardId, to: move.from, viaStock: move.from.zone === 'stock', gen, flyingId, flight })
     } else {
       commitState(prevState)
       settleFlight()
@@ -642,7 +683,7 @@ function CanfieldScreenInner() {
   function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
     const flyingId = beginFlying(to, count)
-    pendingFlightRef.current.push({ cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
+    pendingFlightRef.current.push({ cardId: anchorCardId, to, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 
@@ -716,7 +757,7 @@ function CanfieldScreenInner() {
     const flyingId = beginFlying(to, 1)
     commitState(result)
     checkWin(result, session.moves)
-    pendingFlightRef.current.push({ cardId: entry.card.id, gen: dealTokenRef.current, flyingId, flight, sweep: opts.sweep })
+    pendingFlightRef.current.push({ cardId: entry.card.id, to, gen: dealTokenRef.current, flyingId, flight, sweep: opts.sweep })
   }
 
   async function attemptDrop(from: PileRef, count: number, absoluteX: number, absoluteY: number, anchorCardId: string, flight: DragFlightHandle): Promise<boolean> {
@@ -808,7 +849,7 @@ function CanfieldScreenInner() {
 
     if (!opts?.sweep) pushUndo(current, move)
     commitState(result)
-    pendingFlightRef.current.push({ cardId: drawnCard.id, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
+    pendingFlightRef.current.push({ cardId: drawnCard.id, to: { zone: 'waste', index: 0 }, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
   }
 
   function resolvePile(ref: PileRef): Card[] | null {
@@ -868,13 +909,7 @@ function CanfieldScreenInner() {
     }
   }
 
-  if (!state) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.loadingText}>Loading...</Text>
-      </View>
-    )
-  }
+  if (!state) return <GameLoading />
 
   const wasteTop = top(state.waste)
   // Fixed draw-3, so the waste always fans up to the last 3 drawn cards, same as Klondike's own
@@ -905,12 +940,22 @@ function CanfieldScreenInner() {
                 // same dealHiddenIds membership the reserve's own top card uses, so the starter stays
                 // hidden until its own deal flight lands instead of showing at full opacity from the
                 // very first frame of a fresh deal.
-                const isFlyingHere = flying.some((f) => f.to.zone === 'foundation' && f.to.index === i) || (!!t && dealHiddenIds.has(t.id))
+                //
+                // Several tap flights can also be headed to one pile at once (they overlap): count the cards
+                // still in the air so the pile keeps showing the top card that has already LANDED under the
+                // rest (see FoundationCell's settledCard). A card still hidden by the deal has not landed,
+                // whatever the pile says, so it never counts: that slot shows empty until its own flight arrives
+                // (the starter is the pile's bottom card, so there is nothing beneath it to show instead).
+                const flightsInAir = flying.filter((f) => f.to.zone === 'foundation' && f.to.index === i).reduce((sum, f) => sum + f.count, 0)
+                const isFlyingHere = flightsInAir > 0 || (!!t && dealHiddenIds.has(t.id))
+                const landed = pile[pile.length - 1 - flightsInAir]
+                const cascadeTookOver = winRevealed && cascadeHandoff?.state === state && cascadeHandoff.piles.has(i)
                 return (
                   <DropZone key={i} registry={dropZones} pileRef={{ zone: 'foundation', index: i }} style={[styles.foundationSlot, { width: cardWidth }]}>
                     <FoundationCell
-                      card={won ? undefined : t}
+                      card={cascadeTookOver ? undefined : t}
                       isFlyingHere={isFlyingHere}
+                      settledCard={landed && !dealHiddenIds.has(landed.id) ? landed : null}
                       suit={SUITS[i]}
                       rank={state.foundationRank}
                       highlighted={hintCountFor(activeHint, { zone: 'foundation', index: i }) > 0}
@@ -927,7 +972,7 @@ function CanfieldScreenInner() {
               <ReserveCell card={reserveTop} isFlyingHere={reserveFlyingHere} dealHidden={reserveDealHidden} shakeToken={reserveTop && shake?.cardId === reserveTop.id ? shake.token : undefined} highlighted={hintCountFor(activeHint, { zone: 'reserve', index: 0 }) > 0} onPress={(measure) => handleCardTap({ zone: 'reserve', index: 0 }, reserveTop!.id, measure)} onDrop={(x, y, flight) => attemptDrop({ zone: 'reserve', index: 0 }, 1, x, y, reserveTop!.id, flight)} />
             </DropZone>
 
-            <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} />
+            <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} />
           </View>
 
           <View style={[styles.tableauRow, { gap }]}>
@@ -971,35 +1016,23 @@ function CanfieldScreenInner() {
       (see WinCascadeGhosts' own doc comment for why nesting depth alone can't do this) - the win
       banner comes last of all three so it's the one thing guaranteed to sit on top of the
       animation, not buried under it. */}
-      {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }
 
-function makeStyles(colors: TableColors) {
+function makeStyles() {
   return StyleSheet.create({
     // Centers the narrower 4-column tableauRow underneath the wider 7-slot topRow - see this
     // file's own LAYOUT DECISION comment near TOP_ROW_UNITS above.
     board: {
       alignItems: 'center'
     },
-    container: {
-      backgroundColor: colors.tableFelt,
-      flex: 1,
-      padding: 12
-    },
     foundationSlot: {},
     foundationsGroup: {
       flexDirection: 'row'
-    },
-    loadingText: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      marginTop: 40,
-      textAlign: 'center'
     },
     reserveSlot: {},
     tableauColumn: {},

@@ -1,4 +1,4 @@
-import { getBlendedColor, getTonalColor, getTriadicPalette } from '@rific/auto-paper'
+import { getBlendedColor } from '@rific/auto-paper'
 import type { TableColors } from '@tastic/cards'
 import { useMemo } from 'react'
 import { useTheme } from 'react-native-paper'
@@ -44,10 +44,14 @@ export const CARD_RADIUS = cardRadiusForWidth(CARD_WIDTH)
 const CARD_INK_RED = '#C41E3A'
 const CARD_INK_BLACK = '#1A1A1A'
 
-// Blend anchors only - never rendered directly (see useTableColors below, which always derives
-// through derivePlayerTableColors using at least DEFAULT_SEED_COLOR). cardBack/cardBackPattern
-// here are what every seed's own tint gets blended toward; tableFelt/tableFeltDark are likewise
-// only ever read as derivePlayerTableColors' own `base` input, never returned as-is.
+// cardBack/cardBackPattern here are only blend anchors - never rendered directly (see useTableColors
+// below, which always derives through derivePlayerTableColors using at least DEFAULT_SEED_COLOR),
+// what every seed's own tint gets blended toward. tableFelt/tableFeltDark, by contrast, ARE rendered
+// as-is, for every player: the app's one felt. They are the same two greens as the native splash
+// screen's `backgroundColor` in app.json (`expo-splash-screen` plugin, light + dark) - the splash is
+// compiled into the binary and shown before any JS runs, so it can't know which profile is active,
+// and the felt has to be that same green for the launch to hand off seamlessly. Change one, change
+// the other (src/__tests__/components/splashMatchesFelt.test.ts fails if they drift).
 export const lightColors: TableColors = {
   tableFelt: '#0B6E4F',
   tableFeltDark: '#08573F',
@@ -89,12 +93,12 @@ export const darkColors: TableColors = {
   dimOverlayInverted: '#FFFFFF70'
 }
 
-// The seed every fresh install/guest effectively starts on - Material Pink 500, chosen because its
-// derived felt (see derivePlayerTableColors) lands on a pleasant green close to this app's original
-// hand-picked felt, rather than leaving cardBack/tableFelt on the flatter blue/green blend anchors
-// above. Also what a brand-new profile's own color starts as (see app/profiles.tsx's defaultColor)
-// - a real seed a picker can match against, not a pre-blended value nothing in the swatch grid
-// equals.
+// The seed every fresh install/guest effectively starts on - Material Pink 500 - rather than leaving
+// cardBack on the flatter blue blend anchor above; it is what gives the default card back its
+// magenta. (It was originally picked for the felt it used to derive too; the felt is now the fixed
+// splash-matching green regardless of seed, so today it only sets the card back.) Also what a
+// brand-new profile's own color starts as (see app/profiles.tsx's defaultColor) - a real seed a
+// picker can match against, not a pre-blended value nothing in the swatch grid equals.
 export const DEFAULT_SEED_COLOR = '#e91e63'
 
 // How strongly a profile's own bright/saturated color tints the base cardBack/cardBackPattern -
@@ -121,16 +125,6 @@ const ACCENT_LIGHTEN_ALPHA = 0.25
 // exactly that wall (confirmed unreadable); this is a smaller, safer step up from the original.
 const ACCENT_DARKEN_ALPHA = 0.3
 
-// getTonalColor targets (0-1 lightness), per appearance mode, for the felt/chrome pair.
-// tableFeltDark is the darker accent already used for the Stack header/Toaster in both palettes -
-// reused here as "chrome" rather than inventing a third TableColors field. Both modes keep the
-// same felt-stays-darker-than-chrome-is-light relationship - dark mode's felt is darker than light
-// mode's own (not lighter, as an earlier version of this had it, which read as too bright/washed
-// out for an actual dark theme), while staying a bit above chrome's own tone so the play surface
-// still reads distinctly against it.
-const FELT_TONE = { light: 0.24, dark: 0.16 }
-const CHROME_TONE = { light: 0.15, dark: 0.08 }
-
 /** The card-back color a given seed hex actually resolves to once blended toward the base palette
  * - the same blend derivePlayerTableColors applies to `cardBack`, exported so a color picker can
  * preview this result per-swatch instead of the raw, too-vibrant seed hue. */
@@ -141,9 +135,10 @@ export function previewCardBack(seedHex: string, dark: boolean): string {
 
 /** Derives a full TableColors palette tinted toward a seed color (an active player profile's
  * color, or DEFAULT_SEED_COLOR when nothing's been picked - see useTableColors below). Only
- * cardBack/cardBackPattern/cardBackPatternInverted/tableFelt/tableFeltDark are overridden - every
- * other token is spread from `base` untouched, so legibility-critical tokens (text/borders/glow)
- * never shift with a profile's color. */
+ * cardBack/cardBackPattern/cardBackPatternInverted are overridden - every other token is spread from
+ * `base` untouched, so legibility-critical tokens (text/borders/glow) never shift with a profile's
+ * color, and neither does the felt (tableFelt/tableFeltDark): it is always `base`'s own green, the
+ * one the native splash screen is painted in (see the anchors' comment above). */
 function derivePlayerTableColors(profileColor: string, dark: boolean, base: TableColors): TableColors {
   const cardBack = previewCardBack(profileColor, dark)
   const cardBackPattern = getBlendedColor('#FFFFFF', getBlendedColor(profileColor, base.cardBackPattern, PROFILE_TINT_ALPHA), ACCENT_LIGHTEN_ALPHA)
@@ -152,17 +147,11 @@ function derivePlayerTableColors(profileColor: string, dark: boolean, base: Tabl
   // via `dark` here instead of a light/dark anchor difference (see the interface doc for why).
   const cardBackPatternInverted = dark ? getBlendedColor('#000000', cardBackPattern, ACCENT_DARKEN_ALPHA) : cardBackPattern
 
-  // 'complementary' harmony's own `tertiary` output is the true 180°-opposite hue of cardBack, so
-  // this generalizes to whatever hue cardBack ends up as, not just today's blue.
-  const complementaryHue = getTriadicPalette(cardBack, 'complementary').tertiary
-
   return {
     ...base,
     cardBack,
     cardBackPattern,
-    cardBackPatternInverted,
-    tableFelt: getTonalColor(complementaryHue, dark ? FELT_TONE.dark : FELT_TONE.light),
-    tableFeltDark: getTonalColor(complementaryHue, dark ? CHROME_TONE.dark : CHROME_TONE.light)
+    cardBackPatternInverted
   }
 }
 

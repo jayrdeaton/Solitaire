@@ -12,7 +12,6 @@ import { HeroCards } from '@/components/HeroCards'
 import { ProfilePanel } from '@/components/ProfilePanel'
 import { RulesDialog } from '@/components/RulesDialog'
 import { SettingsDialog } from '@/components/SettingsDialog'
-import { TableBackground } from '@/components/TableBackground'
 import { CHROME_FG, useTableColors } from '@/components/theme'
 import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { ACESUP_RULES, CANFIELD_RULES, FORTYTHIEVES_RULES, FREECELL_RULES, GOLF_RULES, KLONDIKE_RULES, PYRAMID_RULES, SCORPION_RULES, SPIDER_RULES, TRIPEAKS_RULES, YUKON_RULES } from '@/constants/gameRules'
@@ -75,8 +74,8 @@ export default function Home() {
   // (all ~370 preview cards) the moment Home was tapped, which is what made going Home take seconds.
   const [resumeGame] = useState(consumeResumeGame)
   // Owns the profile row's popover state so a full-screen @tastic/hud PressAwayOverlay can be
-  // rendered here, at the screen root, below (see the early-sibling render order right after
-  // TableBackground) every real control - Solitaire has just the one, unscoped zone (no
+  // rendered here, at the screen root, below (see the early-sibling render order at the top of
+  // the screen's own View) every real control - Solitaire has just the one, unscoped zone (no
   // split-screen sibling to shield from), so unlike the fleet's split-screen loadout/lobby
   // screens this needs neither a style rect nor a second host to shield against.
   const profileHost = usePopoverHost()
@@ -103,7 +102,6 @@ export default function Home() {
 
   return (
     <View style={styles.screen}>
-      <TableBackground />
       {/* Unlike the fleet's non-scrolling split-screen HUDs (where PressAwayOverlay's own "plain
       paint order, later sibling wins" doc comment is enough on its own), this screen's real
       content is a ScrollView full of plain, unpositioned Views (HeroCards, headings, the game

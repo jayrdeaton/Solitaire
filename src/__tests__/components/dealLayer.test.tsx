@@ -1,12 +1,15 @@
-import { act, fireEvent, render, screen } from '@testing-library/react-native'
+import { act, fireEvent, render, screen, within } from '@testing-library/react-native'
 import { useEffect } from 'react'
+import { StyleSheet, type ViewStyle } from 'react-native'
 
-import { type DealAnimator, type DealCardSpec, DealProvider, useDealAnimator } from '@/components/dealing/DealLayer'
-import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
+import { type DealAnimator, type DealCardSpec, dealPoolSize, DealProvider, ghostPoolSize, useDealAnimator } from '@/components/dealing/DealLayer'
+import { DEAL_SPRING, DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import type { Card } from '@/engine/types'
 
 const mockPlayCardSound = jest.fn()
 const mockHapticCard = jest.fn()
+const mockMounts = { count: 0 }
+const mockShown: string[] = []
 
 jest.mock('@/components/useCardSounds', () => ({
   useCardSoundEffects: () => ({ playCardSound: mockPlayCardSound, hapticCard: mockHapticCard })
@@ -17,16 +20,26 @@ jest.mock('@/components/overlayFrame', () => ({
 }))
 jest.mock('@/components/PlayingCard', () => {
   const { View } = require('react-native')
-  return { PlayingCard: ({ card }: { card: { id: string } }) => <View testID={`ghost-${card.id}`} /> }
+  const { useEffect: useMockEffect } = require('react')
+  return {
+    PlayingCard: ({ card }: { card: { id: string } }) => {
+      useMockEffect(() => {
+        mockMounts.count++
+      }, [])
+      mockShown.push(card.id)
+      return <View testID={`ghost-${card.id}`} />
+    }
+  }
 })
 jest.mock('@tastic/core', () => ({ useRotation: () => 0, rotateInsets: (insets: unknown) => insets }))
 
 const CARD_WIDTH = 64
+const LOOKAHEAD_MS = 150
 
-function makeEntries(count: number, prefix = 'c'): DealCardSpec[] {
+function makeEntries(count: number, prefix = 'c', faceUp = false, stagger = DEAL_STAGGER_MS): DealCardSpec[] {
   return Array.from({ length: count }, (_, i) => {
-    const card = { id: `${prefix}${i}`, suit: 'spades', rank: 1, faceUp: false } as unknown as Card
-    return { cardId: card.id, card, from: { x: 0, y: 0 }, to: { x: 10 * i, y: 20 }, delayMs: i * DEAL_STAGGER_MS }
+    const card = { id: `${prefix}${i}`, suit: 'spades', rank: 1, faceUp } as unknown as Card
+    return { cardId: card.id, card, from: { x: 0, y: 0 }, to: { x: 10 * i, y: 20 }, delayMs: i * stagger }
   })
 }
 
@@ -39,7 +52,11 @@ function Capture() {
   return null
 }
 
-const ghostCount = () => screen.queryAllByTestId(/^ghost-/).length
+const ghosts = () => screen.queryAllByTestId(/^deal-ghost-/)
+const styleOf = (node: { props: { style?: unknown } }): ViewStyle => StyleSheet.flatten(node.props.style as ViewStyle) ?? {}
+const opacityOf = (node: { props: { style?: unknown } }) => styleOf(node).opacity
+// A slot is "flying" (or waiting to) whenever it is not the hidden idle one.
+const flying = () => ghosts().filter((node) => opacityOf(node) !== 0)
 
 // Steps the fake clock in small increments, flushing React between them like real time would - a single big
 // jump inside one act() would batch every state update to the very end.
@@ -52,52 +69,121 @@ async function advance(ms: number) {
 }
 
 async function renderProvider() {
-  await render(
+  return await render(
     <DealProvider>
       <Capture />
     </DealProvider>
   )
 }
 
-describe('DealProvider ghost lookahead', () => {
+const totalMs = (count: number, stagger = DEAL_STAGGER_MS) => count * stagger + (DEAL_SPRING.duration ?? 0) + 1000
+
+describe('ghostPoolSize', () => {
+  const window = (DEAL_SPRING.duration ?? 0) + LOOKAHEAD_MS
+
+  it('needs nothing for an empty deal and one slot for a single card', () => {
+    expect(ghostPoolSize([], 280, LOOKAHEAD_MS, 2)).toBe(0)
+    expect(ghostPoolSize([0], 280, LOOKAHEAD_MS, 0)).toBe(1)
+  })
+
+  it('counts the most flights that can overlap, plus slack', () => {
+    const delays = Array.from({ length: 54 }, (_, i) => i * 35)
+    // A ghost is occupied from 150ms before its flight to 280ms after it starting: ceil(430 / 35) = 13 at once.
+    expect(ghostPoolSize(delays, 280, LOOKAHEAD_MS, 0)).toBe(Math.ceil(window / 35))
+    expect(ghostPoolSize(delays, 280, LOOKAHEAD_MS, 2)).toBe(Math.ceil(window / 35) + 2)
+  })
+
+  it('never asks for more slots than there are cards', () => {
+    expect(ghostPoolSize([0, 10, 20], 280, LOOKAHEAD_MS, 5)).toBe(3)
+  })
+
+  it('needs a slot per card when they all leave together', () => {
+    expect(ghostPoolSize(Array(8).fill(0), 280, LOOKAHEAD_MS, 0)).toBe(8)
+  })
+
+  it('needs fewer slots the more spread out the flights are', () => {
+    expect(
+      ghostPoolSize(
+        Array.from({ length: 20 }, (_, i) => i * 500),
+        280,
+        LOOKAHEAD_MS,
+        0
+      )
+    ).toBe(1)
+  })
+})
+
+describe('DealProvider ghost pool', () => {
   beforeEach(() => {
     jest.useFakeTimers()
     mockPlayCardSound.mockClear()
     mockHapticCard.mockClear()
+    mockMounts.count = 0
+    mockShown.length = 0
   })
   afterEach(() => {
     jest.useRealTimers()
   })
 
-  it('mounts only the cards about to fly, not a copy of the whole deal', async () => {
+  it('launches only the cards about to fly, not a copy of the whole deal', async () => {
     await renderProvider()
-    const landed: string[] = []
 
-    await act(async () => controller.start(makeEntries(54), CARD_WIDTH, (id) => landed.push(id), jest.fn()))
+    await act(async () => controller.start(makeEntries(54), CARD_WIDTH, jest.fn(), jest.fn()))
 
-    // Everything whose delay is within the lookahead window - a handful of the 54, not all of them.
-    expect(ghostCount()).toBeGreaterThan(0)
-    expect(ghostCount()).toBeLessThanOrEqual(10)
+    expect(flying().length).toBeGreaterThan(0)
+    expect(flying().length).toBeLessThanOrEqual(10)
   })
 
-  it('never has more than a couple dozen ghosts alive at once, and lands every card exactly once, in order', async () => {
+  it('mounts no more card views than the pool holds, however many cards are dealt', async () => {
+    await renderProvider()
+    const entries = makeEntries(54)
+    const pool = dealPoolSize(entries.map((e) => e.delayMs))
+    await act(async () => controller.start(entries, CARD_WIDTH, jest.fn(), jest.fn()))
+
+    for (let t = 0; t < totalMs(54); t += 25) await advance(25)
+
+    expect(ghosts().length).toBe(0) // the pool is torn down once the deal is over
+    expect(mockMounts.count).toBeGreaterThan(0)
+    expect(mockMounts.count).toBeLessThanOrEqual(pool)
+    expect(pool).toBeLessThan(25)
+  })
+
+  it('lands every card exactly once, in order, and reports the deal complete once', async () => {
     await renderProvider()
     const landed: string[] = []
     const onAllLanded = jest.fn()
     await act(async () => controller.start(makeEntries(54), CARD_WIDTH, (id) => landed.push(id), onAllLanded))
 
-    let peak = ghostCount()
-    for (let t = 0; t < 54 * DEAL_STAGGER_MS + 1000; t += 25) {
-      await advance(25)
-      peak = Math.max(peak, ghostCount())
-    }
+    await advance(totalMs(54))
 
-    expect(peak).toBeLessThan(25)
     expect(landed).toHaveLength(54)
     expect(new Set(landed).size).toBe(54)
     expect(landed).toEqual(makeEntries(54).map((e) => e.cardId))
     expect(onAllLanded).toHaveBeenCalledTimes(1)
-    expect(ghostCount()).toBe(0)
+    expect(ghosts().length).toBe(0)
+  })
+
+  // A face-down deal reuses slots between identical card backs, so relaunching must not re-render the card at all.
+  it('does not re-render a reused slot for a face-down deal (identical card backs)', async () => {
+    await renderProvider()
+    const entries = makeEntries(54, 'c', false)
+    const pool = dealPoolSize(entries.map((e) => e.delayMs))
+    await act(async () => controller.start(entries, CARD_WIDTH, jest.fn(), jest.fn()))
+
+    await advance(totalMs(54))
+
+    // One render per slot's first launch and none for the ~40 relaunches after.
+    expect(mockShown.length).toBeLessThanOrEqual(pool)
+  })
+
+  it('shows every card that flies when the deal is face-up (each reuse swaps the face)', async () => {
+    await renderProvider()
+    await act(async () => controller.start(makeEntries(54, 'c', true), CARD_WIDTH, jest.fn(), jest.fn()))
+
+    await advance(totalMs(54))
+
+    const shown = new Set(mockShown)
+    makeEntries(54).forEach((e) => expect(shown.has(e.cardId)).toBe(true))
   })
 
   it('keeps each card flying at its own scheduled time (no card lands early)', async () => {
@@ -106,13 +192,53 @@ describe('DealProvider ghost lookahead', () => {
     let elapsed = 0
     await act(async () => controller.start(makeEntries(20), CARD_WIDTH, (id) => (landedAt[id] = elapsed), jest.fn()))
 
-    for (; elapsed < 20 * DEAL_STAGGER_MS + 1000; elapsed += 25) await advance(25)
+    for (; elapsed < totalMs(20); elapsed += 25) await advance(25)
 
-    // A card lands delay + spring duration (280ms) after the deal starts; never before its own delay.
     makeEntries(20).forEach((e) => expect(landedAt[e.cardId]).toBeGreaterThanOrEqual(e.delayMs))
   })
 
-  it('a skip tap lands the mounted AND the not-yet-mounted cards at once', async () => {
+  it('still lands every card of a compressed deal, whose flights overlap much more', async () => {
+    await renderProvider()
+    const landed: string[] = []
+    const onAllLanded = jest.fn()
+    await act(async () => controller.start(makeEntries(52, 'c', true, 18), CARD_WIDTH, (id) => landed.push(id), onAllLanded))
+
+    await advance(totalMs(52, 18))
+
+    expect(landed).toHaveLength(52)
+    expect(new Set(landed).size).toBe(52)
+    expect(onAllLanded).toHaveBeenCalledTimes(1)
+  })
+
+  it('a later card always paints above an earlier one, whichever slot it flies in', async () => {
+    await renderProvider()
+    await act(async () => controller.start(makeEntries(54, 'c', true), CARD_WIDTH, jest.fn(), jest.fn()))
+
+    // Run long enough that slots have been reused, then read the paint order of everything in the air.
+    await advance(1000)
+    const inAir = flying().map((node) => ({
+      id: within(node)
+        .getByTestId(/^ghost-/)
+        .props.testID.replace('ghost-', ''),
+      z: styleOf(node).zIndex as number
+    }))
+
+    expect(inAir.length).toBeGreaterThan(1)
+    const byPaintOrder = [...inAir].sort((a, b) => a.z - b.z).map((g) => Number(g.id.replace('c', '')))
+    expect(byPaintOrder).toEqual([...byPaintOrder].sort((a, b) => a - b))
+  })
+
+  it('hides a slot the moment its card lands, before the rest of the deal is over', async () => {
+    await renderProvider()
+    await act(async () => controller.start(makeEntries(54), CARD_WIDTH, jest.fn(), jest.fn()))
+
+    await advance(900)
+
+    const idle = ghosts().filter((node) => opacityOf(node) === 0)
+    expect(idle.length).toBeGreaterThan(0)
+  })
+
+  it('a skip tap lands the flying AND the not-yet-launched cards at once', async () => {
     await renderProvider()
     const landed: string[] = []
     const onAllLanded = jest.fn()
@@ -125,15 +251,26 @@ describe('DealProvider ghost lookahead', () => {
     expect(landed).toHaveLength(54)
     expect(new Set(landed).size).toBe(54)
     expect(onAllLanded).toHaveBeenCalledTimes(1)
-    expect(ghostCount()).toBe(0)
+    expect(ghosts().length).toBe(0)
     expect(screen.queryByTestId('deal-skip-layer')).toBeNull()
-    // Every card still gets its one sound/haptic (throttled downstream), including ones that never mounted.
+    // Every card still gets its one sound (throttled downstream), including ones that never launched.
     expect(mockPlayCardSound.mock.calls.length).toBeGreaterThanOrEqual(54)
 
     // ...and nothing fires late once the timers run out.
     await advance(5000)
     expect(landed).toHaveLength(54)
     expect(onAllLanded).toHaveBeenCalledTimes(1)
+  })
+
+  it('caps haptics at one per 40ms even when cards are dealt every 18ms (sound is capped downstream)', async () => {
+    await renderProvider()
+    await act(async () => controller.start(makeEntries(52, 'c', true, 18), CARD_WIDTH, jest.fn(), jest.fn()))
+
+    await advance(totalMs(52, 18))
+
+    expect(mockPlayCardSound).toHaveBeenCalledTimes(52)
+    expect(mockHapticCard.mock.calls.length).toBeLessThan(30)
+    expect(mockHapticCard.mock.calls.length).toBeGreaterThan(10)
   })
 
   it('shows the skip layer only while a deal is in flight', async () => {
@@ -143,7 +280,7 @@ describe('DealProvider ghost lookahead', () => {
     await act(async () => controller.start(makeEntries(5), CARD_WIDTH, jest.fn(), jest.fn()))
     expect(screen.getByTestId('deal-skip-layer')).toBeTruthy()
 
-    await advance(5 * DEAL_STAGGER_MS + 1000)
+    await advance(totalMs(5))
     expect(screen.queryByTestId('deal-skip-layer')).toBeNull()
   })
 
@@ -156,13 +293,182 @@ describe('DealProvider ghost lookahead', () => {
     await advance(200)
 
     await act(async () => controller.start(makeEntries(12, 'b'), CARD_WIDTH, (id) => secondLanded.push(id), secondAll))
-    await advance(12 * DEAL_STAGGER_MS + 1000)
+    await advance(totalMs(12))
 
     expect(secondLanded).toHaveLength(12)
     expect(secondAll).toHaveBeenCalledTimes(1)
-    expect(ghostCount()).toBe(0)
+    expect(ghosts().length).toBe(0)
     // No card of the replaced deal keeps landing into the new deal's callbacks.
     expect(secondLanded.every((id) => id.startsWith('b'))).toBe(true)
+  })
+
+  // The old slots stay mounted (timers live) until the commit AFTER start() - a timer firing in that gap used to feed the new
+  // deal foreign card ids and out-of-range slot numbers (a reproduced permanent stall at 15 of 40 cards).
+  it('a deal replaced before its old slots unmount cannot report into the new one', async () => {
+    await renderProvider()
+    const secondLanded: string[] = []
+    const secondAll = jest.fn()
+    await act(async () => controller.start(makeEntries(52, 'a', true, 18), CARD_WIDTH, jest.fn(), jest.fn()))
+    await advance(500)
+
+    // A's slot timers fire INSIDE this act, before React commits B's slots.
+    await act(async () => {
+      controller.start(makeEntries(40, 'b', true), CARD_WIDTH, (id) => secondLanded.push(id), secondAll)
+      jest.advanceTimersByTime(600)
+    })
+    await advance(totalMs(40))
+
+    expect(secondLanded.filter((id) => !id.startsWith('b'))).toEqual([])
+    expect(secondLanded).toHaveLength(40)
+    expect(new Set(secondLanded).size).toBe(40)
+    expect(secondAll).toHaveBeenCalledTimes(1)
+    expect(ghosts().length).toBe(0)
+    expect(screen.queryByTestId('deal-skip-layer')).toBeNull()
+  })
+
+  it('two starts in one batch run only the second', async () => {
+    await renderProvider()
+    const firstLanded = jest.fn()
+    const secondLanded: string[] = []
+    const secondAll = jest.fn()
+
+    await act(async () => {
+      controller.start(makeEntries(10, 'a'), CARD_WIDTH, firstLanded, jest.fn())
+      controller.start(makeEntries(10, 'b'), CARD_WIDTH, (id) => secondLanded.push(id), secondAll)
+    })
+    await advance(totalMs(10))
+
+    expect(firstLanded).not.toHaveBeenCalled()
+    expect(secondLanded).toEqual(makeEntries(10, 'b').map((e) => e.cardId))
+    expect(secondAll).toHaveBeenCalledTimes(1)
+  })
+
+  it('a card that landed is not relaunched until the commit that hides it has happened', async () => {
+    await renderProvider()
+    await act(async () => controller.start(makeEntries(52, 'c', true, 18), CARD_WIDTH, jest.fn(), jest.fn()))
+
+    // Every commit: whatever a slot is showing while it is flying must be a card that has not landed yet - if a slot were
+    // relaunched in its landing tick, its wrapper would go card1 -> card2 without ever being observed hidden.
+    const seenHidden = new Set<string>()
+    let relaunchedWithoutHiding = 0
+    const lastFlying: Record<string, string> = {}
+    for (let t = 0; t < totalMs(52, 18); t += 25) {
+      await advance(25)
+      ghosts().forEach((node) => {
+        const slot = node.props.testID as string
+        const shown = within(node).queryByTestId(/^ghost-/)?.props.testID as string | undefined
+        if (opacityOf(node) === 0) {
+          seenHidden.add(slot)
+          delete lastFlying[slot]
+        } else if (shown) {
+          if (lastFlying[slot] && lastFlying[slot] !== shown && !seenHidden.has(slot)) relaunchedWithoutHiding++
+          lastFlying[slot] = shown
+          seenHidden.delete(slot)
+        }
+      })
+    }
+
+    expect(relaunchedWithoutHiding).toBe(0)
+  })
+
+  it('unmounting mid-deal stops everything: no callback fires afterwards', async () => {
+    const view = await renderProvider()
+    const landed: string[] = []
+    const onAllLanded = jest.fn()
+    await act(async () => controller.start(makeEntries(30, 'c', true), CARD_WIDTH, (id) => landed.push(id), onAllLanded))
+    await advance(300)
+    const before = landed.length
+
+    await view.unmount()
+    await advance(3000)
+
+    expect(landed).toHaveLength(before)
+    expect(onAllLanded).not.toHaveBeenCalled()
+    expect(jest.getTimerCount()).toBe(0)
+  })
+
+  it('a duplicated cardId cannot leave the deal (and its skip layer) stuck', async () => {
+    await renderProvider()
+    const entries = makeEntries(6)
+    entries[3] = { ...entries[3], cardId: entries[1].cardId }
+    const onAllLanded = jest.fn()
+
+    await act(async () => controller.start(entries, CARD_WIDTH, jest.fn(), onAllLanded))
+    await advance(totalMs(6))
+
+    expect(onAllLanded).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('deal-skip-layer')).toBeNull()
+  })
+
+  it('completes the deal even if a landing callback throws', async () => {
+    await renderProvider()
+    const errors: unknown[] = []
+    const onAllLanded = jest.fn()
+    await act(async () =>
+      controller.start(
+        makeEntries(3),
+        CARD_WIDTH,
+        (id) => {
+          if (id === 'c2') throw new Error('boom')
+        },
+        onAllLanded
+      )
+    )
+    // The throw surfaces from a timer; swallow it like an error boundary would so the test can inspect the outcome.
+    for (let t = 0; t < totalMs(3); t += 25) {
+      try {
+        await advance(25)
+      } catch (error) {
+        errors.push(error)
+      }
+    }
+
+    expect(onAllLanded).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('deal-skip-layer')).toBeNull()
+  })
+
+  // The deal's clock starts when the slots have mounted, not at start(): a slow first commit (a busy board, a slow phone)
+  // must delay every departure, not spend the first cards' delays and send them all off in the same frame.
+  it('keeps the first cards staggered even when mounting the pool is slow', async () => {
+    const departures: number[] = []
+    mockPlayCardSound.mockImplementation(() => departures.push(Date.now()))
+    await renderProvider()
+
+    await act(async () => {
+      controller.start(makeEntries(52, 'c', true, 18), CARD_WIDTH, jest.fn(), jest.fn())
+      jest.advanceTimersByTime(150) // the mount takes 150ms before any slot can be launched
+    })
+    await advance(totalMs(52, 18))
+
+    const first = departures.slice(0, 8)
+    expect(first).toHaveLength(8)
+    for (let i = 1; i < first.length; i++) expect(first[i] - first[i - 1]).toBeGreaterThanOrEqual(10)
+  })
+
+  // A JS stall makes every card that came due meanwhile launch at once; late cards must stream out, not leave as one blob.
+  it('spaces out cards that are late after a stall instead of launching them together', async () => {
+    const departures: number[] = []
+    mockPlayCardSound.mockImplementation(() => departures.push(Date.now()))
+    await renderProvider()
+    await act(async () => controller.start(makeEntries(52, 'c', true, 18), CARD_WIDTH, jest.fn(), jest.fn()))
+    await advance(250)
+
+    // The clock jumps 600ms but no timer fires early - exactly what a long JS stall looks like to the deal.
+    jest.setSystemTime(Date.now() + 600)
+    await advance(totalMs(52, 18))
+
+    expect(departures).toHaveLength(52)
+    const sorted = [...departures].sort((a, b) => a - b)
+    // Without the spacing, every card that came due during the stall left in the same instant (26 at once for a full pool).
+    // The test clock commits React in 25ms steps, which skews individual departures by a few ms, so assert a bounded burst
+    // rather than an exact gap: no more than a handful of cards inside any 12ms window.
+    let worstBurst = 0
+    for (let i = 0; i < sorted.length; i++) {
+      let count = 0
+      while (i + count < sorted.length && sorted[i + count] - sorted[i] < 12) count++
+      worstBurst = Math.max(worstBurst, count)
+    }
+    expect(worstBurst).toBeLessThanOrEqual(4)
   })
 
   it('an empty deal completes immediately', async () => {
@@ -173,5 +479,217 @@ describe('DealProvider ghost lookahead', () => {
 
     expect(onAllLanded).toHaveBeenCalledTimes(1)
     expect(screen.queryByTestId('deal-skip-layer')).toBeNull()
+  })
+
+  it('a deal of one card works', async () => {
+    await renderProvider()
+    const landed: string[] = []
+    const onAllLanded = jest.fn()
+
+    await act(async () => controller.start(makeEntries(1), CARD_WIDTH, (id) => landed.push(id), onAllLanded))
+    await advance(totalMs(1))
+
+    expect(landed).toEqual(['c0'])
+    expect(onAllLanded).toHaveBeenCalledTimes(1)
+  })
+})
+
+// onCardDealt is the take-off counterpart of onCardLanded: it lets a caller react to the instant a card's ghost is drawn over the spot
+// it leaves (Pyramid's win sweep empties a source pile only once its last card has actually left it).
+describe('DealProvider onCardDealt (take-off)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+    mockPlayCardSound.mockClear()
+    mockHapticCard.mockClear()
+    mockMounts.count = 0
+    mockShown.length = 0
+  })
+  afterEach(() => {
+    jest.useRealTimers()
+  })
+
+  it("fires once per card, in deal order, never before that card's own scheduled delay and always before it lands", async () => {
+    await renderProvider()
+    const entries = makeEntries(20, 'c', true)
+    const t0 = Date.now()
+    const dealtAt: Record<string, number> = {}
+    const landedAt: Record<string, number> = {}
+    const order: string[] = []
+    await act(async () =>
+      controller.start(
+        entries,
+        CARD_WIDTH,
+        (id) => (landedAt[id] = Date.now() - t0),
+        jest.fn(),
+        (id) => {
+          order.push(id)
+          dealtAt[id] = Date.now() - t0
+        }
+      )
+    )
+
+    await advance(totalMs(20))
+
+    expect(order).toEqual(entries.map((e) => e.cardId)) // every card exactly once, in order
+    entries.forEach((e) => {
+      // Not when the card is handed to a slot (a slot is launched LOOKAHEAD_MS ahead of its flight): when the flight itself begins.
+      expect(dealtAt[e.cardId]).toBeGreaterThanOrEqual(e.delayMs)
+      expect(landedAt[e.cardId] - dealtAt[e.cardId]).toBeGreaterThanOrEqual((DEAL_SPRING.duration ?? 0) - 1)
+    })
+  })
+
+  it("fires when the card's ghost is really up: its slot is launched and showing exactly that card", async () => {
+    await renderProvider()
+    const entries = makeEntries(12, 'c', true)
+    const drawn: Record<string, boolean> = {}
+    await act(async () =>
+      controller.start(entries, CARD_WIDTH, jest.fn(), jest.fn(), (id) => {
+        drawn[id] = flying().some((node) => within(node).queryByTestId(`ghost-${id}`) !== null)
+      })
+    )
+
+    await advance(totalMs(12))
+
+    expect(Object.keys(drawn)).toHaveLength(12)
+    expect(Object.values(drawn).every(Boolean)).toBe(true)
+  })
+
+  it('is silent for a deal that was replaced, including a card of it whose slot timer fires before the new deal has mounted', async () => {
+    await renderProvider()
+    const dealtA: string[] = []
+    const dealtB: string[] = []
+    await act(async () => controller.start(makeEntries(30, 'a', true), CARD_WIDTH, jest.fn(), jest.fn(), (id) => dealtA.push(id)))
+    await advance(200)
+    const before = dealtA.length
+    expect(before).toBeGreaterThan(0)
+
+    // A's slot timers fire INSIDE this act, before React commits B's slots.
+    await act(async () => {
+      controller.start(makeEntries(12, 'b', true), CARD_WIDTH, jest.fn(), jest.fn(), (id) => dealtB.push(id))
+      jest.advanceTimersByTime(600)
+    })
+    await advance(totalMs(12))
+
+    expect(dealtA).toHaveLength(before) // nothing of the replaced deal took off after the restart
+    expect(dealtB).toEqual(makeEntries(12, 'b').map((e) => e.cardId)) // and the new deal's callback saw only its own cards, all of them
+  })
+
+  it('is silent after an empty start() cancels the deal', async () => {
+    await renderProvider()
+    const dealt: string[] = []
+    await act(async () => controller.start(makeEntries(30, 'a', true), CARD_WIDTH, jest.fn(), jest.fn(), (id) => dealt.push(id)))
+    await advance(200)
+    const before = dealt.length
+    expect(before).toBeGreaterThan(0)
+    expect(before).toBeLessThan(30)
+
+    await act(async () => controller.start([], CARD_WIDTH, jest.fn(), jest.fn()))
+    await advance(totalMs(30))
+
+    expect(dealt).toHaveLength(before)
+  })
+
+  it('a skip tap reports every card that had not taken off yet - flying ones and never-launched ones - exactly once', async () => {
+    await renderProvider()
+    const dealt: string[] = []
+    const landed: string[] = []
+    await act(async () =>
+      controller.start(
+        makeEntries(54),
+        CARD_WIDTH,
+        (id) => landed.push(id),
+        jest.fn(),
+        (id) => dealt.push(id)
+      )
+    )
+    await advance(300)
+    expect(dealt.length).toBeGreaterThan(0)
+    expect(dealt.length).toBeLessThan(54)
+
+    await fireEvent.press(screen.getByTestId('deal-skip-layer'))
+
+    expect(dealt).toHaveLength(54)
+    expect(new Set(dealt)).toEqual(new Set(makeEntries(54).map((e) => e.cardId)))
+    expect(landed).toHaveLength(54)
+    await advance(5000) // nothing fires late
+    expect(dealt).toHaveLength(54)
+  })
+
+  it('a take-off callback that throws cannot strand the deal: a skip still lands every card, and the error still surfaces', async () => {
+    await renderProvider()
+    const landed: string[] = []
+    const onAllLanded = jest.fn()
+    const errors: unknown[] = []
+    // The rethrown error surfaces from a timer; catch it like an error boundary would so the test can inspect the outcome.
+    const advanceCatching = async (ms: number) => {
+      for (let t = 0; t < ms; t += 25) {
+        try {
+          await advance(25)
+        } catch (error) {
+          errors.push(error)
+        }
+      }
+    }
+    await act(async () =>
+      controller.start(
+        makeEntries(20),
+        CARD_WIDTH,
+        (id) => landed.push(id),
+        onAllLanded,
+        () => {
+          throw new Error('boom')
+        }
+      )
+    )
+    await advanceCatching(100)
+
+    // Every take-off throws, the skip's included (its still-unlaunched cards are reported one after another in a single loop).
+    await fireEvent.press(screen.getByTestId('deal-skip-layer'))
+
+    expect(landed).toHaveLength(20)
+    expect(onAllLanded).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('deal-skip-layer')).toBeNull()
+    await advanceCatching(500)
+    expect(errors.length).toBeGreaterThan(0) // the caller's error was not swallowed
+  })
+
+  it('reports every take-off again in a following deal that reuses the same card ids (a game has one deck: its ids repeat across deals)', async () => {
+    await renderProvider()
+    const first: string[] = []
+    const second: string[] = []
+    await act(async () => controller.start(makeEntries(10, 'c', true), CARD_WIDTH, jest.fn(), jest.fn(), (id) => first.push(id)))
+    await advance(totalMs(10))
+    expect(first).toHaveLength(10)
+
+    // The very same ids again - a new game's sweep or deal. A take-off ledger kept from the previous deal would swallow all of them.
+    await act(async () => controller.start(makeEntries(10, 'c', true), CARD_WIDTH, jest.fn(), jest.fn(), (id) => second.push(id)))
+    await advance(totalMs(10))
+    expect(second).toEqual(makeEntries(10, 'c').map((e) => e.cardId))
+    expect(first).toHaveLength(10) // and nothing leaked back into the first deal's callback
+  })
+
+  it('reports a duplicated card id once', async () => {
+    await renderProvider()
+    const entries = makeEntries(6)
+    entries[3] = { ...entries[3], cardId: entries[1].cardId }
+    const dealt: string[] = []
+
+    await act(async () => controller.start(entries, CARD_WIDTH, jest.fn(), jest.fn(), (id) => dealt.push(id)))
+    await advance(totalMs(6))
+
+    expect(dealt.filter((id) => id === 'c1')).toHaveLength(1)
+  })
+
+  it('unmounting mid-deal stops the take-off reports too', async () => {
+    const view = await renderProvider()
+    const dealt: string[] = []
+    await act(async () => controller.start(makeEntries(30, 'c', true), CARD_WIDTH, jest.fn(), jest.fn(), (id) => dealt.push(id)))
+    await advance(300)
+    const before = dealt.length
+
+    await view.unmount()
+    await advance(3000)
+
+    expect(dealt).toHaveLength(before)
   })
 })

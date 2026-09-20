@@ -2,12 +2,12 @@ import { Provider as ThemeProvider, type ThemeSettings, useAutoPaperTheme, useTh
 import { FeedbackPressProvider, hapticActions, type HapticSettings, soundActions, type SoundSettings } from '@rific/feedback-press'
 import { Toaster, ToastProvider } from '@rific/toaster'
 import { OrientationProvider, useThemedRootBackground } from '@tastic/core'
-import { Stack } from 'expo-router'
+import { DarkTheme, Stack, ThemeProvider as NavigationThemeProvider } from 'expo-router'
 import { DeviceMotion } from 'expo-sensors'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
-import { StyleSheet } from 'react-native'
+import { Platform, StyleSheet, View } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import * as RNPaper from 'react-native-paper'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
@@ -15,6 +15,7 @@ import { Provider as ReduxProvider, useDispatch, useSelector } from 'react-redux
 import { PersistGate } from 'redux-persist/integration/react'
 
 import { createLockableDeviceMotion } from '@/components/lockableDeviceMotion'
+import { TableBackground } from '@/components/TableBackground'
 import { DEFAULT_SEED_COLOR, previewCardBack, useTableColors } from '@/components/theme'
 import { UpdateDialog } from '@/components/UpdateDialog'
 import { useCardSoundPlayers } from '@/components/useCardSounds'
@@ -30,6 +31,13 @@ import { useSplashReady } from '@/utils/splashGate'
 
 SplashScreen.preventAutoHideAsync()
 
+// React Navigation paints `colors.background` from its theme on the layers around every screen - on native
+// the ScreenStack's own container, on web each screen's wrapper - and a screen's `contentStyle` only reaches
+// the layer inside those. So the app-wide felt behind the Stack (see ThemedStack) is only visible if the
+// theme's background is itself transparent. Nothing else in this app reads the navigation theme (headers
+// are hidden; Paper has its own).
+const TRANSPARENT_NAVIGATION_THEME = { ...DarkTheme, colors: { ...DarkTheme.colors, background: 'transparent' } }
+
 function ThemedStack() {
   // Hardcoded `true`, not this app's own live system-theme `dark` (see useAutoPaperTheme()'s `dark`
   // used elsewhere in this file, e.g. ProfileThemeSync) - theme.ts's own felt palettes are dark-toned
@@ -38,9 +46,23 @@ function ThemedStack() {
   // `dark` would flash white against this app's always-dark table during a push/pop transition, which
   // is worse than the black-default corner-flash this hook exists to fix. gestureEnabled left at the
   // hook's own default (false) - this Stack had no prior gestureEnabled setting to preserve.
-  const screenOptions = useThemedRootBackground(true, false)
+  const rootBackground = useThemedRootBackground(true, false)
+  // The hook's opaque black `contentStyle` is replaced with a transparent one: the felt (TableBackground,
+  // below) is painted ONCE behind the whole Stack and every screen draws over it, instead of each screen
+  // painting its own copy of the felt as its first child. The hook's root-window sync (the OS-level
+  // corner-flash fix) is unaffected - that is a separate layer beneath even this.
+  //
+  // Android also gets a crossfade. Its default push/pop animation (react-native-screens' rns_default_* tweens)
+  // holds the OUTGOING screen at full alpha for ~450ms while the incoming one slides over it, which only
+  // looked right because every screen used to be opaque; with transparent screens Home would show straight
+  // through the game board for the whole push. rns_fade_* is a 150ms symmetric alpha crossfade, so nothing
+  // sits at full opacity under the incoming screen. iOS is left on its own UIKit push (checked frame by
+  // frame in the simulator - no bleed-through). Derived from the installed react-native-screens sources; NOT
+  // yet observed on an Android device or emulator.
+  const screenOptions = { ...rootBackground, contentStyle: { backgroundColor: 'transparent' }, animation: Platform.select({ android: 'fade' as const }) }
   return (
-    <>
+    <View style={styles.root}>
+      <TableBackground />
       {/* Explicitly light, not the default `auto`: every screen here sits on the dark-toned felt in
       every appearance mode (see theme.ts), so `auto` flips to dark status-bar text in a light-mode
       system and reads poorly against it. Mounted here, next to the Stack, rather than once at the
@@ -48,23 +70,25 @@ function ThemedStack() {
       dark on the menu) while this one does. Game screens layer their own rotation-aware hide on top -
       see GameStatusBar. */}
       <StatusBar style='light' />
-      <Stack screenOptions={screenOptions}>
-        <Stack.Screen name='index' options={{ title: 'Solitaire Suite' }} />
-        <Stack.Screen name='klondike' options={{ title: 'Klondike' }} />
-        <Stack.Screen name='spider' options={{ title: 'Spider' }} />
-        <Stack.Screen name='freecell' options={{ title: 'FreeCell' }} />
-        <Stack.Screen name='pyramid' options={{ title: 'Pyramid' }} />
-        <Stack.Screen name='yukon' options={{ title: 'Yukon' }} />
-        <Stack.Screen name='golf' options={{ title: 'Golf' }} />
-        <Stack.Screen name='tripeaks' options={{ title: 'TriPeaks' }} />
-        <Stack.Screen name='canfield' options={{ title: 'Canfield' }} />
-        <Stack.Screen name='fortythieves' options={{ title: 'Forty Thieves' }} />
-        <Stack.Screen name='scorpion' options={{ title: 'Scorpion' }} />
-        <Stack.Screen name='acesup' options={{ title: 'Aces Up' }} />
-        <Stack.Screen name='achievements' options={{ title: 'Achievements' }} />
-        <Stack.Screen name='profiles' options={{ title: 'Profiles' }} />
-      </Stack>
-    </>
+      <NavigationThemeProvider value={TRANSPARENT_NAVIGATION_THEME}>
+        <Stack screenOptions={screenOptions}>
+          <Stack.Screen name='index' options={{ title: 'Solitaire Suite' }} />
+          <Stack.Screen name='klondike' options={{ title: 'Klondike' }} />
+          <Stack.Screen name='spider' options={{ title: 'Spider' }} />
+          <Stack.Screen name='freecell' options={{ title: 'FreeCell' }} />
+          <Stack.Screen name='pyramid' options={{ title: 'Pyramid' }} />
+          <Stack.Screen name='yukon' options={{ title: 'Yukon' }} />
+          <Stack.Screen name='golf' options={{ title: 'Golf' }} />
+          <Stack.Screen name='tripeaks' options={{ title: 'TriPeaks' }} />
+          <Stack.Screen name='canfield' options={{ title: 'Canfield' }} />
+          <Stack.Screen name='fortythieves' options={{ title: 'Forty Thieves' }} />
+          <Stack.Screen name='scorpion' options={{ title: 'Scorpion' }} />
+          <Stack.Screen name='acesup' options={{ title: 'Aces Up' }} />
+          <Stack.Screen name='achievements' options={{ title: 'Achievements' }} />
+          <Stack.Screen name='profiles' options={{ title: 'Profiles' }} />
+        </Stack>
+      </NavigationThemeProvider>
+    </View>
   )
 }
 

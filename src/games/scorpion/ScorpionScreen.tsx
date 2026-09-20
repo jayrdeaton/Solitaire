@@ -11,23 +11,23 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
+import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
-import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
+import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { PlayingCard } from '@/components/PlayingCard'
 import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
-import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { useGameSession } from '@/components/useGameSession'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
@@ -45,6 +45,7 @@ import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -124,11 +125,11 @@ function ScorpionScreenInner() {
   // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
   // exclusion with everything else; tap/drag/stock-draw can all run concurrently with each other -
   // PATTERN_OVERLAP_GATE, same as Klondike). `shrinkFlying`/`activeFlightCount` (the hook's state
-  // mirror of the ref) are deliberately NOT destructured - Scorpion has no per-card-landing fan flown
-  // via `ghost` (the assisted stock's multi-card burst uses `dealHiddenIds`, not `flying`, same as the
-  // initial deal - see runStockDeal below) and no auto-play cascade to gate on a `settled` flag, so
-  // neither would have a read site (and `noUnusedLocals`/eslint would flag them as dead).
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<ScorpionState>()
+  // mirror of the ref) is NOT destructured - Scorpion has no per-card-landing fan flown via `ghost`
+  // (the assisted stock's multi-card burst uses `dealHiddenIds`, not `flying`, same as the initial
+  // deal - see runStockDeal below), so it would have no read site. `activeFlightCount` (the hook's
+  // state mirror of the ref) is, though: it is what the win celebration waits on (see `settled`).
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<ScorpionState>()
   // Nullable move (Spider's default): an ordinary tableau move always has one, but the assisted
   // stock's one-shot deal lands 3 cards across 3 different columns at once - no single MoveInfo
   // shape for that, so it's recorded as `move: null` and handleUndo detects that case itself (see
@@ -156,10 +157,20 @@ function ScorpionScreenInner() {
   // no suit-based foundation for a "won" flag to hang off; isWon (rules.ts) checks each column's
   // own shape directly instead.
   const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, 'scorpion', session, dealTokenRef, recordDealWon, hintsUsedRef)
-  /** One ref per tableau column's own container - measured independently of CardRegistry so the
-   * win cascade can still find a completed run's screen position after its real cards have been
-   * hidden (won-gated, see the tableau row below), at which point they're no longer
-   * CardRegistry-registered at all. Mirrors Canfield's own foundationSlotRefs/Spider's own
+  // Nothing animating and no deal still landing - every ghost flight (tap, drag, undo, the stock deal) holds an
+  // activeFlightCount claim until it lands, and the initial deal holds dealHiddenIds until its last card does.
+  const settled = activeFlightCount === 0 && dealHiddenIds.size === 0
+  // `won` is game state (clock, stat, save, undo/hint gating) and flips with the winning move; the celebration
+  // waits until the last card has flown in and landed. The columns used to blank the instant `won` flipped,
+  // which unregistered the very card the winning move's ghost was measuring to land on - it could not fly, and
+  // simply vanished, along with every completed run on the board - so those visuals use winRevealed instead.
+  const winRevealed = useWinReveal(won, settled)
+  // The board the win cascade has taken over from (set together with startChains, see runWinCascade): once it IS the
+  // current state, and the win is revealed, the real columns blank - not a moment earlier. Compared by identity (state is
+  // replaced wholesale on every change) so an undo or a New Game un-blanks the columns with no reset to remember.
+  const [cascadeHandoffFor, setCascadeHandoffFor] = useState<ScorpionState | null>(null)
+  /** One ref per tableau column's own container, measured independently of CardRegistry: the win cascade's chain
+   * origin (a completed run's King slot - the top of its fan). Mirrors Canfield's own foundationSlotRefs/Spider's own
    * completedSlotRefs - Scorpion's own "foundation-equivalent" is just each tableau column. */
   const tableauColumnRefs = useRef<(View | null)[]>(new Array(TABLEAU_COLUMNS).fill(null))
   /** Flights awaiting their post-commit measurement + their own flyTo, queued by tap-to-move
@@ -295,7 +306,7 @@ function ScorpionScreenInner() {
         card: { ...step.card, faceUp: false },
         from: origin,
         to: { x: dest.x, y: dest.y },
-        delayMs: step.visitOrder * DEAL_STAGGER_MS
+        delayMs: step.visitOrder * dealStaggerMs(sequence.length)
       })
     })
     if (entries.length === 0) {
@@ -322,29 +333,42 @@ function ScorpionScreenInner() {
   // Win cascade: one chain per completed column (up to 4 - see rules.ts's isWon), each chained
   // top-first (Ace) down to bottom-last (King) - tableau arrays are stored bottom-up (index 0 =
   // King, the first card of the run), same convention Canfield's own foundation piles use, so
-  // reversing gives the right cascade order. Origin is each column's own tableauColumnRefs slot
-  // (not CardRegistry) since every column's real cards are hidden the instant `won` flips true
-  // (see the tableau row below) and therefore unregistered.
+  // reversing gives the right cascade order.
+  //
+  // Unlike a foundation pile (one card showing), a completed run stands FANNED: 13 cards, each in its own place. A
+  // chain with only a shared origin would collapse the whole fan onto the King's slot - twelve cards jumping with no
+  // ghost - so every card also carries the spot it really stands on (`cardOrigins`), and its ghost waits there, then
+  // converges onto the racked chain. Those spots come from CardRegistry (the real, measured positions - including
+  // PileView's height compression - rather than a copy of its fan math that could drift), which only knows cards that
+  // are still rendered. So this runs while the columns are still on screen and the columns blank only afterwards, in the
+  // SAME commit that mounts the ghosts (cascadeHandoffFor, set right beside startChains): measuring after the reveal
+  // blanked them finds nothing, and blanking first leaves the fan empty until the ghosts arrive. A card whose position
+  // cannot be measured falls back to the King's slot (the chain origin) - correct, just collapsed - and if no chain can
+  // start at all the columns simply stay up under the banner instead of vanishing.
   async function runWinCascade(s: ScorpionState, gen: number) {
     const completed = s.tableau.map((col, index) => ({ col, index })).filter(({ col }) => col.length === 13)
-    const origins = await Promise.all(completed.map(({ index }) => measureView(tableauColumnRefs.current[index])))
+    const [origins, cardRects] = await Promise.all([Promise.all(completed.map(({ index }) => measureView(tableauColumnRefs.current[index]))), Promise.all(completed.map(({ col }) => Promise.all(col.map((card) => ghost.cardRegistry.measure(card.id)))))])
     if (dealTokenRef.current !== gen) return
     const chains: ChainSpec[] = []
     completed.forEach(({ col }, i) => {
       const origin = origins[i]
       if (!origin) return
-      chains.push({ cards: col.slice().reverse(), origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
+      const rects = cardRects[i].slice().reverse()
+      chains.push({ cards: col.slice().reverse(), origin, cardOrigins: rects.map((rect) => (rect ? { x: rect.x, y: rect.y } : origin)), entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
     })
     winCascade.startChains(chains, cardWidth)
+    if (chains.length > 0) setCascadeHandoffFor(s)
   }
 
+  // Held back until the win is revealed (see winRevealed): the pending token is set the moment the winning move
+  // commits, but the cascade takes over from the columns, so it must not start while the last card is in the air.
   useEffect(() => {
     const pending = pendingWinCascadeRef.current
-    if (!pending || !state) return
+    if (!pending || !state || !winRevealed) return
     pendingWinCascadeRef.current = null
     runWinCascade(state, pending.gen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
+  }, [state, winRevealed])
 
   // Same race documented in this repo's own CLAUDE.md: measuring CardRegistry synchronously right
   // after the setState in applyMove would find the still-mounted SOURCE card (the destination
@@ -683,13 +707,7 @@ function ScorpionScreenInner() {
     }
   }
 
-  if (!state) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.loadingText}>Loading...</Text>
-      </View>
-    )
-  }
+  if (!state) return <GameLoading />
 
   return (
     <CardSizeProvider width={cardWidth}>
@@ -717,9 +735,12 @@ function ScorpionScreenInner() {
                 // - PileView.tsx (shared, not ours to edit) already ran its own hitTest await before
                 // invoking this callback, so this is the earliest point ScorpionScreen gets a look-in.
                 // Rejects outright if undo is currently running (undo holds full mutual exclusion, not
-                // just a one-way wait - see undoBusyRef's own doc comment).
+                // just a one-way wait - see undoBusyRef's own doc comment) - and once the game is won, like
+                // handleCardTap/handleDrawStock/handleHint: the completed runs stay on the board (and
+                // draggable) until the win is revealed, and a drop in that hold would register a move, fly a
+                // ghost that delays the reveal, and could split a run so the win flips back.
                 onDrop: (to, count, anchorCardId, flight) => {
-                  if (undoBusyRef.current) return false
+                  if (won || undoBusyRef.current) return false
                   startFlights(1)
                   if (!completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)) {
                     settleFlight()
@@ -729,11 +750,14 @@ function ScorpionScreenInner() {
                 }
               }
               const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === colIndex).reduce((sum, f) => sum + f.count, 0)
-              // Hidden entirely once won - at that point every column is either already empty or a
-              // complete run (see rules.ts's isWon), and the win cascade owns displaying those cards
-              // now (see runWinCascade), the same way Spider's own completed-sequence slots go blank
-              // once their cascade takes over.
-              const cards = won ? [] : col
+              // Hidden entirely once the win cascade takes over - at that point every column is either
+              // already empty or a complete run (see rules.ts's isWon), and the win cascade owns displaying
+              // those cards now (see runWinCascade), the same way Spider's own completed-sequence slots
+              // go blank once their cascade takes over. NOT keyed on `won`: that flips with the winning
+              // move, and blanking the columns then would unregister the card its ghost is flying to. And
+              // not on `winRevealed` alone either: runWinCascade measures the still-rendered cards first
+              // (cascadeHandoffFor), so the ghosts land in the very commit the columns blank.
+              const cards = winRevealed && cascadeHandoffFor === state ? [] : col
               return (
                 <DropZone key={colIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: colIndex }} style={[styles.tableauColumn, { width: cardWidth }]}>
                   <View
@@ -750,27 +774,15 @@ function ScorpionScreenInner() {
           </View>
         </View>
       </GameChrome>
-      {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
+      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
     </CardSizeProvider>
   )
 }
 
-function makeStyles(colors: TableColors) {
+function makeStyles() {
   return StyleSheet.create({
-    container: {
-      backgroundColor: colors.tableFelt,
-      flex: 1,
-      padding: 12
-    },
-    loadingText: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      marginTop: 40,
-      textAlign: 'center'
-    },
     tableauColumn: {},
     tableauRow: {
       flexDirection: 'row',

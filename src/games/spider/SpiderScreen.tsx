@@ -1,20 +1,21 @@
 import { Pressable, useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CARD_ASPECT, CardSizeProvider, faceUpFanOffset, type TableColors, useCardSize } from '@tastic/cards'
+import { CARD_ASPECT, CardSizeProvider, faceUpFanOffset, useCardSize } from '@tastic/cards'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
 import Animated, { useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
-import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
+import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView, ScreenPoint } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { autoMoveSpringFor } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { TABLEAU_ROW_PADDING_BOTTOM, useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { GameLoading } from '@/components/GameLoading'
 import { OverlayFrame, toLocal, useOverlayFrame } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
@@ -38,6 +39,7 @@ import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -71,6 +73,16 @@ function stockPacketId(index: number): string {
  * detects this case itself and flies all 10 back to the stock fan (see runUndoDeal). */
 type HistoryEntry = UndoEntry<SpiderState>
 
+/** A completed King->Ace run that has not left the tableau yet: it sits fully assembled in its column (completeMove/
+ * handleDrawStock's displayState) until sweepRunToFoundation flies it to `slotIndex`. `release` is that run's claim on
+ * sweepPendingRef - the board is held still until the sweep gives it back, see claimSweep. */
+interface PendingSweep {
+  colIndex: number
+  slotIndex: number
+  run: Card[]
+  release: () => boolean
+}
+
 /** One tap-to-move or drag-drop's own ghost flight (via `ghost`, DragGhostLayer), queued in
  * pendingMoveFlightsRef awaiting its post-commit measurement + flight.flyTo - see that ref's own
  * doc comment for why this folds together what were three separately-paired single-slot refs
@@ -81,7 +93,7 @@ interface PendingMoveFlight {
   cardId: string
   flight: DragFlightHandle
   flyingId: number
-  sweep: { colIndex: number; slotIndex: number; run: Card[] } | null
+  sweep: PendingSweep | null
 }
 
 /** One card's independent leg of a sequence flight - own origin AND destination, the same shape
@@ -120,7 +132,7 @@ interface SequenceFlightInstance {
  * via withDelay, so a staggered card doesn't visibly move until its own turn arrives. Settlement
  * is a plain timer matching the spring's own duration rather than the spring's completion callback
  * - confirmed elsewhere in this codebase (DragGhostLayer.tsx/DealLayer.tsx) not to reliably fire
- * on this app's web target. `onDealt` mirrors DealGhostCard's own doc comment: fired via its own
+ * on this app's web target. `onDealt` mirrors DealLayer's GhostSlot (formerly DealGhostCard) own doc comment: fired via its own
  * separate timer keyed to just `delayMs` (not delayMs+duration), so this card's own sound/haptic
  * lands the instant ITS turn actually begins, not staggered on top of the landing timer.
  *
@@ -244,9 +256,9 @@ function SpiderScreenInner() {
   // exclusion with everything else; tap/drag/auto-play/stock-draw can all run concurrently with
   // each other - PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`,
   // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
-  // unchanged. Spider has no foundation piles/useAutoFoundationCascade, so activeFlightCount itself
-  // is only ever read by handleUndo's own guard here, unlike Klondike's cascade.settled use of it.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<SpiderState>()
+  // unchanged. Spider has no foundation piles/useAutoFoundationCascade, so activeFlightCount (the state
+  // mirror of the ref, which handleUndo's own guard reads) only feeds the win celebration's `settled` flag.
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<SpiderState>()
   const [history, setHistory] = useState<HistoryEntry[]>([])
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -299,8 +311,16 @@ function SpiderScreenInner() {
     dealt: { card: Card; colIndex: number }[]
     origin: { x: number; y: number } | null
     token: number
-    sweeps?: Map<string, { colIndex: number; slotIndex: number; run: Card[] }>
+    sweeps?: Map<string, PendingSweep>
   } | null>(null)
+  /** The token of the stock deal in flight, from the tap that started it until the deal has settled - null when there is none.
+   * At most one at a time, which is what `deal` (one active batch) and pendingDealRef (one slot) already assume: a second draw
+   * mid-way used to either replace the first's pendingDealRef (dropping its flight claim and any run sweep it held, which
+   * locks every later action - see claimSweep - and undo, for good) or call deal.start() over a batch still in the air (the
+   * first batch's landed/settled callbacks are then silenced for good). Refused up front instead, before it claims anything.
+   * Released where the deal's own claim is (runDeal's onSettled, wired in the [state]-effect below), and dropped by New
+   * Game/restore, which reset every claim outright. */
+  const stockDealTokenRef = useRef<number | null>(null)
   // runInitialDeal re-reads the dealt tableau straight from `state`, exactly like Klondike's own
   // initial-deal effect does - see useDeferredDeal's own doc comment for the race this guards.
   const scheduleInitialDeal = useDeferredDeal(state, dealTokenRef, runInitialDeal)
@@ -331,6 +351,16 @@ function SpiderScreenInner() {
    * never completes a NEW run) - once this entry's own ghost lands, the effect below hands off to
    * sweepRunToFoundation instead of just ending this flying entry, exactly as before. */
   const pendingMoveFlightsRef = useRef<PendingMoveFlight[]>([])
+  /** How many completed runs are still assembled in the tableau waiting for sweepRunToFoundation (see PendingSweep) - a
+   * counter, since one stock deal can complete several columns. A run leaves as a second phase AFTER the move (or the dealt
+   * card) that completed it lands, so for that stretch - the move's ghost, then the sweep's measurements - the board still
+   * shows the run in its column, and a tap, drag, stock deal or undo in that window would act on cards the sweep is about to
+   * remove: removeRun slices the run off the END of its column by length, so it would cut whichever cards are on top by
+   * then. Every entry point that moves, deals or undoes therefore bows out while this is above zero (a second run completing
+   * concurrently would also be handed the same foundation slot). A ref, not state: only those guards read it, synchronously. */
+  const sweepPendingRef = useRef(0)
+  /** Bumped by every New Game/restore. A claim made under an older epoch belongs to a game that no longer exists - see claimSweep. */
+  const sweepEpochRef = useRef(0)
   /** Set by startUndoRunCompletion once the run's cards' shared origin (the foundation slot) has
    * been measured - resolved by the effect below once the intermediate state (with those cards
    * freshly restored into the tableau) has actually committed, since each card's own destination
@@ -360,6 +390,20 @@ function SpiderScreenInner() {
   const [completingSlots, setCompletingSlots] = useState<Set<number>>(new Set())
   const [sequenceFlights, setSequenceFlights] = useState<SequenceFlightInstance[]>([])
   const sequenceFlightIdRef = useRef(0)
+  // Nothing animating: every ghost flight (tap/drag, stock deal, run sweep, undo) holds an activeFlightCount claim
+  // until it lands (startSequenceFlight claims one per sweep/restore flight), and the initial deal holds dealHiddenIds
+  // until its last card does. sequenceFlights is the ghosts actually still mounted - checked directly as well.
+  const settled = activeFlightCount === 0 && dealHiddenIds.size === 0 && sequenceFlights.length === 0
+  // `won` is derived from the SWEPT state - it flips when the last run leaves the tableau for its slot, so the
+  // celebration (slots blanking for the win cascade, fireworks, banner) waits for that last sweep flight to land and
+  // the finished board to hold a beat, instead of cutting it short. See useWinReveal.
+  const winRevealed = useWinReveal(won, settled)
+  // The board the win cascade has taken over from, and the slots it has a chain for (set together with startChains, see
+  // runWinCascade): a slot blanks only once the win is revealed AND the current state IS that board AND its own chain
+  // started - never a moment earlier (the slot would sit empty until its ghosts mount) and never without a chain to show for
+  // it (an unmeasurable slot keeps its King rather than vanishing). Compared by identity (state is replaced wholesale on every
+  // change), so an undo or a New Game un-blanks the slots with no reset to remember.
+  const [cascadeHandoff, setCascadeHandoff] = useState<{ forState: SpiderState; slots: ReadonlySet<number> } | null>(null)
   // Per-flight-instance "cards still in flight" counter - decremented by handleSequenceFlightLanded
   // as each of that instance's own cards lands, so multiple concurrent instances (a stock deal that
   // completes more than one column at once) can each detect their OWN completion independently.
@@ -380,6 +424,27 @@ function SpiderScreenInner() {
   const [shake, setShake] = useState<{ cardId: string; count: number; token: number } | null>(null)
   const shakeTokenRef = useRef(0)
 
+  // Claims one pending run sweep (see sweepPendingRef). The returned `release` gives the claim back exactly once however often
+  // it is called, and reports whether the claim was still live: false once a New Game/restore has replaced the board since,
+  // which already zeroed the counter (so it is not decremented a second time) and means the sweep the claim belonged to must
+  // not touch the fresh game - its removeRun would cut a run's worth of cards out of a board that never completed one.
+  function claimSweep(): () => boolean {
+    const epoch = sweepEpochRef.current
+    sweepPendingRef.current += 1
+    let released = false
+    return () => {
+      const live = sweepEpochRef.current === epoch
+      if (live && !released) sweepPendingRef.current -= 1
+      released = true
+      return live
+    }
+  }
+
+  function resetSweepClaims() {
+    sweepEpochRef.current += 1
+    sweepPendingRef.current = 0
+  }
+
   const startNewGame = useCallback(
     (ctrl: ReturnType<typeof createSpiderController>) => {
       const myToken = ++dealTokenRef.current
@@ -388,6 +453,8 @@ function SpiderScreenInner() {
       setHint(null)
       hintsUsedRef.current = false
       resetFlightConcurrency()
+      resetSweepClaims()
+      stockDealTokenRef.current = null
       pendingMoveFlightsRef.current = []
       pendingDealRef.current = null
       pendingUndoDealRef.current = null
@@ -421,6 +488,8 @@ function SpiderScreenInner() {
     setHint(null)
     hintsUsedRef.current = false
     resetFlightConcurrency()
+    resetSweepClaims()
+    stockDealTokenRef.current = null
     pendingMoveFlightsRef.current = []
     pendingDealRef.current = null
     pendingUndoDealRef.current = null
@@ -471,25 +540,36 @@ function SpiderScreenInner() {
   // pile's per-card CardRegistry registration, there's no per-card identity to look up here, just
   // the slot's own screen position. Same dealTokenRef guard as every other async measurement in
   // this file, for the same "New Game tapped mid-measurement" reason.
+  //
+  // The slots keep drawing their Kings while this measures (their containers are card-sized and always mounted, so they
+  // measure the same whether or not a King is drawn) and blank only in the SAME commit that mounts the cascade's ghosts:
+  // startChains and setCascadeHandoff run in one async continuation, which React batches into one render. Blanking at the
+  // reveal instead left every slot empty for the few frames this measurement takes, before any ghost stood there. A slot with
+  // no chain (its container could not be measured) simply keeps its King, and if no chain starts at all every slot stays up.
   async function runWinCascade(s: SpiderState, gen: number) {
     const origins = await Promise.all(completedSlotRefs.current.map((view) => measureView(view)))
     if (dealTokenRef.current !== gen) return
     const chains: ChainSpec[] = []
+    const chained = new Set<number>()
     s.completedRuns.forEach((run, slot) => {
       const origin = origins[slot]
       if (!origin || run.length === 0) return
       chains.push({ cards: run, origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS }) // already King-first, Ace-last
+      chained.add(slot)
     })
     winCascade.startChains(chains, cardWidth)
+    if (chained.size > 0) setCascadeHandoff({ forState: s, slots: chained })
   }
 
+  // Held back until the win is revealed (see winRevealed): the pending token is set as soon as the last run is swept,
+  // but the cascade takes over from the slots, so it must not start while that run is still flying to its slot.
   useEffect(() => {
     const pending = pendingWinCascadeRef.current
-    if (!pending || !state) return
+    if (!pending || !state || !winRevealed) return
     pendingWinCascadeRef.current = null
     runWinCascade(state, pending.gen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
+  }, [state, winRevealed])
 
   // THE KEY WIRING for making sequenceFlights participate in the shared activeFlightCountRef (see
   // useFlightConcurrency): every call - whichever of the three call sites (sweepRunToFoundation,
@@ -534,8 +614,17 @@ function SpiderScreenInner() {
   // Left undefined when called from handleDrawStock's own onEachLanded hook instead (a stock-deal's
   // cards were never tracked via `flying` at all - see runDeal/handleDrawStock's own dealHiddenIds-
   // based hiding), in which case there's no matching claim here to settle.
-  async function sweepRunToFoundation(colIndex: number, slotIndex: number, run: Card[], flyingId?: number) {
+  //
+  // `release` is this run's claim on sweepPendingRef (see claimSweep): given back the moment the measurements resolve, in
+  // the same synchronous stretch as removeRun's commit below - so the board is held still exactly until the run has left it,
+  // whichever of the exits below (unmeasurable slot, no measurable card, a normal flight) is taken. Neither measurement can
+  // hang or throw: the registry answers null for an unregistered card and measureView for a missing view.
+  async function sweepRunToFoundation(colIndex: number, slotIndex: number, run: Card[], release: () => boolean, flyingId?: number) {
     const [origins, destination] = await Promise.all([Promise.all(run.map((c) => ghost.cardRegistry.measure(c.id))), measureView(completedSlotRefs.current[slotIndex])])
+    // A false answer: a New Game/restore replaced the board while those measurements were pending (a ghost of the old game
+    // can still land, and card ids repeat from deal to deal, so they even measure). The flying claim below, the removal and
+    // the flight all belong to the game that is gone - removeRun on the fresh board would cut cards out of it.
+    if (!release()) return
     // Always runs regardless of whether `destination` resolves: `state` already shows this run
     // fully assembled in the tableau (see completeMove/handleDrawStock's own displayState), so
     // leaving this flying entry set would keep PileView hiding those already-landed real cards
@@ -544,19 +633,24 @@ function SpiderScreenInner() {
       endFlying(flyingId)
       settleFlight()
     }
-    // FINDING 3: bail out of the whole sweep BEFORE touching tableau state if the foundation slot
-    // hasn't been measured yet (not laid out/measured on this render) - removing the run here
-    // regardless would make it vanish instantly with the King popping into the slot fully opaque,
-    // a hard teleport instead of a flight. Leaving the run untouched in the tableau lets a later
-    // render (once the slot is actually measurable) retry it instead.
-    if (!destination) return
-
     const removeRun = (s: SpiderState): SpiderState => ({
       ...s,
       tableau: s.tableau.map((col, i) => (i === colIndex ? col.slice(0, col.length - run.length) : col)),
       completed: [...s.completed, run[0]],
       completedRuns: [...s.completedRuns, run]
     })
+    // FINDING 3: bail out of the whole sweep BEFORE touching tableau state if the foundation slot
+    // hasn't been measured yet (not laid out/measured on this render) - removing the run here
+    // regardless would make it vanish instantly with the King popping into the slot fully opaque,
+    // a hard teleport instead of a flight. Leaving the run untouched in the tableau lets a later
+    // render (once the slot is actually measurable) retry it instead.
+    if (!destination) {
+      // The one exception is the LAST run: the win is derived from it being swept (isWon needs all 8 in their
+      // slots), and nothing ever retries a bailed sweep, so bailing would leave the game unwinnable with a full
+      // run sitting in the tableau. A pathological unmeasurable slot is the one case worth a teleport over that.
+      if (slotIndex === completedSlotRefs.current.length - 1 && stateRef.current) commitState(removeRun(stateRef.current))
+      return
+    }
     // Reads via stateRef.current, not the closure `state` - by the time this async function's own
     // await above resolves, a concurrent action (now genuinely possible - see PATTERN_OVERLAP_GATE)
     // could have committed a newer board than whatever render this closure was created in. The
@@ -628,7 +722,7 @@ function SpiderScreenInner() {
         // completeMove/sweepRunToFoundation) or finish normally.
         const proceed = () => {
           if (p.sweep) {
-            sweepRunToFoundation(p.sweep.colIndex, p.sweep.slotIndex, p.sweep.run, p.flyingId)
+            sweepRunToFoundation(p.sweep.colIndex, p.sweep.slotIndex, p.sweep.run, p.sweep.release, p.flyingId)
             return
           }
           endFlying(p.flyingId)
@@ -840,15 +934,12 @@ function SpiderScreenInner() {
       return
     }
     const destinations = await Promise.all(cards.map((c) => ghost.cardRegistry.measure(c.card.id)))
-    if (dealTokenRef.current !== token) {
-      // Unlike runUndoDeal's identical-looking guard below, this DOES settle on a stale token:
-      // handleDrawStock has no "a deal is already in flight" guard of its own (only undoBusyRef is
-      // checked - see item 7), so two rapid stock draws can genuinely overlap without any reset
-      // ever zeroing activeFlightCountRef in between (resetFlightConcurrency only ever runs from
-      // startNewGame/restoreGame) - leaving this claim unsettled here would leak it permanently.
-      onSettled?.()
-      return
-    }
+    // A stale token means New Game/restore replaced the game while the destinations were being measured, and already reset
+    // every claim (resetFlightConcurrency, resetSweepClaims) - including this deal's own - so, like runUndoDeal's identical
+    // guard below, this does NOT settle: that would decrement whatever newer action's claim is current now. (It used to settle
+    // here, back when two stock draws could overlap and supersede each other with no reset in between - handleDrawStock's
+    // stockDealTokenRef now refuses the second one up front, so a reset is the only way to get here.)
+    if (dealTokenRef.current !== token) return
 
     const entries: DealCardSpec[] = []
     const failedIds: string[] = []
@@ -921,13 +1012,24 @@ function SpiderScreenInner() {
       pending.sweeps
         ? (cardId) => {
             const sweep = pending.sweeps!.get(cardId)
-            if (sweep) sweepRunToFoundation(sweep.colIndex, sweep.slotIndex, sweep.run)
+            if (!sweep) return
+            // Taken out of the map as it starts, so the settle callback below only sees sweeps that never did.
+            pending.sweeps!.delete(cardId)
+            sweepRunToFoundation(sweep.colIndex, sweep.slotIndex, sweep.run, sweep.release)
           }
         : undefined,
       // Settles the startFlights(1) claim handleDrawStock made before stashing pendingDealRef -
       // this is the ONLY caller of runDeal with such a claim to settle (see runInitialDeal below,
       // which passes nothing).
-      () => settleFlight()
+      () => {
+        // The deal is over: the next draw may start (a token that no longer matches is a superseded game's, already dropped).
+        if (stockDealTokenRef.current === pending.token) stockDealTokenRef.current = null
+        settleFlight()
+        // A run whose completing card never got a flight (runDeal found no origin, or that card's own destination could not
+        // be measured) is still assembled in its column and holds a claim on sweepPendingRef - which would block every move
+        // and undo for good. Sweep it now: the run leaves like any other, just without a dealt card arriving first.
+        pending.sweeps?.forEach((sweep) => sweepRunToFoundation(sweep.colIndex, sweep.slotIndex, sweep.run, sweep.release))
+      }
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
@@ -953,7 +1055,7 @@ function SpiderScreenInner() {
       // own cards (see handleDrawStock below) are left showing their real face while flying -
       // every stock-dealt card is always face-up already, with no buried cards to distinguish it
       // from, the same as Klondike's own single-card stock-draw flight.
-      sequence.map((step) => ({ card: { ...step.card, faceUp: false }, delayMs: step.visitOrder * DEAL_STAGGER_MS })),
+      sequence.map((step) => ({ card: { ...step.card, faceUp: false }, delayMs: step.visitOrder * dealStaggerMs(sequence.length) })),
       origin,
       token
     )
@@ -1010,13 +1112,7 @@ function SpiderScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  if (!ready || !state) {
-    return (
-      <View style={styles.loadingContainer}>
-        <Text style={styles.loadingText}>Loading...</Text>
-      </View>
-    )
-  }
+  if (!ready || !state) return <GameLoading />
 
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
@@ -1091,6 +1187,9 @@ function SpiderScreenInner() {
   async function handlePressCard(colIndex: number, card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) {
     if (won || !state || !controller.autoMoveHint) return
     if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
+    // A completed run is still assembled in its column, about to be swept off (see sweepPendingRef) - a tap on it would move
+    // cards the sweep is about to remove. Ignored up front, so it doesn't even flash a ghost/sound; completeMove re-checks.
+    if (sweepPendingRef.current > 0) return
     const move = controller.autoMoveHint(state, { zone: 'tableau', index: colIndex }, card.id)
     if (!move) {
       // Nowhere legal to go - shake the card so the tap reads as "received, just stuck" rather
@@ -1140,10 +1239,11 @@ function SpiderScreenInner() {
   // tableau (Queen through Ace visibly landing on the King) exactly like any other move. Only once
   // that ghost lands does the whole run sweep off to its foundation slot as one consolidated unit
   // (see the entry's own `sweep`/sweepRunToFoundation) - two phases, the same shape a real dealer's
-  // "complete the run, then whisk it away" reads as. Skipped when the move also wins the game
-  // outright: runWinCascade already takes over immediately once `isWon` becomes true, bouncing
-  // every completed run off its slot as one celebratory cascade, and sweeping the winning run on
-  // its own right before that would race the cascade's own use of the same slot.
+  // "complete the run, then whisk it away" reads as. The move that completes the LAST run gets the
+  // same two phases (it used to be skipped, committing the swept state at once): with the run already
+  // gone from `next`'s tableau its ghost had nothing to measure, so it just vanished, and the whole
+  // run left for its slot without a flight. The win is then derived when that last sweep commits, and
+  // the celebration (see winRevealed) waits for the sweep flight to land, so it never races the slot.
   //
   // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
   // closure's `state` - two actions can now be triggered back-to-back before React re-renders (see
@@ -1154,18 +1254,25 @@ function SpiderScreenInner() {
   async function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle): Promise<boolean> {
     const current = stateRef.current
     if (!current) return false
+    // The authoritative check for a tap and a drag alike (a drop reaches here with no guard of its own; a tap may have passed
+    // handlePressCard's while awaiting its measurement, just before another move completed a run) - see sweepPendingRef.
+    if (sweepPendingRef.current > 0) return false
     const next = controller.tryMove(current, { from, to, count })
     if (!next) return false
 
     const justCompleted = next.completedRuns.length > current.completedRuns.length ? next.completedRuns[next.completedRuns.length - 1] : null
-    const slotIndex = justCompleted && !controller.isWon(next) ? next.completed.length - 1 : null
+    const slotIndex = justCompleted ? next.completed.length - 1 : null
     const displayState = slotIndex !== null ? withRunsRestored(next, [{ colIndex: to.index, run: justCompleted! }]) : next
 
     pushHistory(current, { from, to, count, anchorCardId })
     commitState(displayState)
     session.registerMove()
+    // The displayState above holds the last run back in the tableau, so `won` (derived from the swept state) only
+    // flips a phase later, once that run leaves - the clock still stops with the winning move itself.
+    if (controller.isWon(next)) session.stopClock()
     const flyingId = beginFlying(to, count)
-    pendingMoveFlightsRef.current.push({ cardId: anchorCardId, flight, flyingId, sweep: slotIndex !== null ? { colIndex: to.index, slotIndex, run: justCompleted! } : null })
+    // The claim is made here, in the same tick as the commit that shows the assembled run, so there is no gap before it holds.
+    pendingMoveFlightsRef.current.push({ cardId: anchorCardId, flight, flyingId, sweep: slotIndex !== null ? { colIndex: to.index, slotIndex, run: justCompleted!, release: claimSweep() } : null })
     return true
   }
 
@@ -1194,10 +1301,16 @@ function SpiderScreenInner() {
     if (won) return
     if (!controller.drawStock) return
     if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
+    // A deal would land on top of a run that is still assembled in its column, and its own sweep would then cut the wrong
+    // cards off the end of that column - see sweepPendingRef.
+    if (sweepPendingRef.current > 0) return
+    // One stock deal at a time, until it has fully landed - see stockDealTokenRef. Refused before anything is claimed, so
+    // a second tap has nothing to leak.
+    if (stockDealTokenRef.current !== null) return
     // Reads via stateRef.current, not the closure `state` - see completeMove's identical comment.
-    // Without this, rapid-tapping the stock pile several times before React re-renders dealt the
-    // SAME batch repeatedly (every call computing drawStock() against the same stale board) instead
-    // of dealing several different ones in a row.
+    // Without this, a draw computed against a stale render's board would deal the SAME batch again
+    // (a rapid second tap is now refused above until the first deal has landed, so this is the
+    // remaining guard for a tap racing some other move's commit).
     const current = stateRef.current
     if (!current) return
     // Captured from the PRE-deal stock - see runDeal's comment on why this can't be re-derived
@@ -1217,6 +1330,7 @@ function SpiderScreenInner() {
     session.registerMove()
 
     const myToken = ++dealTokenRef.current
+    stockDealTokenRef.current = myToken
 
     // The packet this round is dealt from is the frontmost currently-rendered one (see
     // StockFan/StockPacket) - has to be measured now, before the commitState below commits a state
@@ -1224,15 +1338,20 @@ function SpiderScreenInner() {
     // below, which can only be measured AFTER they've mounted.
     const packetIndex = Math.ceil(current.stock.length / TABLEAU_COLUMNS) - 1
     const origin = await ghost.cardRegistry.measure(stockPacketId(packetIndex))
+    // New Game/restore replaced the game while the packet was being measured: they already reset every claim (this draw's
+    // startFlights included) and stockDealTokenRef, and `current`/`next` belong to a game that is gone - committing them would
+    // overwrite the fresh board, and claimSweep below would take a claim out under the NEW game's epoch that nothing releases.
+    // Bails before claiming or committing anything, and without settling (that claim was reset, not leaked).
+    if (dealTokenRef.current !== myToken) return
 
     // A card can complete (and immediately sweep) a 13-card run the instant it's dealt - see
     // resolveCompletedSequence. Every column unconditionally grows by exactly 1 from the deal
     // itself, so a column whose FINAL length isn't current.tableau[col].length + 1 is one that had
     // its whole top run swept. drawStock's own sweep loop and this check both iterate columns in
     // ascending order, so the Nth such column pairs with the Nth run appended to
-    // next.completedRuns beyond however many existed before this deal. Skipped entirely if this
-    // deal also wins the game outright - see completeMove's own comment on why the winning move is
-    // left to runWinCascade rather than also getting a solo sequence flight.
+    // next.completedRuns beyond however many existed before this deal. A deal can never win the
+    // game outright (a deal needs all 10 columns non-empty, and only 8 runs exist to empty them),
+    // so the isWon guard below never fires - kept as a cheap invariant, not a real branch.
     const priorCompletedCount = current.completedRuns.length
     const completingColumns = controller.isWon(next) ? [] : dealt.filter(({ colIndex }) => next.tableau[colIndex].length !== current.tableau[colIndex].length + 1).map(({ colIndex }) => colIndex)
 
@@ -1254,7 +1373,9 @@ function SpiderScreenInner() {
       next,
       completingColumns.map((colIndex, i) => ({ colIndex, run: next.completedRuns[completingSlotIndexes[i]] }))
     )
-    const sweeps = new Map(completingColumns.map((colIndex, i) => [dealt.find((d) => d.colIndex === colIndex)!.card.id, { colIndex, slotIndex: completingSlotIndexes[i], run: next.completedRuns[completingSlotIndexes[i]] }]))
+    // One claim per completing column (see sweepPendingRef), released by that column's own sweep - or by the settle callback in
+    // the pendingDealRef effect if its completing card never gets a flight to trigger it. Made in the same tick as the commit below.
+    const sweeps = new Map<string, PendingSweep>(completingColumns.map((colIndex, i) => [dealt.find((d) => d.colIndex === colIndex)!.card.id, { colIndex, slotIndex: completingSlotIndexes[i], run: next.completedRuns[completingSlotIndexes[i]], release: claimSweep() }]))
 
     setDealHiddenIds(new Set(dealt.map((d) => d.card.id)))
     pendingDealRef.current = { dealt, origin, token: myToken, sweeps }
@@ -1268,7 +1389,9 @@ function SpiderScreenInner() {
   // state), then revert and mark `move.from` as incoming so it flies the rest of the way there
   // exactly like a fresh move would.
   async function handleUndo() {
-    if (undoBusyRef.current || activeFlightCountRef.current > 0 || history.length === 0 || !state) return
+    // sweepPendingRef: a stock deal's last card can land (settling its flight claim) a few milliseconds before the sweep it
+    // triggered has measured and removed its run - undoing in that gap would revert the board the sweep is about to edit.
+    if (undoBusyRef.current || activeFlightCountRef.current > 0 || sweepPendingRef.current > 0 || history.length === 0 || !state) return
     undoBusyRef.current = true
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition - the only move available once it's true is New Game), so any undo reachable while
@@ -1407,11 +1530,16 @@ function SpiderScreenInner() {
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.completedGroup, { gap }]}>
             {Array.from({ length: 8 }).map((_, i) => {
-              // Hidden once won - the win cascade owns these cards now (see runWinCascade), the same
-              // way Pyramid's discard-top goes blank once its own chain takes over. Also hidden
-              // while this slot's own sequence flight is still en route (see completingSlots) so
-              // the King doesn't pop in before the ghost visually lands on top of it.
-              const completedCard = won || completingSlots.has(i) ? undefined : state.completed[i]
+              // Hidden once the win cascade has taken this slot over - the win cascade owns these cards
+              // then (see runWinCascade), the same way Pyramid's discard-top goes blank once its own
+              // chain takes over. NOT keyed on `won`: that flips as the last run is swept, and blanking
+              // its slot then would cut that run's flight short. And not on `winRevealed` alone either:
+              // runWinCascade measures first, so the slots blank in the very commit its ghosts land
+              // (cascadeHandoff), never a moment before. Also hidden while this slot's own sequence
+              // flight is still en route (see completingSlots) so the King doesn't pop in before the
+              // ghost visually lands on top of it.
+              const handedOff = winRevealed && cascadeHandoff?.forState === state && cascadeHandoff.slots.has(i)
+              const completedCard = handedOff || completingSlots.has(i) ? undefined : state.completed[i]
               return (
                 <View
                   key={i}
@@ -1478,10 +1606,10 @@ function SpiderScreenInner() {
     (see WinCascadeGhosts' own doc comment for why nesting depth alone can't do this) - the win
     dialog comes last of all three so it's the one thing guaranteed to sit on top of the animation,
     not buried under it (also backstopped by WinBanner's own explicit zIndex). */}
-      {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <SequenceFlightGhosts flights={sequenceFlights} onCardLanded={handleSequenceFlightLanded} />
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
+      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
     </CardSizeProvider>
   )
 }
@@ -1542,22 +1670,11 @@ function StockFan({ count, onPress, hinted }: { count: number; onPress: () => vo
   )
 }
 
-function makeStyles(colors: TableColors) {
+function makeStyles() {
   return StyleSheet.create({
     column: {},
     completedGroup: {
       flexDirection: 'row'
-    },
-    loadingContainer: {
-      alignItems: 'center',
-      backgroundColor: colors.tableFelt,
-      flex: 1,
-      justifyContent: 'center'
-    },
-    loadingText: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16
     },
     message: {
       color: '#FFE082',

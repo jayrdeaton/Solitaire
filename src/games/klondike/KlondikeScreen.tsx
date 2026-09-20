@@ -1,25 +1,25 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
-import { CardSizeProvider, faceUpFanOffset, type TableColors } from '@tastic/cards'
+import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
-import { DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
+import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { GameLoading } from '@/components/GameLoading'
 import { wasteFanScreenShift } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
-import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { useGameSession } from '@/components/useGameSession'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
@@ -41,6 +41,7 @@ import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -164,6 +165,12 @@ function KlondikeScreenInner() {
   // foundation card un-hides immediately instead of staying hidden forever with no ghost ever
   // covering for it (mirrors Pyramid's own fallback for the same rare failure mode).
   const [winCascadeFallbackSuits, setWinCascadeFallbackSuits] = useState<Set<number>>(new Set())
+  // The board the win cascade has taken over from (set together with startChains, see runWinCascade): once it IS the
+  // current state, and the win is revealed, the real foundation cards blank - not a moment earlier, or the piles would
+  // sit empty for the frames between the reveal commit and the commit that mounts the cascade's ghosts. Compared by
+  // identity (state is replaced wholesale on every change) so an undo or a New Game un-blanks the piles with nothing
+  // to reset, and a re-win after an undo (which never relaunches the cascade) can never blank piles with no ghosts.
+  const [cascadeHandoffFor, setCascadeHandoffFor] = useState<KlondikeState | null>(null)
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
@@ -173,10 +180,20 @@ function KlondikeScreenInner() {
   // straggling call from a stale render's closure chain still checks against the CURRENT
   // controller, same as every other controllerRef.current read in this file.
   const { won, setWon, recordedWinRef, pendingWinCascadeRef, checkWin } = useFoundationWinCheck({ isWon: (s: KlondikeState) => controllerRef.current.isWon(s) }, 'klondike', session, dealTokenRef, recordDealWon, hintsUsedRef)
+  // Nothing animating and the initial deal finished - what the auto-play cascade below waits for, and
+  // what the win celebration waits for too (see useWinReveal). activeFlightCount is claimed before
+  // every flight's own async measurement (tap, drop, auto-play, stock draw, undo) and released only
+  // once it has landed, so it covers the winning card's flight too.
+  const settled = activeFlightCount === 0 && dealHiddenIds.size === 0
+  // `won` is game state (clock, stat, save, undo/hint gating) and flips with the winning move; the
+  // celebration - foundations giving way to the win cascade, fireworks, banner - waits until the
+  // last card has flown in and landed, so it is never hidden mid-flight (which used to make it
+  // simply appear) and the finished board reads for a beat first.
+  const winRevealed = useWinReveal(won, settled)
   /** One ref per foundation slot's own container (see FoundationCell's slotRef) - measured
-   * independently of CardRegistry so the win cascade can still find each pile's screen position
-   * after its real King has been hidden (won-gated, see the foundation row below), at which point
-   * that card is no longer CardRegistry-registered at all. */
+   * independently of CardRegistry so the win cascade can find each pile's screen position whether
+   * or not its real King is drawn (the container is card-sized and always mounted; the piles only
+   * blank once the cascade has taken over, see cascadeHandoffFor in runWinCascade). */
   const foundationSlotRefs = useRef<(View | null)[]>(new Array(4).fill(null))
   /** Flights awaiting their post-commit measurement + flight.flyTo, queued by tap-to-move
    * (handleCardTap), drawing from the stock (handleDrawStock), undo, and auto-play (fireAutoMove) -
@@ -194,8 +211,9 @@ function KlondikeScreenInner() {
    * measurement below resolves, so a flight queued against a game that's since been replaced by
    * "New Game" doesn't measure/land against the new deal's DOM (card ids are shuffle-independent
    * and reused across deals - see deck.ts). Mirrors exactly how runDeal below already guards itself
-   * with dealTokenRef/pendingDealTokenRef. */
-  const pendingFlightRef = useRef<{ cardId: string; viaStock?: boolean; fast?: boolean; sweep?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
+   * with dealTokenRef/pendingDealTokenRef. `to` is the pile the flight is headed to, so a failed
+   * per-card lookup can still land on that pile's own container (see the [state]-effect below). */
+  const pendingFlightRef = useRef<{ cardId: string; to: PileRef; viaStock?: boolean; fast?: boolean; sweep?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
   /** Draw-3 stock draws awaiting their post-commit measurement + deal.start() - a list for the same
    * overlapping-actions reason as pendingFlightRef above. Analogous shape, for the multi-card
    * deal-style flight (see the [state]-effect below and handleDrawStock) - drawnCards is
@@ -315,7 +333,7 @@ function KlondikeScreenInner() {
         card: { ...step.card, faceUp: false },
         from: origin,
         to: { x: dest.x, y: dest.y },
-        delayMs: step.visitOrder * DEAL_STAGGER_MS
+        delayMs: step.visitOrder * dealStaggerMs(sequence.length)
       })
     })
     if (entries.length === 0) {
@@ -341,19 +359,24 @@ function KlondikeScreenInner() {
 
   // Foundation piles are guaranteed full (13 cards each, Ace..King) the instant isWon() is true -
   // measures each pile's own slot container (see foundationSlotRefs/FoundationCell's slotRef),
-  // not the King via CardRegistry, since the real King is hidden (and therefore unregistered) the
-  // instant `won` flips true, in the same commit this effect reacts to. Chains that whole pile
-  // King-first/head down to Ace-last/tail (foundation arrays are built bottom-up, Ace pushed
-  // first, so reversing gives the right order). Same dealTokenRef guard as every other async
-  // measurement here, for the same "New Game tapped mid-measurement" reason.
+  // not the King via CardRegistry (a container is measurable whether or not the pile's real card
+  // is drawn). Chains that whole pile King-first/head down to Ace-last/tail (foundation arrays are
+  // built bottom-up, Ace pushed first, so reversing gives the right order).
+  //
+  // This runs while the real foundation cards are STILL on screen: the piles blank only afterwards,
+  // in the SAME commit that mounts the cascade's ghosts (cascadeHandoffFor, set right beside
+  // startChains - React batches the two, being one async continuation). Blanking on winRevealed
+  // alone left every pile empty for the frames this measurement takes (~140ms in a dev bundle)
+  // before the ghosts appeared. Same dealTokenRef guard as every other async measurement here, for
+  // the same "New Game tapped mid-measurement" reason.
   async function runWinCascade(s: KlondikeState, gen: number) {
     const origins = await Promise.all(foundationSlotRefs.current.map((view) => measureView(view)))
     if (dealTokenRef.current !== gen) return
     const chains: ChainSpec[] = []
     // A suit whose slot measurement failed (rare) can't get a bounce chain at all - rather than
     // silently omit it (leaving a bare empty placeholder for the rest of the win screen, since
-    // `won` otherwise hides every foundation's real card unconditionally below), un-hide that
-    // suit's real top card immediately, mirroring Pyramid's own "unhide on failed measurement"
+    // the hand-off otherwise blanks every foundation's real card unconditionally below), keep that
+    // suit's real top card showing, mirroring Pyramid's own "unhide on failed measurement"
     // fallback for the same rare failure mode.
     const fallbackSuits = new Set<number>()
     s.foundation.forEach((pile, suit) => {
@@ -367,6 +390,9 @@ function KlondikeScreenInner() {
     })
     if (fallbackSuits.size > 0) setWinCascadeFallbackSuits(fallbackSuits)
     winCascade.startChains(chains, cardWidth)
+    // A pile with no chain to take over from it is in fallbackSuits above and stays up regardless, so this hand-off
+    // never blanks a pile for a chain that did not start (with every suit failed, all four just stay up under the banner).
+    setCascadeHandoffFor(s)
   }
 
   // Same race as the deal effect above: measuring CardRegistry synchronously right after the
@@ -381,7 +407,12 @@ function KlondikeScreenInner() {
     pendingFlightRef.current = []
     pending.forEach((p) => {
       ;(async () => {
-        const landed = p.viaStock ? await measureView(stockViewRef.current) : await ghost.cardRegistry.measure(p.cardId)
+        // A destination card's registered view is the usual landing spot, but if it can't be found
+        // (a foundation card buried under a later arrival, a waste card already covered by the next
+        // draw) the pile's own slot container is card-sized and always there - fly to that rather than
+        // hiding the ghost and letting the card simply appear. A tableau column has no such container
+        // (its card position depends on the fan), so that one still falls through to the hide.
+        const landed = p.viaStock ? await measureView(stockViewRef.current) : ((await ghost.cardRegistry.measure(p.cardId)) ?? (p.to.zone === 'foundation' ? await measureView(foundationSlotRefs.current[p.to.index]) : p.to.zone === 'waste' ? await measureView(wasteViewRef.current) : null))
         // A new game can start while the measurement above is in flight (e.g. tapping "New Game"
         // mid auto-play-cascade - see maybeAutoPlay). `landed`, if it resolved at all, would then
         // be measuring an unrelated card in the NEW deal (ids are shuffle-independent and reused
@@ -409,14 +440,16 @@ function KlondikeScreenInner() {
 
   // Same deferral reasoning as the deal/flight effects above - never measure CardRegistry
   // synchronously inside checkWin itself, since the winning foundation cards' own registration
-  // effects haven't necessarily run yet in that same commit.
+  // effects haven't necessarily run yet in that same commit. Also waits for winRevealed: `won`
+  // flips with the winning move, but the cascade must only take over once that move's flight has
+  // landed (see useWinReveal), so the pending token is kept until then.
   useEffect(() => {
     const pending = pendingWinCascadeRef.current
-    if (!pending || !state) return
+    if (!pending || !state || !winRevealed) return
     pendingWinCascadeRef.current = null
     runWinCascade(state, pending.gen)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
+  }, [state, winRevealed])
 
   // Draw-3's own version of the deal effect above: handleDrawStock already committed the new
   // state (so the real top waste card is mounted/registered) but kept the whole fan hidden via
@@ -573,7 +606,7 @@ function KlondikeScreenInner() {
   // air; `dealHiddenIds.size > 0` guards against firing mid-deal.
   const cascade = useAutoFoundationCascade<KlondikeState>({
     state,
-    settled: activeFlightCount === 0 && dealHiddenIds.size === 0,
+    settled,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     computeNextStep,
@@ -832,9 +865,17 @@ function KlondikeScreenInner() {
     }
 
     const sourcePile = resolvePile(move.to)
-    const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : []
+    // A foundation pile stacks in place, so an undone foundation move's card is not necessarily its
+    // top: auto-play cascaded more cards on top of it (they ride along in `cascaded`, flying back on
+    // their own). Look the card up by id then, instead of ghosting whatever now sits on top.
+    const foundationAt = move.to.zone === 'foundation' && sourcePile ? sourcePile.findIndex((c) => c.id === move.anchorCardId) : -1
+    const movingCards = sourcePile ? (foundationAt >= 0 ? sourcePile.slice(foundationAt, foundationAt + move.count) : sourcePile.slice(sourcePile.length - move.count)) : []
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
-    const origin = movingCards.length > 0 ? await ghost.cardRegistry.measure(move.anchorCardId) : null
+    // That buried card (and the winning move's own card once the celebration has hidden the real
+    // foundation cards) has no CardRegistry entry, so without a fallback the undo had no origin, took
+    // the `else` branch below and the card simply appeared back home. Every card in a foundation pile
+    // sits exactly where the pile's own always-present container is, so fly out of that.
+    const origin = movingCards.length > 0 ? ((await ghost.cardRegistry.measure(move.anchorCardId)) ?? (move.to.zone === 'foundation' ? await measureView(foundationSlotRefs.current[move.to.index]) : null)) : null
 
     setUndoStack((stack) => stack.slice(0, -1))
     hideCascadeCards(cascaded)
@@ -853,7 +894,7 @@ function KlondikeScreenInner() {
       const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
       const flyingId = beginFlying(move.from, move.count)
       commitState(prevState)
-      pendingFlightRef.current.push({ cardId: move.anchorCardId, viaStock: move.from.zone === 'stock', gen, flyingId, flight })
+      pendingFlightRef.current.push({ cardId: move.anchorCardId, to: move.from, viaStock: move.from.zone === 'stock', gen, flyingId, flight })
     } else {
       commitState(prevState)
       settleFlight()
@@ -903,7 +944,7 @@ function KlondikeScreenInner() {
   function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
     const flyingId = beginFlying(to, count)
-    pendingFlightRef.current.push({ cardId: anchorCardId, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
+    pendingFlightRef.current.push({ cardId: anchorCardId, to, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 
@@ -971,7 +1012,7 @@ function KlondikeScreenInner() {
     pushCascadedMove({ from: { zone: 'stock', index: 0 }, to, count: 1, anchorCardId: entry.card.id })
     commitState(result)
     checkWin(result, session.moves)
-    pendingFlightRef.current.push({ cardId: entry.card.id, gen: dealTokenRef.current, flyingId, flight, sweep: opts.sweep })
+    pendingFlightRef.current.push({ cardId: entry.card.id, to, gen: dealTokenRef.current, flyingId, flight, sweep: opts.sweep })
   }
 
   // Drag-and-drop's own entry point into flight bookkeeping (see activeFlightCountRef's doc
@@ -1112,7 +1153,7 @@ function KlondikeScreenInner() {
     if (opts?.sweep) pushCascadedMove(move)
     else pushUndo(current, move)
     commitState(result)
-    pendingFlightRef.current.push({ cardId: drawnCard.id, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
+    pendingFlightRef.current.push({ cardId: drawnCard.id, to: { zone: 'waste', index: 0 }, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
   }
 
   // `s` defaults to the closure's own live `state` (every pre-existing call site) - runCascadeReturn
@@ -1186,13 +1227,7 @@ function KlondikeScreenInner() {
     }
   }
 
-  if (!state) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.loadingText}>Loading...</Text>
-      </View>
-    )
-  }
+  if (!state) return <GameLoading />
 
   const wasteTop = top(state.waste)
   // Draw-3 keeps the last 3 drawn cards visible, fanned - draw-1 never shows more than the one
@@ -1208,12 +1243,17 @@ function KlondikeScreenInner() {
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)
-              const isFlyingHere = flying.some((f) => f.to.zone === 'foundation' && f.to.index === i)
+              // Several tap flights can be headed to one pile at once (they overlap), so count the cards still
+              // in the air: the pile keeps showing the top card that has already LANDED under the rest instead of
+              // reverting to the one from before the whole stream (see FoundationCell's settledCard).
+              const flightsInAir = flying.filter((f) => f.to.zone === 'foundation' && f.to.index === i).reduce((sum, f) => sum + f.count, 0)
+              const isFlyingHere = flightsInAir > 0
               return (
                 <DropZone key={i} registry={dropZones} pileRef={{ zone: 'foundation', index: i }} style={[styles.foundationSlot, { width: cardWidth }]}>
                   <FoundationCell
-                    card={won && !winCascadeFallbackSuits.has(i) ? undefined : t}
+                    card={winRevealed && cascadeHandoffFor === state && !winCascadeFallbackSuits.has(i) ? undefined : t}
                     isFlyingHere={isFlyingHere}
+                    settledCard={pile[pile.length - 1 - flightsInAir] ?? null}
                     suit={SUITS[i]}
                     highlighted={hintCountFor(activeHint, { zone: 'foundation', index: i }) > 0}
                     slotRef={(el) => {
@@ -1262,30 +1302,18 @@ function KlondikeScreenInner() {
     (see WinCascadeGhosts' own doc comment for why nesting depth alone can't do this) - the win
     banner comes last of all three so it's the one thing guaranteed to sit on top of the animation,
     not buried under it. */}
-      {won && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {won && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }
 
-function makeStyles(colors: TableColors) {
+function makeStyles() {
   return StyleSheet.create({
-    container: {
-      backgroundColor: colors.tableFelt,
-      flex: 1,
-      padding: 12
-    },
     foundationSlot: {},
     foundationsGroup: {
       flexDirection: 'row'
-    },
-    loadingText: {
-      color: '#fff',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16,
-      marginTop: 40,
-      textAlign: 'center'
     },
     tableauColumn: {},
     tableauRow: {

@@ -1,6 +1,6 @@
 import { PileRef } from '@/engine/gameTypes'
 import { Card } from '@/engine/types'
-import { FreeCellController, FreeCellState } from '@/games/freecell/rules'
+import { FreeCellController, FreeCellState, moveHeadCard } from '@/games/freecell/rules'
 
 function card(id: string, suit: Card['suit'], rank: Card['rank'], faceUp = true): Card {
   return { id, suit, rank, faceUp }
@@ -525,5 +525,34 @@ describe('FreeCell scoreHintMove', () => {
 
     expect(parkInFreecell).toBeGreaterThanOrEqual(0)
     expect(parkInFreecell).toBeGreaterThan(fragmentIntoFreecell)
+  })
+})
+
+describe('moveHeadCard - the card a move is about', () => {
+  const state: FreeCellState = {
+    tableau: [[card('clubs-9-0', 'clubs', 9), card('hearts-8-0', 'hearts', 8), card('spades-7-0', 'spades', 7)], [], [], [], [], [], [], []],
+    freecells: [card('diamonds-4-0', 'diamonds', 4), null, null, null],
+    foundation: [[], [], [], []]
+  }
+
+  it('is the first card of the run being moved, not the top of the column', () => {
+    expect(moveHeadCard(state, { zone: 'tableau', index: 0 }, 1)?.id).toBe('spades-7-0')
+    expect(moveHeadCard(state, { zone: 'tableau', index: 0 }, 2)?.id).toBe('hearts-8-0')
+    expect(moveHeadCard(state, { zone: 'tableau', index: 0 }, 3)?.id).toBe('clubs-9-0')
+  })
+
+  it('is undefined when the pile holds fewer cards than the move claims, or is empty', () => {
+    expect(moveHeadCard(state, { zone: 'tableau', index: 0 }, 4)).toBeUndefined()
+    expect(moveHeadCard(state, { zone: 'tableau', index: 3 }, 1)).toBeUndefined()
+  })
+
+  it('reads a freecell, but only ever for a single card', () => {
+    expect(moveHeadCard(state, { zone: 'freecell', index: 0 }, 1)?.id).toBe('diamonds-4-0')
+    expect(moveHeadCard(state, { zone: 'freecell', index: 1 }, 1)).toBeUndefined()
+    expect(moveHeadCard(state, { zone: 'freecell', index: 0 }, 2)).toBeUndefined()
+  })
+
+  it('has no head for a foundation (nothing is ever moved out of one)', () => {
+    expect(moveHeadCard(state, { zone: 'foundation', index: 0 }, 1)).toBeUndefined()
   })
 })

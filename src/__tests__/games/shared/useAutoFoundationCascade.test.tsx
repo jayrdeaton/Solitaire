@@ -128,4 +128,33 @@ describe('useAutoFoundationCascade', () => {
     await rerender({ state: 's2', settled: true }) // disarms
     await unmount()
   })
+
+  it('disarm() drops a pending arm - a later settle fires nothing without a fresh arm call', async () => {
+    const firePlay = jest.fn()
+    const computeNextStep = jest.fn(() => STEP_PLAY)
+    const enabled = jest.fn(() => true)
+    const isBusy = jest.fn(() => false)
+    const { result, rerender, unmount } = await renderHook(({ state, settled }: Props) => useAutoFoundationCascade({ state, settled, enabled, isBusy, computeNextStep, firePlay }), { initialProps: { state: 's0', settled: false } })
+
+    result.current.armFromForwardMove()
+    result.current.disarm() // e.g. an undo / new game landed before the board settled
+    await rerender({ state: 's1', settled: true })
+    expect(computeNextStep).not.toHaveBeenCalled()
+    expect(firePlay).not.toHaveBeenCalled()
+    await unmount()
+  })
+
+  it('disarm() also drops a pinned ace, so it cannot fire on a later board', async () => {
+    const firePlay = jest.fn()
+    const computeNextStep = jest.fn(() => null)
+    const enabled = jest.fn(() => true)
+    const isBusy = jest.fn(() => false)
+    const { result, rerender, unmount } = await renderHook(({ state, settled }: Props) => useAutoFoundationCascade({ state, settled, enabled, isBusy, computeNextStep, firePlay }), { initialProps: { state: 's0', settled: false } })
+
+    result.current.armFromAceEvent(ACE_ENTRY, ACE_TO)
+    result.current.disarm()
+    await rerender({ state: 's1', settled: true })
+    expect(firePlay).not.toHaveBeenCalled()
+    await unmount()
+  })
 })

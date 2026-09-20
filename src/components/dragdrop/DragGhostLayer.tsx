@@ -104,7 +104,7 @@ interface FlightGhostCardProps {
 // still-flying entry's own props here stay referentially stable across a sibling landing (content
 // is only ever set once at creation; the shared values and `frame` never change
 // identity) - without this, every remaining ghost would re-render whenever any sibling's own
-// landing removed it from `flights`, same reasoning as DealLayer.tsx's DealGhostCard.
+// landing removed it from `flights`, same reasoning as DealLayer.tsx's GhostSlot.
 const FlightGhostCard = memo(function FlightGhostCard({ content, originX, originY, dx, dy, frame }: FlightGhostCardProps) {
   const cardHeight = content.cardWidth / CARD_ASPECT
   const animatedStyle = useAnimatedStyle(() => {

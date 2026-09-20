@@ -22,10 +22,19 @@ interface DiscardCellProps {
   card: Card | undefined
   isFlyingHere: boolean
   viewRef: RefObject<View | null>
+  /** What to show under the incoming ghost(s) while `isFlyingHere`: the top card that has already
+   * LANDED (`null` = the empty slot) - the same optional prop FoundationCell has, for the same
+   * reason. Omit it (Aces Up, which only ever has one card in the air) to use the frozen copy of
+   * whatever was on top before the flight began; that copy goes stale once flights to the pile
+   * OVERLAP (`isFlyingHere` never drops in between, so it is never refreshed) and every ghost that
+   * lands vanishes onto a pile still showing the card from before the whole stream. The caller
+   * works out what has landed (Pyramid: the topmost discard card that is not still in the air). */
+  settledCard?: Card | null
 }
 
-export function DiscardCell({ card, isFlyingHere, viewRef }: DiscardCellProps) {
-  const frozen = useFrozenWhileHidden(card, isFlyingHere)
+export function DiscardCell({ card, isFlyingHere, viewRef, settledCard }: DiscardCellProps) {
+  const frozenCopy = useFrozenWhileHidden(card, isFlyingHere)
+  const frozen = settledCard === undefined ? frozenCopy : settledCard
   return (
     <View ref={viewRef} collapsable={false}>
       {card ? <PlayingCard card={card} disabled style={isFlyingHere && HIDDEN_CARD_STYLE} testID='discard-top' /> : <EmptySlot testID='discard-empty' />}

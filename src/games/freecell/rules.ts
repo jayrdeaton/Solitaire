@@ -341,6 +341,16 @@ function scoreHintMove(state: FreeCellState, move: Move): number {
   return score
 }
 
+/** The card at the head of a `count`-card move from `from` - the first of the run, the one a
+ * player grabs and a flight is drawn for - or undefined if `from` holds fewer than `count` cards.
+ * tryMove itself only knows positions, so callers use this to check a move is still about the card
+ * they meant. */
+export function moveHeadCard(state: FreeCellState, from: PileRef, count: number): Card | undefined {
+  if (from.zone === 'tableau') return state.tableau[from.index]?.[state.tableau[from.index].length - count]
+  if (from.zone === 'freecell') return count === 1 ? (state.freecells[from.index] ?? undefined) : undefined
+  return undefined
+}
+
 /** Every card currently reachable - every freecell's contents plus each tableau column's top card
  * (FreeCell has no stock/waste) - for the auto-play-to-foundation feature (see
  * engine/autoFoundation.ts). */

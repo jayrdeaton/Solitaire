@@ -10,7 +10,8 @@ export interface CanfieldDealStep {
   /** Tableau column index (0-3) when zone is 'tableau'; unused (0) otherwise. */
   colIndex: number
   /** 0-based order this card is visited in the deal replay - use directly as
-   * delayMs = visitOrder * DEAL_STAGGER_MS. */
+   * delayMs = visitOrder * dealStaggerMs(sequence.length) (components/dealing/dealSpring.ts - NOT the bare
+   * DEAL_STAGGER_MS, which would put a 52-card deal back at ~2.1s). */
   visitOrder: number
   /** Only meaningful when zone is 'reserve'. True for the pile's own 13th/top (face-up) card - the
    * only reserve card ReserveCell actually renders and registers in CardRegistry, so it's the only

@@ -6,7 +6,8 @@ export interface YukonDealStep {
   colIndex: number
   rowIndex: number
   /** 0-based order this card is visited in a two-phase replay - use directly as
-   * delayMs = visitOrder * DEAL_STAGGER_MS. */
+   * delayMs = visitOrder * dealStaggerMs(sequence.length) (components/dealing/dealSpring.ts - NOT the bare
+   * DEAL_STAGGER_MS, which would put a 52-card deal back at ~2.1s). */
   visitOrder: number
 }
 

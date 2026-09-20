@@ -14,6 +14,12 @@ export interface AutoFoundationCascade {
    * order would otherwise pick, then continues the cascade exactly like armFromForwardMove - the
    * ace landing on its foundation is itself now "a card moved to the foundation." */
   armFromAceEvent(entry: AccessibleCard, to: PileRef): void
+  /** Drops any pending arm (and its pinned card / sweep latch). For a board change that isn't a
+   * consequence of the player's own foundation move - an undo, a resumed save, a new deal, or an
+   * arm made while auto-move was off: the effect below only ever disarms once computeNextStep runs
+   * dry, which it never reaches while enabled()/settled/isBusy() hold it back, so without this an
+   * old arm could fire a cascade on a later board with no fresh tap. */
+  disarm(): void
 }
 
 /**
@@ -85,6 +91,11 @@ export function useAutoFoundationCascade<TState>(config: {
     armFromAceEvent(entry, to) {
       armedRef.current = true
       pinnedRef.current = { entry, to }
+    },
+    disarm() {
+      armedRef.current = false
+      pinnedRef.current = null
+      sweepingRef.current = false
     }
   }
 }
