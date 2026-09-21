@@ -1,9 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
+import { AUTO_MOVE_SPRING, scaledMs, springSettleMs, winSweepSpringFor } from '@/components/dragdrop/dragSpring'
 import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
-import FreeCellScreen from '@/games/freecell/FreeCellScreen'
+import FreeCellScreen, { FINISH_LAST_CARD_WAIT_MS, FINISH_STAGGER_MS } from '@/games/freecell/FreeCellScreen'
 import { FreeCellController, FreeCellState } from '@/games/freecell/rules'
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -20,6 +21,10 @@ import { FreeCellController, FreeCellState } from '@/games/freecell/rules'
 // ---------------------------------------------------------------------------------------------------------------------
 
 const FLIGHT_MS = 80
+/** How long a finish (sweep-tier) flight stays up: the real ghost keeps it up springSettleMs of a winSweepSpringFor spring (~110-215ms over the board's
+ * distances; ~160ms for a 200px hop) - derived, so re-pacing the flights (dragSpring.ts's FLIGHT_TIME_SCALE) keeps the stand-in honest. Every other flight
+ * stays at FLIGHT_MS. */
+const SWEEP_FLIGHT_MS = springSettleMs(winSweepSpringFor(200))
 const SAVE_KEY = 'solitaire.game-in-progress.v1.freecell'
 
 const mockSettings = { autoMove: true }
@@ -59,10 +64,13 @@ function mockMakeFlight() {
       mockLog.paces.push({ fast: opts?.fast, sweep: opts?.sweep })
       mockLog.inAir += 1
       mockLog.maxInAir = Math.max(mockLog.maxInAir, mockLog.inAir)
-      setTimeout(() => {
-        mockLog.inAir -= 1
-        onDone?.()
-      }, FLIGHT_MS)
+      setTimeout(
+        () => {
+          mockLog.inAir -= 1
+          onDone?.()
+        },
+        opts?.sweep ? SWEEP_FLIGHT_MS : FLIGHT_MS
+      )
     }
   }
 }
@@ -636,5 +644,27 @@ describe('FreeCell screen - a card never moves without its own flight', () => {
     expect(mockLog.shown).toHaveLength(shownBefore)
     const acePile = [...mockPiles.values()].find((p) => p.cards.some((c) => c.id === id('diamonds', 1)))!
     expect(acePile.cards.map((c) => c.id)).toEqual([id('diamonds', 1)])
+  })
+})
+
+describe('FreeCell finish pacing follows the flight pace', () => {
+  // The finish stream (useAutoFinish) sends a card every FINISH_STAGGER_MS while each flies at the sweep tier. It was tuned at scale 1 - 60ms against
+  // 40-90ms flights - and must keep overlapping them the same way whatever dragSpring.ts's FLIGHT_TIME_SCALE is, so it derives from the same knob.
+  it('the finish stagger keeps the same fraction of a sweep flight at every distance: it is the scale-1 60ms re-paced with the flights', () => {
+    expect(FINISH_STAGGER_MS).toBe(scaledMs(60))
+    for (const distance of [60, 100, 200, 300, 360, 900]) {
+      const scale1Flight = 40 + Math.max(0, Math.min(1, (distance - 60) / 300)) * (90 - 40)
+      expect(FINISH_STAGGER_MS / (winSweepSpringFor(distance).duration ?? 0)).toBeCloseTo(60 / scale1Flight, 1)
+    }
+  })
+
+  it('the stagger is shorter than the shortest sweep flight stays up, so flights still overlap; and above the cascade feedback floor, so each card keeps its tick', () => {
+    expect(FINISH_STAGGER_MS).toBeLessThan(springSettleMs(winSweepSpringFor(60)))
+    expect(FINISH_STAGGER_MS).toBeGreaterThan(45) // useCascadeFeedback's CASCADE_FEEDBACK_MIN_INTERVAL_MS
+  })
+
+  it("the last card's wait comfortably outlasts the slowest sweep flight, and a tap flight that may still be in the air", () => {
+    expect(FINISH_LAST_CARD_WAIT_MS).toBeGreaterThanOrEqual(2 * springSettleMs(winSweepSpringFor(Infinity)))
+    expect(FINISH_LAST_CARD_WAIT_MS).toBeGreaterThanOrEqual(springSettleMs(AUTO_MOVE_SPRING))
   })
 })

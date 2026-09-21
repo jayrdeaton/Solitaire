@@ -1,9 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
+import { AUTO_MOVE_SPRING, autoMoveSpringFor, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { Card, Suit } from '@/engine/types'
-import PyramidScreen, { topLandedCard } from '@/games/pyramid/PyramidScreen'
+import PyramidScreen, { DEFER_MAX_WAIT_MS, topLandedCard } from '@/games/pyramid/PyramidScreen'
 import { PyramidController, PyramidState } from '@/games/pyramid/rules'
+import { WIN_REVEAL_HOLD_MS } from '@/games/shared/useWinReveal'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // RAPID-INPUT tests for the REAL PyramidScreen (same harness approach as pyramidScreenWin.test.tsx: real rules, flight
@@ -34,6 +36,13 @@ let mockMeasureMs = 0
 let mockHitTestMs = 0
 const SAVE_KEY = 'solitaire.game-in-progress.v1.pyramid'
 const MEAS = 30
+/** How long a pair-flight ghost over `distance` px stays up: the very timer PyramidScreen's FlyingPairCard arms (dragSpring.ts's springSettleMs of
+ * the distance-scaled autoMove spring) - derived, so re-pacing the flights (FLIGHT_TIME_SCALE) re-times every wait below with it. */
+const pairFlightMs = (distance: number) => springSettleMs(autoMoveSpringFor(distance))
+/** The default pair card's own flight here: it takes off at (10, 10) and lands on the discard pile at (100, 5). */
+const NEAR_PAIR_MS = pairFlightMs(Math.hypot(90, 5))
+/** The slowest a pair-flight ghost stays up (a full-distance flight) - what a fixed window around a flight must outlast. */
+const SLOWEST_PAIR_MS = springSettleMs(AUTO_MOVE_SPRING)
 
 interface MockLog {
   /** Every ghost.show() - one per single-card (King, draw) or grouped (recycle) flight the screen started. */
@@ -351,7 +360,7 @@ async function landEverything() {
 /** Taps undo and waits out its measurements and flight (a fixed window: there is a stretch, while it measures, with nothing visibly flying yet). */
 async function undo() {
   await press('undo')
-  await flush(400)
+  await flush(2 * MEAS + SLOWEST_PAIR_MS)
 }
 
 beforeEach(() => {
@@ -412,6 +421,25 @@ describe('Pyramid screen quick play - pair flights are independent', () => {
     expect(text('undo-disabled')).toBe('true')
   })
 
+  it("a pair's ghosts stay up until their spring's real end (springSettleMs), not the bare duration that would retire them short of the discard", async () => {
+    await mount(TWO_PAIRS())
+    mockMeasureMs = MEAS
+
+    await pair(Q, ACE)
+    await flush(MEAS) // the pair commits and its two ghosts take off
+    expect(flyingGhosts()).toEqual(ids(Q, ACE))
+
+    const config = autoMoveSpringFor(Math.hypot(90, 5))
+    await flush((config.duration ?? 0) + 20) // the bare duration - the old timer - has run out
+    expect(flyingGhosts()).toEqual(ids(Q, ACE))
+    await flush(NEAR_PAIR_MS - (config.duration ?? 0) - 20 + STEP_MS) // ...and now the spring's real end has
+    expect(flyingGhosts()).toEqual([])
+  })
+
+  it('the deferral bound outlasts even the slowest flight (a draw ghost that is merely slow must land before its waiting tap gives up)', () => {
+    expect(DEFER_MAX_WAIT_MS).toBeGreaterThanOrEqual(2 * SLOWEST_PAIR_MS)
+  })
+
   it('the win celebration is not held back by a first flight that was overtaken: the last pair of the deal settles on its own', async () => {
     // Q+A and 7+6 are ALL that is left: taking them back to back wins the game. A claim that never settled would make the
     // celebration wait out its 2.5s maximum instead of its 400ms beat.
@@ -431,7 +459,7 @@ describe('Pyramid screen quick play - pair flights are independent', () => {
     await flush(MEAS)
     expect(flyingGhosts()).toEqual(ids(Q, ACE, SEVEN, SIX))
 
-    await flush(700) // both flights have landed and the 400ms beat has passed - far short of 2.5s
+    await flush(NEAR_PAIR_MS + WIN_REVEAL_HOLD_MS + 100) // both flights have landed and the beat has passed - far short of the fallback wait
     expect(screen.queryByTestId('win-banner')).not.toBeNull()
   })
 
@@ -449,7 +477,7 @@ describe('Pyramid screen quick play - pair flights are independent', () => {
 
     // The first pair (in the air since ~30ms) lands while the second (since ~110ms) is still flying: the ghosts of the first are
     // gone and the pile under the second's shows what THEY brought - the Ace, the last card of the first pair - not the old top.
-    await flush(75)
+    await flush(NEAR_PAIR_MS - 75)
     expect(flyingGhosts()).toEqual(ids(SEVEN, SIX))
     expect(text('discard-flying')).toBe('true')
     expect(discardPainted()).toBe(ACE.id)
@@ -462,7 +490,7 @@ describe('Pyramid screen quick play - pair flights are independent', () => {
   it("a solo King's flight overlapping a pair's shares the same landed-card accounting", async () => {
     await mount(TWO_PAIRS())
     mockMeasureMs = MEAS
-    mockFlightMs = 400 // the King is still up long after the pair has landed
+    mockFlightMs = NEAR_PAIR_MS + 250 // the King is still up long after the pair has landed
 
     await press(`pyramid-${KING.id}`)
     await flush(MEAS)
@@ -472,7 +500,7 @@ describe('Pyramid screen quick play - pair flights are independent', () => {
     expect(flyingGhosts()).toEqual(ids(Q, ACE))
     expect(discardPainted()).toBe(PRE_STREAM_TOP)
 
-    await flush(200) // the pair has landed (its ~150ms), the King has not
+    await flush(NEAR_PAIR_MS + 50) // the pair has landed (after NEAR_PAIR_MS), the King has not
     expect(flyingGhosts()).toEqual([])
     expect(text('discard-flying')).toBe('true')
     expect(discardPainted()).toBe(ACE.id) // what the pair brought, under the King's ghost
@@ -514,14 +542,14 @@ describe('Pyramid screen quick play - a pair is two independent flights', () => 
   ])('%s: its ghost goes at once and the pile shows what has landed', async (_name, far, paintedFirst) => {
     await mount(TWO_PAIRS())
     mockMeasureMs = MEAS
-    mockRegistryPoints.set(far.id, { x: 400, y: 300 }) // ~320ms away, against ~150ms for the other
+    mockRegistryPoints.set(far.id, { x: 400, y: 300 }) // a full-distance flight (SLOWEST_PAIR_MS), against NEAR_PAIR_MS for the other
 
     await pair(Q, ACE)
     await flush(MEAS)
     expect(flyingGhosts()).toEqual(ids(Q, ACE))
     expect(discardPainted()).toBe(PRE_STREAM_TOP)
 
-    await flush(160)
+    await flush(NEAR_PAIR_MS + 10)
     expect(flyingGhosts()).toEqual(ids(far)) // the near card landed: its ghost is gone, the far one still flies
     expect(discardPainted()).toBe(paintedFirst)
 
@@ -984,7 +1012,7 @@ describe('Pyramid screen quick play - overlapping draws land on what has landed,
 })
 
 describe('Pyramid screen quick play - undoing a move puts its ghosts up in the same commit as the reverted board', () => {
-  const STEPS = 25 // x 10ms
+  const STEPS = Math.ceil((2 * MEAS + SLOWEST_PAIR_MS) / STEP_MS) // x 10ms: the measurements and the slowest flight
 
   // For each restored pyramid card: at EVERY step after the undo is tapped, it is either covered by its ghost or visible in its own cell -
   // never neither (the discard has already shown its older top by then, so a card that is neither is simply missing).
@@ -1007,7 +1035,8 @@ describe('Pyramid screen quick play - undoing a move puts its ghosts up in the s
         // The board has reverted: from this very commit on, both cards are covered.
         expect(pyramidCardCovered(Q)).toBe(true)
         expect(pyramidCardCovered(ACE)).toBe(true)
-        expect(flyingGhosts()).toEqual(ids(Q, ACE)) // and the ghosts are up in that same commit
+        // and the ghosts are up in that same commit (a later step may find one card already landed - the window now outlasts the slowest flight)
+        if (!sawGhosts) expect(flyingGhosts()).toEqual(ids(Q, ACE))
         sawGhosts = true
       }
     }
@@ -1182,10 +1211,10 @@ describe('Pyramid screen quick play - a drawn card tapped or dragged while its d
     await press('stock-top')
     await flush(50)
     await press('waste-top')
-    await flush(900)
+    await flush(DEFER_MAX_WAIT_MS - 150)
     expect(moves()).toBe('1') // still waiting
 
-    await flush(300) // past the 1s bound: the move goes ahead
+    await flush(300) // past the bound (DEFER_MAX_WAIT_MS): the move goes ahead
     expect(moves()).toBe('2')
     expect(wasteShows()).toBe('empty')
   })
@@ -1412,10 +1441,10 @@ describe('Pyramid screen quick play - a draw and a recycle never overlap', () =>
     await press('stock-top') // the recycle: its group ghost never lands, so the stock stays frozen
     await flush(50)
     await press('stock-top') // a draw from the new stock: parked behind it
-    await flush(900)
+    await flush(DEFER_MAX_WAIT_MS - 150)
     expect(moves()).toBe('1') // still waiting
 
-    await flush(300) // past the 1s bound: the draw goes ahead anyway
+    await flush(300) // past the bound (DEFER_MAX_WAIT_MS): the draw goes ahead anyway
     expect(moves()).toBe('2')
     expect(wasteShows()).toBe(id('hearts', 2))
   })

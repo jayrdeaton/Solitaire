@@ -101,6 +101,10 @@ export function DraggableCard({ card, selected, hinted, disabled, onPress, onDro
   // hand off to the caller's onDrop) and by nothing else, since only one drag can ever be in
   // progress on this card at a time.
   const flightRef = useRef<DragFlightHandle | null>(null)
+  // Bumped at every drag start. A drag's late outcome (its drop resolving, its snap-back landing)
+  // only clears `dragging` if no NEWER drag has begun in the meantime - otherwise it would reveal
+  // the card under the new drag's own ghost.
+  const dragTokenRef = useRef(0)
 
   const latest = useRef({ onDrop, disabled, card, cardWidth })
   // Updated in an effect rather than directly during render (mutating a ref during render isn't
@@ -125,6 +129,7 @@ export function DraggableCard({ card, selected, hinted, disabled, onPress, onDro
 
   const handleStart = useCallback(() => {
     wasDraggingRef.current = true
+    dragTokenRef.current += 1
     flightRef.current = ghost.showLive({ cards: [latest.current.card], offsetStep: 0, cardWidth: latest.current.cardWidth }, { originX, originY, dx, dy })
     playCardSound()
     setDragging(true)
@@ -135,15 +140,22 @@ export function DraggableCard({ card, selected, hinted, disabled, onPress, onDro
     ;(async () => {
       const dropFn = latest.current.onDrop
       const flight = flightRef.current
+      const token = dragTokenRef.current
+      // Before anything awaits: from the moment the drag ends this ghost runs on values of its own,
+      // so a quick next drag from this same card can never hijack it while the drop is still being
+      // resolved (see DragFlightHandle.release).
+      flight?.release()
       const applied = dropFn && flight ? await dropFn(absoluteX, absoluteY, flight) : false
       if (applied) {
         // Don't hide the ghost here - the caller's onDrop (mirroring handleCardTap) has already
         // marked this card's destination "incoming" and will measure its real landed position
         // and fly this same flight the rest of the way there, instead of it just vanishing
         // mid-air.
-        setDragging(false)
+        if (dragTokenRef.current === token) setDragging(false)
       } else {
-        flight?.snapBack(() => setDragging(false))
+        flight?.snapBack(() => {
+          if (dragTokenRef.current === token) setDragging(false)
+        })
       }
     })()
     setTimeout(() => {

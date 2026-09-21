@@ -11,6 +11,7 @@ import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { scaledMs } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
@@ -57,17 +58,22 @@ import { countEmptyFreecells, countEmptyTableauColumns, FreeCellController, Free
 const TABLEAU_MIN_HEIGHT = 460
 const TABLEAU_COLUMNS = 8
 // Gap between one finish card leaving and the next (see useAutoFinish) - each flight is only
-// 40-90ms (dragSpring.ts's winSweepSpringFor), so a few overlap at once, and the whole sweep reads
-// as one quick stream instead of a card per full flight round trip. Also just above
-// useCascadeFeedback's floor, so every card still gets its own sound/haptic tick.
-const FINISH_STAGGER_MS = 60
+// 64-144ms of perceptual duration (dragSpring.ts's winSweepSpringFor), so a few overlap at once, and
+// the whole sweep reads as one quick stream instead of a card per full flight round trip. Written at
+// scale 1 (60ms against the 40-90ms sweep flights) and re-paced by FLIGHT_TIME_SCALE like the flights
+// themselves, so the stream keeps overlapping them exactly as before when the pace changes: 96ms at
+// the default. Also above useCascadeFeedback's floor, so every card still gets its own sound/haptic tick.
+export const FINISH_STAGGER_MS = scaledMs(60)
 const DECK_SIZE = 52
 function foundationCount(s: FreeCellState | null): number {
   return s ? s.foundation.reduce((n, pile) => n + pile.length, 0) : 0
 }
 // A finish's LAST card waits (up to this long) for every earlier flight to land first, so the win
-// cascade doesn't start over foundation cards that are still mid-air.
-const FINISH_LAST_CARD_WAIT_MS = 600
+// cascade doesn't start over foundation cards that are still mid-air. It only bounds the wait (the
+// loop leaves the moment nothing is in flight): 960ms at the default pace, against the slowest sweep
+// flight's ~215ms ghost lifetime (springSettleMs of winSweepSpringFor's ceiling) - and against a
+// tap flight still in the air, which can take ~675ms.
+export const FINISH_LAST_CARD_WAIT_MS = scaledMs(600)
 // FreeCell has no stock pile of its own to visually deal from (rules.ts's newGame deals straight
 // into the tableau; freecells start, and stay, empty throughout the deal) - the far-right freecell
 // doubles as the deck the deal animation flies out of instead, showing this face-down placeholder

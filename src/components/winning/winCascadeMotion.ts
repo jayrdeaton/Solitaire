@@ -34,38 +34,47 @@ export function chainSegmentDelayMs(cardCount: number, maxSpanMs: number = CHAIN
   return Math.min(CHAIN_SEGMENT_DELAY_MS, maxSpanMs / (cardCount - 1))
 }
 
-// The bounce path itself - assigned once per chain (see buildChainPath/computeCascadeVerticals),
-// then shared by every card in that chain via the delay above, never randomized per-card, and
-// fixed for the whole cascade (no drift). apexY is RANKED by each chain's own horizontal speed
-// against the other chains in this cascade (see computeCascadeVerticals) rather than its own
-// independent random draw - the floor is always the screen's actual bottom, shared by every
-// chain. BOUNCE_MIN_SPAN_PX is the shortest any one chain's own bounce is allowed to be, so even
-// the fastest/highest-bouncing chain never reads as a broken flicker against the floor.
+// The bounce path itself - assigned once per chain (see buildChainPath), then shared by every card in that chain via the delay
+// above, never randomized per-card, and fixed for the whole cascade (no drift). Every chain in a cascade bounces between the SAME
+// two heights: the floor is the screen's actual bottom (BOUNCE_FLOOR_MARGIN_PX above it) and the apex is the bottom of the
+// header (see cascadeApexY), so no chain ever climbs behind the header's controls and none bounces visibly higher than the rest.
+// BOUNCE_TOP_MARGIN_PX is the hard limit on that apex on a screen too short to leave the header its room, and BOUNCE_MIN_SPAN_PX
+// the shortest any bounce is allowed to be, so it never reads as a broken flicker against the floor.
 export const BOUNCE_FLOOR_MARGIN_PX = 24
 export const BOUNCE_TOP_MARGIN_PX = 24
 export const BOUNCE_MIN_SPAN_PX = 220
-// vHalfPeriodMs is randomized per chain too (not derived from its own span) so a short bounce
-// doesn't automatically read as a frantic flicker - see buildChainPath for how this still keeps
-// the motion feeling weighty regardless of how tall that particular chain's arc turned out.
+// vHalfPeriodMs is randomized per chain (not derived from its own span), so chains sharing one floor and one apex still leave and
+// return to it out of step with each other.
 export const BOUNCE_V_HALF_PERIOD_MIN_MS = 900
 export const BOUNCE_V_HALF_PERIOD_MAX_MS = 1330
 export const BOUNCE_H_MARGIN_PX = 12
-// Deliberately a much wider spread than the vertical half-period above (nearly 4x, min to max,
-// vs. vertical's ~1.5x) - since every chain now shares the same floor and alternates its starting
-// wall by index (see buildChainPath), a wide horizontal speed range is what keeps chains reading as
-// visually distinct from each other over time, rather than a uniform mass that only ever splits
-// into two lockstep groups (one per starting wall).
-export const BOUNCE_H_HALF_PERIOD_MIN_MS = 2500
-export const BOUNCE_H_HALF_PERIOD_MAX_MS = 9500
+// With every chain on the same floor and apex, horizontal speed is the ONLY thing left that tells two chains apart, so it is what
+// keeps one from sitting behind another for long: each chain gets its own speed (see spreadHHalfPeriods), spread evenly across
+// this band - deliberately narrow (about +/-16% around 5s per wall-to-wall leg), a slight difference rather than the very wide
+// 2.5-9.5s range a chain used to draw from when speed also decided its height.
+export const BOUNCE_H_HALF_PERIOD_MIN_MS = 4200
+export const BOUNCE_H_HALF_PERIOD_MAX_MS = 5800
 
-// How far down the available apex range (from BOUNCE_TOP_MARGIN_PX at the top down to the
-// screen's true lowest-allowed apex) the SLOWEST chain in a cascade bounces, by rank - see
-// computeCascadeVerticals in WinCascadeLayer. 0 would put it at the very top alongside the
-// fastest chain (no visible height difference at all); 1 would put it at the absolute lowest
-// bounce the screen allows (uncomfortably close to the floor, reading as a weak, stunted hop
-// rather than a deliberate "conservative" bounce). 0.75 still keeps it a real, deliberate bounce
-// rather than the absolute minimum, while reading noticeably lower/calmer than the fastest chain's.
-export const BOUNCE_APEX_CONSERVATIVE_FRACTION = 0.75
+/** The single apex every chain of a cascade bounces up to: the top of the cards sits at `headerBottomY` (the bottom of the header
+ * band, in the same frame as `floorY`), so a bounce reaches the header's lower edge without going behind it. Held back only as far
+ * as needed to leave every bounce at least BOUNCE_MIN_SPAN_PX tall (a short screen), and never above BOUNCE_TOP_MARGIN_PX. */
+export function cascadeApexY(headerBottomY: number, floorY: number): number {
+  return Math.min(headerBottomY, Math.max(BOUNCE_TOP_MARGIN_PX, floorY - BOUNCE_MIN_SPAN_PX))
+}
+
+/** One horizontal half-period per chain, all different: `count` values spaced evenly from BOUNCE_H_HALF_PERIOD_MIN_MS to
+ * BOUNCE_H_HALF_PERIOD_MAX_MS (a lone chain gets the middle), then shuffled so WHICH chain is the fast one changes from win to
+ * win. Even spacing, rather than an independent random draw per chain, is what guarantees no two chains ever share a speed - two
+ * draws can land nearly on top of each other, and two chains at the same speed stay stacked for as long as the cascade runs. */
+export function spreadHHalfPeriods(count: number, random: () => number = Math.random): number[] {
+  const middle = (BOUNCE_H_HALF_PERIOD_MIN_MS + BOUNCE_H_HALF_PERIOD_MAX_MS) / 2
+  const periods = Array.from({ length: count }, (_, i) => (count > 1 ? BOUNCE_H_HALF_PERIOD_MIN_MS + ((BOUNCE_H_HALF_PERIOD_MAX_MS - BOUNCE_H_HALF_PERIOD_MIN_MS) * i) / (count - 1) : middle))
+  for (let i = periods.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1))
+    ;[periods[i], periods[j]] = [periods[j], periods[i]]
+  }
+  return periods
+}
 
 /** One chain's bounce path - randomized once per chain (see buildChainPath in WinCascadeLayer), then
  * shared by reference across every card in that chain, which is what keeps a chain racked together

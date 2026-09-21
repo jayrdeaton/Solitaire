@@ -282,6 +282,10 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
   // or hand off to `drag.onDrop`) and by nothing else, since only one drag can ever be in progress
   // from this column at a time.
   const flightRef = useRef<DragFlightHandle | null>(null)
+  // Bumped at every drag start. A drag's late outcome (its drop resolving, its snap-back landing) only
+  // clears `activeDrag` if no NEWER drag from this column has begun in the meantime - otherwise it
+  // would reveal the cards under the new drag's own ghost.
+  const dragTokenRef = useRef(0)
 
   // Read through a ref (refreshed after every render, like DraggableTableauCard's own `latest`) so the three
   // callbacks handed to every card are STABLE - closing over `cards`/`drag`/`onPressCard` directly would give them a
@@ -296,6 +300,7 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
     (indexFromTop: number, runCount: number) => {
       const { cards: current, resolvedFaceUpOffset: offsetStep, cardWidth: width } = latest.current
       const runCards = current.slice(current.length - runCount)
+      dragTokenRef.current += 1
       flightRef.current = ghost.showLive({ cards: runCards, offsetStep, cardWidth: width }, { originX, originY, dx, dy })
       playCardSound()
       setActiveDrag({ indexFromTop, count: runCount })
@@ -306,8 +311,14 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
   const handleDragEnd = useCallback((absoluteX: number, absoluteY: number, count: number, anchorCardId: string) => {
     ;(async () => {
       const { drag: currentDrag } = latest.current
-      const target = currentDrag ? await currentDrag.registry.hitTest(absoluteX, absoluteY) : null
+      // Taken BEFORE the hit test awaits: this drag's own flight (a quick next drag from this column
+      // replaces flightRef while the hit test is still resolving, and the drop would then be applied
+      // with - and fly - the wrong ghost), released at once so that next drag cannot hijack its values
+      // either (see DragFlightHandle.release).
       const flight = flightRef.current
+      const token = dragTokenRef.current
+      flight?.release()
+      const target = currentDrag ? await currentDrag.registry.hitTest(absoluteX, absoluteY) : null
       const applied = target && currentDrag && flight ? await currentDrag.onDrop(target, count, anchorCardId, flight) : false
       if (applied) {
         // Don't hide the ghost here - it's still sitting wherever the pointer released it, not
@@ -315,9 +326,11 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
         // handleCardTap) has already marked that destination "incoming" and will measure its real
         // landed position and fly this same flight the rest of the way there, same as a
         // tap-to-move.
-        setActiveDrag(null)
+        if (dragTokenRef.current === token) setActiveDrag(null)
       } else {
-        flight?.snapBack(() => setActiveDrag(null))
+        flight?.snapBack(() => {
+          if (dragTokenRef.current === token) setActiveDrag(null)
+        })
       }
     })()
   }, [])

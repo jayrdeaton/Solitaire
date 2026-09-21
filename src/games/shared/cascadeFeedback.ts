@@ -17,9 +17,11 @@ const CASCADE_FEEDBACK_MIN_INTERVAL_MS = 45
  * every other call site (a manual tap, a drag's drop, undo, a non-sweep manual draw) keeps calling
  * playCardSound/hapticCard directly, fully unthrottled. Harmless to apply even to an ordinary
  * (non-sweep) cascade step: those are already gated by the slower autoPlaySpringFor settle time
- * (75-170ms, see dragSpring.ts) before the next step ever fires, well above this floor, so the
- * throttle only actually suppresses anything once sweep speed (40-90ms) makes consecutive steps
- * fast enough to collide.
+ * (springSettleMs of a 120-272ms spring at the default FLIGHT_TIME_SCALE, see dragSpring.ts) before
+ * the next step ever fires, well above this floor. The floor itself is a sound-pool limit, not a
+ * flight pace, so it deliberately does NOT follow FLIGHT_TIME_SCALE: slowing the flights only ever
+ * spaces the steps further apart, and the throttle then simply never triggers (FreeCell's finish
+ * stagger, scaledMs(60) = 96ms at the default, stays above it too).
  */
 export function useCascadeFeedback(playCardSound: () => void, hapticCard: () => void): () => void {
   const lastFiredAtRef = useRef(0)

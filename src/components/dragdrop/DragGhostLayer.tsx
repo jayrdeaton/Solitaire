@@ -1,5 +1,5 @@
 import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
-import React, { createContext, memo, useCallback, useContext, useMemo, useRef, useState } from 'react'
+import React, { createContext, memo, useCallback, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 import Animated, { makeMutable, SharedValue, useAnimatedStyle, withSpring, WithSpringConfig } from 'react-native-reanimated'
 
@@ -9,7 +9,7 @@ import { OverlayFrame, toLocal, useOverlayFrame } from '../overlayFrame'
 import { PlayingCard } from '../PlayingCard'
 import { useCardSoundEffects } from '../useCardSounds'
 import { CardRegistry, useCardRegistry } from './CardRegistry'
-import { autoMoveSpringFor, autoPlaySpringFor, SNAP_BACK_SPRING, winSweepSpringFor } from './dragSpring'
+import { autoMoveSpringFor, autoPlaySpringFor, SNAP_BACK_SPRING, springSettleMs, winSweepSpringFor } from './dragSpring'
 
 interface GhostContent {
   cards: Card[]
@@ -50,6 +50,17 @@ export interface DragFlightHandle {
   flyTo(targetX: number, targetY: number, onArrived: () => void, opts?: { fast?: boolean; sweep?: boolean }): void
   /** Hide immediately (used when a drop was applied and the source has already disappeared). */
   hide(): void
+  /**
+   * Cut this flight loose from the caller's persistent gesture values (a showLive() flight; a no-op
+   * for show(), and once done). From here the ghost runs on values of its OWN, starting at exactly
+   * the position it has now, so nothing a later drag from the same slot/column writes to the
+   * persistent ones can touch it - it keeps flying to its own landing. Call it the moment the drag
+   * ENDS, before anything awaits (DraggableCard/PileView do): a drop can sit in a hit test, a
+   * measurement or a deferral for a while before flyTo, and a quick next drag from the same source
+   * would otherwise hijack the persistent values under it (the ghost vanished partway and its card
+   * just appeared at the destination). flyTo/snapBack/hide do it themselves if it hasn't happened.
+   */
+  release(): void
 }
 
 export interface DragGhostController {
@@ -82,21 +93,58 @@ export function useDragGhost(): DragGhostController {
   return ctx
 }
 
-interface FlightEntry {
-  id: number
-  content: GhostContent
+/** One set of position-tracking SharedValues: the flight's screen-space origin plus its live delta. */
+interface FlightValues {
   originX: SharedValue<number>
   originY: SharedValue<number>
   dx: SharedValue<number>
   dy: SharedValue<number>
 }
 
-interface FlightGhostCardProps {
+/** Holds a flight's motion back until its ghost view exists (see FlightGhostCard's onMounted): a flight the caller starts in the very stretch that
+ * shows its ghost - flyTo right after show(), the screen's own re-render and commit still ahead - would otherwise be moving for however long that
+ * commit takes (tens to hundreds of ms on a phone) before there was anything to see, and the ghost would first appear already partway along its path. */
+interface MountGate {
+  run(fn: () => void): void
+  open(): void
+}
+function createMountGate(): MountGate {
+  let isOpen = false
+  const queued: (() => void)[] = []
+  return {
+    run(fn) {
+      if (isOpen) fn()
+      else queued.push(fn)
+    },
+    open() {
+      isOpen = true
+      queued.splice(0).forEach((fn) => fn())
+    }
+  }
+}
+
+interface FlightEntry {
+  id: number
+  mountGate: MountGate
   content: GhostContent
-  originX: SharedValue<number>
-  originY: SharedValue<number>
-  dx: SharedValue<number>
-  dy: SharedValue<number>
+  /** What the ghost follows while a drag is in progress: the caller's persistent gesture values for a
+   * showLive() flight, the flight's own for a show() one (the same object as `own`). */
+  live: FlightValues
+  /** The flight's own values - what every terminal animation (flyTo/snapBack) drives, and what the
+   * ghost follows once `handedOff` is 1. */
+  own: FlightValues
+  /** 0 while the ghost follows `live`, 1 once it follows `own` (see DragFlightHandle.release). Flipped
+   * from JS AFTER `own` has been written, so the switch lands on the identical position with no
+   * re-render and no remount - the ghost reads both sets from its very first render. */
+  handedOff: SharedValue<number>
+}
+
+interface FlightGhostCardProps {
+  onMounted: () => void
+  content: GhostContent
+  live: FlightValues
+  own: FlightValues
+  handedOff: SharedValue<number>
   frame: OverlayFrame
 }
 
@@ -105,12 +153,21 @@ interface FlightGhostCardProps {
 // is only ever set once at creation; the shared values and `frame` never change
 // identity) - without this, every remaining ghost would re-render whenever any sibling's own
 // landing removed it from `flights`, same reasoning as DealLayer.tsx's GhostSlot.
-const FlightGhostCard = memo(function FlightGhostCard({ content, originX, originY, dx, dy, frame }: FlightGhostCardProps) {
+const FlightGhostCard = memo(function FlightGhostCard({ onMounted, content, live, own, handedOff, frame }: FlightGhostCardProps) {
   const cardHeight = content.cardWidth / CARD_ASPECT
+  // In the commit that mounts the ghost (a layout effect: the view is in the tree by then) - see MountGate.
+  useLayoutEffect(() => onMounted(), [onMounted])
+  // Plain locals rather than the two objects: the worklet below should capture each SharedValue on
+  // its own, exactly like every other ghost in this app.
+  const { originX: liveOriginX, originY: liveOriginY, dx: liveDx, dy: liveDy } = live
+  const { originX: ownOriginX, originY: ownOriginY, dx: ownDx, dy: ownDy } = own
   const animatedStyle = useAnimatedStyle(() => {
-    // originX/Y + dx/dy is the ghost's live screen-space position (see toLocal for how that becomes a
+    // origin + delta is the ghost's live screen-space position (see toLocal for how that becomes a
     // position inside this overlay, which lives in the rotated frame under a landscape hold).
-    const p = toLocal(originX.value + dx.value, originY.value + dy.value, content.cardWidth, cardHeight, frame)
+    const handed = handedOff.value === 1
+    const sx = handed ? ownOriginX.value + ownDx.value : liveOriginX.value + liveDx.value
+    const sy = handed ? ownOriginY.value + ownDy.value : liveOriginY.value + liveDy.value
+    const p = toLocal(sx, sy, content.cardWidth, cardHeight, frame)
     return { transform: [{ translateX: p.x }, { translateY: p.y }] }
   })
   return (
@@ -154,6 +211,31 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
   // again on resize/rotation) and toLocal converts each ghost's screen-space position accordingly -
   // see overlayFrame.ts.
 
+  // showLive's caller (DraggableCard/PileView) owns ONE persistent set of SharedValues per
+  // draggable slot/column, reused for every drag that ever starts from there - necessary so the
+  // gesture worklet always has a stable value to write to (see showLive's own doc comment). Two
+  // flights sharing those exact SharedValue objects would hijack each other: a second drag's
+  // worklet writing fresh origin/dx the instant it starts silently moved the FIRST flight's
+  // still-mounted, still-settling ghost out from under it (confirmed live - dragging repeatedly from
+  // the same waste slot or tableau column faster than one flight's settle time made the earlier
+  // ghost vanish partway, its card just appearing at the destination).
+  //
+  // So a flight only ever sits on the persistent values WHILE ITS DRAG IS IN PROGRESS. The instant
+  // the drag ends, DragFlightHandle.release() hands the ghost values of its own, holding the same
+  // position (see FlightEntry.handedOff for why that needs no re-render). After that the flight is
+  // completely independent of the source, applied or not, and a new drag from the same slot can never
+  // reach it. (Tried cloning onto fresh SharedValues at hand-off first, git history - the ghost, still
+  // mounted, kept rendering its OLD values until React re-rendered, so every flight ran invisibly for
+  // a render cycle and then jumped to wherever it had got to. Here the ghost reads both sets from its
+  // first render, so nothing has to re-render.)
+  //
+  // The only flights still cut off by a new claim are the ones that never released (a drag whose
+  // end never arrived) and a SNAP-BACK in progress: that ghost is returning the very card the new
+  // drag has just picked up again, so the pick-up correctly ends it (its onSettled runs at once,
+  // like it always did, so the source card is revealed before the new drag hides it). This map keys
+  // each such flight by its persistent originX.
+  const liveOwnersRef = useRef(new Map<SharedValue<number>, DragFlightHandle>())
+
   const removeFlight = useCallback((id: number) => {
     setFlights((prev) => prev.filter((f) => f.id !== id))
   }, [])
@@ -165,10 +247,14 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
   // lifetime: `hide()` can race a still-pending settleAfter timer from an earlier flyTo/snapBack
   // call on this SAME handle, and must stop that stale timer from firing after this flight has
   // already been torn down.
+  //
+  // `source` is the caller's persistent originX (a showLive flight) or null (a show flight, which
+  // never had persistent values and is born released).
   const createFlight = useCallback(
-    (id: number, values: { originX: SharedValue<number>; originY: SharedValue<number>; dx: SharedValue<number>; dy: SharedValue<number> }): DragFlightHandle => {
+    (id: number, mountGate: MountGate, live: FlightValues, own: FlightValues, handedOff: SharedValue<number>, source: SharedValue<number> | null): DragFlightHandle => {
       let generation = 0
       let pendingSettle: (() => void) | null = null
+      let released = source === null
 
       function flushPendingSettle() {
         const settle = pendingSettle
@@ -177,102 +263,145 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
         settle()
       }
 
-      // Reveals the real card (and removes this ghost) `config.duration` after a flight starts,
-      // instead of waiting on withSpring's own per-axis completion callback: that callback was found
+      function unregisterOwner() {
+        if (source && liveOwnersRef.current.get(source) === handle) liveOwnersRef.current.delete(source)
+      }
+
+      // See DragFlightHandle.release. `own` is written BEFORE `handedOff` flips (writes reach the UI
+      // thread in order), so the ghost only switches once its own values already hold the position.
+      function release() {
+        if (released) return
+        released = true
+        own.originX.value = live.originX.value
+        own.originY.value = live.originY.value
+        own.dx.value = live.dx.value
+        own.dy.value = live.dy.value
+        handedOff.value = 1
+        unregisterOwner()
+      }
+
+      // Reveals the real card (and removes this ghost) once a flight has ACTUALLY finished, instead of
+      // waiting on withSpring's own per-axis completion callback: that callback was found
       // to never fire at all for these duration-based springs when run through this app's web target
       // (confirmed live - the ghost visibly animates to its target via the shared-value-driven
       // transform below, which doesn't depend on the callback, but then never gets removed,
-      // permanently masking the real card it's standing in for). Passing the very same config that
-      // drives the withSpring calls keeps the timer and the motion it's covering for the same
-      // length, and it fires regardless of whether dx/dy had anything to actually move (a
-      // stock-to-waste draw has dy already at its target, since the two sit on the same row).
-      function settleAfter(config: WithSpringConfig, onSettled: () => void) {
+      // permanently masking the real card it's standing in for). The timer must be springSettleMs(),
+      // not the bare `config.duration`: `duration` is only the spring's PERCEPTUAL length (it really
+      // runs 1.5x that) and the UI-thread spring starts a frame or two after this timer does, so a
+      // timer of exactly `duration` retired the ghost with up to tens of pixels still to go. It fires
+      // regardless of whether dx/dy had anything to actually move (a stock-to-waste draw has dy
+      // already at its target, since the two sit on the same row).
+      //
+      // `animate` (the withSpring writes) and this timer both start once the ghost view exists (MountGate) - a flight started in the same
+      // stretch as show() would otherwise be moving, unseen, for as long as the commit that mounts its ghost takes.
+      function settleAfter(config: WithSpringConfig, onSettled: () => void, animate: () => void) {
         const gen = ++generation
         pendingSettle = onSettled
-        setTimeout(() => {
-          if (generation !== gen) return
-          pendingSettle = null
-          removeFlight(id)
-          onSettled()
-        }, config.duration ?? 0)
+        mountGate.run(() => {
+          if (generation !== gen) return // hidden (or superseded) before it could start: nothing to move, nothing to settle
+          animate()
+          setTimeout(() => {
+            if (generation !== gen) return
+            pendingSettle = null
+            removeFlight(id)
+            onSettled()
+          }, springSettleMs(config))
+        })
       }
 
-      return {
-        originX: values.originX,
-        originY: values.originY,
-        dx: values.dx,
-        dy: values.dy,
+      // What a caller reads/animates: the persistent values until the drag ends, the flight's own after.
+      function values(): FlightValues {
+        return released ? own : live
+      }
+
+      const handle: DragFlightHandle = {
+        get originX() {
+          return values().originX
+        },
+        get originY() {
+          return values().originY
+        },
+        get dx() {
+          return values().dx
+        },
+        get dy() {
+          return values().dy
+        },
+        release,
         snapBack(onSettled) {
-          settleAfter(SNAP_BACK_SPRING, () => {
-            playInvalidSound()
-            hapticInvalid()
-            onSettled()
-          })
-          values.dx.value = withSpring(0, SNAP_BACK_SPRING)
-          values.dy.value = withSpring(0, SNAP_BACK_SPRING)
+          release()
+          // A drag that picks the same source up again ends this return at once (see liveOwnersRef).
+          if (source) liveOwnersRef.current.set(source, handle)
+          settleAfter(
+            SNAP_BACK_SPRING,
+            () => {
+              unregisterOwner()
+              playInvalidSound()
+              hapticInvalid()
+              onSettled()
+            },
+            () => {
+              own.dx.value = withSpring(0, SNAP_BACK_SPRING)
+              own.dy.value = withSpring(0, SNAP_BACK_SPRING)
+            }
+          )
         },
         flyTo(targetX, targetY, onArrived, opts) {
+          release()
+          unregisterOwner()
           // Distance actually left to travel from wherever the ghost is sitting right now - not
           // always originX/Y (that's only the flight's start point; a manual drag has already
           // moved dx/dy away from it by the time flyTo runs) - see autoMoveSpringFor's doc comment
           // in dragSpring.ts for why this determines the settle duration instead of a fixed one.
-          const curX = values.originX.value + values.dx.value
-          const curY = values.originY.value + values.dy.value
+          const curX = own.originX.value + own.dx.value
+          const curY = own.originY.value + own.dy.value
           const distance = Math.hypot(targetX - curX, targetY - curY)
           const config = opts?.sweep ? winSweepSpringFor(distance) : opts?.fast ? autoPlaySpringFor(distance) : autoMoveSpringFor(distance)
           // No hapticCard() here (unlike snapBack's own hapticInvalid above) - a successful flight's
           // sound+haptic pair now fires together the instant the move was confirmed (see
           // useCardSounds.ts), not on arrival, so there's nothing left for this settle to trigger
           // beyond the caller's own onArrived.
-          settleAfter(config, onArrived)
-          values.dx.value = withSpring(targetX - values.originX.value, config)
-          values.dy.value = withSpring(targetY - values.originY.value, config)
+          settleAfter(config, onArrived, () => {
+            own.dx.value = withSpring(targetX - own.originX.value, config)
+            own.dy.value = withSpring(targetY - own.originY.value, config)
+          })
         },
         hide() {
+          // Also lets go of the persistent values (copying the position, so a later read still
+          // answers) - a hidden ghost must never keep a claim on them.
+          release()
+          unregisterOwner()
           flushPendingSettle()
           generation += 1
           removeFlight(id)
         }
       }
+      return handle
     },
     [playInvalidSound, hapticInvalid, removeFlight]
   )
-
-  // showLive's caller (DraggableCard/PileView) owns ONE persistent set of SharedValues per
-  // draggable slot/column, reused for every drag that ever starts from there - necessary so the
-  // gesture worklet always has a stable value to write to (see showLive's own doc comment). That
-  // means two overlapping flights from the SAME slot/column would otherwise share the exact same
-  // SharedValue objects: a second drag's worklet writing fresh origin/dx the instant it starts
-  // would silently hijack the FIRST flight's still-mounted, still-settling ghost out from under
-  // it (confirmed live - dragging repeatedly from the same waste slot or tableau column faster
-  // than one flight's settle time visibly stole the earlier ghost's position). Tried cloning onto
-  // fresh SharedValues at handoff first (see git history) - that broke EVERY flight, not just
-  // overlapping ones: swapping a still-mounted FlightGhostCard's rendered SharedValues requires a
-  // React re-render to take effect, so the spring ran invisibly on the new values for up to a
-  // whole render cycle while the screen kept showing the old (now frozen) ones, then jumped to
-  // wherever the animation had already gotten to the moment React caught up - exactly the "clicks
-  // into place at the last frame" bug. Tracking the current owner per persistent-values object
-  // instead, and force-completing it (calling its own hide(), which fires whatever onSettled/
-  // onArrived it's already mid-flight toward) the instant a NEW flight claims the same values,
-  // means only this narrow, genuinely-overlapping-same-source case reverts to the old "cut off"
-  // behavior - every other flight (a different column, a tap-to-move, a stock draw, ...) is still
-  // fully independent and animates normally.
-  const liveOwnersRef = useRef(new Map<SharedValue<number>, DragFlightHandle>())
 
   const controller = useMemo<DragGhostController>(
     () => ({
       cardRegistry,
       show(content, origin) {
         const id = ++nextIdRef.current
-        const values = { originX: makeMutable(origin.x), originY: makeMutable(origin.y), dx: makeMutable(0), dy: makeMutable(0) }
-        setFlights((prev) => [...prev, { id, content, ...values }])
-        return createFlight(id, values)
+        const own = { originX: makeMutable(origin.x), originY: makeMutable(origin.y), dx: makeMutable(0), dy: makeMutable(0) }
+        const handedOff = makeMutable(1)
+        const mountGate = createMountGate()
+        setFlights((prev) => [...prev, { id, mountGate, content, live: own, own, handedOff }])
+        return createFlight(id, mountGate, own, own, handedOff, null)
       },
       showLive(content, values) {
+        // A flight still on these values is a snap-back to be ended by this pick-up (or a drag that
+        // never released) - see liveOwnersRef. A released, in-flight one is not in the map.
         liveOwnersRef.current.get(values.originX)?.hide()
         const id = ++nextIdRef.current
-        setFlights((prev) => [...prev, { id, content, ...values }])
-        const handle = createFlight(id, values)
+        const own = { originX: makeMutable(0), originY: makeMutable(0), dx: makeMutable(0), dy: makeMutable(0) }
+        const handedOff = makeMutable(0)
+        const mountGate = createMountGate()
+        setFlights((prev) => [...prev, { id, mountGate, content, live: values, own, handedOff }])
+        const handle = createFlight(id, mountGate, values, own, handedOff, values.originX)
         liveOwnersRef.current.set(values.originX, handle)
         return handle
       }
@@ -288,7 +417,7 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
       which needs the view to already exist. */}
       <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
         {flights.map((flight) => (
-          <FlightGhostCard key={flight.id} content={flight.content} originX={flight.originX} originY={flight.originY} dx={flight.dx} dy={flight.dy} frame={frame} />
+          <FlightGhostCard key={flight.id} onMounted={flight.mountGate.open} content={flight.content} live={flight.live} own={flight.own} handedOff={flight.handedOff} frame={frame} />
         ))}
       </View>
     </DragGhostContext.Provider>

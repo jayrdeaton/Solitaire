@@ -1,9 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
+import { AUTO_MOVE_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { CHAIN_MAX_SPAN_MS, chainSegmentDelayMs } from '@/components/winning/winCascadeMotion'
 import { Card, Suit } from '@/engine/types'
-import PyramidScreen, { winHoldView } from '@/games/pyramid/PyramidScreen'
+import PyramidScreen, { SWEEP_WIN_REVEAL_MAX_WAIT_MS, winHoldView } from '@/games/pyramid/PyramidScreen'
 import { PyramidController, PyramidState } from '@/games/pyramid/rules'
 import { WIN_REVEAL_MAX_WAIT_MS } from '@/games/shared/useWinReveal'
 
@@ -33,6 +34,8 @@ let mockFlightMs = FLIGHT_MS
 /** How long every measurement (registry, plain view, the tapped card's own measure) takes. */
 let mockMeasureMs = 0
 const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
+/** The longest a real flight keeps its ghost up (a full-distance autoMove: dragSpring.ts's springSettleMs) - derived, so re-pacing the flights re-times the waits below. */
+const SLOWEST_FLIGHT_MS = springSettleMs(AUTO_MOVE_SPRING)
 const DEAL_SPRING_MS = 280 // dealSpring.ts's DEAL_SPRING.duration - a dealt card lands this long after its own take-off
 const STAGGER_MS = 35 // dealStaggerMs() for any sweep of up to 28 cards
 const SAVE_KEY = 'solitaire.game-in-progress.v1.pyramid'
@@ -648,7 +651,7 @@ describe('Pyramid screen - a winning King', () => {
     expect(text('discard-top')).toBe('empty')
 
     await press('undo')
-    await flush(FLIGHT_MS + 200)
+    await flush(FLIGHT_MS + 100 + SLOWEST_FLIGHT_MS) // the King flies back on the pair-flight overlay: up to a full-distance flight
     expect(screen.queryByTestId('win-banner')).toBeNull()
     expect(text('discard-top')).toBe(id('spades', 4)) // the King is back on the pyramid, the discard is what it was
     expect(stockShows()).toBe(id('diamonds', 6))
@@ -829,7 +832,7 @@ describe('Pyramid screen - the win sweep is timed to fit its wait', () => {
   it('the worst case - 24 leftover cards, the last removal flying its longest, every measurement slow - reveals well inside the default 2.5s max wait', async () => {
     await mount(fullDeckBoard(12, 12))
     mockMeasureMs = 30
-    mockFlightMs = 320 // the longest flight: a distance-scaled spring's ceiling
+    mockFlightMs = SLOWEST_FLIGHT_MS // the longest flight: a distance-scaled spring's ceiling, plus the spring's real end
     const t0 = Date.now()
 
     await press(`pyramid-${id('clubs', 13)}`)
@@ -839,9 +842,9 @@ describe('Pyramid screen - the win sweep is timed to fit its wait', () => {
 
     expect(mockLog.deals[0]).toHaveLength(24)
     expect(mockLog.dealPendingAtCascade).toBe(0)
-    // measure (30) + King (320) + sweep measure (30) + 23 * 35 + 280 + hold 400 = ~1.9s: not the fallback timer's doing.
-    expect(revealedAfter).toBeLessThan(WIN_REVEAL_MAX_WAIT_MS - 400)
-    expect(revealedAfter).toBeGreaterThanOrEqual(30 + 320 + 30 + 23 * STAGGER_MS + DEAL_SPRING_MS + HOLD_MS)
+    // measure (30) + King (the slowest flight) + sweep measure (30) + 23 * 35 + 280 + hold 400 = ~2.2s: not the fallback timer's doing.
+    expect(revealedAfter).toBeLessThan(SWEEP_WIN_REVEAL_MAX_WAIT_MS - 400)
+    expect(revealedAfter).toBeGreaterThanOrEqual(30 + SLOWEST_FLIGHT_MS + 30 + 23 * STAGGER_MS + DEAL_SPRING_MS + HOLD_MS)
   })
 
   it('hands ONE chain of all 52 cards to the cascade, head on top of the discard, its per-card delay capped so the whole chain stays one snake', async () => {

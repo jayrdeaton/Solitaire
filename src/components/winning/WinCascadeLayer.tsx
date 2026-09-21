@@ -1,15 +1,17 @@
 import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
-import { useRotatedWindowDimensions, useRotation } from '@tastic/core'
+import { rotateInsets, useRotatedWindowDimensions, useRotation } from '@tastic/core'
 import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, useWindowDimensions, View } from 'react-native'
 import Animated, { SharedValue, useAnimatedStyle, useFrameCallback, useSharedValue } from 'react-native-reanimated'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { Card } from '@/engine/types'
 
 import { ScreenPoint } from '../dealing/measureView'
+import { GAME_CONTENT_TOP_PADDING } from '../gameLayout'
 import { screenToLocalPoint } from '../overlayFrame'
 import { PlayingCard } from '../PlayingCard'
-import { BOUNCE_APEX_CONSERVATIVE_FRACTION, BOUNCE_FLOOR_MARGIN_PX, BOUNCE_H_HALF_PERIOD_MAX_MS, BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_H_MARGIN_PX, BOUNCE_MIN_SPAN_PX, BOUNCE_TOP_MARGIN_PX, BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, cardXAtElapsed, cardYAtElapsed, CHAIN_SEGMENT_DELAY_MS, ChainPath, isGhostVisible } from './winCascadeMotion'
+import { BOUNCE_FLOOR_MARGIN_PX, BOUNCE_H_MARGIN_PX, BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, cardXAtElapsed, cardYAtElapsed, cascadeApexY, CHAIN_SEGMENT_DELAY_MS, ChainPath, isGhostVisible, spreadHHalfPeriods } from './winCascadeMotion'
 
 export interface ChainSpec {
   /** Head-to-tail order - index 0 leads the chain (e.g. a foundation pile's King, or Pyramid's
@@ -61,29 +63,6 @@ export function useWinCascade(): WinCascadeController {
 
 function randomBetween(min: number, max: number): number {
   return min + Math.random() * (max - min)
-}
-
-/** Assigns each chain's fixed floor and apex heights for one cascade launch, given every chain's
- * own (already-drawn) horizontal half-period. All chains share the same floor (the screen's
- * actual bottom). Apex height is RANKED by speed across this specific set of chains, not derived
- * from each chain's own half-period in isolation - the fastest chain always reaches
- * BOUNCE_TOP_MARGIN_PX (the very top of the screen), the slowest always reaches
- * BOUNCE_APEX_CONSERVATIVE_FRACTION of the way there (a deliberately modest bounce, never as low
- * as the absolute minimum the screen would allow), and any chains in between are spaced evenly by
- * rank. Ranking (rather than mapping each chain's raw half-period linearly against the fixed
- * BOUNCE_H_HALF_PERIOD_MIN/MAX_MS range) guarantees this spread every single cascade, regardless
- * of how tightly or widely this particular random draw of half-periods happened to cluster. */
-function computeCascadeVerticals(hHalfPeriods: number[], bounds: { width: number; height: number }, cardHeight: number): { floorY: number; apexYs: number[] } {
-  const floorY = bounds.height - cardHeight - BOUNCE_FLOOR_MARGIN_PX
-  const apexMax = Math.max(BOUNCE_TOP_MARGIN_PX, floorY - BOUNCE_MIN_SPAN_PX)
-  const conservativeLowY = BOUNCE_TOP_MARGIN_PX + BOUNCE_APEX_CONSERVATIVE_FRACTION * (apexMax - BOUNCE_TOP_MARGIN_PX)
-  const order = hHalfPeriods.map((_, chainIndex) => chainIndex).sort((a, b) => hHalfPeriods[a] - hHalfPeriods[b])
-  const apexYs = new Array(hHalfPeriods.length).fill(BOUNCE_TOP_MARGIN_PX)
-  order.forEach((chainIndex, rank) => {
-    const rankFraction = order.length > 1 ? rank / (order.length - 1) : 0
-    apexYs[chainIndex] = BOUNCE_TOP_MARGIN_PX + rankFraction * (conservativeLowY - BOUNCE_TOP_MARGIN_PX)
-  })
-  return { floorY, apexYs }
 }
 
 function buildChainPath(origin: ScreenPoint, bounds: { width: number; height: number }, cardWidth: number, chainIndex: number, hHalfPeriodMs: number, floorY: number, apexY: number): ChainPath {
@@ -186,6 +165,13 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     screenRef.current = { rotation, width: screenWidth, height: screenHeight }
   }, [rotation, screenWidth, screenHeight])
+  // The bottom of the header band in the rotated frame's own coordinates - the same band GameChrome reserves above the board
+  // (its top safe-area inset, remapped onto the rotated frame, plus GAME_CONTENT_TOP_PADDING) - and where every chain bounces up to.
+  const headerBottom = rotateInsets(useSafeAreaInsets(), rotation).top + GAME_CONTENT_TOP_PADDING
+  const headerBottomRef = useRef(headerBottom)
+  useEffect(() => {
+    headerBottomRef.current = headerBottom
+  }, [headerBottom])
   useEffect(() => {
     // useRotatedWindowDimensions() can transiently report a degenerate 0x0 size (e.g. right after a fresh
     // web navigation, before the viewport has settled) - guard against ever computing a chain's
@@ -205,12 +191,11 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
           return
         }
         const cardHeight = cardWidth / CARD_ASPECT
-        // Every chain's horizontal half-period is drawn up front (rather than inside
-        // buildChainPath) so computeCascadeVerticals can rank them against each other before any
-        // chain's apex height is assigned - see its own doc comment for why ranking, not each
-        // chain's raw half-period in isolation, is what actually guarantees the height spread.
-        const hHalfPeriods = chains.map(() => randomBetween(BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_H_HALF_PERIOD_MAX_MS))
-        const { floorY, apexYs } = computeCascadeVerticals(hHalfPeriods, boundsRef.current, cardHeight)
+        // Every chain bounces between the same two heights - the screen's bottom and the bottom of the header - so what tells chains
+        // apart is their horizontal speed alone: one distinct half-period per chain (see spreadHHalfPeriods).
+        const hHalfPeriods = spreadHHalfPeriods(chains.length)
+        const floorY = boundsRef.current.height - cardHeight - BOUNCE_FLOOR_MARGIN_PX
+        const apexY = cascadeApexY(headerBottomRef.current, floorY)
         // chain.origin is a screen-space measurement, but boundsRef above is the ROTATED footprint
         // (that's the frame the ghosts render and bounce in under a landscape hold), so an origin
         // measured on a rotated board has to be converted into it first. A no-op at rotation 0, where
@@ -222,7 +207,7 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
           const segmentDelayMs = chain.segmentDelayMs ?? CHAIN_SEGMENT_DELAY_MS
           return {
             segmentDelayMs,
-            path: buildChainPath(origin, boundsRef.current, cardWidth, chainIndex, hHalfPeriods[chainIndex], floorY, apexYs[chainIndex]),
+            path: buildChainPath(origin, boundsRef.current, cardWidth, chainIndex, hHalfPeriods[chainIndex], floorY, apexY),
             cards: chain.cards
               .map((card, i) => {
                 // Converted with the same function as the chain's own origin, so the offset between them is the

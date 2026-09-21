@@ -40,7 +40,7 @@ jest.mock('react-native-reanimated', () => {
   }
 })
 let mockRotation = 0
-jest.mock('@tastic/core', () => ({ useRotation: () => mockRotation, useRotatedWindowDimensions: () => ({ width: 400, height: 800 }) }))
+jest.mock('@tastic/core', () => ({ useRotation: () => mockRotation, useRotatedWindowDimensions: () => ({ width: 400, height: 800 }), rotateInsets: (insets: unknown) => insets }))
 jest.mock('@/components/PlayingCard', () => {
   const { View } = require('react-native')
   return { PlayingCard: ({ card }: { card: { id: string } }) => <View testID={`ghost-${card.id}`} /> }
@@ -256,6 +256,55 @@ describe('WinCascadeGhosts - cardOrigins', () => {
     expect(isDrawn('c1')).toBe(true)
     expect(positionOf('c2')).toEqual({ x: 40, y: 456 })
     expect(isDrawn('c2')).toBe(false) // no spot of its own: it waits under the head like any other follower
+  })
+})
+
+describe('WinCascadeGhosts - bounce heights and speeds', () => {
+  const HEADER_BOTTOM = 56 // no safe-area inset in the tests + GAME_CONTENT_TOP_PADDING
+  const V_HALF_PERIOD_MS = 1115 // Math.random -> 0.5: after the first fall and one rise, a head is at the apex
+
+  // Three chains from three different heights, so nothing about their starts could make their apexes agree by accident.
+  const CHAINS: ChainSpec[] = [
+    { cards: cards(1, 3), origin: { x: 40, y: 300 }, entranceDelayMs: 0 },
+    { cards: cards(11, 3), origin: { x: 200, y: 340 }, entranceDelayMs: 220 },
+    { cards: cards(21, 3), origin: { x: 300, y: 500 }, entranceDelayMs: 440 }
+  ]
+
+  it('sends every chain up to the same height - the bottom of the header, not one ranked height per chain', async () => {
+    await start(CHAINS)
+
+    // The head of a chain that entered `delay` ms late is at the top of its first bounce at 2 * vHalf + delay.
+    for (const [id, delay] of [
+      ['c1', 0],
+      ['c11', 220],
+      ['c21', 440]
+    ] as const) {
+      await tick(2 * V_HALF_PERIOD_MS + delay)
+      expect(positionOf(id).y).toBeCloseTo(HEADER_BOTTOM, 3)
+    }
+  })
+
+  it('never lifts a card above the header, at any moment of the cascade', async () => {
+    await start(CHAINS)
+
+    for (let ms = 0; ms < 30_000; ms += 250) {
+      await tick(ms)
+      for (const id of ['c1', 'c11', 'c21']) expect(positionOf(id).y).toBeGreaterThanOrEqual(HEADER_BOTTOM - 1e-6)
+    }
+  })
+
+  it('gives chains that start from the same spot and head the same way different horizontal speeds, so one cannot stay behind another', async () => {
+    // Chains 0 and 2 both head for the far wall first (start walls alternate by chain index) from the very same origin.
+    await start([
+      { cards: cards(1, 2), origin: { x: 200, y: 300 }, entranceDelayMs: 0 },
+      { cards: cards(11, 2), origin: { x: 200, y: 300 }, entranceDelayMs: 0 },
+      { cards: cards(21, 2), origin: { x: 200, y: 300 }, entranceDelayMs: 0 }
+    ])
+
+    for (const ms of [2000, 4000, 8000, 15_000]) {
+      await tick(ms)
+      expect(positionOf('c1').x).not.toBeCloseTo(positionOf('c21').x, 0)
+    }
   })
 })
 

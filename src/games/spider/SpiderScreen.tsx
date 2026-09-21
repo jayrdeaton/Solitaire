@@ -11,7 +11,7 @@ import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView, ScreenPoint } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
-import { autoMoveSpringFor } from '@/components/dragdrop/dragSpring'
+import { autoMoveSpringFor, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { TABLEAU_ROW_PADDING_BOTTOM, useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
@@ -130,7 +130,7 @@ interface SequenceFlightInstance {
  * settles sooner than one starting further away instead of both moving in lockstep. `delayMs`
  * (see SequenceFlightCardSpec) pushes both the flight and its settlement back by the same amount,
  * via withDelay, so a staggered card doesn't visibly move until its own turn arrives. Settlement
- * is a plain timer matching the spring's own duration rather than the spring's completion callback
+ * is a plain timer matching the spring's own real end (springSettleMs) rather than the spring's completion callback
  * - confirmed elsewhere in this codebase (DragGhostLayer.tsx/DealLayer.tsx) not to reliably fire
  * on this app's web target. `onDealt` mirrors DealLayer's GhostSlot (formerly DealGhostCard) own doc comment: fired via its own
  * separate timer keyed to just `delayMs` (not delayMs+duration), so this card's own sound/haptic
@@ -165,7 +165,9 @@ function FlyingSequenceCard({ card, from, to, delayMs, frame, cardWidth, onDealt
         notified.current = true
         onLanded()
       },
-      delayMs + (config.duration ?? 0)
+      // The spring's real end, not its bare `duration` (see dragSpring.ts's springSettleMs) - the withDelay
+      // above starts on the UI thread, a frame or two after this timer does, just like the spring itself.
+      delayMs + springSettleMs(config)
     )
     return () => {
       clearTimeout(dealtTimer)

@@ -10,6 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { computeScore } from '@/engine/score'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
 
+import { scaledMs } from './dragdrop/dragSpring'
 import { GAME_CONTENT_BOTTOM_PADDING, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GAME_CONTENT_TOP_PADDING, useGameLayout } from './gameLayout'
 import { RotatedContentGutter } from './RotatedContentGutter'
 import { RulesDialog } from './RulesDialog'
@@ -85,12 +86,13 @@ export const GAME_DIALOG_Z_INDEX = 9999
 
 // Press-and-hold-to-repeat undo (see the IconButton below) - matches the delayLongPress/repeat-tick
 // convention @rific/feedback-press's own useHoldToRepeat is already used with elsewhere (Swirlio's
-// hold-to-repeat FABs). UNDO_HOLD_REPEAT_MS is tuned to this app's own measured ~150-300ms undo-
-// flight settle time (see dragSpring.ts/dealSpring.ts) - each game's own handleUndo guards itself
-// against being re-entered before that settle completes, so a tick that lands mid-animation is
-// simply dropped rather than desyncing anything.
+// hold-to-repeat FABs). UNDO_HOLD_REPEAT_MS is tuned to this app's own undo-flight settle time
+// (~150-300ms at scale 1 - see dragSpring.ts/dealSpring.ts) and re-paced with it by FLIGHT_TIME_SCALE
+// (scaledMs): 400ms at the default. Each game's own handleUndo guards itself against being
+// re-entered before that settle completes, so a tick that lands mid-animation is simply dropped
+// rather than desyncing anything.
 const UNDO_LONG_PRESS_MS = 400
-const UNDO_HOLD_REPEAT_MS = 250
+const UNDO_HOLD_REPEAT_MS = scaledMs(250)
 
 // Vertical rhythm shared by the footer and the moves/timer row that sits just above it - single
 // source for both their JSX bottom offsets and how far the moves/timer row slides down to fill the

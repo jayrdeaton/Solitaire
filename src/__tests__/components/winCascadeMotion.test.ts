@@ -1,4 +1,4 @@
-import { BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, cardXAtElapsed, cardYAtElapsed, CHAIN_MAX_SPAN_MS, CHAIN_SEGMENT_DELAY_MS, ChainPath, chainSegmentDelayMs, fanOffsetScale, horizontalXAtElapsed, isGhostVisible, verticalYAtElapsed } from '@/components/winning/winCascadeMotion'
+import { BOUNCE_H_HALF_PERIOD_MAX_MS, BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_MIN_SPAN_PX, BOUNCE_TOP_MARGIN_PX, BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, cardXAtElapsed, cardYAtElapsed, cascadeApexY, CHAIN_MAX_SPAN_MS, CHAIN_SEGMENT_DELAY_MS, ChainPath, chainSegmentDelayMs, fanOffsetScale, horizontalXAtElapsed, isGhostVisible, spreadHHalfPeriods, verticalYAtElapsed } from '@/components/winning/winCascadeMotion'
 
 // A fixed chain path: launches at (100, 200), falls to a floor at 700 (first fall 1000ms), then bounces between 700 and an apex
 // at 100 forever; heads for the wall at x=20 over a 1000ms first leg, then swings between it and x=320.
@@ -166,5 +166,61 @@ describe('a 52-card chain (the whole Pyramid deck in one pile)', () => {
       for (let elapsed = 0; elapsed < 9_000; elapsed += 7) for (let i = 1; i < 52; i++) widest = Math.max(widest, Math.abs(verticalYAtElapsed(path, elapsed - i * delay) - verticalYAtElapsed(path, elapsed - (i - 1) * delay)))
       expect(widest).toBeLessThan(cardHeight)
     }
+  })
+})
+
+describe('cascadeApexY', () => {
+  it('is the bottom of the header, whatever the floor, when the screen leaves room for a full bounce', () => {
+    expect(cascadeApexY(56, 700)).toBe(56)
+    expect(cascadeApexY(115, 700)).toBe(115) // a notched phone: the header band is taller
+  })
+
+  it('is held back only far enough to leave the bounce BOUNCE_MIN_SPAN_PX tall on a screen too short for the header', () => {
+    expect(cascadeApexY(300, 400)).toBe(400 - BOUNCE_MIN_SPAN_PX)
+  })
+
+  it('never rises above the top margin', () => {
+    expect(cascadeApexY(0, 700)).toBe(0) // the header's own bottom wins when it is higher: nothing lifts the apex further
+    expect(cascadeApexY(500, 100)).toBe(BOUNCE_TOP_MARGIN_PX) // a floor so high there is no room: the margin is the limit
+  })
+})
+
+describe('spreadHHalfPeriods', () => {
+  const noShuffle = () => 0.999 // Fisher-Yates swaps each slot with itself: the even spacing, in order
+
+  it('gives every chain its own speed, all inside the band', () => {
+    for (const count of [2, 3, 4, 8]) {
+      const periods = spreadHHalfPeriods(count)
+      expect(new Set(periods).size).toBe(count)
+      for (const period of periods) {
+        expect(period).toBeGreaterThanOrEqual(BOUNCE_H_HALF_PERIOD_MIN_MS)
+        expect(period).toBeLessThanOrEqual(BOUNCE_H_HALF_PERIOD_MAX_MS)
+      }
+    }
+  })
+
+  it('spaces them evenly from the slowest end of the band to the fastest', () => {
+    const periods = spreadHHalfPeriods(4, noShuffle)
+    expect(periods[0]).toBe(BOUNCE_H_HALF_PERIOD_MIN_MS)
+    expect(periods[3]).toBe(BOUNCE_H_HALF_PERIOD_MAX_MS)
+    const step = (BOUNCE_H_HALF_PERIOD_MAX_MS - BOUNCE_H_HALF_PERIOD_MIN_MS) / 3
+    expect(periods[1] - periods[0]).toBeCloseTo(step, 6)
+    expect(periods[2] - periods[1]).toBeCloseTo(step, 6)
+  })
+
+  it('gives a lone chain the middle of the band, and an empty cascade nothing', () => {
+    expect(spreadHHalfPeriods(1)).toEqual([(BOUNCE_H_HALF_PERIOD_MIN_MS + BOUNCE_H_HALF_PERIOD_MAX_MS) / 2])
+    expect(spreadHHalfPeriods(0)).toEqual([])
+  })
+
+  it('shuffles which chain gets which speed, without changing the set of speeds', () => {
+    const ordered = spreadHHalfPeriods(5, noShuffle)
+    const shuffled = spreadHHalfPeriods(5, () => 0)
+    expect(shuffled).not.toEqual(ordered)
+    expect([...shuffled].sort((a, b) => a - b)).toEqual(ordered)
+  })
+
+  it('is a slight difference, not a wide one: the fastest chain is well under twice as fast as the slowest', () => {
+    expect(BOUNCE_H_HALF_PERIOD_MAX_MS / BOUNCE_H_HALF_PERIOD_MIN_MS).toBeLessThan(1.5)
   })
 })

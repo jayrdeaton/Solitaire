@@ -2,6 +2,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { StrictMode } from 'react'
 
+import { autoMoveSpringFor, springSettleMs } from '@/components/dragdrop/dragSpring'
+import { CHAIN_SEGMENT_DELAY_MS } from '@/components/winning/winCascadeMotion'
 import { Card } from '@/engine/types'
 import { SpiderState } from '@/games/spider/rules'
 import SpiderScreen from '@/games/spider/SpiderScreen'
@@ -427,6 +429,21 @@ describe('Spider screen - the winning move never makes a card teleport', () => {
     await flush(HOLD_MS + 50)
     expect(screen.getByTestId('win-banner')).toBeTruthy()
     expect(screen.getByTestId('fireworks')).toBeTruthy()
+  })
+
+  it("a sweep ghost stays up until its spring's real end - springSettleMs after it departs, not the bare duration that would retire it with the card still short of its slot", async () => {
+    await mount(oneMoveFromWon())
+    await tap(id(1, FINAL_DECK))
+    await flush(10)
+    await flush(FLIGHT_MS) // the Ace lands and the run peels off: King first, the Ace last, one CHAIN_SEGMENT_DELAY_MS apart
+    expect(finalRunFlying()).toBe(true)
+
+    const config = autoMoveSpringFor(Math.hypot(10 - 5, 10 - 5)) // from the registry's (10, 10) to the slot's (5, 5)
+    const aceDeparts = 12 * CHAIN_SEGMENT_DELAY_MS
+    await flush(aceDeparts + (config.duration ?? 0) + 20) // the bare duration - the old timer - has run out for the Ace, the run's last card
+    expect(finalRunFlying()).toBe(true)
+    await flush(springSettleMs(config) - (config.duration ?? 0)) // and now the spring's real end has
+    expect(finalRunFlying()).toBe(false)
   })
 
   it('a New Game started while the finished board is still holding cancels the celebration', async () => {
