@@ -246,7 +246,7 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
   return (
     <GestureDetector gesture={pan}>
       <Animated.View ref={viewRef} style={[cardStyle, isHidden && styles.hidden, shakeStyle]}>
-        <PlayingCard card={card} selected={selected} hinted={hinted} dimmed={dimmed} onPress={onPress ? handlePress : undefined} />
+        <PlayingCard card={card} selected={selected} hinted={hinted} dimmed={dimmed} dimHold={isHidden} onPress={onPress ? handlePress : undefined} />
       </Animated.View>
     </GestureDetector>
   )

@@ -10,8 +10,8 @@ interface RulesDialogProps {
   title: string
   rules: string[]
   // The wide (landscape) layout: the sheet is only ~400pt tall there, so it trades some padding and
-  // margin for reading room (the portrait sizing left a ~50pt scroll area, about two bullets). The menu
-  // - which is never rotated - omits it.
+  // margin for reading room (the portrait sizing left a ~50pt scroll area, about two bullets). Both the game
+  // screens and the menu pass it when their rotated footprint is landscape.
   compact?: boolean
 }
 

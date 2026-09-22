@@ -10,7 +10,7 @@ export const TALLEST_COLUMN = { faceDown: 5, faceUp: 1 }
  * marginBottom 16; then the 10 tableau columns.
  *
  * Default headroom on purpose. Every stock deal adds one face-up card to each column (up to 5 of them),
- * but Spider is 10 cards wide, so on a phone held sideways the WIDTH runs out first (56pt cards at
+ * but Spider is 10 cards wide, so on a phone held sideways the WIDTH runs out first (~63pt cards at
  * 874x402) and this height fit is a no-op there (see boardModel.test.ts) - padding the budget for the
  * stock deals would only shrink cards on the rare short window where the height does bind, and a
  * column that outgrows the budget just compresses like it always has. The tableau row's own

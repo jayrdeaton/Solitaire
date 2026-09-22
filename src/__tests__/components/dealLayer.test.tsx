@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react-native'
-import { useEffect } from 'react'
+import { Profiler, useEffect } from 'react'
 import { StyleSheet, type ViewStyle } from 'react-native'
 
 import { type DealAnimator, type DealCardSpec, dealPoolSize, DealProvider, ghostPoolSize, useDealAnimator } from '@/components/dealing/DealLayer'
@@ -10,6 +10,9 @@ const mockPlayCardSound = jest.fn()
 const mockHapticCard = jest.fn()
 const mockMounts = { count: 0 }
 const mockShown: string[] = []
+// Card ids whose FIRST render should take `ms` of wall-clock time (see the absolute-deadline tests): a stand-in for the slow commit of
+// a court-card face, which the fake clock cannot otherwise show.
+const mockRenderLatency = { ids: new Set<string>(), ms: 60 }
 
 jest.mock('@/components/useCardSounds', () => ({
   useCardSoundEffects: () => ({ playCardSound: mockPlayCardSound, hapticCard: mockHapticCard })
@@ -27,6 +30,7 @@ jest.mock('@/components/PlayingCard', () => {
         mockMounts.count++
       }, [])
       mockShown.push(card.id)
+      if (mockRenderLatency.ids.delete(card.id)) jest.setSystemTime(Date.now() + mockRenderLatency.ms)
       return <View testID={`ghost-${card.id}`} />
     }
   }
@@ -491,6 +495,269 @@ describe('DealProvider ghost pool', () => {
 
     expect(landed).toEqual(['c0'])
     expect(onAllLanded).toHaveBeenCalledTimes(1)
+  })
+})
+
+// A card's departure is an ABSOLUTE deadline, fixed when its slot is launched: the React commit that shows a face-up card (tens of ms
+// for a court card) counts against the lookahead instead of pushing the departure late.
+describe('DealProvider absolute-deadline departures', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+    mockPlayCardSound.mockClear()
+    mockHapticCard.mockClear()
+    mockMounts.count = 0
+    mockShown.length = 0
+    mockRenderLatency.ids.clear()
+  })
+  afterEach(() => {
+    jest.useRealTimers()
+    mockRenderLatency.ids.clear()
+  })
+
+  // Runs one deal and returns every card's take-off and landing time (ms since start). Cards in `slow` take mockRenderLatency.ms to
+  // render their face the first time it is drawn.
+  async function runDeal(entries: DealCardSpec[], stagger: number, slow: string[]) {
+    mockRenderLatency.ids = new Set(slow)
+    const t0 = Date.now()
+    const dealtAt: Record<string, number> = {}
+    const landedAt: Record<string, number> = {}
+    await act(async () =>
+      controller.start(
+        entries,
+        CARD_WIDTH,
+        (id) => (landedAt[id] = Date.now() - t0),
+        jest.fn(),
+        (id) => (dealtAt[id] = Date.now() - t0)
+      )
+    )
+    await advance(totalMs(entries.length, stagger))
+    return { dealtAt, landedAt, unspent: mockRenderLatency.ids.size }
+  }
+
+  it('departs a card on its scheduled time even when the commit that shows its face is slow', async () => {
+    await renderProvider()
+    const entries = makeEntries(20, 'c', true, 40)
+    const baseline = await runDeal(entries, 40, [])
+    const slowed = await runDeal(entries, 40, ['c8'])
+
+    expect(slowed.unspent).toBe(0) // the slow render really happened (and cost 60ms of the fake clock)
+    // Without the absolute deadline the springs/take-off timer started only AFTER the 60ms commit, so this card left ~60ms late.
+    expect(slowed.dealtAt.c8 - baseline.dealtAt.c8).toBeLessThanOrEqual(25)
+    // Every card that had launch runway left is unaffected, not just the slow one.
+    entries.slice(9).forEach((e) => expect(Math.abs(slowed.dealtAt[e.cardId] - baseline.dealtAt[e.cardId])).toBeLessThanOrEqual(25))
+  })
+
+  it('never departs a card before its scheduled time, however slow or fast its commit was', async () => {
+    await renderProvider()
+    const entries = makeEntries(20, 'c', true, 40)
+    const { dealtAt } = await runDeal(entries, 40, ['c3', 'c8', 'c15'])
+
+    expect(Object.keys(dealtAt)).toHaveLength(20)
+    entries.forEach((e) => expect(dealtAt[e.cardId]).toBeGreaterThanOrEqual(e.delayMs))
+  })
+
+  it('keeps the landing timer on the same deadline: every card still flies its full spring after taking off', async () => {
+    await renderProvider()
+    const entries = makeEntries(20, 'c', true, 40)
+    const { dealtAt, landedAt } = await runDeal(entries, 40, ['c8'])
+
+    entries.forEach((e) => expect(landedAt[e.cardId] - dealtAt[e.cardId]).toBeGreaterThanOrEqual((DEAL_SPRING.duration ?? 0) - 1))
+    expect(Object.keys(landedAt)).toHaveLength(20)
+  })
+
+  it('two cards launched in ONE slow commit still leave apart from each other, not in the same frame', async () => {
+    await renderProvider()
+    const entries = makeEntries(20, 'c', true, 33.7)
+    // c0 and c1 are launched together at the start, and c0's face takes 60ms to commit: c1's 34ms of runway is gone before its effect runs.
+    const { dealtAt } = await runDeal(entries, 34, ['c0'])
+
+    // Both find their deadline passed, but the second is held LATE_LAUNCH_MIN_GAP_MS (12ms) behind the first instead of leaving with it.
+    expect(dealtAt.c1 - dealtAt.c0).toBeGreaterThanOrEqual(12)
+    // ...and that spacing is a floor for late cards only: nothing ever leaves before its scheduled time, and the deal recovers its schedule.
+    entries.forEach((e) => expect(dealtAt[e.cardId]).toBeGreaterThanOrEqual(Math.floor(e.delayMs))) // Date.now() is whole ms
+    expect(dealtAt.c10 - entries[10].delayMs).toBeLessThanOrEqual(25)
+  })
+
+  it('a face-down deal (no commit to wait for) departs exactly as before', async () => {
+    await renderProvider()
+    const entries = makeEntries(20, 'c', false, 40)
+    const { dealtAt } = await runDeal(entries, 40, [])
+
+    entries.forEach((e) => {
+      expect(dealtAt[e.cardId]).toBeGreaterThanOrEqual(e.delayMs)
+      expect(dealtAt[e.cardId] - e.delayMs).toBeLessThanOrEqual(25)
+    })
+  })
+})
+
+// A launch pass hands at most two face-up cards to slots (one React commit's worth); face-down cards - which cost no commit - are never capped.
+describe('DealProvider face-up launch cap', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+    mockPlayCardSound.mockClear()
+    mockHapticCard.mockClear()
+    mockMounts.count = 0
+    mockShown.length = 0
+  })
+  afterEach(() => {
+    jest.useRealTimers()
+  })
+
+  it('launches at most two face-up cards in the first pass, then feeds the rest on a short tick', async () => {
+    await renderProvider()
+
+    await act(async () => controller.start(makeEntries(52, 'c', true, 33.7), CARD_WIDTH, jest.fn(), jest.fn()))
+
+    // Five cards are due within the 150ms lookahead, but only two may share this commit.
+    expect(flying().length).toBeGreaterThan(0)
+    expect(flying().length).toBeLessThanOrEqual(2)
+
+    await advance(40)
+
+    // Not starved: the short tick caught the queue up with the lookahead (5-6 cards are within 150ms of their flight by now).
+    expect(flying().length).toBeGreaterThanOrEqual(5)
+    expect(flying().length).toBeLessThanOrEqual(8)
+  })
+
+  it('does not cap a face-down deal: every card due within the lookahead is launched in the first pass', async () => {
+    await renderProvider()
+
+    await act(async () => controller.start(makeEntries(52, 'c', false, 33.7), CARD_WIDTH, jest.fn(), jest.fn()))
+
+    expect(flying().length).toBeGreaterThanOrEqual(5)
+    expect(flying().length).toBeLessThanOrEqual(10)
+  })
+
+  it('counts only face-up cards against the cap', async () => {
+    await renderProvider()
+    const faceDown = makeEntries(4, 'd', false, 0)
+    const faceUp = makeEntries(3, 'u', true, 0)
+
+    await act(async () => controller.start([...faceDown, ...faceUp], CARD_WIDTH, jest.fn(), jest.fn()))
+
+    // All four backs and two of the three faces; the third face waits for the next tick.
+    expect(flying()).toHaveLength(6)
+    await advance(16)
+    expect(flying()).toHaveLength(7)
+  })
+
+  it('lands every card and completes even when a whole face-up deal is due at once (nothing is stranded behind the cap)', async () => {
+    await renderProvider()
+    const landed: string[] = []
+    const onAllLanded = jest.fn()
+
+    await act(async () => controller.start(makeEntries(40, 'c', true, 0), CARD_WIDTH, (id) => landed.push(id), onAllLanded))
+    expect(flying()).toHaveLength(2)
+    await advance(totalMs(40, 0))
+
+    expect(landed).toHaveLength(40)
+    expect(new Set(landed).size).toBe(40)
+    expect(onAllLanded).toHaveBeenCalledTimes(1)
+    expect(ghosts().length).toBe(0)
+    expect(jest.getTimerCount()).toBe(0)
+  })
+
+  it('a skip tap while the cap is holding cards back lands them all exactly once and leaves no timer behind', async () => {
+    await renderProvider()
+    const landed: string[] = []
+    const onAllLanded = jest.fn()
+    await act(async () => controller.start(makeEntries(40, 'c', true, 0), CARD_WIDTH, (id) => landed.push(id), onAllLanded))
+    await advance(20)
+    expect(landed.length).toBeLessThan(40)
+
+    await fireEvent.press(screen.getByTestId('deal-skip-layer'))
+    await advance(2000)
+
+    expect(landed).toHaveLength(40)
+    expect(new Set(landed).size).toBe(40)
+    expect(onAllLanded).toHaveBeenCalledTimes(1)
+    expect(ghosts().length).toBe(0)
+    expect(jest.getTimerCount()).toBe(0)
+  })
+
+  it('a new deal started while the cap is holding cards back replaces the old one cleanly', async () => {
+    await renderProvider()
+    const firstLanded: string[] = []
+    const secondLanded: string[] = []
+    const secondAll = jest.fn()
+    await act(async () => controller.start(makeEntries(40, 'a', true, 0), CARD_WIDTH, (id) => firstLanded.push(id), jest.fn()))
+    await advance(20)
+
+    await act(async () => controller.start(makeEntries(30, 'b', true, 0), CARD_WIDTH, (id) => secondLanded.push(id), secondAll))
+    await advance(totalMs(30, 0))
+
+    expect(firstLanded).toHaveLength(0)
+    expect(secondLanded).toHaveLength(30)
+    expect(new Set(secondLanded).size).toBe(30)
+    expect(secondAll).toHaveBeenCalledTimes(1)
+    expect(ghosts().length).toBe(0)
+    expect(jest.getTimerCount()).toBe(0)
+  })
+
+  // The stall test above pins WHEN late cards depart; this pins how many faces one tick has to commit while catching up.
+  it('feeds a stalled face-up deal to the slots a couple of faces per tick, not all the overdue cards at once', async () => {
+    await renderProvider()
+    const landed: string[] = []
+    await act(async () => controller.start(makeEntries(52, 'c', true, 18), CARD_WIDTH, (id) => landed.push(id), jest.fn()))
+    await advance(250)
+    // The clock jumps 600ms with no timer firing early: a JS stall, after which ~26 cards are overdue for a slot at once.
+    jest.setSystemTime(Date.now() + 600)
+
+    let mostFacesInATick = 0
+    for (let t = 0; t < totalMs(52, 18); t += 16) {
+      const before = mockShown.length
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(16)
+      })
+      mostFacesInATick = Math.max(mostFacesInATick, mockShown.length - before)
+    }
+
+    // A pass launches at most 2 face-up cards, so a tick (one launch pass, plus at most one triggered by a slot going idle) shows at most 4.
+    expect(mostFacesInATick).toBeLessThanOrEqual(4)
+    expect(landed).toHaveLength(52)
+  })
+
+  // Every slot that lands runs its own onIdle effect; if each of those launched its own capped pass, k landings in one commit would put ~k
+  // faces in the next one. They must share ONE pass (the idle handler only re-arms the launch timer).
+  it('lets a burst of landings free slots for a capped pass of faces, not one face per landing slot', async () => {
+    const commits: number[] = []
+    let seen = 0
+    await render(
+      <Profiler
+        id='deal'
+        onRender={() => {
+          commits.push(mockShown.length - seen)
+          seen = mockShown.length
+        }}
+      >
+        <DealProvider>
+          <Capture />
+        </DealProvider>
+      </Profiler>
+    )
+    // Twelve faces at t=0 (they all land within ~65ms of each other, a few per test tick) and twelve more due 3s later. The pool is sized
+    // for the larger group (14 slots), so once the clock jumps the second group can only trickle in as the first group's slots free up.
+    const second = makeEntries(12, 'b', true, 0).map((entry) => ({ ...entry, delayMs: 3000 }))
+    const landed: string[] = []
+    await act(async () => controller.start([...makeEntries(12, 'a', true, 0), ...second], CARD_WIDTH, (id) => landed.push(id), jest.fn()))
+    await advance(120) // the first group is launched (two per pass) and in flight
+    jest.setSystemTime(Date.now() + 3000) // a stall: the second group is now due, with every slot but two taken
+
+    commits.length = 0
+    seen = mockShown.length
+    // One wide step: every landing timer of the first group fires inside it, and React commits them together (a busy JS thread does the
+    // same). No slot is free meanwhile, so the launch ticks in the window have nothing to launch into - the next launches can only come
+    // from the slots that go idle in that ONE commit.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(330)
+    })
+    await advance(400)
+    expect(Math.max(...commits)).toBeGreaterThan(0)
+    // One pass (2 faces) plus at most the capped tick already due (2 more) - never one face per landing slot (~10 of them here).
+    expect(Math.max(...commits)).toBeLessThanOrEqual(4)
+
+    await advance(totalMs(24, 0) + 3000)
+    expect(landed).toHaveLength(24)
   })
 })
 

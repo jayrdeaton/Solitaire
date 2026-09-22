@@ -7,7 +7,9 @@ import { Text, useTheme } from 'react-native-paper'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { LoadingIndicator } from '@/components/GameLoading'
+import { RotatedScreen } from '@/components/RotatedScreen'
 import { CHROME_FG, CHROME_FG_MUTED, CHROME_SECTION_BG } from '@/components/theme'
+import { useProfilePickerAlign } from '@/components/useProfilePickerAlign'
 import { ACHIEVEMENT_CATALOG } from '@/stores/achievementCatalog'
 import { useGameStats } from '@/stores/gameStats'
 import { useProfiles } from '@/stores/profiles'
@@ -15,6 +17,10 @@ import { getBestMoves, getBestScore, getBestStreak, getBestTimeSeconds, getProfi
 import { SOLITAIRE_GAME_IDS, SolitaireGameId } from '@/stores/statsTypes'
 import { DEFAULT_PROFILE_STATS } from '@/stores/statsValidation'
 import { safeBack } from '@/utils/navigation'
+
+// Widest the stats column gets in the WIDE (landscape) layout - a list of stat rows stretched across a 874pt
+// screen reads badly. Portrait is never capped (see RotatedFrame).
+const SCREEN_MAX_WIDTH = 640
 
 const GAME_TITLES: Record<SolitaireGameId, string> = {
   klondike: 'Klondike',
@@ -36,7 +42,19 @@ function formatTime(seconds: number): string {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
+/** Same rotated frame as every other screen (see RotatedScreen). `rotatedSafeArea` because BaseStatsScreen and the
+ * content below read the safe-area insets themselves, and inside a turned frame the physical ones sit on the
+ * wrong edges. */
 export default function AchievementsScreen() {
+  return (
+    <RotatedScreen rotatedSafeArea maxContentWidth={SCREEN_MAX_WIDTH}>
+      <AchievementsContent />
+    </RotatedScreen>
+  )
+}
+
+function AchievementsContent() {
+  // Already remapped onto the rotated frame's edges by RotatedScreen's SafeAreaInsetsContext.
   const insets = useSafeAreaInsets()
   const { dark } = useTheme()
   const { stats, unlockedAchievements, loaded, resetAll } = useGameStats()
@@ -47,6 +65,9 @@ export default function AchievementsScreen() {
   // Profiles when reopened, matching every other @tastic game's achievements screen (e.g.
   // LightCycles').
   const profilePickerHost = usePopoverHost()
+  // Frame-aware placement for the picker's popover (see useProfilePickerAlign) - @tastic/hud's own measures along
+  // the wrong axes inside the turned frame. No Manage row here, so the popover is one row shorter than Home's.
+  const profilePickerAlign = useProfilePickerAlign(profilePickerHost.openId === 'achievements-profile', profiles.length, false)
 
   // null = "All Profiles" (device-wide, today's original default view). Self-heals to null if the
   // selected profile gets deleted while this screen is still mounted.
@@ -73,7 +94,9 @@ export default function AchievementsScreen() {
     // screen's own tinted felt bleeding into just this one dialog and making it look like a
     // different component (see this app's CLAUDE.md).
     <View style={styles.screen}>
-      <BaseStatsScreen onBack={safeBack} insets={insets} onReset={resetAll} fg={CHROME_FG} bg='transparent'>
+      {/* rotation={0}: its reset-confirm portals into the Portal.Host RotatedScreen mounts INSIDE the frame, so it is
+      already turned with it - the ambient rotation on top would turn it twice. */}
+      <BaseStatsScreen onBack={safeBack} insets={insets} onReset={resetAll} fg={CHROME_FG} bg='transparent' rotation={0}>
         {!loaded ? (
           // Stats load asynchronously from AsyncStorage (see useGameStats' own `loaded` doc comment) -
           // without this guard, this screen would render a full flash of zeroed-out "0 games played"
@@ -83,7 +106,7 @@ export default function AchievementsScreen() {
           </View>
         ) : (
           <>
-            {profiles.length > 0 && <ProfilePicker idPrefix='achievements' host={profilePickerHost} profiles={profiles} selectedId={effectiveProfileId} color={CHROME_FG} dark={dark} guestLabel='All Profiles' nullLabel='All Profiles' nullIcon='account-group' onSelect={(profile) => setSelectedProfileId(profile?.id ?? null)} />}
+            {profiles.length > 0 && <ProfilePicker idPrefix='achievements' host={profilePickerHost} profiles={profiles} selectedId={effectiveProfileId} color={CHROME_FG} dark={dark} guestLabel='All Profiles' nullLabel='All Profiles' nullIcon='account-group' onSelect={(profile) => setSelectedProfileId(profile?.id ?? null)} alignOverride={profilePickerAlign} />}
 
             <StatSection label='OVERALL' fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
               <StatRow label='Games Played' value={String(played)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />

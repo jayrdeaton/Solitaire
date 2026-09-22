@@ -15,6 +15,7 @@ import { Provider as ReduxProvider, useDispatch, useSelector } from 'react-redux
 import { PersistGate } from 'redux-persist/integration/react'
 
 import { createLockableDeviceMotion } from '@/components/lockableDeviceMotion'
+import { RotatedFrame } from '@/components/RotatedScreen'
 import { TableBackground } from '@/components/TableBackground'
 import { DEFAULT_SEED_COLOR, previewCardBack, useTableColors } from '@/components/theme'
 import { UpdateDialog } from '@/components/UpdateDialog'
@@ -67,8 +68,8 @@ function ThemedStack() {
       every appearance mode (see theme.ts), so `auto` flips to dark status-bar text in a light-mode
       system and reads poorly against it. Mounted here, next to the Stack, rather than once at the
       very root - confirmed live on iOS that a root-level instance never took effect (the bar stayed
-      dark on the menu) while this one does. Game screens layer their own rotation-aware hide on top -
-      see GameStatusBar. */}
+      dark on the menu) while this one does. Game screens, Home, Achievements and Profiles layer their own
+      rotation-aware hide on top - see GameStatusBar and RotatedScreen. */}
       <StatusBar style='light' />
       <NavigationThemeProvider value={TRANSPARENT_NAVIGATION_THEME}>
         <Stack screenOptions={screenOptions}>
@@ -88,6 +89,27 @@ function ThemedStack() {
           <Stack.Screen name='profiles' options={{ title: 'Profiles' }} />
         </Stack>
       </NavigationThemeProvider>
+    </View>
+  )
+}
+
+/** The toaster and the update dialog, laid OVER the whole app in a frame that turns with the phone - they used to
+ * sit outside the rotation (toasts on the physical bottom edge, the "Update Available" card upright while
+ * everything else was sideways). `passThrough` because this frame covers the Stack: only a toast card / the
+ * dialog claims a touch. `rotatedSafeArea` so the toaster's own `useSafeAreaInsets()` bottom offset lands on the
+ * frame's bottom edge; `portalHost` so the update dialog's Paper Portal lands inside the frame (its `rotation`
+ * stays 0). The absoluteFill wrapper takes the frame out of the Stack's layout. The toaster renders inline in the
+ * frame (ToastProvider is given no `paper`, so it does not portal); only the update dialog uses the frame's
+ * Portal.Host. Two of the toaster's behaviours still assume an upright screen: its swipe-to-dismiss reads the
+ * pan in window space (wrong axis when turned - toasts still auto-dismiss) until @rific/toaster learns a `rotation`
+ * prop, and its keyboard-aware lift is switched off when turned (ThemedToaster). */
+function RootOverlays() {
+  return (
+    <View style={styles.overlays} pointerEvents='box-none'>
+      <RotatedFrame rotatedSafeArea portalHost passThrough>
+        <ThemedToaster />
+        <UpdateDialog />
+      </RotatedFrame>
     </View>
   )
 }
@@ -135,24 +157,26 @@ function ProfileThemeSync() {
   return null
 }
 
-/** Mounted once, wrapping every route via ThemedStack below - every game screen's own
- * withGameProviders() wrapper (see games/shared/withGameProviders.tsx) reads the live rotation this
- * provides via @tastic/core's useRotation()/RotatedGameView. Only needs useSettings() (the plain
+/** Mounted once, wrapping every route via ThemedStack below AND the root overlays (toaster, update dialog) -
+ * every screen's rotated frame (see RotatedScreen, and withGameProviders for the games) reads the live rotation
+ * this provides via @tastic/core's useRotation()/RotatedGameView. Only needs useSettings() (the plain
  * Context store, not Redux) for the persisted Lock Orientation setting, so - unlike FeedbackBridge -
  * it has no dependency on ReduxProvider/PersistGate/ProfilesProvider and doesn't need to nest inside
- * any of them; wraps ThemedStack alone (not ThemedToaster/UpdateDialog, which aren't rotated game
- * content) to keep this addition as narrowly scoped as the feature it's for. */
+ * any of them. */
 function OrientationBridge({ children }: { children: ReactNode }) {
   const { settings, updateSettings } = useSettings()
   // Lock Orientation works by withholding sensor samples from the provider while locked - see
   // createLockableDeviceMotion for why that (rather than passing `locked` to each useRotation()/
   // useOrientationState() call site) is what freezes every consumer consistently.
+  // `portraitWhileKeyboard`: the software keyboard can't turn with a faked rotation (it's always drawn in the
+  // device's real, portrait interface orientation), so every rotated screen reads portrait for as long as it's
+  // showing, and the real rotation again once it hides - see @tastic/core's own doc for the full reasoning.
   const [{ deviceMotion, setLocked }] = useState(() => createLockableDeviceMotion(DeviceMotion, settings.lockOrientation))
   useEffect(() => {
     setLocked(settings.lockOrientation)
   }, [settings.lockOrientation, setLocked])
   return (
-    <OrientationProvider deviceMotion={deviceMotion} lockInitialValue={{ locked: settings.lockOrientation }} onLockChange={(next) => updateSettings({ lockOrientation: next.locked })}>
+    <OrientationProvider deviceMotion={deviceMotion} lockInitialValue={{ locked: settings.lockOrientation }} onLockChange={(next) => updateSettings({ lockOrientation: next.locked })} portraitWhileKeyboard>
       {children}
     </OrientationProvider>
   )
@@ -264,9 +288,8 @@ export default function RootLayout() {
                           <ProfileThemeSync />
                           <OrientationBridge>
                             <ThemedStack />
+                            <RootOverlays />
                           </OrientationBridge>
-                          <ThemedToaster />
-                          <UpdateDialog />
                         </ToastProvider>
                       </FeedbackBridge>
                     </GameStatsProvider>
@@ -282,6 +305,9 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
+  overlays: {
+    ...StyleSheet.absoluteFill
+  },
   root: {
     flex: 1
   }

@@ -15,7 +15,7 @@ import { cardWidthForRow } from '@tastic/cards'
  * component internals or vice versa - same reasoning GAME_CONTENT_PADDING/GAME_CONTENT_MAX_WIDTH
  * already live in GameChrome.tsx rather than a games/shared/ file.
  */
-export const CARD_GAP_MIN = 6
+export const CARD_GAP_MIN = 2
 
 /** cardWidthForRow's own default max card width (see @tastic/cards) - re-exported so cardLayoutForRow
  * below has one named constant to compare against instead of a second hardcoded 96 magic number. */
@@ -24,8 +24,9 @@ export const CARD_WIDTH_MAX = 96
 /** Ceiling on how far cardLayoutForRow will grow the gap past CARD_GAP_MIN once cards are maxed
  * out - without this, a low-column game (AcesUp's 4 piles, say) on a wide enough desktop/web window
  * would keep stretching the gap to fill every last pixel of leftover width, reading as cards
- * scattered across the table rather than a deliberately roomier layout. 4x CARD_GAP_MIN: clearly
- * more breathing room than the floor once there's real space to spare, without approaching
+ * scattered across the table rather than a deliberately roomier layout. Fixed independently of
+ * CARD_GAP_MIN (which is now tuned edge-tight rather than as a baseline breathing room): 24 is
+ * clearly more breathing room than the floor once there's real space to spare, without approaching
  * CARD_WIDTH_MAX itself (a gap as wide as the cards it separates would stop reading as one row).
  * Once this caps out, the leftover width past `columns*CARD_WIDTH_MAX + (columns-1)*CARD_GAP_MAX`
  * is simply left unused - every game's own top-level row is already centered within GameChrome's

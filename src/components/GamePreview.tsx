@@ -95,7 +95,7 @@ interface GamePreviewProps {
 const PIP_SCALE = 0.85
 const PIP_INSET_X = 3.2
 // Small enough that a pip sits entirely inside the strip of a covered face-up card (FACE_UP_OFFSET_RATIO of the
-// card's height, ~10.7 design units) - the strip is all that shows of a card once the next one overlaps it.
+// card's height, ~12.7 design units) - the strip is all that shows of a card once the next one overlaps it.
 const PIP_INSET_Y = 1.8
 const CARD_RX = 2.6
 const BACK_FRAME = 1.4

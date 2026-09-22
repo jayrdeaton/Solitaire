@@ -1,6 +1,6 @@
 import { CARD_ASPECT } from '@tastic/cards'
 
-import { cardLayoutForRow } from '@/components/cardLayout'
+import { CARD_GAP_MIN, cardLayoutForRow } from '@/components/cardLayout'
 import { columnBoardModel, computeGameLayout, FACE_DOWN_FAN_RATIO, FACE_UP_FAN_RATIO, fitCardWidthToHeight, fittedGap, GAME_CONTENT_PADDING } from '@/components/gameLayout'
 import { Card } from '@/engine/types'
 import { BOARD_MODEL, TALLEST_COLUMN } from '@/games/scorpion/boardModel'
@@ -125,7 +125,8 @@ describe('scorpion card size in portrait', () => {
   it('is not height-fitted: portrait is not the wide layout, so the width-derived size is used as-is', () => {
     const layout = computeGameLayout(402, 874, PORTRAIT_INSETS)
     expect(layout.isWide).toBe(false)
-    // (402 - 2 * 6 of screen padding - 6 gaps of 6) / 7 columns
-    expect(widthDerivedCardWidth(layout.contentWidth)).toBeCloseTo(354 / 7, 6)
+    // (402 - 2*GAME_CONTENT_PADDING - 6 gaps of CARD_GAP_MIN) / 7 columns
+    const row = 402 - GAME_CONTENT_PADDING * 2 - (TABLEAU_COLUMNS - 1) * CARD_GAP_MIN
+    expect(widthDerivedCardWidth(layout.contentWidth)).toBeCloseTo(row / TABLEAU_COLUMNS, 6)
   })
 })

@@ -81,11 +81,24 @@ const mockGhost = {
     return mockMakeFlight()
   }
 }
+/** Every deal.start() the screen made (initial deals and cascade-undo batches alike): the entries it flew and the callbacks it handed over. */
+interface MockDealCall {
+  entries: { cardId: string; delayMs: number; card: { faceUp: boolean } }[]
+  onLanded: (id: string) => void
+  onDone: () => void
+  onDealt?: (id: string) => void
+}
+const mockDealCalls: MockDealCall[] = []
+/** While set the stand-in deal layer never takes off or lands anything by itself - a test drives onDealt/onLanded/onDone by hand, like the real layer's clock would. */
+let mockHoldDeal = false
 const mockDeal = {
-  start: (entries: { cardId: string }[], _w: number, onLanded: (id: string) => void, onDone?: () => void) => {
+  start: (entries: MockDealCall['entries'], _w: number, onLanded: (id: string) => void, onDone: () => void, onDealt?: (id: string) => void) => {
+    mockDealCalls.push({ entries, onLanded, onDone, onDealt })
+    if (mockHoldDeal) return
     setTimeout(() => {
+      entries.forEach((e) => onDealt?.(e.cardId))
       entries.forEach((e) => onLanded(e.cardId))
-      onDone?.()
+      onDone()
     }, FLIGHT_MS)
   },
   cancel: () => {}
@@ -134,7 +147,8 @@ jest.mock('@/components/theme', () => {
 })
 jest.mock('@/components/PlayingCard', () => {
   const { View: MockView } = require('react-native')
-  return { PlayingCard: () => <MockView />, EmptySlot: () => <MockView />, FoundationSlot: () => <MockView /> }
+  // Forwards testID so the deck placeholder (FreeCell's far-right freecell while dealing) can be found.
+  return { PlayingCard: ({ testID }: { testID?: string }) => <MockView testID={testID} />, EmptySlot: () => <MockView />, FoundationSlot: () => <MockView /> }
 })
 jest.mock('@/games/shared/FoundationCell', () => {
   const { Text: MockText } = require('react-native')
@@ -298,6 +312,8 @@ beforeEach(() => {
   mockLog.paces = []
   mockUnmeasurableSlots.clear()
   mockRecordWon.mockClear()
+  mockDealCalls.length = 0
+  mockHoldDeal = false
 })
 afterEach(async () => {
   await act(async () => {
@@ -666,5 +682,105 @@ describe('FreeCell finish pacing follows the flight pace', () => {
   it("the last card's wait comfortably outlasts the slowest sweep flight, and a tap flight that may still be in the air", () => {
     expect(FINISH_LAST_CARD_WAIT_MS).toBeGreaterThanOrEqual(2 * springSettleMs(winSweepSpringFor(Infinity)))
     expect(FINISH_LAST_CARD_WAIT_MS).toBeGreaterThanOrEqual(springSettleMs(AUTO_MOVE_SPRING))
+  })
+})
+
+describe("FreeCell screen - the deck placeholder leaves with the last card, on the deal layer's own clock", () => {
+  const PLACEHOLDER = 'freecell-deck-origin'
+  const deckShown = () => screen.queryByTestId(PLACEHOLDER) !== null
+
+  /** A brand-new game (nothing saved), its initial deal held at the start: returns that deal's start() call. */
+  async function mountFreshDeal() {
+    mockHoldDeal = true
+    jest.spyOn(AsyncStorage, 'getItem').mockResolvedValue(null)
+    await render(<FreeCellScreen />)
+    await flush() // loadGameInProgress -> startNewGame
+    await flush() // the deferred [state] effect -> runDeal (measures, then deal.start)
+    expect(mockDealCalls).toHaveLength(1)
+    return mockDealCalls[0]
+  }
+  const byDelay = (call: MockDealCall) => [...call.entries].sort((a, b) => a.delayMs - b.delayMs)
+  const takeOff = async (call: MockDealCall, cardIds: string[]) => {
+    await act(async () => {
+      cardIds.forEach((cardId) => call.onDealt?.(cardId))
+    })
+  }
+
+  it('flies all 52 cards face-up, paced to ~2s instead of the compressed 1.2s', async () => {
+    const call = await mountFreshDeal()
+    expect(call.entries).toHaveLength(52)
+    expect(call.entries.every((entry) => entry.card.faceUp)).toBe(true)
+    const delays = byDelay(call).map((entry) => entry.delayMs)
+    expect(delays[0]).toBe(0)
+    expect(delays[51] + 280).toBeGreaterThan(1990) // the last card lands ~2000ms after the first leaves
+    expect(delays[51] + 280).toBeLessThanOrEqual(2001)
+    expect(typeof call.onDealt).toBe('function')
+  })
+
+  it('shows the placeholder while dealing, and it does not disappear on a timer the deal layer never agreed to', async () => {
+    await mountFreshDeal()
+    expect(deckShown()).toBe(true)
+    await flush(5000) // far past the last card's scheduled delay - the old setTimeout(lastDelayMs) would have hidden it by now
+    expect(deckShown()).toBe(true)
+  })
+
+  it('stays up until the LAST card to leave has taken off, then goes', async () => {
+    const call = await mountFreshDeal()
+    const ordered = byDelay(call)
+    const last = ordered[ordered.length - 1]
+
+    await takeOff(
+      call,
+      ordered.slice(0, -1).map((entry) => entry.cardId)
+    ) // every card but the last has left the deck
+    expect(deckShown()).toBe(true)
+
+    await takeOff(call, [last.cardId])
+    expect(deckShown()).toBe(false)
+  })
+
+  it('is gone after a skip, which reports every take-off that had not happened yet at once', async () => {
+    const call = await mountFreshDeal()
+    const ordered = byDelay(call)
+    await takeOff(
+      call,
+      ordered.slice(0, 5).map((entry) => entry.cardId)
+    )
+    expect(deckShown()).toBe(true)
+
+    await takeOff(
+      call,
+      ordered.slice(5).map((entry) => entry.cardId)
+    ) // the skip: the other 47 in one go, last card included
+    expect(deckShown()).toBe(false)
+  })
+
+  it('still clears when the deal finishes without the last take-off having been reported (the onAllLanded safety net)', async () => {
+    const call = await mountFreshDeal()
+    await act(async () => {
+      call.entries.forEach((entry) => call.onLanded(entry.cardId))
+      call.onDone()
+    })
+    expect(deckShown()).toBe(false)
+  })
+
+  it('ignores a take-off report from a deal that a New Game has since replaced', async () => {
+    const first = await mountFreshDeal()
+    const last = byDelay(first).at(-1)!
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('new-game'))
+    })
+    await flush()
+    await flush()
+    expect(mockDealCalls).toHaveLength(2) // the new game dealt again
+    expect(deckShown()).toBe(true)
+
+    await takeOff(first, [last.cardId]) // the old deal's last card - stale, must not empty the NEW deal's deck
+    expect(deckShown()).toBe(true)
+
+    const second = mockDealCalls[1]
+    await takeOff(second, [byDelay(second).at(-1)!.cardId])
+    expect(deckShown()).toBe(false)
   })
 })

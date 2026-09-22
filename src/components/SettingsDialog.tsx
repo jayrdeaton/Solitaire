@@ -69,9 +69,10 @@ interface SettingsDialogProps {
   // section below. Omitted entirely by the home screen and by FreeCell/Pyramid, which have no
   // game-specific settings today.
   children?: ReactNode
-  // Forwarded to BaseSettingsDialog's own `rotation` override. GameChrome passes 0 because it renders
-  // this inside its own Portal.Host, i.e. already inside the rotated frame (see GameChrome); the home
-  // screen omits it and gets the ambient live rotation like before.
+  // Forwarded to BaseSettingsDialog's own `rotation` override. GameChrome and the home screen both pass 0
+  // because they render this inside a Portal.Host that sits INSIDE the rotated frame (see
+  // withGameProviders / app/index.tsx), so the dialog is already turned with it; omitting it would apply the
+  // ambient live rotation on top of that and turn the dialog twice.
   rotation?: ViewRotation
 }
 

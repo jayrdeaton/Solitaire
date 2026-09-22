@@ -12,7 +12,7 @@ import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
-import { dealStaggerMs } from '@/components/dealing/dealSpring'
+import { dealStaggerMs, paceFaceUpDeal } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
@@ -53,12 +53,12 @@ const TABLEAU_COLUMNS = 7
 // Every column starts at (and never exceeds) 5 cards, all dealt face up - Golf's tableau only ever
 // shrinks as cards leave for the waste pile, unlike Klondike/FreeCell/Spider, whose columns can grow
 // well past their dealt depth during play. At cardWidthForRow's own max (96px), 5 face-up cards
-// fanned at FACE_UP_OFFSET_RATIO (0.26 of card height, ~139.5px at that width) total 4*36.27 +
-// 139.5 ≈ 285px - 300 leaves comfortable headroom so PileView's own compression never kicks in at
-// any real card size, the same "round number safely above the true worst case" choice
-// Klondike/FreeCell made for their own much taller columns. Now a floor for useTableauMaxHeight
-// below rather than a fixed height - compression already never fired at this size, so this floor
-// is mostly moot in practice, but keeps the guarantee explicit rather than implicit.
+// fanned at faceUpFanOffset (0.45 of card WIDTH = 43.2px; the card is ~139.5px tall at that width)
+// total 4*43.2 + 139.5 ≈ 312px. That is a touch over this 300 floor, but a 96px card only occurs
+// on a window big enough that useTableauMaxHeight's own budget already exceeds it (the wide layout
+// has no floor and sizes the card to fit), so PileView's compression never kicks in at any real
+// card size. Now a floor for useTableauMaxHeight below rather than a fixed height -
+// compression already never fired at this size, so this floor is mostly moot in practice.
 const TABLEAU_MIN_HEIGHT = 300
 
 export default withGameProviders(GolfScreenInner)
@@ -252,8 +252,8 @@ function GolfScreenInner() {
       return
     }
 
-    const entries: DealCardSpec[] = []
-    // A card whose destination can't be measured never enters `entries`, so it would never reach the
+    const built: DealCardSpec[] = []
+    // A card whose destination can't be measured never enters `built`, so it would never reach the
     // onCardLanded callback that clears it from dealHiddenIds - stuck invisible for the whole hand (and
     // holding the win celebration back to its max wait). Unhide it instead, same fallback FreeCell's
     // runDeal/TriPeaks' starter use.
@@ -264,7 +264,7 @@ function GolfScreenInner() {
         unresolvedIds.push(step.cardId)
         return
       }
-      entries.push({
+      built.push({
         cardId: step.cardId,
         card: step.card,
         from: origin,
@@ -272,6 +272,8 @@ function GolfScreenInner() {
         delayMs: step.visitOrder * dealStaggerMs(sequence.length)
       })
     })
+    // Every card here flies face-up, so the deal is slowed to a pace where each one can actually be seen (see paceFaceUpDeal).
+    const entries = paceFaceUpDeal(built)
     if (entries.length === 0) {
       setDealHiddenIds(new Set())
       return

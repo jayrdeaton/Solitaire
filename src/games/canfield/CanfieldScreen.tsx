@@ -31,6 +31,7 @@ import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
 import { useGameSession } from '@/components/useGameSession'
+import { wasteFanStepFor } from '@/components/wasteFan'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { CANFIELD_RULES } from '@/constants/gameRules'
@@ -88,6 +89,13 @@ const TABLEAU_MIN_HEIGHT = 460
 // this one shared runtime value), so the two rows always match even once cards hit CARD_WIDTH_MAX
 // and cardLayoutForRow starts growing the gap past CARD_GAP_MIN.
 const TOP_ROW_UNITS = 7
+
+// Whether the draw-3 waste fan may spread past the plain face-up strip to keep a covered '10' whole (StockWaste's widenFan, and the
+// same step in this screen's draw/undo flights). It can't here: the top row is sized to exactly its 7 slots, so the fan has no clear
+// room - it already paints over the reserve slot beside the waste (twice the step, less the gap: ~39pt of a 50pt reserve card at 402pt
+// wide; the reserve stays tappable, the fan cards ignore touches, but only its left ~11pt shows), and widening the step from 0.45W to
+// ~0.53W would leave ~3pt of it. Flip to true once the top row reserves real room for the fan.
+const WASTE_FAN_WIDENS = false
 
 /** The one card that seeds every foundation's starting rank - rules.ts's newGame cuts it from the
  * very top of the deck and pushes it onto its own suit's foundation pile before anything else, so
@@ -455,7 +463,7 @@ function CanfieldScreenInner() {
           settleFlight()
           return
         }
-        const fanOffset = faceUpFanOffset(cardWidth)
+        const fanOffset = wasteFanStepFor(cardWidth, WASTE_FAN_WIDENS)
         const n = p.drawnCards.length
         const entries: DealCardSpec[] = p.drawnCards.map((card, i) => {
           const distanceFromTop = n - 1 - i // i=0 is the oldest/farthest card, i=n-1 is the new top
@@ -587,7 +595,7 @@ function CanfieldScreenInner() {
       setUndoStack((stack) => stack.slice(0, -1))
 
       if (topPos && stockDest) {
-        const fanOffset = faceUpFanOffset(cardWidth)
+        const fanOffset = wasteFanStepFor(cardWidth, WASTE_FAN_WIDENS)
         const entries: DealCardSpec[] = movingCards
           .slice()
           .reverse() // newest/top (last dealt) first
@@ -972,7 +980,7 @@ function CanfieldScreenInner() {
               <ReserveCell card={reserveTop} isFlyingHere={reserveFlyingHere} dealHidden={reserveDealHidden} shakeToken={reserveTop && shake?.cardId === reserveTop.id ? shake.token : undefined} highlighted={hintCountFor(activeHint, { zone: 'reserve', index: 0 }) > 0} onPress={(measure) => handleCardTap({ zone: 'reserve', index: 0 }, reserveTop!.id, measure)} onDrop={(x, y, flight) => attemptDrop({ zone: 'reserve', index: 0 }, 1, x, y, reserveTop!.id, flight)} />
             </DropZone>
 
-            <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} />
+            <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} widenFan={WASTE_FAN_WIDENS} />
           </View>
 
           <View style={[styles.tableauRow, { gap }]}>

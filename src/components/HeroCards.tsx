@@ -7,7 +7,7 @@ import Animated, { cancelAnimation, Easing, SharedValue, useAnimatedStyle, useSh
 import { useProfiles } from '@/stores/profiles'
 import { useSettings } from '@/stores/settings'
 
-import { CARD_HEIGHT, CARD_RADIUS, CARD_WIDTH, useTableColors } from './theme'
+import { CARD_HEIGHT, CARD_RADIUS, CARD_WIDTH, cardRadiusForWidth, useTableColors } from './theme'
 
 // marginHorizontal on each card - about 37% of CARD_WIDTH overlap per adjacent pair.
 const HERO_FAN_OVERLAP = -12
@@ -56,6 +56,8 @@ const HERO_BUMP_DOWN_MS = 260
 const HERO_BUMP_STAGGER_MS = 260
 const HERO_BUMP_REST_MS = 500
 const HERO_BUMP_RISE_PX = 8
+// Room under the fan for the sunk/rotated cards' overshoot before whatever sits below it.
+const HERO_ROW_MARGIN_BOTTOM = 20
 
 interface HeroCardSpec {
   key: string
@@ -104,7 +106,12 @@ function startBumpLoop(bump: SharedValue<number>, spec: HeroCardSpec, leadInMs: 
   )
 }
 
-function HeroCard({ spec, colors, tag, cardBackStyle, invertDarkModeColors }: { spec: HeroCardSpec; colors: TableColors; tag?: string; cardBackStyle: 'geometric' | 'ornate' | 'plain'; invertDarkModeColors?: boolean }) {
+function HeroCard({ spec, colors, tag, cardBackStyle, invertDarkModeColors, scale }: { spec: HeroCardSpec; colors: TableColors; tag?: string; cardBackStyle: 'geometric' | 'ornate' | 'plain'; invertDarkModeColors?: boolean; scale: number }) {
+  // Every length below is the natural (scale 1) one times `scale`; rotation is never scaled. At scale 1
+  // the width/height/radius are exactly CARD_WIDTH/CARD_HEIGHT/CARD_RADIUS.
+  const width = Math.round(CARD_WIDTH * scale)
+  const height = Math.round(CARD_HEIGHT * scale)
+  const radius = scale === 1 ? CARD_RADIUS : cardRadiusForWidth(width)
   const lift = useSharedValue(0)
   const bump = useSharedValue(0)
   const hasStartedLoop = useRef(false)
@@ -157,30 +164,30 @@ function HeroCard({ spec, colors, tag, cardBackStyle, invertDarkModeColors }: { 
 
   const animatedStyle = useAnimatedStyle(() => ({
     opacity: lift.value,
-    transform: [{ translateY: spec.restY + (1 - lift.value) * HERO_RISE_PX - bump.value * HERO_BUMP_RISE_PX }, { rotate: `${spec.rotateDeg * lift.value}deg` }]
+    transform: [{ translateY: (spec.restY + (1 - lift.value) * HERO_RISE_PX - bump.value * HERO_BUMP_RISE_PX) * scale }, { rotate: `${spec.rotateDeg * lift.value}deg` }]
   }))
 
   return (
-    <Animated.View style={[styles.cardShadow, { width: CARD_WIDTH, height: CARD_HEIGHT, marginHorizontal: HERO_FAN_OVERLAP, zIndex: spec.zIndex }, animatedStyle]}>
-      <View style={styles.cardClip}>{cardBackStyle === 'geometric' ? <CardBack colors={colors} width={CARD_WIDTH} height={CARD_HEIGHT} tag={tag} invertDarkModeColors={invertDarkModeColors} /> : <DecoratedCardBack style={cardBackStyle} colors={colors} width={CARD_WIDTH} height={CARD_HEIGHT} invertDarkModeColors={invertDarkModeColors} />}</View>
+    <Animated.View style={[styles.cardShadow, { borderRadius: radius, width, height, marginHorizontal: HERO_FAN_OVERLAP * scale, zIndex: spec.zIndex }, animatedStyle]}>
+      <View style={[styles.cardClip, { borderRadius: radius }]}>{cardBackStyle === 'geometric' ? <CardBack colors={colors} width={width} height={height} tag={tag} invertDarkModeColors={invertDarkModeColors} /> : <DecoratedCardBack style={cardBackStyle} colors={colors} width={width} height={height} invertDarkModeColors={invertDarkModeColors} />}</View>
     </Animated.View>
   )
 }
 
-/** Purely decorative hero for the home screen - a fan of face-down cards that spring into place on
+/** Purely decorative hero for the home screen (`scale` shrinks it for the landscape layout; 1 is its natural size) - a fan of face-down cards that spring into place on
  * mount, then pop up one at a time left to right, then rest, forever. Not reactive to color/profile
  * changes: CardBack already re-renders live from useTableColors()/the active profile's tag/
  * invertDarkModeColors, same as every in-game card, so the fan just shows whatever's current
  * without any "detect a change" logic of its own. */
-export function HeroCards() {
+export function HeroCards({ scale = 1 }: { scale?: number } = {}) {
   const colors = useTableColors()
   const { activeProfile } = useProfiles()
   const { settings } = useSettings()
 
   return (
-    <View style={styles.row} pointerEvents='none'>
+    <View style={[styles.row, { marginBottom: HERO_ROW_MARGIN_BOTTOM * scale }]} pointerEvents='none'>
       {HERO_CARD_SPECS.map((spec) => (
-        <HeroCard key={spec.key} spec={spec} colors={colors} tag={activeProfile?.tag} cardBackStyle={settings.cardBackStyle} invertDarkModeColors={settings.invertDarkModeColors} />
+        <HeroCard key={spec.key} spec={spec} colors={colors} tag={activeProfile?.tag} cardBackStyle={settings.cardBackStyle} invertDarkModeColors={settings.invertDarkModeColors} scale={scale} />
       ))}
     </View>
   )
@@ -208,7 +215,6 @@ const styles = StyleSheet.create({
   },
   row: {
     flexDirection: 'row',
-    justifyContent: 'center',
-    marginBottom: 20
+    justifyContent: 'center'
   }
 })

@@ -1,4 +1,4 @@
-import { faceUpFanOffset, type TableColors, useCardSize } from '@tastic/cards'
+import { type TableColors, useCardSize } from '@tastic/cards'
 import React, { RefObject } from 'react'
 import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
 
@@ -12,6 +12,7 @@ import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
 import { EmptySlot, PlayingCard } from './PlayingCard'
 import { useTableColors } from './theme'
 import { useFrozenWhileHidden } from './useFrozenWhileHidden'
+import { wasteFanStepFor } from './wasteFan'
 
 // Stable empty-array default for wasteBehind, so callers that never pass it (Pyramid, draw-1) get
 // a consistent, referentially-stable [] rather than a fresh literal on every render.
@@ -92,13 +93,18 @@ interface StockWasteProps {
    * would flip to a solid card the instant state reverts, a beat before the undo ghost actually
    * lands there. */
   stockHidden?: boolean
+  /** Whether a draw-3 fan may spread past the plain face-up strip so a covered card shows its whole rank (a '10' reaches ~0.51W,
+   * the strip is 0.45W) - default true, which needs the fan to have clear room to its left. False keeps the strip, for a screen
+   * whose fan has none: Canfield's runs over its reserve slot, so widening it would only bury the reserve card further. A caller
+   * passing false must offset its own draw/undo flight ghosts by wasteFanStepFor(cardWidth, false), or they land off the fan. */
+  widenFan?: boolean
 }
 
 /** Stock (face-down, draw) + waste (face-up, top card) pair, shared by every game that deals from
  * a stock pile. Waste sits first so the card players are about to act on lands next to the tableau,
  * with the draw pile as the secondary action beside it. When the stock runs out but the waste still
  * has cards, an empty stock slot shows a recycle hint - every game here allows unlimited recycling. */
-export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EMPTY_WASTE_BEHIND, onDrawStock, onWastePress, onWasteDrop, wasteSelected, wasteHinted, stockHinted, wasteHiddenCount = 0, settledWasteTop, wasteShakeToken, cardWidth, gap, style, stockRef, wasteRef, stockHidden = false }: StockWasteProps) {
+export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EMPTY_WASTE_BEHIND, onDrawStock, onWastePress, onWasteDrop, wasteSelected, wasteHinted, stockHinted, wasteHiddenCount = 0, settledWasteTop, wasteShakeToken, cardWidth, gap, style, stockRef, wasteRef, stockHidden = false, widenFan = true }: StockWasteProps) {
   const colors = useTableColors()
   const styles = React.useMemo(() => makeStyles(colors), [colors])
   const wasteHasCards = !!wasteTop
@@ -122,12 +128,13 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
   const frozenBehind2 = useFrozenWhileHidden(behind2, behind2Hidden)
   const frozenStockTopCard = useFrozenWhileHidden(stockTopCard, stockHidden)
   const underTop = settledWasteTop === undefined ? frozenWasteTop : settledWasteTop
-  // Reuses faceUpFanOffset's fraction, tuned to clear PileView's vertical corner-row content -
-  // this deck's corner row (rank left, suit pip right - see CardFace's cornerRow) spans nearly the
-  // full card width, so the same fraction leaves enough horizontal peek to read a covered card's
-  // rank too.
+  // Starts from faceUpFanOffset's fraction, tuned to clear PileView's VERTICAL corner-row strip, and
+  // widens it where a HORIZONTAL fan needs more: a covered card shows only its left `fanOffset`
+  // points, and the corner rank's ink (a '10' in particular) can reach past that strip - see
+  // wasteFanStep. The draw-3 flights in Klondike/Canfield offset their ghosts by the same
+  // wasteFanStepFor (with the same widenFan), so the two can't drift apart.
   const { width: contextCardWidth } = useCardSize()
-  const fanOffset = faceUpFanOffset(cardWidth ?? contextCardWidth)
+  const fanOffset = wasteFanStepFor(cardWidth ?? contextCardWidth, widenFan)
 
   return (
     <View style={[styles.group, gap != null && { gap }, style]}>

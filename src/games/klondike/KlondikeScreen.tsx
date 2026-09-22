@@ -21,6 +21,7 @@ import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
+import { wasteFanStepFor } from '@/components/wasteFan'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { KLONDIKE_RULES } from '@/constants/gameRules'
@@ -473,7 +474,7 @@ function KlondikeScreenInner() {
           settleFlight()
           return
         }
-        const fanOffset = faceUpFanOffset(cardWidth)
+        const fanOffset = wasteFanStepFor(cardWidth)
         const n = p.drawnCards.length
         const entries: DealCardSpec[] = p.drawnCards.map((card, i) => {
           const distanceFromTop = n - 1 - i // i=0 is the oldest/farthest card, i=n-1 is the new top
@@ -824,7 +825,7 @@ function KlondikeScreenInner() {
       hideCascadeCards(cascaded)
 
       if (topPos && stockDest) {
-        const fanOffset = faceUpFanOffset(cardWidth)
+        const fanOffset = wasteFanStepFor(cardWidth)
         const entries: DealCardSpec[] = movingCards
           .slice()
           .reverse() // newest/top (last dealt) first

@@ -1,6 +1,10 @@
-import { render } from '@testing-library/react-native'
+import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
+import { render, screen } from '@testing-library/react-native'
+import { StyleSheet, ViewStyle } from 'react-native'
 
 import { StockWaste } from '@/components/StockWaste'
+import * as wasteFan from '@/components/wasteFan'
+import { WASTE_FAN_CLEAR_MARGIN_FRACTION, wasteFanStep, wasteFanStepFor } from '@/components/wasteFan'
 import type { Card } from '@/engine/types'
 
 // The real StockWaste, with the card art and the gesture-driven card replaced by bare views. What is under test is which card the waste
@@ -73,5 +77,118 @@ describe('StockWaste - what the waste slot paints under flying draws', () => {
 
     expect(queryByTestId('card-hearts-3-0')).toBeNull()
     expect(queryByTestId('waste-top')!.props.accessibilityHint).toBe('visible')
+  })
+})
+
+// Where the '10' of a compact/numeric/tarot corner ends, as a fraction of card width, in the @tastic/cards versions that export
+// RANK_INK_RIGHT_FRACTION (4 decimals of the package's own value) - passed in by hand so these tests mean the same against the version
+// that predates the export.
+const TEN_INK_RIGHT = 0.5073
+
+describe('wasteFanStep - how far apart the draw-3 fan spreads its cards', () => {
+  it('is exactly the plain face-up strip while the rank ink extent is unknown (a @tastic/cards without the export)', () => {
+    for (const w of [28, 38.86, 46.71, 50.57, 61.04, 96]) {
+      expect(wasteFanStep(w)).toBe(faceUpFanOffset(w))
+      expect(wasteFanStep(w, undefined)).toBe(faceUpFanOffset(w))
+      expect(wasteFanStep(w, 0)).toBe(faceUpFanOffset(w))
+    }
+  })
+
+  it('widens to clear the rank ink plus the margin, so a covered 10 keeps its whole 0', () => {
+    for (const w of [28, 38.86, 46.71, 50.57, 61.04, 96]) {
+      const step = wasteFanStep(w, TEN_INK_RIGHT)
+      expect(step).toBeGreaterThanOrEqual((TEN_INK_RIGHT + WASTE_FAN_CLEAR_MARGIN_FRACTION) * w)
+      expect(step).toBeGreaterThan(faceUpFanOffset(w))
+    }
+  })
+
+  it('is never narrower than the strip, however small the reported ink extent', () => {
+    for (const w of [28, 50.57, 96]) {
+      expect(wasteFanStep(w, 0.1)).toBe(faceUpFanOffset(w))
+      expect(wasteFanStep(w, 0.3)).toBe(faceUpFanOffset(w))
+      expect(wasteFanStep(w, TEN_INK_RIGHT)).toBeGreaterThanOrEqual(faceUpFanOffset(w))
+    }
+  })
+
+  it('scales linearly with card width (the ghosts and the board model both rely on it)', () => {
+    expect(wasteFanStep(100, TEN_INK_RIGHT) / 100).toBeCloseTo(wasteFanStep(50, TEN_INK_RIGHT) / 50, 10)
+  })
+})
+
+describe('wasteFanStepFor - reading the export defensively', () => {
+  // Loads a private copy of wasteFan.ts against a @tastic/cards with (or without) the export, whatever version is installed.
+  function stepFor(cardWidth: number, ink: number | 'absent', widen?: boolean): number {
+    let step = NaN
+    jest.isolateModules(() => {
+      jest.doMock('@tastic/cards', () => {
+        const mocked: Record<string, unknown> = { ...jest.requireActual('@tastic/cards') }
+        if (ink === 'absent') delete mocked.RANK_INK_RIGHT_FRACTION
+        else mocked.RANK_INK_RIGHT_FRACTION = ink
+        return mocked
+      })
+      step = (require('@/components/wasteFan') as typeof import('@/components/wasteFan')).wasteFanStepFor(cardWidth, widen)
+    })
+    jest.dontMock('@tastic/cards')
+    return step
+  }
+
+  it("without the export it is today's step exactly", () => {
+    expect(stepFor(50.57, 'absent')).toBe(faceUpFanOffset(50.57))
+  })
+
+  it('with the export it widens to clear the ink', () => {
+    expect(stepFor(50.57, TEN_INK_RIGHT)).toBeCloseTo((TEN_INK_RIGHT + WASTE_FAN_CLEAR_MARGIN_FRACTION) * 50.57, 10)
+  })
+
+  it('widen false is the plain strip even when the export is present (a screen whose fan has no room to spread)', () => {
+    expect(stepFor(50.57, TEN_INK_RIGHT, false)).toBe(faceUpFanOffset(50.57))
+    expect(stepFor(50.57, 'absent', false)).toBe(faceUpFanOffset(50.57))
+  })
+
+  it('agrees with the pure function for whichever @tastic/cards is installed', () => {
+    expect(wasteFanStepFor(64)).toBeGreaterThanOrEqual(faceUpFanOffset(64))
+  })
+})
+
+describe('StockWaste - the draw-3 fan', () => {
+  const leftOf = (cardId: string) => (StyleSheet.flatten(screen.getByTestId(`card-${cardId}`).parent!.props.style) as ViewStyle).left
+
+  it('lays the two cards behind the top out one step and two steps to its left - the step the flights offset their ghosts by', async () => {
+    await render(waste({ cardWidth: 60, wasteTop: heart(4), wasteBehind: [heart(3), heart(2)] }))
+
+    const step = wasteFanStepFor(60)
+    expect(leftOf('hearts-3-0')).toBe(-step) // wasteBehind[0]: directly under the top
+    expect(leftOf('hearts-2-0')).toBe(-step * 2)
+  })
+
+  it('takes its step from wasteFanStepFor alone (not a second copy of the strip), so a wider step moves the cards', async () => {
+    const spy = jest.spyOn(wasteFan, 'wasteFanStepFor').mockReturnValue(33)
+    try {
+      await render(waste({ cardWidth: 60, wasteTop: heart(4), wasteBehind: [heart(3), heart(2)] }))
+
+      expect(leftOf('hearts-3-0')).toBe(-33)
+      expect(leftOf('hearts-2-0')).toBe(-66)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('widenFan false keeps the plain face-up strip, the step Canfield offsets its own flight ghosts by', async () => {
+    await render(waste({ cardWidth: 60, widenFan: false, wasteTop: heart(4), wasteBehind: [heart(3), heart(2)] }))
+
+    expect(leftOf('hearts-3-0')).toBe(-faceUpFanOffset(60))
+    expect(leftOf('hearts-2-0')).toBe(-faceUpFanOffset(60) * 2)
+  })
+
+  it('never fans tighter than the plain face-up strip', async () => {
+    await render(waste({ cardWidth: 60, wasteTop: heart(4), wasteBehind: [heart(3)] }))
+
+    expect(-(leftOf('hearts-3-0') as number)).toBeGreaterThanOrEqual(faceUpFanOffset(60))
+  })
+
+  it('fans by the context card size when no cardWidth is passed', async () => {
+    await render(<CardSizeProvider width={80}>{waste({ wasteTop: heart(4), wasteBehind: [heart(3)] })}</CardSizeProvider>)
+
+    expect(leftOf('hearts-3-0')).toBe(-wasteFanStepFor(80))
   })
 })

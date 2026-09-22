@@ -24,8 +24,10 @@ import { WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
  * underneath it rotates - a visible, jarring break, not a subtle one. Those overlays convert their
  * screen-space positions into the rotated frame themselves - see overlayFrame.ts. This is every game
  * screen's own entire exported component (src/app/<game>.tsx re-exports withGameProviders(Inner)
- * directly), so this one wrapper is what scopes the whole feature to gameplay screens -
- * menus/achievements/profiles/settings, which never call withGameProviders, are untouched by it.
+ * directly), so this one wrapper is what gives a game screen the rotation. Home, Achievements and Profiles
+ * get the same frame from RotatedScreen (components/RotatedScreen.tsx: RotatedGameView + a Portal.Host + a focus-gated
+ * status bar), and the root layout's toaster/update dialog from RotatedFrame - so nothing in the app is left in
+ * physical portrait.
  *
  * The Portal.Host sits inside RotatedGameView and OUTSIDE the three providers, for two reasons. (1) The
  * game's dialogs (Settings, Rules, the New Game confirm) render through Paper's Portal, which by default

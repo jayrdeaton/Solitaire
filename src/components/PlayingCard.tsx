@@ -8,6 +8,7 @@ import { Card, Rank, Suit } from '@/engine/types'
 import { useProfiles } from '@/stores/profiles'
 import { useSettings } from '@/stores/settings'
 
+import { fadeInDimScrim } from './dimScrimAnimation'
 import { startHintPulse } from './hintAnimation'
 import { CARD_RADIUS, cardRadiusForWidth, useTableColors } from './theme'
 
@@ -27,6 +28,12 @@ interface PlayingCardProps {
   /** Not yet playable (e.g. a buried Pyramid card) - draws a translucent scrim on top of the
    * still-full-opacity face instead of fading the card itself, so its rank/suit stay legible. */
   dimmed?: boolean
+  /** Opt in to a seamless hand-off from a flying ghost (a deal, an undo, a tap-to-move - all drawn undimmed) to this card.
+   * `true` while the real card is held back hidden waiting for its ghost to land: the scrim starts fully transparent, so
+   * the card that appears at the landing frame is pixel-identical to the ghost, and when it flips to `false` the scrim
+   * fades in (dimScrimAnimation.ts) instead of darkening the card in a single frame. Only meaningful with `dimmed`;
+   * omitted (the default) draws today's plain, instant scrim, and a card that was never held pays nothing extra. */
+  dimHold?: boolean
   onPress?: () => void
   style?: StyleProp<ViewStyle>
   testID?: string
@@ -36,7 +43,7 @@ interface PlayingCardProps {
 // that toggling `selected`/`hinted` (a thicker, different-colored border) never changes the box's
 // content area - RN sizes borders inward from a fixed width/height, so swapping 1px for 3px would
 // nudge the card's own SVG content by a couple pixels every time it's (de)selected/(un)hinted.
-export function PlayingCard({ card, selected, hinted, disabled, dimmed, onPress, style, testID }: PlayingCardProps) {
+export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold, onPress, style, testID }: PlayingCardProps) {
   const colors = useTableColors()
   const { activeProfile } = useProfiles()
   const { settings } = useSettings()
@@ -48,7 +55,7 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, onPress,
   // value, an animated-style mapper and a looping animation, none of which ~every card on the board (almost never
   // hinted) should pay for at mount.
   const borderOverlay = selected ? <View pointerEvents='none' style={styles.selectedRing} /> : hinted ? <HintRing style={styles.hintRing} /> : <View pointerEvents='none' style={styles.border} />
-  const dimOverlay = dimmed ? <View pointerEvents='none' style={styles.dim} /> : null
+  const dimOverlay = dimmed ? dimHold === undefined ? <View pointerEvents='none' style={styles.dim} /> : <HeldDimScrim hold={dimHold} style={styles.dim} /> : null
 
   if (!card.faceUp) {
     return (
@@ -97,6 +104,30 @@ function HintRing({ style }: { style: StyleProp<ViewStyle> }) {
     return () => cancelAnimation(opacity)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  return <Animated.View pointerEvents='none' style={[style, animatedStyle]} />
+}
+
+/** The dim scrim of a card that takes part in a ghost hand-off (`dimHold` set). While `hold` is true - the real card is
+ * still hidden, waiting for its ghost - it draws NOTHING: a transparent scrim looks the same, and drawing none means the
+ * ~30-44 dimmed cards of a fresh deal mount no shared value or animated-style mapper in the (already heavy) deal-start
+ * commit; each one's mapper mounts in the small commit of its own landing instead. When `hold` drops on a card that WAS
+ * held, the animated FadingDimScrim mounts (from transparent) and fades in. A card that was never held (a resumed save, a
+ * card that only becomes dimmed later in play) keeps today's plain, instant scrim and pays for no animation at all. */
+function HeldDimScrim({ hold, style }: { hold: boolean; style: StyleProp<ViewStyle> }) {
+  const [held, setHeld] = React.useState(hold)
+  if (hold && !held) setHeld(true)
+  if (hold) return null
+  return held ? <FadingDimScrim style={style} /> : <View pointerEvents='none' style={style} />
+}
+
+/** The animated scrim itself: mounts fully transparent (so the frame it first appears in is still the ghost's look) and
+ * fades to opaque (fadeInDimScrim). Only ever mounted at the moment a held card is released. */
+function FadingDimScrim({ style }: { style: StyleProp<ViewStyle> }) {
+  const opacity = useSharedValue(0)
+  const animatedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }))
+  React.useEffect(() => {
+    fadeInDimScrim(opacity)
+  }, [opacity])
   return <Animated.View pointerEvents='none' style={[style, animatedStyle]} />
 }
 

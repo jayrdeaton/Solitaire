@@ -4,6 +4,10 @@ import { StyleProp, StyleSheet, useWindowDimensions, View, ViewStyle } from 'rea
 
 interface RotatedGameViewProps {
   style?: StyleProp<ViewStyle>
+  /** Lets touches fall through the frame's own (full-screen) box to whatever is beneath it, so only its
+   * children claim them. For a frame laid OVER other screens (the root-level toaster/update dialog) - a game
+   * screen owns the whole screen and leaves this off. */
+  passThrough?: boolean
   children: ReactNode
 }
 
@@ -26,7 +30,8 @@ interface RotatedGameViewProps {
  *    swapped (landscape) footprint, centred, and rotated - the standard fake-landscape trick.
  * Uses the same useRotation()/rotateDimensions math FakeLandscapeView does, so anything reading
  * useRotatedWindowDimensions() elsewhere still sees exactly the footprint rendered here. */
-export function RotatedGameView({ style, children }: RotatedGameViewProps) {
+export function RotatedGameView({ style, passThrough = false, children }: RotatedGameViewProps) {
+  const innerPointerEvents = passThrough ? 'box-none' : undefined
   const { width, height } = useWindowDimensions()
   const rotation = useRotation()
 
@@ -34,14 +39,18 @@ export function RotatedGameView({ style, children }: RotatedGameViewProps) {
     const swapped = rotateDimensions(width, height, rotation)
     return (
       <View style={StyleSheet.absoluteFill} pointerEvents='box-none'>
-        <View style={[style, styles.absolute, { height: swapped.height, left: (width - swapped.width) / 2, top: (height - swapped.height) / 2, width: swapped.width }, toRotationStyle(rotation)]}>{children}</View>
+        <View style={[style, styles.absolute, { height: swapped.height, left: (width - swapped.width) / 2, top: (height - swapped.height) / 2, width: swapped.width }, toRotationStyle(rotation)]} pointerEvents={innerPointerEvents}>
+          {children}
+        </View>
       </View>
     )
   }
 
   return (
     <View style={styles.fill} pointerEvents='box-none'>
-      <View style={[style, toRotationStyle(rotation)]}>{children}</View>
+      <View style={[style, toRotationStyle(rotation)]} pointerEvents={innerPointerEvents}>
+        {children}
+      </View>
     </View>
   )
 }

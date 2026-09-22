@@ -7,7 +7,7 @@ import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
-import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
+import { DEAL_STAGGER_MS, dealStaggerMs, paceFaceUpDeal } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
@@ -192,7 +192,7 @@ function FreeCellScreenInner() {
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
   // Separate from dealHiddenIds (which tracks each tableau card's own landing) - the deck
   // placeholder should read as exhausted the moment the LAST card actually leaves it, not once
-  // every card has finished landing. See runDeal's setTimeout for the timing.
+  // every card has finished landing. See runDeal's onCardDealt for the timing.
   const [deckVisible, setDeckVisible] = useState(false)
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
@@ -275,7 +275,7 @@ function FreeCellScreenInner() {
       return
     }
 
-    const entries: DealCardSpec[] = []
+    const built: DealCardSpec[] = []
     // A card whose destination measurement comes back null (while its siblings in the same batch
     // resolve fine) can't be flown - but it must still be unhidden right away instead of staying
     // in dealHiddenIds forever, which would otherwise soft-lock it out of play permanently (and
@@ -289,7 +289,7 @@ function FreeCellScreenInner() {
         unresolvedIds.push(step.cardId)
         return
       }
-      entries.push({
+      built.push({
         cardId: step.cardId,
         card: step.card,
         from: origin,
@@ -297,6 +297,8 @@ function FreeCellScreenInner() {
         delayMs: step.visitOrder * dealStaggerMs(sequence.length)
       })
     })
+    // Every card here flies face-up, so the deal is slowed to a pace where each one can actually be seen (see paceFaceUpDeal).
+    const entries = paceFaceUpDeal(built)
     if (unresolvedIds.length > 0) {
       setDealHiddenIds((ids) => {
         if (unresolvedIds.every((id) => !ids.has(id))) return ids
@@ -312,15 +314,14 @@ function FreeCellScreenInner() {
     }
 
     // The deck should look exhausted the instant its last card actually leaves it (starts its own
-    // delayed flight), not once every card has finished landing - those are DEAL_SPRING.duration
-    // apart, and waiting for the latter would show the placeholder still sitting there with its
-    // last card already visibly flying away. Mirrors that card's own delayMs, guarded by the same
-    // dealTokenRef check every other async step here uses.
-    const lastDelayMs = Math.max(...entries.map((entry) => entry.delayMs))
-    setTimeout(() => {
-      if (dealTokenRef.current !== token) return
-      setDeckVisible(false)
-    }, lastDelayMs)
+    // flight), not once every card has finished landing - those are DEAL_SPRING.duration apart, and
+    // waiting for the latter would show the placeholder still sitting there with its last card
+    // already visibly flying away. Driven by the deal layer's own take-off signal (onCardDealt)
+    // rather than a timer armed here: the deal's clock only starts once its ghosts have mounted, so
+    // a timer set from the scheduled delays ran ahead of it and emptied the deck before the last
+    // cards had really left. A skip reports every not-yet-taken-off card through onCardDealt too.
+    // Same dealTokenRef guard as every other async step here.
+    const lastCardId = entries.reduce((a, b) => (b.delayMs > a.delayMs ? b : a)).cardId
 
     deal.start(
       entries,
@@ -335,11 +336,14 @@ function FreeCellScreenInner() {
         })
       },
       () => {
-        // Safety net for a tap-to-skip mid-deal: every card lands at once, including any whose
-        // own delay hadn't elapsed yet, so the setTimeout above may not have fired yet - this
-        // guarantees the deck disappears exactly when the deal actually finishes either way.
+        // Safety net: guarantees the deck is gone by the time the deal has actually finished, whatever
+        // route the last take-off report took (a skip reports every remaining card at once).
         if (dealTokenRef.current !== token) return
         setDeckVisible(false)
+      },
+      (cardId) => {
+        if (dealTokenRef.current !== token) return
+        if (cardId === lastCardId) setDeckVisible(false)
       }
     )
   }

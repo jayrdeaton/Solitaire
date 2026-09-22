@@ -47,6 +47,14 @@ const DealContext = createContext<DealAnimator | null>(null)
 // costs no React work at all; a face-up deal only re-renders a face instead of mounting one.
 const LOOKAHEAD_MS = 150
 const LAUNCH_TICK_MS = 50
+// A launch pass used to hand EVERY card due within the lookahead to a slot in one go, i.e. one React commit: at the start of a
+// face-up deal that is ~5-9 cards, and a court card's face is ~100-150 SVG nodes, so that one commit stalled the JS thread
+// for long enough to delay the departures it was meant to feed. A pass now launches at most MAX_FACE_UP_LAUNCHES_PER_PASS
+// face-up cards and, when it stops short, comes back after CAPPED_TICK_MS instead of the usual LAUNCH_TICK_MS. Throughput
+// stays far above what a deal needs (2 per 16ms = ~125 launches/s against ~30/s at the deal's stagger), and the lookahead
+// leaves room for the delayed ones. Face-down cards swap between identical backs (nothing to commit), so they are never capped.
+const MAX_FACE_UP_LAUNCHES_PER_PASS = 2
+const CAPPED_TICK_MS = 16
 // A slot stays occupied a little past its flight: its landing timer can fire late, and it is only offered for reuse once the
 // commit that hides it (and reveals the real card) has happened. The pool is sized for that turnaround too, so a busy JS
 // thread does not leave a due card waiting for a slot.
@@ -122,17 +130,31 @@ interface GhostSlotProps {
   frame: OverlayFrame
   /** The deal's card width - the ghost's own footprint for that conversion. */
   cardWidth: number
+  /** When the most recent card actually took off (epoch ms), shared by every slot of the deal. A card that reaches its slot's
+   * effect with no runway left - its own launch commit ate the whole delay - departs at once, but not in the same breath as
+   * the card before it: without this, two cards launched in one slow commit both find their deadline passed and leave in the
+   * same frame. */
+  lastTakeOffRef: { current: number }
   ref?: Ref<GhostSlotHandle>
 }
 
-interface Job {
+/** A card waiting in the provider's queue for a free slot. */
+interface QueuedCard {
   spec: DealCardSpec
+  /** The card's position in the deal (becomes its paint order). */
   order: number
+}
+
+interface Job extends QueuedCard {
+  /** The absolute time (epoch ms) this card's flight begins. Fixed when the slot is launched, so however long the React commit
+   * that shows the card takes (a court-card face is tens of ms), the springs and timers below count down from the launch,
+   * not from whenever that commit finished - the commit is absorbed by the lookahead instead of pushing the departure late. */
+  departAt: number
 }
 
 // Memoized: props are all stable across the deal (a slot number, stable callbacks, the overlay frame, the card width),
 // so a slot re-renders only through its own state - i.e. when it is launched or lands.
-const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdle, frame, cardWidth, ref }: GhostSlotProps) {
+const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdle, frame, cardWidth, lastTakeOffRef, ref }: GhostSlotProps) {
   const cardHeight = cardWidth / CARD_ASPECT
   const tx = useSharedValue(0)
   const ty = useSharedValue(0)
@@ -186,19 +208,27 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
 
   useEffect(() => {
     if (!job) return
-    const { spec } = job
-    tx.value = withDelay(spec.delayMs, withSpring(spec.to.x, DEAL_SPRING))
-    ty.value = withDelay(spec.delayMs, withSpring(spec.to.y, DEAL_SPRING))
-    opacity.value = withDelay(spec.delayMs, withTiming(1, { duration: 0 }))
+    const { spec, departAt } = job
+    // What is left of the delay: the commit that got us here has already spent part of it (see Job.departAt). A card whose
+    // deadline has already passed leaves now, but no closer than LATE_LAUNCH_MIN_GAP_MS to the card before it (the same
+    // spacing launchDue gives late launches); an on-time card keeps its scheduled time exactly.
+    const now = Date.now()
+    let takeOffAt = Math.max(departAt, now)
+    if (departAt <= now) takeOffAt = Math.max(takeOffAt, lastTakeOffRef.current + LATE_LAUNCH_MIN_GAP_MS)
+    lastTakeOffRef.current = Math.max(lastTakeOffRef.current, takeOffAt)
+    const wait = takeOffAt - now
+    tx.value = withDelay(wait, withSpring(spec.to.x, DEAL_SPRING))
+    ty.value = withDelay(wait, withSpring(spec.to.y, DEAL_SPRING))
+    opacity.value = withDelay(wait, withTiming(1, { duration: 0 }))
     // Deliberately its own timer rather than piggybacked on the settle one below - this card's sound/haptic should fire
-    // the instant it's dealt out (delayMs), not once it's finished flying.
-    dealtTimeoutRef.current = setTimeout(() => dealtNotify(spec.cardId), spec.delayMs)
+    // the instant it's dealt out (the departure), not once it's finished flying.
+    dealtTimeoutRef.current = setTimeout(() => dealtNotify(spec.cardId), wait)
     // Settlement used to be driven by withSpring's own completion callback (one per axis, both required before
     // notifying) - that callback was found to never fire at all for these duration-based springs on this app's web
     // target (confirmed live via DragGhostLayer.tsx's identical bug, fixed the same way there). A plain timer covering
     // the same delay+duration the springs are configured for stands in for it instead; the visual flight itself doesn't
     // depend on the callback either way, since it's driven by tx/ty directly.
-    timeoutRef.current = setTimeout(notify, spec.delayMs + (DEAL_SPRING.duration ?? 0))
+    timeoutRef.current = setTimeout(notify, wait + (DEAL_SPRING.duration ?? 0))
     return clearTimers
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job])
@@ -232,7 +262,7 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
         tx.value = spec.from.x
         ty.value = spec.from.y
         opacity.value = 0
-        const next = { spec, order }
+        const next: Job = { spec, order, departAt: Date.now() + spec.delayMs }
         jobRef.current = next
         setCard((prev) => (prev && !prev.faceUp && !spec.card.faceUp ? prev : spec.card))
         setJob(next)
@@ -293,11 +323,12 @@ export function DealProvider({ children }: { children: ReactNode }) {
   const [cardWidth, setCardWidth] = useState(0)
   // Specs not yet launched, in ascending delayMs order (with their paint order), the slots currently free, the deal's
   // clock and the pending launch timer. Only ever touched from start()/timer/landing/skip callbacks, never during render.
-  const queueRef = useRef<Job[]>([])
+  const queueRef = useRef<QueuedCard[]>([])
   const freeSlots = useRef<number[]>([])
   const slotHandles = useRef<(GhostSlotHandle | null)[]>([])
   const startedAtRef = useRef(0)
   const lastDepartAt = useRef(0)
+  const lastTakeOffAt = useRef(0)
   const launchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const landedIds = useRef(new Set<string>())
   const callbacksRef = useRef<{ onCardLanded: (cardId: string) => void; onAllLanded: () => void; onCardDealt?: (cardId: string) => void } | null>(null)
@@ -361,19 +392,28 @@ export function DealProvider({ children }: { children: ReactNode }) {
 
   // Hands every queued card whose flight starts within LOOKAHEAD_MS to a free slot (with its delay re-based onto its own
   // launch time - a slot's timers/springs all start when it is launched), then reschedules itself while any remain. A
-  // card that is due but finds no free slot simply waits: the next slot to go idle calls this again.
+  // card that is due but finds no free slot simply waits: the next slot to go idle calls this again. A pass stops after
+  // MAX_FACE_UP_LAUNCHES_PER_PASS face-up cards (one commit's worth) and comes back on the short CAPPED_TICK_MS.
   const launchDue = useCallback(function launchDue() {
     if (launchTimerRef.current) clearTimeout(launchTimerRef.current)
     launchTimerRef.current = null
     const now = Date.now()
     const elapsed = now - startedAtRef.current
     const queue = queueRef.current
+    let faceUpLaunched = 0
+    let capped = false
     while (queue.length > 0 && freeSlots.current.length > 0 && queue[0].spec.delayMs - LOOKAHEAD_MS <= elapsed) {
       const handle = slotHandles.current[freeSlots.current[0]]
       // The slots mount in the commit after start(); until their handles attach there is nothing to launch into.
       if (!handle) break
+      // Enough face-up cards for one commit: the rest go on the next (short) tick - see MAX_FACE_UP_LAUNCHES_PER_PASS.
+      if (queue[0].spec.card.faceUp && faceUpLaunched >= MAX_FACE_UP_LAUNCHES_PER_PASS) {
+        capped = true
+        break
+      }
       freeSlots.current.shift()
       const { spec, order } = queue.shift()!
+      if (spec.card.faceUp) faceUpLaunched++
       // An on-time card departs exactly when scheduled. A LATE one (a JS stall made it due meanwhile) departs as soon as
       // possible but no closer than LATE_LAUNCH_MIN_GAP_MS to the previous late one, so a hitch doesn't turn the riffle
       // into a blob followed by a second blob.
@@ -383,7 +423,7 @@ export function DealProvider({ children }: { children: ReactNode }) {
       lastDepartAt.current = departAt
       handle.launch({ ...spec, delayMs: departAt - now }, order)
     }
-    if (queue.length > 0) launchTimerRef.current = setTimeout(launchDue, LAUNCH_TICK_MS)
+    if (queue.length > 0) launchTimerRef.current = setTimeout(launchDue, capped ? CAPPED_TICK_MS : LAUNCH_TICK_MS)
   }, [])
 
   const handleLanded = useCallback((cardId: string, deal: number) => {
@@ -411,7 +451,13 @@ export function DealProvider({ children }: { children: ReactNode }) {
     (slot: number, deal: number) => {
       if (deal !== generationRef.current) return
       if (!freeSlots.current.includes(slot)) freeSlots.current.push(slot)
-      launchDue()
+      // Not a launchDue() call of its own: every slot that landed in one commit runs its own onIdle effect, and each pass
+      // gets its own MAX_FACE_UP_LAUNCHES_PER_PASS budget - after a JS stall (several landing timers firing together) k idle
+      // effects would launch up to 2k faces into the next commit. Re-arming the one launch timer instead coalesces all of
+      // them into a single, capped pass a macrotask later (launchDue clears whatever timer is pending when it runs).
+      if (queueRef.current.length === 0) return
+      if (launchTimerRef.current) clearTimeout(launchTimerRef.current)
+      launchTimerRef.current = setTimeout(launchDue, 0)
     },
     [launchDue]
   )
@@ -463,6 +509,7 @@ export function DealProvider({ children }: { children: ReactNode }) {
         freeSlots.current = []
         slotHandles.current = []
         lastDepartAt.current = 0
+        lastTakeOffAt.current = 0
         if (entries.length === 0) {
           callbacksRef.current = null
           setPoolSize(0)
@@ -508,7 +555,7 @@ export function DealProvider({ children }: { children: ReactNode }) {
         {dealing && poolSize > 0 && (
           <CardSizeProvider width={cardWidth}>
             {Array.from({ length: poolSize }, (_, slot) => (
-              <GhostSlot key={`${generation}-${slot}`} slot={slot} deal={generation} onDealt={handleDealt} onLanded={handleLanded} onIdle={handleSlotIdle} frame={frame} cardWidth={cardWidth} ref={slotRefs[slot]} />
+              <GhostSlot key={`${generation}-${slot}`} slot={slot} deal={generation} onDealt={handleDealt} onLanded={handleLanded} onIdle={handleSlotIdle} frame={frame} cardWidth={cardWidth} lastTakeOffRef={lastTakeOffAt} ref={slotRefs[slot]} />
             ))}
           </CardSizeProvider>
         )}

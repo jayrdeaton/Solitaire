@@ -1,5 +1,6 @@
 import { CARD_ASPECT } from '@tastic/cards'
 
+import { CARD_GAP_MIN } from '@/components/cardLayout'
 import { columnBoardModel, computeGameLayout, FACE_DOWN_FAN_RATIO, FACE_UP_FAN_RATIO, fitCardWidthToHeight, fittedGap, GAME_CONTENT_BOTTOM_PADDING, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_TOP_PADDING, MIN_CARD_WIDTH } from '@/components/gameLayout'
 
 const NO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 }
@@ -94,10 +95,10 @@ describe('fittedGap', () => {
   })
 
   it('never goes below the minimum gap, even for a row that is already too wide', () => {
-    expect(fittedGap(400, 60, 7)).toBe(6)
+    expect(fittedGap(400, 60, 7)).toBe(CARD_GAP_MIN)
   })
 
   it('is the minimum gap for a single column', () => {
-    expect(fittedGap(628, 60, 1)).toBe(6)
+    expect(fittedGap(628, 60, 1)).toBe(CARD_GAP_MIN)
   })
 })

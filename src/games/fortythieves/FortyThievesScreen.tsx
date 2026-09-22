@@ -14,7 +14,7 @@ import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
-import { dealStaggerMs } from '@/components/dealing/dealSpring'
+import { dealStaggerMs, paceFaceUpDeal } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
@@ -237,12 +237,14 @@ function FortyThievesScreenInner() {
       return
     }
 
-    const entries: DealCardSpec[] = []
+    const built: DealCardSpec[] = []
     sequence.forEach((step, i) => {
       const dest = destinations[i]
       if (!dest) return
-      entries.push({ cardId: step.cardId, card: step.card, from: origin, to: { x: dest.x, y: dest.y }, delayMs: step.visitOrder * dealStaggerMs(sequence.length) })
+      built.push({ cardId: step.cardId, card: step.card, from: origin, to: { x: dest.x, y: dest.y }, delayMs: step.visitOrder * dealStaggerMs(sequence.length) })
     })
+    // Every card here flies face-up, so the deal is slowed to a pace where each one can actually be seen (see paceFaceUpDeal).
+    const entries = paceFaceUpDeal(built)
     if (entries.length === 0) {
       setDealHiddenIds(new Set())
       return

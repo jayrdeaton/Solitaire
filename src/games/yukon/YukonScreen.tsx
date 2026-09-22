@@ -7,7 +7,7 @@ import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
-import { dealStaggerMs } from '@/components/dealing/dealSpring'
+import { dealStaggerMs, paceFaceUpDeal } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
@@ -293,11 +293,11 @@ function YukonScreenInner() {
       return
     }
 
-    const entries: DealCardSpec[] = []
+    const built: DealCardSpec[] = []
     sequence.forEach((step, i) => {
       const dest = destinations[i]
       if (!dest) return
-      entries.push({
+      built.push({
         cardId: step.cardId,
         // Phase 1 (the Klondike-shaped base triangle - rowIndex <= colIndex, see rules.ts's
         // newGame) flies face-down regardless of step.card's real faceUp, same reasoning as
@@ -311,6 +311,9 @@ function YukonScreenInner() {
         delayMs: step.visitOrder * dealStaggerMs(sequence.length)
       })
     })
+    // Phase 1 flies face-down and keeps its compressed pace; phase 2's face-up cards are slowed to where each can be seen
+    // (see paceFaceUpDeal - it reads the FLOWN face, so the forced face-down flights above are left alone).
+    const entries = paceFaceUpDeal(built)
     if (entries.length === 0) {
       setDealHiddenIds(new Set())
       setDeckVisible(false)
@@ -318,15 +321,14 @@ function YukonScreenInner() {
     }
 
     // The deck should look exhausted the instant its last card actually leaves it (starts its own
-    // delayed flight), not once every card has finished landing - those are DEAL_SPRING.duration
-    // apart, and waiting for the latter would show the placeholder still sitting there with its
-    // last card already visibly flying away. Mirrors that card's own delayMs, guarded by the same
-    // dealTokenRef check every other async step here uses.
-    const lastDelayMs = Math.max(...entries.map((entry) => entry.delayMs))
-    setTimeout(() => {
-      if (dealTokenRef.current !== token) return
-      setDeckVisible(false)
-    }, lastDelayMs)
+    // flight), not once every card has finished landing - those are DEAL_SPRING.duration apart, and
+    // waiting for the latter would show the placeholder still sitting there with its last card
+    // already visibly flying away. Driven by the deal layer's own take-off signal (onCardDealt)
+    // rather than a timer armed here: the deal's clock only starts once its ghosts have mounted, so
+    // a timer set from the scheduled delays ran ahead of it and emptied the deck before the last
+    // cards had really left. A skip reports every not-yet-taken-off card through onCardDealt too.
+    // Same dealTokenRef guard as every other async step here.
+    const lastCardId = entries.reduce((a, b) => (b.delayMs > a.delayMs ? b : a)).cardId
 
     deal.start(
       entries,
@@ -341,11 +343,14 @@ function YukonScreenInner() {
         })
       },
       () => {
-        // Safety net for a tap-to-skip mid-deal: every card lands at once, including any whose
-        // own delay hadn't elapsed yet, so the setTimeout above may not have fired yet - this
-        // guarantees the deck disappears exactly when the deal actually finishes either way.
+        // Safety net: guarantees the deck is gone by the time the deal has actually finished, whatever
+        // route the last take-off report took (a skip reports every remaining card at once).
         if (dealTokenRef.current !== token) return
         setDeckVisible(false)
+      },
+      (cardId) => {
+        if (dealTokenRef.current !== token) return
+        if (cardId === lastCardId) setDeckVisible(false)
       }
     )
   }

@@ -1,6 +1,6 @@
 import { CARD_ASPECT } from '@tastic/cards'
 
-import { cardLayoutForRow } from '@/components/cardLayout'
+import { CARD_GAP_MIN, CARD_WIDTH_MAX, cardLayoutForRow } from '@/components/cardLayout'
 import { columnBoardModel, computeGameLayout, FACE_DOWN_FAN_RATIO, FACE_UP_FAN_RATIO, fitCardWidthToHeight, GAME_CONTENT_PADDING } from '@/components/gameLayout'
 import { Card } from '@/engine/types'
 import { BOARD_MODEL, TALLEST_COLUMN } from '@/games/acesup/boardModel'
@@ -78,7 +78,8 @@ describe('acesup card size in portrait', () => {
   it('is not height-fitted: portrait is not the wide layout, so the width-derived size is used as-is', () => {
     const layout = computeGameLayout(402, 874, PORTRAIT_INSETS)
     expect(layout.isWide).toBe(false)
-    // (402 - 2 * 6 of screen padding - 3 gaps of 6) / 4 piles
-    expect(widthDerivedCardWidth(layout.contentWidth)).toBeCloseTo(93, 6)
+    // (402 - 2*GAME_CONTENT_PADDING - 3*CARD_GAP_MIN) / 4 piles, clamped at CARD_WIDTH_MAX
+    const row = 402 - GAME_CONTENT_PADDING * 2 - (NUM_PILES - 1) * CARD_GAP_MIN
+    expect(widthDerivedCardWidth(layout.contentWidth)).toBeCloseTo(Math.min(CARD_WIDTH_MAX, row / NUM_PILES), 6)
   })
 })

@@ -1,11 +1,19 @@
-import { InlineColorPicker, PopoverHost } from '@tastic/hud'
+import { defaultColors } from '@rific/auto-paper'
+import { getInlineColorPickerContentSize, InlineColorPicker, PopoverHost } from '@tastic/hud'
 import { ProfilePicker } from '@tastic/profile'
 import { useRouter } from 'expo-router'
-import { StyleSheet, View } from 'react-native'
+import { StyleSheet, useWindowDimensions, View } from 'react-native'
 import { useTheme } from 'react-native-paper'
 
 import { DEFAULT_SEED_COLOR, previewCardBack } from '@/components/theme'
+import { useFrameAutoAlign } from '@/components/useFrameAutoAlign'
+import { useProfilePickerAlign } from '@/components/useProfilePickerAlign'
 import { useProfiles } from '@/stores/profiles'
+
+// The popover host ids of the two triggers - shared with the frame-aware placement hooks' `open` below. The
+// profile picker's is `${idPrefix}-profile` (see @tastic/profile's ProfilePicker).
+const COLOR_PICKER_ID = 'home-player-color'
+const PROFILE_ID_PREFIX = 'home-player'
 
 interface ProfilePanelProps {
   // Owned by the caller (Home) rather than this component, so Home can also render a full-screen
@@ -29,6 +37,16 @@ export function ProfilePanel({ host }: ProfilePanelProps) {
   // already handles turning it into the muted color that's actually rendered.
   const liveColor = tableColorOverride ?? DEFAULT_SEED_COLOR
 
+  // Home lives inside a fake-rotated frame, where @tastic/hud's own popover placement (it compares a
+  // screen-space measurement with the un-rotated portrait window) picks the wrong side and can run a popover
+  // under the notch/island or past the frame's bottom. So both popovers are placed by a frame-aware hook instead
+  // (`alignOverride`): the swatch sized with the same raw-window-width formula InlineColorPicker itself uses, the
+  // profile list with @tastic/profile's own getProfilePickerContentSize (this picker has a Manage row).
+  const { width: windowWidth } = useWindowDimensions()
+  const { width: swatchesWidth, height: swatchesHeight } = getInlineColorPickerContentSize(defaultColors.length, windowWidth)
+  const swatchAlign = useFrameAutoAlign(host.openId === COLOR_PICKER_ID, swatchesWidth, swatchesHeight)
+  const profileAlign = useProfilePickerAlign(host.openId === `${PROFILE_ID_PREFIX}-profile`, profiles.length, true)
+
   return (
     // backgroundColor genuinely can't live in the static StyleSheet below - it's a function of
     // both `dark` and the live Paper theme's surface color, neither of which a module-level
@@ -36,8 +54,8 @@ export function ProfilePanel({ host }: ProfilePanelProps) {
     // documents for the identical situation).
     // eslint-disable-next-line react-native/no-inline-styles
     <View style={[styles.row, { backgroundColor: dark ? paperColors.surface : '#ffffffee' }]}>
-      <InlineColorPicker id='home-player-color' host={host} value={liveColor} onChange={setTableColorOverride} previewValue={(hex) => previewCardBack(hex, dark)} dark={dark} tag={activeProfile?.tag} />
-      <ProfilePicker idPrefix='home-player' host={host} profiles={profiles} selectedId={activeProfileId} color={previewCardBack(liveColor, dark)} dark={dark} guestLabel='GUEST' nullLabel='Guest' onSelect={(profile) => selectProfile(profile?.id ?? null)} onManage={() => router.push('/profiles')} />
+      <InlineColorPicker id={COLOR_PICKER_ID} host={host} value={liveColor} onChange={setTableColorOverride} previewValue={(hex) => previewCardBack(hex, dark)} dark={dark} tag={activeProfile?.tag} alignOverride={swatchAlign} />
+      <ProfilePicker idPrefix={PROFILE_ID_PREFIX} host={host} profiles={profiles} selectedId={activeProfileId} color={previewCardBack(liveColor, dark)} dark={dark} guestLabel='GUEST' nullLabel='Guest' onSelect={(profile) => selectProfile(profile?.id ?? null)} onManage={() => router.push('/profiles')} alignOverride={profileAlign} />
     </View>
   )
 }

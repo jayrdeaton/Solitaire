@@ -1651,7 +1651,7 @@ function PyramidScreenInner() {
               const cardStyle = [styles.pyramidCard, { left, top, zIndex: row }]
 
               if (!exposed) {
-                return <PlayingCard key={card.id} card={card} disabled dimmed style={[cardStyle, isHidden && styles.hiddenCard]} testID={`pyramid-${index}`} />
+                return <PlayingCard key={card.id} card={card} disabled dimmed dimHold={isHidden} style={[cardStyle, isHidden && styles.hiddenCard]} testID={`pyramid-${index}`} />
               }
 
               return (

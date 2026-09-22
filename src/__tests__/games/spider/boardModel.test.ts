@@ -1,6 +1,6 @@
 import { CARD_ASPECT } from '@tastic/cards'
 
-import { cardLayoutForRow } from '@/components/cardLayout'
+import { CARD_GAP_MIN, cardLayoutForRow } from '@/components/cardLayout'
 import { columnBoardModel, computeGameLayout, FACE_DOWN_FAN_RATIO, FACE_UP_FAN_RATIO, fitCardWidthToHeight, GAME_CONTENT_PADDING } from '@/components/gameLayout'
 import { Card } from '@/engine/types'
 import { BOARD_MODEL, TALLEST_COLUMN } from '@/games/spider/boardModel'
@@ -57,9 +57,13 @@ describe('spider card size in the wide layout', () => {
     expect(w).toBeGreaterThanOrEqual(40)
   })
 
-  it('is a no-op when width, not height, is the limit (10 columns across a phone held sideways)', () => {
+  it("is height-limited here (10 columns across a phone held sideways): CARD_GAP_MIN tight enough that the width-derived card now exceeds spider's own height ceiling", () => {
+    // Per cardLayout.ts's CARD_GAP_MIN doc: spider's height fit is a documented tight boundary
+    // (~63.26pt) that a small-enough gap floor pushes the width-derived card past.
     const widthCardWidth = widthDerivedCardWidth(layout.contentWidth)
-    expect(fitCardWidthToHeight(widthCardWidth, layout.availableHeight, BOARD_MODEL)).toBe(widthCardWidth)
+    const w = fitCardWidthToHeight(widthCardWidth, layout.availableHeight, BOARD_MODEL)
+    expect(w).toBeLessThan(widthCardWidth)
+    expect(w * BOARD_MODEL.perWidth + BOARD_MODEL.fixed).toBeCloseTo(layout.availableHeight, 6)
   })
 
   it('shrinks the cards when the window is short enough for height to be the limit', () => {
@@ -75,7 +79,8 @@ describe('spider card size in portrait', () => {
   it('is not height-fitted: portrait is not the wide layout, so the width-derived size is used as-is', () => {
     const layout = computeGameLayout(402, 874, PORTRAIT_INSETS)
     expect(layout.isWide).toBe(false)
-    // (402 - 2 * 6 of screen padding - 9 gaps of 6) / 10 columns
-    expect(widthDerivedCardWidth(layout.contentWidth)).toBeCloseTo(33.6, 6)
+    // (402 - 2*GAME_CONTENT_PADDING - 9 gaps of CARD_GAP_MIN) / 10 columns
+    const row = 402 - GAME_CONTENT_PADDING * 2 - (TABLEAU_COLUMNS - 1) * CARD_GAP_MIN
+    expect(widthDerivedCardWidth(layout.contentWidth)).toBeCloseTo(row / TABLEAU_COLUMNS, 6)
   })
 })
