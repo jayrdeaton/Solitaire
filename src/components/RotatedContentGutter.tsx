@@ -18,8 +18,13 @@ interface RotatedContentGutterProps {
  * portrait window width (e.g. 402pt) while every card-size calculation below it - which does read
  * useRotatedWindowDimensions() - was already sized for the swapped landscape width (874pt). The
  * board laid out at landscape size inside a portrait-width box, clipping everything past the first
- * ~402pt. Exact identity with ContentGutter at rotation 0. Drop this and go back to the hud one
- * once @tastic/hud's ContentGutter reads the rotated width itself. */
+ * ~402pt. Exact identity with ContentGutter at rotation 0.
+ *
+ * hud's ContentGutter reads the rotated width itself since 0.13.0, but it still can't replace this:
+ * it caps against the WHOLE window and splits the leftover equally, while the wide layout needs each
+ * side's chrome column (useGameLayout's leftGutter/rightGutter, which differ per side) reserved out of
+ * the width first. hud's leftGutter/rightGutter props are decorations drawn inside the leftover, not
+ * reserved widths - swapped in, the board would run under the footer and readout columns. */
 export function RotatedContentGutter({ maxContentWidth, style, children }: RotatedContentGutterProps) {
   // Wide (landscape) layout: the leading/trailing gutters double as the chrome columns (footer icons,
   // moves/timer), so each is reserved out of the width before capping - see gameLayout.ts. Any width

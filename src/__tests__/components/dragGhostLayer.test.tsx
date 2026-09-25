@@ -1,4 +1,4 @@
-import { CardSizeProvider } from '@tastic/cards'
+import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
 import { act, render, screen } from '@testing-library/react-native'
 import { ReactNode, useEffect } from 'react'
 import { makeMutable, SharedValue } from 'react-native-reanimated'
@@ -185,6 +185,22 @@ afterEach(() => {
 })
 
 // ------------------------------------------------------------------------------------------------ the provider
+
+// The ghost's container must never lay out as an exactly-zero frame at the overlay's origin: its only children are
+// absolutely positioned card wrappers, so without an explicit size it would. That zero frame trips a React Native
+// (Fabric, iOS) view-recycling bug that leaves a recycled UIView at its PREVIOUS life's position - see DealLayer.tsx's
+// GhostSlot (slotSize) for the full account, where the same shape put a deal's ghosts on the wrong row for a whole deal.
+describe('DragGhostProvider - ghost container frame', () => {
+  it('gives the ghost container an explicit, non-zero frame sized to the fanned group', async () => {
+    await mountProvider()
+    await inAct(() => ghost.show({ cards: [A, B], offsetStep: 20, cardWidth: 64 }, { x: 10, y: 20 }))
+    const container = screen.getByTestId(`ghost:${A.id}`)
+    const style = ([container.props.style].flat(Infinity) as Record<string, unknown>[]).filter(Boolean).reduce((acc, s) => ({ ...acc, ...s }), {})
+    expect(style.width).toBe(64)
+    // card height (64 / CARD_ASPECT) plus one fan step for the second card
+    expect(style.height).toBeCloseTo(64 / CARD_ASPECT + 20, 5)
+  })
+})
 
 describe('DragGhostProvider - when a flight is settled', () => {
   it.each([

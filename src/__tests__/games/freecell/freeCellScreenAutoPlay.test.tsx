@@ -122,6 +122,20 @@ jest.mock('@/components/winning/WinCascadeLayer', () => ({
 // A foundation slot container measures like any view unless its suit is in mockUnmeasurableSlots; every other view (the deal origin the
 // stand-ins never attach, so null) keeps answering.
 jest.mock('@/components/dealing/measureView', () => ({ measureView: async (view: { suit?: string } | null) => (view?.suit && mockUnmeasurableSlots.has(view.suit) ? null : { x: 5, y: 5 }) }))
+// DropZone (the real one, wrapping the mocked PileView above) still registers its own view for real, but this test
+// environment's measureInWindow never actually calls back (the same reason measureView itself is mocked above) - so
+// the deal's own column-container measurement (runDeal's analytical destination math - see FreeCellScreen's own doc
+// comment on it) needs a working stand-in too, or every column comes back unresolved and no deal ever starts at all.
+// One column-index-sized step per column is enough for a deterministic, distinct rect per column - the exact pixels
+// are never asserted here, only that entries end up with sane, present `to` coordinates.
+jest.mock('@/components/dragdrop/DropZoneRegistry', () => ({
+  useDropZoneRegistry: () => ({
+    register: () => {},
+    unregister: () => {},
+    measure: async (ref: { index: number }) => ({ x: ref.index * 60, y: 100, width: 50, height: 70 }),
+    hitTest: async () => null
+  })
+}))
 jest.mock('@/components/RotatedGameView', () => ({ RotatedGameView: ({ children }: { children: unknown }) => children }))
 jest.mock('@/components/GameStatusBar', () => ({ GameStatusBar: () => null }))
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => {}, hapticCard: () => {}, hapticInvalid: () => {} }) }))
@@ -345,6 +359,32 @@ describe('FreeCell screen - the safe-card cascade needs a TAP that went to a fou
     expect(mockLog.paces).toEqual([{ fast: undefined, sweep: undefined }, ...Array.from({ length: 3 }, () => ({ fast: true, sweep: false }))])
   })
 
+  it('every auto-played card is its own undo step, taken back one at a time before the tap that set them off', async () => {
+    await mount(SAFE_CARDS_BOARD())
+    await tap(id('clubs', 1))
+    await flush(3000)
+    expect(foundationTops()).toEqual({ clubs: id('clubs', 1), diamonds: 'empty', hearts: id('hearts', 2), spades: id('spades', 1) })
+
+    const undo = async () => {
+      const before = mockLog.shown.length
+      await act(async () => {
+        fireEvent.press(screen.getByTestId('undo'))
+      })
+      await flush(3000)
+      expect(mockLog.shown.length).toBe(before + 1) // one card flies back, and nothing is auto-played again
+      expect(mockDealCalls).toHaveLength(0) // not through the old all-at-once cascade undo
+    }
+
+    await undo() // the 2 of hearts, the last card auto-played
+    expect(foundationTops()).toEqual({ clubs: id('clubs', 1), diamonds: 'empty', hearts: id('hearts', 1), spades: id('spades', 1) })
+    await undo() // one of the auto-played Aces...
+    await undo() // ...then the other
+    expect(foundationTops()).toEqual({ clubs: id('clubs', 1), diamonds: 'empty', hearts: 'empty', spades: 'empty' })
+    await undo() // and only then the tap itself
+    expect(foundationTops()).toEqual({ clubs: 'empty', diamonds: 'empty', hearts: 'empty', spades: 'empty' })
+    expect(cardsOnBoard()).toBe(52)
+  })
+
   it('dragging that same card onto the foundation does NOT start it', async () => {
     await mount(SAFE_CARDS_BOARD())
 
@@ -464,8 +504,8 @@ describe('FreeCell screen - once every column is solved the rest finishes itself
     })
     await flush(10000)
 
-    expect(cardsOnBoard()).toBe(52) // the board is back...
-    expect(mockLog.shown.length).toBe(before + 1) // ...through the undo's own flight only
+    expect(cardsOnBoard()).toBe(1) // the last card the finish played is back...
+    expect(mockLog.shown.length).toBe(before + 1) // ...through the undo's own flight only - nothing went up again
   })
 
   it('a new deal that happens to be finishable is not swept up either', async () => {

@@ -34,6 +34,7 @@ import { computeScore } from '@/engine/score'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
+import { useDimAfterDeal } from '@/games/shared/useDimAfterDeal'
 import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
@@ -125,6 +126,8 @@ function GolfScreenInner() {
   // (wasteTopCard below), same as every other game's own foundation/discard pile during its cascade.
   const wasteViewRef = useRef<View>(null)
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
+  // Nothing is dimmed while the deal is in the air; the whole board dims at once when it has landed (see useDimAfterDeal).
+  const dimAfterDeal = useDimAfterDeal()
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
@@ -194,6 +197,7 @@ function GolfScreenInner() {
     // lets wasteHiddenCount below (computed from this same set) reuse one mechanism for both.
     const dealtIds = new Set([...s.tableau.flat().map((c) => c.id), ...s.waste.map((c) => c.id)])
     setDealHiddenIds(dealtIds)
+    dimAfterDeal.hold()
     scheduleDeal(myToken)
     commitState(s)
   }
@@ -218,6 +222,7 @@ function GolfScreenInner() {
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
     setDealHiddenIds(new Set())
+    dimAfterDeal.releaseNow()
     commitState(saved.state)
   }
 
@@ -249,6 +254,7 @@ function GolfScreenInner() {
     if (dealTokenRef.current !== token) return
     if (!origin) {
       setDealHiddenIds(new Set())
+      dimAfterDeal.release()
       return
     }
 
@@ -276,6 +282,7 @@ function GolfScreenInner() {
     const entries = paceFaceUpDeal(built)
     if (entries.length === 0) {
       setDealHiddenIds(new Set())
+      dimAfterDeal.release()
       return
     }
     if (unresolvedIds.length > 0) {
@@ -299,7 +306,10 @@ function GolfScreenInner() {
           return next
         })
       },
-      () => {}
+      () => {
+        if (dealTokenRef.current !== token) return
+        dimAfterDeal.release()
+      }
     )
   }
 
@@ -646,7 +656,7 @@ function GolfScreenInner() {
                 card in a column is permanently unplayable, not just sometimes-stuck like
                 FreeCell/Spider's suit/color-broken runs. Still the same "face-up but not a legal
                 move source" cue those need. */}
-                <PileView cards={col} onPressCard={(card, _indexFromTop, measure) => handleCardTap({ zone: 'tableau', index: colIndex }, card.id, measure)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} dimUnplayable={settings.dimUnplayable} shakeCardId={shake?.cardId} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} />
+                <PileView cards={col} onPressCard={(card, _indexFromTop, measure) => handleCardTap({ zone: 'tableau', index: colIndex }, card.id, measure)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} dimUnplayable={settings.dimUnplayable && !dimAfterDeal.held} shakeCardId={shake?.cardId} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} />
               </DropZone>
             )
           })}

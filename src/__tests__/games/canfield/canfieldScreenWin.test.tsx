@@ -26,6 +26,8 @@ const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
 const SAVE_KEY = 'solitaire.game-in-progress.v1.canfield'
 
 const mockRecordWon = jest.fn()
+/** Settings' Auto-Move to Foundation - off except where a test turns it on. */
+let mockAutoMove = false
 /** How long a flight stays in the air - a test can stretch it past the celebration's own hold. */
 let mockFlightMs = FLIGHT_MS
 let mockPileInstance = 0
@@ -150,7 +152,7 @@ jest.mock('@/stores/gameStats', () => ({ useGameStats: () => ({ recordDealWon: m
 jest.mock('@/stores/lastActiveGame', () => ({ useLastActiveGame: () => ({ setLastActiveGame: () => {}, clearLastActiveGame: () => {} }) }))
 jest.mock('@/stores/settings', () => {
   const actual = jest.requireActual('@/stores/settings')
-  return { ...actual, useSettings: () => ({ settings: { ...actual.DEFAULT_SETTINGS, autoMoveToFoundation: false } }) }
+  return { ...actual, useSettings: () => ({ settings: { ...actual.DEFAULT_SETTINGS, autoMoveToFoundation: mockAutoMove } }) }
 })
 jest.mock('@/components/theme', () => {
   const actual = jest.requireActual('@/components/theme')
@@ -255,11 +257,12 @@ jest.mock('@/components/PileView', () => {
   }
 })
 jest.mock('@/components/GameChrome', () => {
-  const { Pressable: MockPressable, View: MockView } = require('react-native')
+  const { Pressable: MockPressable, Text: MockText, View: MockView } = require('react-native')
   return {
     GAME_CONTENT_PADDING: 6,
-    GameChrome: ({ children, onUndo, onNewGame }: { children: unknown; onUndo: () => void; onNewGame: () => void }) => (
+    GameChrome: ({ children, onUndo, onNewGame, movesCount }: { children: unknown; onUndo: () => void; onNewGame: () => void; movesCount: number }) => (
       <MockView>
+        <MockText testID='moves'>{movesCount}</MockText>
         <MockPressable testID='undo' onPress={onUndo} />
         <MockPressable testID='new-game' onPress={onNewGame} />
         {children}
@@ -340,6 +343,7 @@ beforeEach(() => {
   mockNoSlot.clear()
   mockRecordWon.mockClear()
   mockFlightMs = FLIGHT_MS
+  mockAutoMove = false
 })
 afterEach(async () => {
   await act(async () => {
@@ -545,7 +549,8 @@ describe('Canfield screen - a card never moves without its own flight', () => {
   })
 
   it('undoing a foundation move whose card is buried under an auto-played card flies THAT card (not the one on top) from the pile', async () => {
-    // The player sent the 3 of clubs up; the auto-play then put the 4 on top of it (a silent move: not on the undo stack).
+    // The player sent the 3 of clubs up; the auto-play then put the 4 on top of it - in a save written before auto-plays became
+    // their own undo steps, the 4 has no entry of its own.
     const before = board({ tableau: [[card('clubs', 3)], [card('clubs', 4)]], foundation: [pile('clubs', 2), [], [], []] })
     const after = board({ foundation: [pile('clubs', 4), [], [], []] })
     const entry = { state: before, move: { from: { zone: 'tableau', index: 0 } as PileRef, to: { zone: 'foundation', index: SUITS.indexOf('clubs') } as PileRef, count: 1, anchorCardId: id('clubs', 3) } }
@@ -603,5 +608,73 @@ describe('Canfield screen - a foundation pile keeps showing the card that has la
 
     await flush(FLIGHT_MS + 50) // the deal lands
     expect(underGhost(starterSuit)).toBe('none')
+  })
+})
+
+describe('Canfield screen - every auto-played step is its own undo step', () => {
+  const moves = () => screen.getByTestId('moves').props.children as number
+
+  /** Presses Undo and lets it finish: exactly one card flies back (`fan` - a draw-3 fan flying back deal-style instead), and
+   * nothing is auto-played again on the board it lands on. */
+  async function undoOne(fan = 0) {
+    const shown = mockLog.shown.length
+    const dealt = mockLog.dealt.length
+    await press('undo')
+    await flush(1000)
+    expect(mockLog.shown.length).toBe(shown + (fan ? 0 : 1))
+    expect(mockLog.dealt.length).toBe(dealt + fan)
+    expect(mockLog.hidden).toBe(0)
+  }
+
+  it('the safe cards a foundation tap sets off are taken back one at a time, before the tap itself', async () => {
+    mockAutoMove = true
+    // Tapping the 3 of clubs up makes the red 2s safe; the 10 of clubs in the reserve keeps the board from finishing itself.
+    await mount(board({ tableau: [[card('clubs', 3)], [card('diamonds', 2)], [card('hearts', 2)], [card('spades', 5)]], reserve: [card('clubs', 10)], foundation: [pile('clubs', 2), pile('diamonds', 1), pile('hearts', 1), pile('spades', 1)] }), [], 5)
+
+    await press(`card-${id('clubs', 3)}`)
+    await flush(1000)
+    expect(mockLog.shown).toEqual([id('clubs', 3), id('diamonds', 2), id('hearts', 2)]) // the tap, then two auto-plays
+    expect(moves()).toBe(1) // the auto-plays do not count
+    expect([foundationTop('diamonds'), foundationTop('hearts')]).toEqual([id('diamonds', 2), id('hearts', 2)])
+
+    await undoOne() // the last card auto-played...
+    expect(mockLog.shown.at(-1)).toBe(id('hearts', 2))
+    expect([foundationTop('clubs'), foundationTop('diamonds'), foundationTop('hearts')]).toEqual([id('clubs', 3), id('diamonds', 2), id('hearts', 1)])
+    await undoOne() // ...then the one before it (the 2 of hearts, safe again, is left where the player put it back)
+    expect(mockLog.shown.at(-1)).toBe(id('diamonds', 2))
+    expect([foundationTop('clubs'), foundationTop('diamonds'), foundationTop('hearts')]).toEqual([id('clubs', 3), id('diamonds', 1), id('hearts', 1)])
+    await undoOne() // and only then the tap
+    expect(mockLog.shown.at(-1)).toBe(id('clubs', 3))
+    expect(foundationTop('clubs')).toBe(id('clubs', 2))
+    expect(screen.queryByTestId(`card-${id('clubs', 3)}`)).not.toBeNull()
+  })
+
+  it("a sweep's draw-and-play is two undo steps: the card back to the waste, then the draw back into the stock", async () => {
+    mockAutoMove = true
+    // Tapping the 10 of clubs up leaves a board that finishes itself: one draw-3 turns up the J (waste top), which goes
+    // straight up with the Q and K after it.
+    const others = [pile('diamonds', 13), pile('hearts', 13), pile('spades', 13)]
+    await mount(board({ tableau: [[card('clubs', 10)]], foundation: [pile('clubs', 9), ...others], stock: [card('clubs', 13), card('clubs', 12), card('clubs', 11)] }), [], 2)
+
+    await press(`card-${id('clubs', 10)}`)
+    await flush(1500)
+    expect(mockLog.shown).toEqual([id('clubs', 10), id('clubs', 11), id('clubs', 12), id('clubs', 13)])
+    expect(mockLog.dealt).toEqual([]) // the draw-and-play flew the J straight from the stock, no waste stop
+    expect(mockRecordWon).toHaveBeenCalledTimes(1)
+    expect(moves()).toBe(1)
+
+    await undoOne() // the K, back to the waste
+    expect(screen.queryByTestId('win-banner')).toBeNull()
+    expect(screen.queryByTestId(`waste-${id('clubs', 13)}`)).not.toBeNull()
+    await undoOne() // the Q
+    await undoOne() // the J - the play half of the draw-and-play
+    expect(screen.queryByTestId(`waste-${id('clubs', 11)}`)).not.toBeNull()
+    expect(foundationTop('clubs')).toBe(id('clubs', 10))
+    await undoOne(3) // the draw half: the three drawn cards fly back into the stock
+    expect(screen.queryByTestId(/^waste-/)).toBeNull()
+    expect(screen.queryByTestId('stock-pile')).not.toBeNull()
+    await undoOne() // and the tap
+    expect(mockLog.shown.at(-1)).toBe(id('clubs', 10))
+    expect(foundationTop('clubs')).toBe(id('clubs', 9))
   })
 })

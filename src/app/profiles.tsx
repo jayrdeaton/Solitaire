@@ -1,10 +1,9 @@
 import { ProfilesScreen } from '@tastic/profile'
 import { StyleSheet, View } from 'react-native'
-import { useTheme } from 'react-native-paper'
 
 import { RotatedScreen } from '@/components/RotatedScreen'
+import { CHROME_FG, DEFAULT_SEED_COLOR, useTableColors } from '@/components/theme'
 import { useFrameAutoAlign } from '@/components/useFrameAutoAlign'
-import { CHROME_FG, DEFAULT_SEED_COLOR, previewCardBack, useTableColors } from '@/components/theme'
 import { useProfiles } from '@/stores/profiles'
 import { safeBack } from '@/utils/navigation'
 
@@ -15,10 +14,10 @@ import { safeBack } from '@/utils/navigation'
 // repo's own CLAUDE.md finding). This wrapper only themes it - ProfilesScreen owns its own opaque
 // bg with no background-slot prop, so bg='transparent' lets the app-wide felt (TableBackground,
 // mounted once in _layout.tsx) show through underneath, same as achievements.tsx's BaseStatsScreen
-// usage. fg/cardBg/
-// titleVariant/colorPreview mirror the same overrides the old ProfilesManager call passed
+// usage. fg/cardBg/titleVariant mirror the same overrides the old ProfilesManager call passed
 // directly - same chrome palette, same headlineSmall title size, instead of ProfilesScreen's own
-// literal-black/white default and oversized displaySmall.
+// literal-black/white default and oversized displaySmall. Muted profile colors (chips and swatch
+// previews alike) come from _layout.tsx's MutedProfileColors, not a prop here.
 //
 // Same rotated frame as every other screen (see RotatedScreen). `rotatedSafeArea` because ProfilesManager reads
 // the safe-area insets itself (the header padding), and inside a turned frame the physical ones sit on the wrong
@@ -39,13 +38,12 @@ export default function Profiles() {
 const SCREEN_MAX_WIDTH = 640
 
 function ProfilesContent() {
-  const { dark } = useTheme()
   const colors = useTableColors()
   const { profiles, createProfile, updateProfile, deleteProfile } = useProfiles()
 
   return (
     <View style={styles.container}>
-      <ProfilesScreen profiles={profiles} defaultColor={DEFAULT_SEED_COLOR} onCreate={(patch) => createProfile(patch)} onSave={(id, patch) => updateProfile(id, patch)} onDelete={(id) => deleteProfile(id)} onBack={safeBack} fg={CHROME_FG} bg='transparent' cardBg={colors.tableFeltDark} titleVariant='headlineSmall' colorPreview={(hex) => previewCardBack(hex, dark)} useColorPickerAlign={useFrameAutoAlign} />
+      <ProfilesScreen profiles={profiles} defaultColor={DEFAULT_SEED_COLOR} onCreate={(patch) => createProfile(patch)} onSave={(id, patch) => updateProfile(id, patch)} onDelete={(id) => deleteProfile(id)} onBack={safeBack} fg={CHROME_FG} bg='transparent' cardBg={colors.tableFeltDark} titleVariant='headlineSmall' useColorPickerAlign={useFrameAutoAlign} />
     </View>
   )
 }

@@ -4,6 +4,7 @@ import { useToast } from '@rific/toaster'
 import { CardBack, CardFace, DecoratedCardBack } from '@tastic/cards'
 import { type ViewRotation } from '@tastic/core'
 import { BaseSettingsDialog } from '@tastic/hud'
+import { useGuide } from '@tastic/hud/guide'
 import { ReactNode } from 'react'
 import { StyleSheet, View } from 'react-native'
 import { Icon, Text } from 'react-native-paper'
@@ -74,6 +75,10 @@ interface SettingsDialogProps {
   // withGameProviders / app/index.tsx), so the dialog is already turned with it; omitting it would apply the
   // ambient live rotation on top of that and turn the dialog twice.
   rotation?: ViewRotation
+  // Shows the "How to Play" row that replays the how-to-play guide (see GuideHost). Off by default and
+  // turned on ONLY by Home: GameChrome leaves it off, since the score counts elapsed seconds and a
+  // guide opened mid-deal would cost the player score.
+  showHowToPlay?: boolean
 }
 
 // Thin adapter over @tastic/hud's shared settings shell, matching the rest of the fleet's own
@@ -82,14 +87,15 @@ interface SettingsDialogProps {
 // - see lockableDeviceMotion.ts for how the lock actually takes effect). Check for Updates is left showing (its own Platform.OS check
 // already hides it on web) - the root layout's UpdateDialog handles the autoCheck/autoPrompt flow,
 // this just adds the manual "Check for Updates" button/version row.
-export function SettingsDialog({ visible, onDismiss, children, rotation }: SettingsDialogProps) {
+export function SettingsDialog({ visible, onDismiss, children, rotation, showHowToPlay = false }: SettingsDialogProps) {
+  const { open: openGuide } = useGuide()
   const { settings, updateSettings } = useSettings()
   const colors = useTableColors()
   const { colors: paperColors } = useAutoPaperTheme()
   const { error } = useToast()
 
   return (
-    <BaseSettingsDialog visible={visible} onDismiss={onDismiss} rotation={rotation} version={release.otaVersion} onUpdateError={(message) => error('Update check failed', message)} lockOrientation={settings.lockOrientation} onLockOrientationChange={(value) => updateSettings({ lockOrientation: value })}>
+    <BaseSettingsDialog visible={visible} onDismiss={onDismiss} rotation={rotation} version={release.otaVersion} onUpdateError={(message) => error('Update check failed', message)} lockOrientation={settings.lockOrientation} onLockOrientationChange={(value) => updateSettings({ lockOrientation: value })} onShowHowToPlay={showHowToPlay ? openGuide : undefined}>
       {children}
       <SettingsSection>
         {/* Same bare-row shape as BaseSettingsDialog's own Sound/Haptics rows (an icon badge whose
@@ -133,6 +139,20 @@ export function SettingsDialog({ visible, onDismiss, children, rotation }: Setti
             </View>
             <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
               Invert Dark Mode Colors
+            </Text>
+          </View>
+        </TouchableRipple>
+        {/* Same bare-row shape as the toggles above - a standard "Reduce Motion" accessibility
+        preference (see stores/settings.tsx's own doc comment on reduceMotion): skips every deal/
+        draw/undo/sweep flight straight to landed, the same instant-land outcome a mid-deal skip tap
+        already produces, just automatic rather than requiring one. */}
+        <TouchableRipple onPress={() => updateSettings({ reduceMotion: !settings.reduceMotion })} style={styles.toggleButton} accessibilityLabel={`Reduce motion ${settings.reduceMotion ? 'on' : 'off'}`}>
+          <View style={styles.toggleContent}>
+            <View style={[styles.iconBadge, { backgroundColor: settings.reduceMotion ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
+              <Icon source={settings.reduceMotion ? 'motion-pause-outline' : 'motion-play-outline'} size={18} color={settings.reduceMotion ? paperColors.tertiary : paperColors.onSurfaceVariant} />
+            </View>
+            <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
+              Reduce Motion
             </Text>
           </View>
         </TouchableRipple>

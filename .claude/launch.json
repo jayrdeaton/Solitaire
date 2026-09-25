@@ -4,9 +4,27 @@
     {
       "name": "solitaire-web",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["expo", "start", "--web", "--port", "8092"],
-      "port": 8092,
+      "runtimeArgs": [
+        "expo",
+        "start",
+        "--web",
+        "--port",
+        "8094"
+      ],
+      "port": 8094,
       "autoPort": true
+    },
+    {
+      "name": "solitaire-dev-client",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "expo",
+        "start",
+        "--dev-client",
+        "--port",
+        "8093"
+      ],
+      "port": 8093
     }
   ]
 }

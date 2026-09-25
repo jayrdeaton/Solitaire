@@ -170,9 +170,15 @@ const FlightGhostCard = memo(function FlightGhostCard({ onMounted, content, live
     const p = toLocal(sx, sy, content.cardWidth, cardHeight, frame)
     return { transform: [{ translateX: p.x }, { translateY: p.y }] }
   })
+  // An explicit size for the container - its only children are absolutely positioned, so without it this lays out as
+  // an exactly-zero frame at the overlay's origin, which trips a React Native (Fabric, iOS) view-recycling bug that
+  // leaves a recycled UIView at its PREVIOUS life's position (a recycled view's stored layout is reset to a zero
+  // frame, so a new zero frame reads as "unchanged" and its center/bounds are never reset). See DealLayer.tsx's
+  // slotSize for the full account; a ghost mounted into such a view would fly on the wrong row for its whole flight.
+  const groupHeight = cardHeight + Math.max(0, content.cards.length - 1) * content.offsetStep
   return (
     <CardSizeProvider width={content.cardWidth}>
-      <Animated.View style={[styles.ghostLayer, animatedStyle]}>
+      <Animated.View style={[styles.ghostLayer, { width: content.cardWidth, height: groupHeight }, animatedStyle]}>
         {content.cards.map((c, i) => (
           <View key={c.id} style={[styles.stackedCard, { top: i * content.offsetStep }]}>
             <PlayingCard card={c} />

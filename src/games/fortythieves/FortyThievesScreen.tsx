@@ -41,6 +41,7 @@ import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
+import { useDimAfterDeal } from '@/games/shared/useDimAfterDeal'
 import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
@@ -127,6 +128,8 @@ function FortyThievesScreenInner() {
   // The waste slot itself (StockWaste's wasteRef) - exactly card-sized, and where the top card sits.
   const wasteViewRef = useRef<View>(null)
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
+  // Nothing is dimmed while the deal is in the air; the whole board dims at once when it has landed (see useDimAfterDeal).
+  const dimAfterDeal = useDimAfterDeal()
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
@@ -195,6 +198,7 @@ function FortyThievesScreenInner() {
     pendingWinCascadeRef.current = null
 
     setDealHiddenIds(new Set(s.tableau.flat().map((c) => c.id)))
+    dimAfterDeal.hold()
     scheduleDeal(myToken)
     commitState(s)
   }
@@ -218,6 +222,7 @@ function FortyThievesScreenInner() {
     setWon(false)
     recordedWinRef.current = false
     setDealHiddenIds(new Set())
+    dimAfterDeal.releaseNow()
     commitState(saved.state)
   }
 
@@ -234,6 +239,7 @@ function FortyThievesScreenInner() {
     if (dealTokenRef.current !== token) return
     if (!origin) {
       setDealHiddenIds(new Set())
+      dimAfterDeal.release()
       return
     }
 
@@ -247,6 +253,7 @@ function FortyThievesScreenInner() {
     const entries = paceFaceUpDeal(built)
     if (entries.length === 0) {
       setDealHiddenIds(new Set())
+      dimAfterDeal.release()
       return
     }
 
@@ -262,7 +269,10 @@ function FortyThievesScreenInner() {
           return next
         })
       },
-      () => {}
+      () => {
+        if (dealTokenRef.current !== token) return
+        dimAfterDeal.release()
+      }
     )
   }
 
@@ -402,6 +412,10 @@ function FortyThievesScreenInner() {
       setWon(false)
       winCascade.clear()
     }
+    // Every auto-played step is its own entry now (see applyMove), so an undo can land between two
+    // steps of a cascade that is still armed: dropped here, or the reverted board - provably
+    // finishable again - would set the cascade straight back off with no player move behind it.
+    cascade.disarm()
     const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
     startFlights(1)
@@ -415,8 +429,8 @@ function FortyThievesScreenInner() {
 
     const sourcePile = resolvePile(move.to, stateRef.current)
     // A foundation move's own card can sit BURIED under silent auto-plays that landed on the same
-    // pile after it (they are not on the undo stack) - so it is found by id, not assumed to be on
-    // top, or the ghost would carry the wrong card.
+    // pile after it in a save written before every auto-play got its own undo entry (see applyMove)
+    // - so it is found by id, not assumed to be on top, or the ghost would carry the wrong card.
     const buriedAt = move.to.zone === 'foundation' && sourcePile ? sourcePile.findIndex((c) => c.id === move.anchorCardId) : -1
     const movingCards = sourcePile ? (buriedAt >= 0 ? [sourcePile[buriedAt]] : sourcePile.slice(sourcePile.length - move.count)) : []
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
@@ -449,7 +463,10 @@ function FortyThievesScreenInner() {
     if (!current) return false
     const result = controllerRef.current.tryMove(current, { from, to, count })
     if (result) {
-      if (!opts?.silent) pushUndo(current, { from, to, count, anchorCardId })
+      // A silent auto-play is still its own undo step (the board right before it), so the player can
+      // take a cascade back one card at a time and stop exactly where they want - it just never
+      // counts as a move (below) or arms the cascade again.
+      pushUndo(current, { from, to, count, anchorCardId })
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
@@ -502,8 +519,10 @@ function FortyThievesScreenInner() {
   // to its foundation (see engine/autoFoundation.ts's 'drawAndPlay' step) - draws AND plays it in
   // one committed state change, animated as one continuous flight straight from the stock pile,
   // skipping the ordinary "land on waste first" stop entirely (the confirmed sweep visual). Not a
-  // player decision, so - matching applyMove's own silent branch - this never touches the undo
-  // stack at all (this game excludes every silent move from undo, same as Canfield).
+  // player decision, so it never counts as a move - but, like every auto-play (see applyMove), each
+  // half is its own undo step: the draw (the board before it) and then the waste-to-foundation play
+  // (the board after the draw). Both are kinds handleUndo already flies, so the first Undo sends the
+  // card back to the waste and the next one back into the stock.
   async function fireDrawAndPlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
     const current = stateRef.current
     if (!current || !controllerRef.current.drawStock) return
@@ -522,6 +541,8 @@ function FortyThievesScreenInner() {
     cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying(to, 1)
+    pushUndo(current, { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: 1, anchorCardId: entry.card.id })
+    pushUndo(afterDraw, { from: entry.ref, to, count: 1, anchorCardId: entry.card.id })
     commitState(result)
     checkWin(result, session.moves)
     pendingFlightRef.current.push({ cardId: entry.card.id, to, gen: dealTokenRef.current, flyingId, flight, sweep: opts.sweep })
@@ -550,8 +571,8 @@ function FortyThievesScreenInner() {
 
   // `opts.sweep` marks this as an automatic step of the win-completing sweep (see the shared
   // cascade hook's own fireDraw callback above) rather than a genuine player tap - not a player
-  // decision, so (matching applyMove's own silent branch) it never touches the undo stack at all,
-  // and doesn't count toward moves/score.
+  // decision, so it doesn't count toward moves/score, but (like every auto-play, see applyMove) it
+  // is still its own undo step.
   async function handleDrawStock(opts?: { sweep?: boolean }) {
     // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
     const current = stateRef.current
@@ -580,7 +601,7 @@ function FortyThievesScreenInner() {
 
     const origin = await measureView(stockViewRef.current)
     if (!origin) {
-      if (!opts?.sweep) pushUndo(current, move)
+      pushUndo(current, move)
       commitState(result)
       settleFlight()
       return
@@ -594,7 +615,7 @@ function FortyThievesScreenInner() {
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
 
-    if (!opts?.sweep) pushUndo(current, move)
+    pushUndo(current, move)
     commitState(result)
     pendingFlightRef.current.push({ cardId: drawnCard.id, to: { zone: 'waste', index: 0 }, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
   }
@@ -716,7 +737,7 @@ function FortyThievesScreenInner() {
                 a face-up card that isn't currently the head of a movable run (every card but the
                 true top, while runMoves is off) needs its own dimmed cue to read as temporarily
                 stuck rather than pickable. */}
-                <PileView cards={col} onPressCard={(card, indexFromTop, measure) => handleCardTap({ zone: 'tableau', index: colIndex }, card.id, measure, indexFromTop)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} dimUnplayable shakeCardId={shake?.cardId} shakeCount={shake?.count} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} />
+                <PileView cards={col} onPressCard={(card, indexFromTop, measure) => handleCardTap({ zone: 'tableau', index: colIndex }, card.id, measure, indexFromTop)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} dimUnplayable={!dimAfterDeal.held} shakeCardId={shake?.cardId} shakeCount={shake?.count} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} />
               </DropZone>
             )
           })}

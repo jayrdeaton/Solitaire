@@ -34,7 +34,15 @@ export function dealStaggerMs(cardCount: number): number {
  * an irregular riffle; 44 leaves a few ms of margin, so every card gets both. */
 export const FACE_UP_STAGGER_MS = 44
 /** How long a deal made of face-up flights may take, first card leaving to last card landing - deliberately longer than
- * DEAL_TARGET_TOTAL_MS, since a face-up card is worth seeing land. paceFaceUpDeal spends up to this much, and no more. */
+ * DEAL_TARGET_TOTAL_MS, since a face-up card is worth seeing land. paceFaceUpDeal spends up to this much, and no more.
+ * Reverted a same-day 2000 -> 2300 (+15%) bump: real screen-recording evidence (frame-by-frame, on the Simulator) showed
+ * that stretching this total did NOT smooth out the deal - it only spaced the same per-card stutter further apart, which
+ * reads as a MORE isolated, more noticeable judder rather than fewer/smaller ones, while also making the whole deal take
+ * longer. The actual stutter comes from GhostSlot's per-launch face mount/commit cost (a court card is ~100-150 SVG
+ * nodes), which no amount of rescheduling fixes - see the "Face-up deals are slower on purpose" and "Known remaining
+ * costs" sections of .claude/CLAUDE.md, and the pre-launch face-seeding fix landing alongside this revert. Settings' own
+ * Reduce Motion toggle (stores/settings.tsx) remains the real escape hatch for anyone who'd rather skip the wait
+ * entirely - it does NOT license creeping the default total back up; do that only with real on-device evidence it helps. */
 export const FACE_UP_TARGET_TOTAL_MS = 2000
 
 /** Slows the FACE-UP part of an initial deal (FreeCell, Yukon's second phase, Forty Thieves, Golf) to FACE_UP_STAGGER_MS per

@@ -11,13 +11,16 @@ const SUIT_REST_OPACITY = 0.25
 // suit lights while the previous is still mid-pulse - a continuous sweep rather than a take-turns blink.
 const SUIT_PULSE_MS = 420
 const SUIT_STAGGER_MS = 140
-// Nothing is shown for this long, then the row fades in over REVEAL_FADE_MS. Every load this stands in
-// for is one AsyncStorage round trip (a game's saved-board read, which `preloadGameInProgress` already
-// starts on finger-down; the stats read) - normally a few dozen ms - so an indicator shown at once would
-// just be a flash of text/motion that's gone before it reads. Held back, the common case is simply the
-// felt (which the board that replaces it also paints), and the indicator only appears if the wait is
-// genuinely long enough to warrant one.
-const REVEAL_DELAY_MS = 250
+// Nothing is shown for this long, then the row fades in over REVEAL_FADE_MS. The read this stands in for
+// is one AsyncStorage round trip (a game's saved-board read, which `preloadGameInProgress` already starts
+// on finger-down; the stats read) - a few dozen ms - but a game's loading screen stays up until the board
+// that replaces it has been BUILT too, and that commit is ~400-500ms of JS (the indicator keeps animating
+// through it, on the UI thread). At 250ms an ordinary game entry landed just past the threshold: a few
+// half-faded suits flashed and were gone before a single pulse (840ms) could play. Held back past a normal
+// entry, the common case is simply the felt (which the board also paints), and the indicator only appears
+// on a genuinely slow load - by which point its pulses have been running since mount, so it arrives
+// already mid-wave rather than starting from rest.
+const REVEAL_DELAY_MS = 750
 const REVEAL_FADE_MS = 200
 
 /** One suit's looping pulse, phase-shifted by its position in the row (see SUIT_STAGGER_MS) so the

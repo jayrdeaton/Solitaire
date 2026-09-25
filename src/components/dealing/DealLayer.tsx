@@ -2,10 +2,11 @@ import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
 import { rotateInsets, useRotation } from '@tastic/core'
 import { createContext, memo, ReactNode, Ref, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Pressable, StyleSheet, View } from 'react-native'
-import Animated, { useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
+import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { Card } from '@/engine/types'
+import { useSettings } from '@/stores/settings'
 
 import { GAME_CONTENT_TOP_PADDING } from '../gameLayout'
 import { OverlayFrame, toLocal, useOverlayFrame } from '../overlayFrame'
@@ -64,6 +65,24 @@ const POOL_SLACK = 2
 // After a JS stall every card that came due meanwhile launches at once; cards that are LATE are spaced at least this far
 // apart so they stream out instead of leaving as one blob (on-time cards always keep their own scheduled time).
 const LATE_LAUNCH_MIN_GAP_MS = 12
+// A landing is only revealed once the ghost's OWN shared values (tx/ty) actually read this close to
+// its destination - comfortably above the spring's genuine settling residual (this app's own dragSpring
+// tests require the equivalent well under 1px against Reanimated's real spring math), so this never
+// fires early on a still-animating ghost. Confirmed live: a plain `wait + duration` timer (this used
+// to be exactly that) fires on the JS thread's own clock, which keeps time fine even while the UI
+// thread is too busy (mounting the deal's own ~52-card initial board commit, worst right at a deal's
+// start) to have actually run the spring at all yet - a handful of the earliest-launched cards per
+// deal reported "landed" while their ghost was still sitting at (or near) its ORIGIN, then popped to
+// the real card far away the instant the swap happened. Never every card (most launch once that
+// initial congestion has cleared) and never the same handful twice (which JS/UI thread scheduling
+// happens to starve is real-device-timing-dependent) - "a small percentage, inconsistent," exactly as
+// reported and reproduced.
+const SETTLE_CHECK_PX = 4
+const SETTLE_POLL_MS = 16
+// However much EXTRA time (beyond the nominal wait+duration) checkSettled may keep polling before
+// giving up and revealing the real card anyway - a genuinely stuck ghost (UI thread starved far
+// longer than one busy commit) must still resolve, not stall forever.
+const SETTLE_MAX_EXTRA_MS = 1000
 // Haptics are capped like the sound pool already is (PLAY_THROTTLE_MS = 40) - at any pace: a card dealt every ~18ms
 // (compressed deals) or ~35ms (the rest) would otherwise be a buzz, not a riffle, and the click and buzz stay paired.
 const HAPTIC_MIN_GAP_MS = 40
@@ -175,7 +194,6 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
   const notified = useRef(false)
   const dealtTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
   const clearTimers = useCallback(() => {
     if (dealtTimeoutRef.current) clearTimeout(dealtTimeoutRef.current)
     if (timeoutRef.current) clearTimeout(timeoutRef.current)
@@ -225,10 +243,41 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
     dealtTimeoutRef.current = setTimeout(() => dealtNotify(spec.cardId), wait)
     // Settlement used to be driven by withSpring's own completion callback (one per axis, both required before
     // notifying) - that callback was found to never fire at all for these duration-based springs on this app's web
-    // target (confirmed live via DragGhostLayer.tsx's identical bug, fixed the same way there). A plain timer covering
-    // the same delay+duration the springs are configured for stands in for it instead; the visual flight itself doesn't
-    // depend on the callback either way, since it's driven by tx/ty directly.
-    timeoutRef.current = setTimeout(notify, wait + (DEAL_SPRING.duration ?? 0))
+    // target (confirmed live via DragGhostLayer.tsx's identical bug, fixed the same way there). A plain `wait + duration`
+    // timer stood in for it next - correct AS LONG AS the UI thread actually ran the spring on schedule, which a busy
+    // commit (this deal's own ~52-card initial board mount, worst right at a deal's start) can't guarantee: the JS timer
+    // keeps time regardless, so it could fire while the ghost was still sitting at its ORIGIN, revealing the real card
+    // far from where the ghost had actually gotten to (see SETTLE_CHECK_PX's own comment - confirmed live, reproduced,
+    // and this is the fix). checkSettled polls the ghost's OWN shared values instead of trusting the clock, and only
+    // calls notify() once they genuinely read close to the destination (or SETTLE_MAX_EXTRA_MS has passed, so a truly
+    // stuck ghost still resolves rather than stalling the deal forever).
+    const nominalSettleAt = Date.now() + wait + (DEAL_SPRING.duration ?? 0)
+    const checkSettled = () => {
+      const dx = Math.abs(tx.value - spec.to.x)
+      const dy = Math.abs(ty.value - spec.to.y)
+      if (dx <= SETTLE_CHECK_PX && dy <= SETTLE_CHECK_PX) {
+        notify()
+      } else if (Date.now() >= nominalSettleAt + SETTLE_MAX_EXTRA_MS) {
+        // A truly stuck ghost must still resolve rather than stall the deal forever - but revealing
+        // the real card while the ghost is still wherever it got stranded is EXACTLY the original bug
+        // this whole mechanism exists to prevent (confirmed live: this branch used to call notify()
+        // unconditionally here, with no position check at all - "structurally impossible" was only
+        // ever true of the fast path above, never of this fallback, and a direct JS-thread lag probe
+        // proved the fallback is far from rare: the thread was stalled MORE than it was free for over
+        // half of a real deal's total duration). Snap the ghost to its true destination first - an
+        // instant jump, still visible as a discontinuity, but the ghost's own last rendered position
+        // and the real card's position are the same pixel the moment the swap happens, so the reveal
+        // itself is never wrong, only occasionally abrupt for a ghost this badly starved.
+        cancelAnimation(tx)
+        cancelAnimation(ty)
+        tx.value = spec.to.x
+        ty.value = spec.to.y
+        notify()
+      } else {
+        timeoutRef.current = setTimeout(checkSettled, SETTLE_POLL_MS)
+      }
+    }
+    timeoutRef.current = setTimeout(checkSettled, wait + (DEAL_SPRING.duration ?? 0))
     return clearTimers
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job])
@@ -281,13 +330,46 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
       },
       cancel() {
         clearTimers()
+        // Stop whatever spring is still running - without this, a slot cancelled mid-flight (a new
+        // deal replacing this one) kept animating on the UI thread toward ITS OLD deal's destination
+        // (nothing had ever told Reanimated to stop), visibly landing there and just sitting, frozen,
+        // showing the old deal's card - until this same slot index was eventually reused by the NEW
+        // deal's own launch(), whose plain value writes finally overwrote it. Confirmed live: rapid
+        // repeated "New Game" taps (a new deal starting while the previous one still had ghosts mid-
+        // flight) made a card visibly fly to a stale, meaningless position and sit there before
+        // "snapping" once its slot was recycled - this is the fix, not a scheduling/pacing change.
+        cancelAnimation(tx)
+        cancelAnimation(ty)
+        cancelAnimation(opacity)
+        opacity.value = 0
         jobRef.current = null
         dealt.current = true
         notified.current = true
+        // React state too, not just the ref - job still non-null in state left this slot rendering
+        // with a real zIndex (not styles.idle) for however long it took the generation-keyed unmount
+        // to actually commit, which is exactly the window the frozen ghost was visible in.
+        setJob(null)
       }
     }),
     [clearTimers, dealtNotify, notify, tx, ty, opacity]
   )
+
+  // Both the slot wrapper and the animated card box carry an explicit card size. Neither NEEDS one for
+  // layout (the card inside sizes itself, and the wrapper's only children are absolute), but without it
+  // each lays out as an exactly-zero frame at the overlay's origin - and that specific frame triggers a
+  // React Native (Fabric, iOS) view-recycling bug that put a ghost on the wrong ROW for the whole deal:
+  // RCTViewComponentView's prepareForRecycle resets its stored _layoutMetrics to a default-constructed,
+  // ZERO frame (not EmptyLayoutMetrics, whose size is -1x-1), so when the recycled UIView is reused for a
+  // view whose new frame is also zero, updateLayoutMetrics sees "frame unchanged" and never resets the
+  // view's center/bounds - the UIView keeps the position of its PREVIOUS life. A New Game unmounts every
+  // real tableau card (PileView does not mount a card whose flight has not landed), and each card's outer
+  // view has frame (0, index * fanOffset) inside its column; a slot wrapper that drew one of those from the
+  // recycle pool sat at y = index * fanOffset, so every card that slot ever flew rendered exactly that many
+  // fan steps too low (x untouched), from its very first flight, with the shared values, the shadow tree
+  // and measureInWindow all reporting the correct position. Confirmed frame-by-frame on the Simulator
+  // (offsets of exactly 4 and 5 fan steps, always on the same slots) and gone once the frame is non-zero.
+  // The same guard is on DragGhostLayer's ghost container, which had the same zero-frame shape.
+  const slotSize = useMemo(() => ({ width: cardWidth, height: cardHeight }), [cardWidth, cardHeight])
 
   const style = useAnimatedStyle(() => {
     const p = toLocal(tx.value, ty.value, cardWidth, cardHeight, frame)
@@ -301,8 +383,8 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
 
   return (
     // The static wrapper (not the animated opacity) is what hides an idle slot, and it carries the paint order.
-    <View testID={`deal-ghost-${slot}`} pointerEvents='none' style={[styles.slot, job ? { zIndex: job.order } : styles.idle]}>
-      <Animated.View style={[styles.ghostCard, style]}>{face}</Animated.View>
+    <View testID={`deal-ghost-${slot}`} pointerEvents='none' style={[styles.slot, slotSize, job ? { zIndex: job.order } : styles.idle]}>
+      <Animated.View style={[styles.ghostCard, slotSize, style]}>{face}</Animated.View>
     </View>
   )
 })
@@ -316,6 +398,14 @@ export function DealProvider({ children }: { children: ReactNode }) {
   const { playCardSound, hapticCard } = useCardSoundEffects()
   // Same rotated-frame safe-area top GameChrome positions its controls from, plus that band's height.
   const topChromeBand = rotateInsets(useSafeAreaInsets(), useRotation()).top + GAME_CONTENT_TOP_PADDING
+  // Read through a ref, not a controller dependency: `controller` below is memoized once (`[]`) so
+  // every screen's `deal` reference stays stable for its whole lifetime, and start() itself always
+  // wants the CURRENT setting - not whatever it was when the provider first mounted.
+  const { settings } = useSettings()
+  const reduceMotionRef = useRef(settings.reduceMotion)
+  useEffect(() => {
+    reduceMotionRef.current = settings.reduceMotion
+  }, [settings.reduceMotion])
   // How many ghost slots the current deal mounts (see ghostPoolSize) - NOT one per card.
   const [poolSize, setPoolSize] = useState(0)
   // Whether a deal is in flight at all (drives the skip-tap layer and mounts the pool).
@@ -347,7 +437,7 @@ export function DealProvider({ children }: { children: ReactNode }) {
   // The state copy is what render reads (a ref's `.current` can't be read during render).
   const [generation, setGeneration] = useState(0)
   const generationRef = useRef(0)
-  const { overlayRef, frame } = useOverlayFrame()
+  const { overlayRef, frame, ready: frameReady } = useOverlayFrame()
   // spec.from/to are screen-space (measureView/CardRegistry.measure, both viewport-relative on
   // web). But this overlay - a screen-level sibling of {children}, not a descendant - isn't
   // necessarily anchored at the true viewport origin: it renders wherever the containing block
@@ -389,6 +479,16 @@ export function DealProvider({ children }: { children: ReactNode }) {
     },
     [playCardSound, hapticCard]
   )
+  // handleDealt isn't unconditionally stable (its own deps are playCardSound/hapticCard), but
+  // `controller` below is memoized at `[]` forever - so start()'s reduceMotion fast path reads it
+  // through a ref, the same reason reduceMotionRef exists above, rather than adding it (and
+  // therefore controller itself) to a dependency array. handleLanded needs no such ref: its own
+  // deps are already `[]`, so the closure `controller` captures at mount stays the only one there
+  // ever is.
+  const handleDealtRef = useRef(handleDealt)
+  useEffect(() => {
+    handleDealtRef.current = handleDealt
+  }, [handleDealt])
 
   // Hands every queued card whose flight starts within LOOKAHEAD_MS to a free slot (with its delay re-based onto its own
   // launch time - a slot's timers/springs all start when it is launched), then reschedules itself while any remain. A
@@ -466,11 +566,23 @@ export function DealProvider({ children }: { children: ReactNode }) {
   // handles - that is the commit after start(), and effects run after refs attach. The deal's clock starts HERE, not in
   // start(): if the mount took a while (a slow phone, a busy board commit), every card's delay would already be spent and
   // the first several would all leave in the same frame instead of staggered.
+  //
+  // Also gated on frameReady: useOverlayFrame's cx/cy/lw/lh start at 0 until its own async
+  // measureInWindow lands, and toLocal has no way to tell "genuinely a zero-sized frame at the
+  // screen's origin" from "not measured yet" - it just computes with whatever's there. On a fresh
+  // game screen's very first deal, that measurement can still be in flight when this effect would
+  // otherwise fire (both are async work kicked off around the same mount), so the first cards flew to
+  // a wrong, shared position (toLocal's output for a zero frame) and jumped to their real one the
+  // instant the real measurement landed and every still-mounted ghost's animated style (reading
+  // cx/cy reactively) recomputed - confirmed live: "a small percentage" of a deal's earliest cards
+  // flying to nowhere before snapping into place, never the middle or tail of a deal. Re-running once
+  // frameReady flips true (it's a dependency below) costs nothing on every OTHER deal, where it's
+  // already long since true.
   useEffect(() => {
-    if (generation === 0) return
+    if (generation === 0 || !frameReady) return
     startedAtRef.current = Date.now()
     launchDue()
-  }, [generation, launchDue])
+  }, [generation, frameReady, launchDue])
 
   useEffect(
     () => () => {
@@ -517,6 +629,24 @@ export function DealProvider({ children }: { children: ReactNode }) {
           onAllLanded()
           return
         }
+        if (reduceMotionRef.current) {
+          // No ghost is ever mounted or flown: every card is dealt and lands in the same tick - the
+          // same instant-land outcome handleSkipTap already gives an unlaunched card, just reached
+          // without a tap. onCardDealt/onCardLanded still fire once per card in entries order (via
+          // the same guarded functions a real flight uses, so a duplicated id in entries still only
+          // reaches the caller once each) - sound/haptic still fire too, throttled by their own
+          // existing PLAY_THROTTLE_MS/HAPTIC_MIN_GAP_MS to essentially one of each for the whole
+          // deal, not 52 - and a caller's own take-off-driven side effects (e.g. FreeCell/Yukon's
+          // deck placeholder, keyed on the max-delay card's own id) resolve exactly as they would at
+          // the end of a real flight, just immediately.
+          setPoolSize(0)
+          setDealing(false)
+          entries.forEach((entry) => {
+            handleDealtRef.current(entry.cardId, generationRef.current)
+            handleLanded(entry.cardId, generationRef.current)
+          })
+          return
+        }
         const sorted = [...entries].sort((a, b) => a.delayMs - b.delayMs)
         queueRef.current = sorted.map((spec, order) => ({ spec, order }))
         const size = dealPoolSize(sorted.map((entry) => entry.delayMs))
@@ -528,7 +658,10 @@ export function DealProvider({ children }: { children: ReactNode }) {
         setDealing(true)
       }
     }),
-    []
+    // handleLanded's own deps are `[]` (see its definition above), so it never actually changes -
+    // listing it here costs nothing (this memo still only ever runs once) and satisfies the linter
+    // honestly, rather than disabling the rule for a dependency that genuinely is being read.
+    [handleLanded]
   )
 
   function handleSkipTap() {

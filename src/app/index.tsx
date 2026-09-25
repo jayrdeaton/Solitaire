@@ -2,6 +2,7 @@ import { IconButton, Pressable } from '@rific/feedback-press'
 import { type TableColors } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
 import { PressAwayOverlay, usePopoverHost } from '@tastic/hud'
+import { useAutoShowGuide } from '@tastic/hud/guide'
 import { Link, Redirect, useIsFocused, useRouter } from 'expo-router'
 import { useEffect, useMemo, useState } from 'react'
 import { ScrollView, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
@@ -10,6 +11,7 @@ import { Icon, MD3Theme, useTheme } from 'react-native-paper'
 import { GamePreview, type PreviewCardPlacement } from '@/components/GamePreview'
 import { HeroCards } from '@/components/HeroCards'
 import { HOME_GRID_GAP, HOME_TILE_PADDING, HOME_TOP_BAND, HOME_WIDE_MAX_FONT_SCALE, HOME_WIDE_PANE_GAP, useHomeLayout } from '@/components/homeLayout'
+import type { PreviewGame } from '@/components/previewFaceBitmaps'
 import { ProfilePanel } from '@/components/ProfilePanel'
 import { RotatedScreen } from '@/components/RotatedScreen'
 import { RulesDialog } from '@/components/RulesDialog'
@@ -69,6 +71,11 @@ export default function Home() {
   // every Home in the stack swap its whole menu for a Redirect while a game was on top and rebuild it
   // (all ~370 preview cards) the moment Home was tapped, which is what made going Home take seconds.
   const [resumeGame] = useState(consumeResumeGame)
+  // First launch only (and once per session): opens the how-to-play cards over this screen (see
+  // GuideHost). Held back while this Home is about to redirect into a saved game, so the guide can
+  // never open over a live deal, whose clock is running. Called before the early return: hooks run
+  // unconditionally.
+  useAutoShowGuide(!resumeGame)
 
   // A cold launch/relaunch while a game was in progress drops the player straight back onto it,
   // skipping this menu entirely - it only reappears once they explicitly back out of that game
@@ -167,7 +174,7 @@ function HomeContent() {
         // columns beside the left pane can't give it. The rules button floats over the preview's corner.
         <Pressable style={wideTileStyle} onPressIn={() => preloadGameInProgress(g.href.slice(1) as SolitaireGameId)}>
           <View>
-            <GamePreview placements={previewsRevealed ? g.placements : []} colors={colors} style={styles.tilePreview} />
+            <GamePreview game={g.href.slice(1) as PreviewGame} placements={previewsRevealed ? g.placements : []} colors={colors} style={styles.tilePreview} />
             {renderRulesButton(g, styles.tileInfoButton, '#fff')}
           </View>
           <Text style={styles.tileTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
@@ -179,7 +186,7 @@ function HomeContent() {
         </Pressable>
       ) : (
         <Pressable style={styles.card} onPressIn={() => preloadGameInProgress(g.href.slice(1) as SolitaireGameId)}>
-          <GamePreview placements={previewsRevealed ? g.placements : []} colors={colors} style={styles.preview} />
+          <GamePreview game={g.href.slice(1) as PreviewGame} placements={previewsRevealed ? g.placements : []} colors={colors} style={styles.preview} />
           <View style={styles.cardText}>
             <Text style={styles.cardTitle}>{g.title}</Text>
             <Text style={styles.cardBlurb}>{g.blurb}</Text>
@@ -268,7 +275,7 @@ function HomeContent() {
 
       {/* rotation={0}: these portal into the Portal.Host HomeMenu mounts INSIDE the rotated frame, so they are
       already turned with it - the dialog's own ambient rotation on top would turn them twice. */}
-      <SettingsDialog visible={settingsOpen} onDismiss={() => setSettingsOpen(false)} rotation={0} />
+      <SettingsDialog visible={settingsOpen} onDismiss={() => setSettingsOpen(false)} rotation={0} showHowToPlay />
 
       <RulesDialog visible={!!rulesFor} onDismiss={() => setRulesFor(null)} title={rulesFor?.title ?? ''} rules={rulesFor?.rules ?? []} compact={isWide} />
     </View>

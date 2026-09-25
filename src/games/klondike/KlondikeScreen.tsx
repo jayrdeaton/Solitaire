@@ -59,19 +59,22 @@ const TABLEAU_MIN_HEIGHT = 420
 const TABLEAU_COLUMNS = 7
 
 /** This game's own undo-move shape (see undoTypes.ts's TMove generic): `primary` is the move that
- * produced the very next state (same as every other game's plain MoveInfo|null), and `cascaded`
- * collects any silent auto-play-to-foundation moves (see applyMove's `opts.silent`) that happened
- * afterward, before the player's next real action - so one Undo press reverses the whole burst,
- * animating every card it touched instead of only the primary one. */
+ * produced the very next state (same as every other game's plain MoveInfo|null). Every step, an
+ * auto-played one included (a silent auto-play-to-foundation move, see applyMove's `opts.silent`,
+ * and each draw/recycle/draw-and-play of the win-completing sweep), now pushes its own entry, so
+ * `cascaded` is always empty for a new entry. It is kept only for saves written before that, when
+ * those steps were folded into the entry of the move that set them off, in the order they happened,
+ * and one Undo press took them all back (see handleUndo and runCascadeReturn, which still fly those
+ * back). */
 interface KlondikeUndoMove {
   primary: MoveInfo | null
   cascaded: MoveInfo[]
 }
 
-/** Every container-ref position a cascaded move's reverse flight might need as its origin or
- * destination, pre-measured once up front in handleUndo (all three are cheap, content-independent
- * refs). A cascaded move's own `to`/`from` zone picks which of these applies (see
- * originForCascadedMove/isStockDestinedMove below) - an ordinary auto-played card still uses
+/** Every container-ref position a legacy cascaded move's (see KlondikeUndoMove) reverse flight might
+ * need as its origin or destination, pre-measured once up front in handleUndo (all three are cheap,
+ * content-independent refs). A cascaded move's own `to`/`from` zone picks which of these applies
+ * (see originForCascadedMove/isStockDestinedMove below) - an ordinary auto-played card still uses
  * `foundation` exactly as before; only the newer stock-cycling-during-a-win moves ever reach for
  * `stock`/`waste` instead. */
 interface CascadeOrigins {
@@ -156,11 +159,11 @@ function KlondikeScreenInner() {
   // frozen on its outgoing look rather than reveal the incoming one early - see StockWaste's own
   // `stockHidden` prop doc comment.
   const [stockHidden, setStockHidden] = useState(false)
-  // Extra waste-slot hidden count contributed by cascaded auto-play cards flying back onto the
-  // waste during an undo (see PATTERN_CASCADE_UNDO) - added on top of `flying`'s own waste count
-  // in the StockWaste wasteHiddenCount prop below, since the two can be simultaneously true (the
-  // primary move undoing back to a foundation/tableau slot while a cascaded card independently
-  // returns to waste).
+  // Extra waste-slot hidden count contributed by a legacy save's cascaded auto-play cards flying
+  // back onto the waste during an undo (see PATTERN_CASCADE_UNDO) - added on top of `flying`'s own
+  // waste count in the StockWaste wasteHiddenCount prop below, since the two can be simultaneously
+  // true (the primary move undoing back to a foundation/tableau slot while a cascaded card
+  // independently returns to waste).
   const [cascadeWasteHiddenCount, setCascadeWasteHiddenCount] = useState(0)
   // Suits whose win-cascade origin measurement failed (see runWinCascade) - that suit's real
   // foundation card un-hides immediately instead of staying hidden forever with no ghost ever
@@ -221,14 +224,14 @@ function KlondikeScreenInner() {
    * oldest-first, ending with the new top/frontmost card. `gen`/`flyingId` guard the same races
    * pendingFlightRef's do, above. */
   const pendingDealDrawRef = useRef<{ topCardId: string; drawnCards: Card[]; gen: number; flyingId: number }[]>([])
-  /** A cascade-return flight (see PATTERN_CASCADE_UNDO) awaiting its post-commit destination
-   * measurement + deal.start(), analogous to pendingDealDrawRef above - `origins` is each
-   * foundation slot's own measured position (index-aligned with foundationSlotRefs/SUITS),
-   * captured synchronously in handleUndo (a container ref, content-independent, safe to measure
-   * before the state revert commits) since the cascaded cards themselves have no CardRegistry
-   * entry once buried under a later foundation arrival. Stays a single slot (not a list) - undo
-   * itself is still fully serialized (see useFlightConcurrency's undoBusyRef/activeFlightCountRef), so at most one
-   * of these is ever pending at a time. */
+  /** A legacy save's cascade-return flight (see KlondikeUndoMove/PATTERN_CASCADE_UNDO) awaiting its
+   * post-commit destination measurement + deal.start(), analogous to pendingDealDrawRef above -
+   * `origins` is each foundation slot's own measured position (index-aligned with
+   * foundationSlotRefs/SUITS), captured synchronously in handleUndo (a container ref,
+   * content-independent, safe to measure before the state revert commits) since the cascaded cards
+   * themselves have no CardRegistry entry once buried under a later foundation arrival. Stays a
+   * single slot (not a list) - undo itself is still fully serialized (see useFlightConcurrency's
+   * undoBusyRef/activeFlightCountRef), so at most one of these is ever pending at a time. */
   const pendingCascadeUndoRef = useRef<{ moves: MoveInfo[]; origins: CascadeOrigins; gen: number } | null>(null)
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
@@ -585,12 +588,13 @@ function KlondikeScreenInner() {
     )
   }
 
-  // Cascade-return effect (see PATTERN_CASCADE_UNDO): once an undo's revert has committed, fly
-  // every cascaded (silently auto-played) card back from the foundation slot it left to wherever
-  // it now really sits (a tableau column or the waste), independently and concurrently with the
-  // primary move's own DragGhostLayer flight (see the pendingFlightRef effect above - independent
-  // providers, so both animating at once is correct). Deferred to [state] for the same
-  // registration-race reason as every other post-commit measurement in this file.
+  // Cascade-return effect (see PATTERN_CASCADE_UNDO), only for an entry restored from a save
+  // written before auto-plays became their own undo steps (see KlondikeUndoMove): once an undo's
+  // revert has committed, fly every cascaded (silently auto-played) card back from the foundation
+  // slot it left to wherever it now really sits (a tableau column or the waste), independently and
+  // concurrently with the primary move's own DragGhostLayer flight (see the pendingFlightRef effect
+  // above - independent providers, so both animating at once is correct). Deferred to [state] for
+  // the same registration-race reason as every other post-commit measurement in this file.
   useEffect(() => {
     const pending = pendingCascadeUndoRef.current
     if (!pending || !state) return
@@ -665,30 +669,21 @@ function KlondikeScreenInner() {
     recordHintUsed('klondike')
   }
 
+  // Every step gets its own undo entry, an auto-played one included (a silent foundation play, a
+  // sweep's draw/recycle, each half of a draw-and-play), so one Undo press takes back exactly one
+  // step and the player can stop exactly where they want. An auto-played step used to be folded
+  // into the entry of the move that set it off instead (see KlondikeUndoMove's `cascaded`).
   function pushUndo(prev: KlondikeState, move: MoveInfo | null) {
     setUndoStack((stack) => [...stack, { state: prev, move: { primary: move, cascaded: [] } }])
   }
 
-  // Appends a silently-auto-played move (see applyMove's `opts.silent`) to the CURRENT
-  // top-of-stack entry's own cascade list instead of pushing a new stack entry - see
-  // PATTERN_CASCADE_UNDO. A cascaded move arriving with an empty stack is dropped (shouldn't
-  // happen - a silent move only ever follows a real player move, which always pushes an entry
-  // first), matching this game's pre-fix behavior for that edge case rather than inventing new
-  // behavior for it.
-  function pushCascadedMove(move: MoveInfo) {
-    setUndoStack((stack) => {
-      if (stack.length === 0) return stack
-      const last = stack[stack.length - 1]
-      return [...stack.slice(0, -1), { state: last.state, move: { primary: last.move.primary, cascaded: [...last.move.cascaded, move] } }]
-    })
-  }
-
-  // Marks cascaded cards hidden at their real (about-to-be-revealed-by-revert) destination -
-  // reuses dealHiddenIds for a tableau destination (conceptually identical to the initial deal:
-  // a card mid-flight into a pile) and a dedicated counter for a waste destination (StockWaste has
-  // no per-id hide, only a frontmost-N-slots count - see cascadeWasteHiddenCount above). Must be
-  // called in the SAME commit as the setState that reverts to prevState (see PATTERN_CASCADE_UNDO)
-  // so the returning cards never flash fully visible before their ghosts arrive to cover them.
+  // Legacy (a save's folded `cascaded` list, see KlondikeUndoMove). Marks cascaded cards hidden at
+  // their real (about-to-be-revealed-by-revert) destination - reuses dealHiddenIds for a tableau
+  // destination (conceptually identical to the initial deal: a card mid-flight into a pile) and a
+  // dedicated counter for a waste destination (StockWaste has no per-id hide, only a
+  // frontmost-N-slots count - see cascadeWasteHiddenCount above). Must be called in the SAME commit
+  // as the setState that reverts to prevState (see PATTERN_CASCADE_UNDO) so the returning cards
+  // never flash fully visible before their ghosts arrive to cover them.
   function hideCascadeCards(moves: MoveInfo[]) {
     if (moves.length === 0) return
     const tableauIds = moves.filter((m) => m.from.zone === 'tableau').map((m) => m.anchorCardId)
@@ -726,12 +721,17 @@ function KlondikeScreenInner() {
   // re-rendered, so the ORIGIN has to be captured here, synchronously against the still-current
   // state), then revert and mark `move.from` as incoming so it flies the rest of the way there
   // exactly like a fresh move would. Undoing a stock draw flies back toward the stock instead of a
-  // per-card pile - see pendingFlightRef's `viaStock`. A recorded cascade (see PATTERN_CASCADE_UNDO)
-  // rides along, animating back to its own origins concurrently with whichever branch below
-  // handles the primary move.
+  // per-card pile - see pendingFlightRef's `viaStock`. Each auto-played step is its own entry (see
+  // pushUndo), taken back by the same branch as the player's own move of that kind. An entry from a
+  // save written before that can still carry a `cascaded` list (see PATTERN_CASCADE_UNDO): it rides
+  // along, animating back to its own origins concurrently with whichever branch below handles the
+  // primary move.
   async function handleUndo() {
     if (undoBusyRef.current || activeFlightCountRef.current > 0 || flying.length > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
+    // An undo is not the player's own foundation move, so it must never set auto-play off again: an
+    // undone auto-play would otherwise fly straight back up the moment the reverted board settles.
+    cascade.disarm()
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition - the only move available once it's true is New Game), so any undo reachable while
     // won must be undoing the winning move itself. Clears the "You Won!" banner and stops the
@@ -867,8 +867,9 @@ function KlondikeScreenInner() {
 
     const sourcePile = resolvePile(move.to)
     // A foundation pile stacks in place, so an undone foundation move's card is not necessarily its
-    // top: auto-play cascaded more cards on top of it (they ride along in `cascaded`, flying back on
-    // their own). Look the card up by id then, instead of ghosting whatever now sits on top.
+    // top in a legacy entry: auto-play cascaded more cards on top of it (they ride along in
+    // `cascaded`, flying back on their own). Look the card up by id then, instead of ghosting
+    // whatever now sits on top.
     const foundationAt = move.to.zone === 'foundation' && sourcePile ? sourcePile.findIndex((c) => c.id === move.anchorCardId) : -1
     const movingCards = sourcePile ? (foundationAt >= 0 ? sourcePile.slice(foundationAt, foundationAt + move.count) : sourcePile.slice(sourcePile.length - move.count)) : []
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
@@ -903,10 +904,8 @@ function KlondikeScreenInner() {
   }
 
   // `silent` is for the auto-play-to-foundation feature (see maybeAutoPlay/fireAutoMove below): an
-  // auto-played card isn't a player decision, so instead of pushing its own undo entry, it's
-  // appended to the CURRENT top entry's own cascade list (see PATTERN_CASCADE_UNDO/pushCascadedMove)
-  // - one Undo press reverts the whole triggering move plus any cascade it set off, animating every
-  // card it touched - and it doesn't count toward the moves/score the player is judged on.
+  // auto-played card isn't a player decision, so it doesn't count toward the moves/score the player
+  // is judged on. It is still its own undo step, like any other move (see pushUndo).
   function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean }) {
     // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
     // closure's `state` - two actions can now be triggered back-to-back before React re-renders
@@ -916,9 +915,7 @@ function KlondikeScreenInner() {
     if (!current) return false
     const result = controllerRef.current.tryMove(current, { from, to, count })
     if (result) {
-      const moveInfo: MoveInfo = { from, to, count, anchorCardId }
-      if (opts?.silent) pushCascadedMove(moveInfo)
-      else pushUndo(current, moveInfo)
+      pushUndo(current, { from, to, count, anchorCardId })
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
@@ -989,8 +986,14 @@ function KlondikeScreenInner() {
   // skipping the ordinary "land on waste first" stop entirely (the confirmed sweep visual). Reuses
   // the exact same pendingFlightRef/[state]-effect mechanism an ordinary draw-to-waste already uses
   // (a card's own post-commit CardRegistry registration, wherever it lands) - the only differences
-  // are committing the FINAL (post-play) state directly, recording the undo as a cascaded move
-  // (this isn't a player decision), and passing sweep through for the quicker spring.
+  // are committing the FINAL (post-play) state directly, not counting it as a move (this isn't a
+  // player decision), and passing sweep through for the quicker spring.
+  //
+  // It is recorded as TWO undo steps, the draw and then the play from the waste, each against the
+  // board right before it, so each Undo press takes back a kind of move handleUndo already flies:
+  // the card drops from its foundation onto the waste, then the draw goes back into the stock. As
+  // one stock-to-foundation step, undoing a draw-3 drawAndPlay would put the other drawn cards back
+  // into the stock with no flight at all (they would just vanish off the waste).
   async function fireDrawAndPlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
     const current = stateRef.current
     if (!current || !controllerRef.current.drawStock) return
@@ -1010,7 +1013,12 @@ function KlondikeScreenInner() {
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying(to, 1)
 
-    pushCascadedMove({ from: { zone: 'stock', index: 0 }, to, count: 1, anchorCardId: entry.card.id })
+    // The draw's own record mirrors handleDrawStock's (the drawn top card is the anchor, and a
+    // multi-card draw keeps its cards' ids for the deal-style undo flight).
+    const drawnCount = afterDraw.waste.length - current.waste.length
+    const drawnCards = afterDraw.waste.slice(afterDraw.waste.length - drawnCount) // oldest -> newest/top
+    pushUndo(current, { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: drawnCount, anchorCardId: entry.card.id, ...(drawnCount > 1 ? { cardIds: drawnCards.map((c) => c.id) } : {}) })
+    pushUndo(afterDraw, { from: entry.ref, to, count: 1, anchorCardId: entry.card.id })
     commitState(result)
     checkWin(result, session.moves)
     pendingFlightRef.current.push({ cardId: entry.card.id, to, gen: dealTokenRef.current, flyingId, flight, sweep: opts.sweep })
@@ -1049,10 +1057,10 @@ function KlondikeScreenInner() {
   // drawn card flies, not just the new top one.
   // `opts.sweep` marks this as an automatic step of the win-completing sweep (see fireDraw, passed
   // as the shared cascade hook's own fireDraw callback) rather than a genuine player tap - not a
-  // player decision, so its undo entry folds into the current cascade (pushCascadedMove) instead of
-  // pushing its own stack entry, and it doesn't count toward moves/score. Every other branch below
-  // (the actual draw/recycle logic, the flight animation) is identical either way; only the
-  // undo-push and the flight's spring config differ.
+  // player decision, so it doesn't count toward moves/score. It is still its own undo step, like a
+  // player's draw (see pushUndo). Every other branch below (the actual draw/recycle logic, the
+  // undo entry, the flight animation) is identical either way; only the move count, the feedback
+  // and the flight's spring config differ.
   async function handleDrawStock(opts?: { sweep?: boolean }) {
     // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
     // Without this, rapid-clicking the stock pile several times before React re-renders drew the
@@ -1071,14 +1079,14 @@ function KlondikeScreenInner() {
       // Recycling the waste back into the stock (see PATTERN_RECYCLE) - the whole waste flies as
       // one clump, from the waste slot to the stock slot, both content-independent container refs
       // measurable synchronously (no post-commit deferral needed for either end). cardIds records
-      // the full group (oldest-to-newest) for a later cascaded-undo reversal to reconstruct exactly
-      // this move's own cards even after other moves happen on top of it - see undoTypes.ts.
+      // the full group (oldest-to-newest) - a legacy save's cascaded-undo reversal needed it to
+      // reconstruct exactly this move's own cards even after other moves happened on top of it (see
+      // undoTypes.ts).
       const wasteOrigin = await measureView(wasteViewRef.current)
       const stockDest = await measureView(stockViewRef.current)
       const recycledCards = current.waste.slice()
       const move: MoveInfo = { from: { zone: 'waste', index: 0 }, to: { zone: 'stock', index: 0 }, count: recycledCards.length, anchorCardId: recycledCards[0]?.id ?? '', cardIds: recycledCards.map((c) => c.id) }
-      if (opts?.sweep) pushCascadedMove(move)
-      else pushUndo(current, move)
+      pushUndo(current, move)
 
       if (wasteOrigin && stockDest && recycledCards.length > 0) {
         if (opts?.sweep) cascadeFeedback()
@@ -1126,8 +1134,7 @@ function KlondikeScreenInner() {
     if (drawnCount > 1) {
       const drawnCards = result.waste.slice(result.waste.length - drawnCount) // oldest -> newest/top
       const moveWithIds: MoveInfo = { ...move, cardIds: drawnCards.map((c) => c.id) }
-      if (opts?.sweep) pushCascadedMove(moveWithIds)
-      else pushUndo(current, moveWithIds)
+      pushUndo(current, moveWithIds)
       const flyingId = beginFlying({ zone: 'waste', index: 0 }, drawnCount)
       pendingDealDrawRef.current.push({ topCardId: drawnCard.id, drawnCards, gen: dealTokenRef.current, flyingId })
       commitState(result)
@@ -1136,8 +1143,7 @@ function KlondikeScreenInner() {
 
     const origin = await measureView(stockViewRef.current)
     if (!origin) {
-      if (opts?.sweep) pushCascadedMove(move)
-      else pushUndo(current, move)
+      pushUndo(current, move)
       commitState(result)
       settleFlight()
       return
@@ -1151,8 +1157,7 @@ function KlondikeScreenInner() {
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
 
-    if (opts?.sweep) pushCascadedMove(move)
-    else pushUndo(current, move)
+    pushUndo(current, move)
     commitState(result)
     pendingFlightRef.current.push({ cardId: drawnCard.id, to: { zone: 'waste', index: 0 }, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
   }

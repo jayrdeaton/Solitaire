@@ -24,6 +24,8 @@ const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
 const SAVE_KEY = 'solitaire.game-in-progress.v1.yukon'
 
 const mockRecordWon = jest.fn()
+/** Settings' Auto-Move to Foundation - off for every test here except the ones about auto-play itself. */
+const mockSettings = { autoMove: false }
 /** How long a flight stays in the air - a test can stretch it past the celebration's own hold. */
 let mockFlightMs = FLIGHT_MS
 const mockPiles = new Map<number, { cards: Card[] }>()
@@ -171,7 +173,7 @@ jest.mock('@/stores/gameStats', () => ({ useGameStats: () => ({ recordDealWon: m
 jest.mock('@/stores/lastActiveGame', () => ({ useLastActiveGame: () => ({ setLastActiveGame: () => {}, clearLastActiveGame: () => {} }) }))
 jest.mock('@/stores/settings', () => {
   const actual = jest.requireActual('@/stores/settings')
-  return { ...actual, useSettings: () => ({ settings: { ...actual.DEFAULT_SETTINGS, autoMoveToFoundation: false } }) }
+  return { ...actual, useSettings: () => ({ settings: { ...actual.DEFAULT_SETTINGS, autoMoveToFoundation: mockSettings.autoMove } }) }
 })
 jest.mock('@/components/theme', () => {
   const actual = jest.requireActual('@/components/theme')
@@ -264,7 +266,9 @@ function board(tableau: Card[][], foundation: Card[][]): YukonState {
 }
 /** Every card is home except the King of clubs, sitting alone in a column: tapping it wins the game. */
 const ONE_CARD_FROM_WON = () => board([[card('clubs', 13)]], [pile('clubs', 12), pile('diamonds', 13), pile('hearts', 13), pile('spades', 13)])
-/** The player sent the 3 of clubs up; the auto-play then put the 4 on top of it. Undo: the 3 is under the 4. */
+/** A LEGACY save (written before every auto-play became its own undo step): the player sent the 3 of clubs up, the
+ * auto-play then put the 4 on top of it, and that auto-play was folded into the 3's entry as `cascaded`. Undo: the 3 is
+ * under the 4, and one press takes both back. */
 const THREE_UNDER_AUTOPLAYED_FOUR = () => {
   const before = board([[card('clubs', 3)], [card('clubs', 4)]], [pile('clubs', 2), [], [], []])
   const after = board([], [pile('clubs', 4), [], [], []])
@@ -347,6 +351,7 @@ beforeEach(() => {
   mockMeasureGate = null
   mockRecordWon.mockClear()
   mockFlightMs = FLIGHT_MS
+  mockSettings.autoMove = false
 })
 afterEach(async () => {
   await act(async () => {
@@ -509,7 +514,7 @@ describe('Yukon screen - a card never moves without its own flight', () => {
     expect(mockLog.hidden).toBe(0)
   })
 
-  it('undoing a foundation move whose card is buried under an auto-played cascade flies THAT card (not the one on top) from the pile', async () => {
+  it("undoing a legacy save's foundation move whose card is buried under an auto-played cascade flies THAT card (not the one on top) from the pile", async () => {
     const { after, entry } = THREE_UNDER_AUTOPLAYED_FOUR()
     await mount(after, [entry], 0) // the 3 is buried: only a foundation's top card (the 4) is in the registry
     expect(mockRegistered.has(id('clubs', 3))).toBe(false)
@@ -552,7 +557,7 @@ describe('Yukon screen - a foundation pile keeps showing the card that has lande
     expect(foundationTop('clubs')).toBe(id('clubs', 3))
   })
 
-  it('a cascade undo keeps the card that is about to fly away on its pile until its return flight is under way, instead of letting it vanish first', async () => {
+  it("a legacy save's cascade undo keeps the card that is about to fly away on its pile until its return flight is under way, instead of letting it vanish first", async () => {
     const { after, entry } = THREE_UNDER_AUTOPLAYED_FOUR()
     await mount(after, [entry], 0)
     expect(foundationTop('clubs')).toBe(id('clubs', 4))
@@ -575,6 +580,46 @@ describe('Yukon screen - a foundation pile keeps showing the card that has lande
     await flush(FLIGHT_MS * 2)
     expect(underGhost('clubs')).toBe('none') // everything has landed: the pile is its real self again
     expect(foundationTop('clubs')).toBe(id('clubs', 2))
+  })
+})
+
+describe('Yukon screen - auto-play and undo', () => {
+  /** Every Ace is up. The 2s of clubs, hearts and spades each sit alone in a column; the 2 of diamonds is buried under the 3,
+   * so the board is never finishable. Once the 2 of clubs goes up, the 2s of hearts and spades are both safe to auto-play. */
+  const SAFE_TWOS = () => board([[card('clubs', 2)], [card('hearts', 2)], [card('spades', 2)], [card('diamonds', 2), card('diamonds', 3)]], [pile('clubs', 1), pile('diamonds', 1), pile('hearts', 1), pile('spades', 1)])
+  /** The moves count of the latest save - what the player is scored on. */
+  const savedMoves = (setItem: jest.SpyInstance) => {
+    const saves = setItem.mock.calls.filter(([key]) => key === SAVE_KEY)
+    return (JSON.parse(saves[saves.length - 1][1] as string) as { moves: number }).moves
+  }
+
+  it('every auto-played card is its own undo step, taken back one at a time before the tap that set them off', async () => {
+    mockSettings.autoMove = true
+    const setItem = jest.spyOn(AsyncStorage, 'setItem')
+    await mount(SAFE_TWOS(), [], 5)
+
+    await tap(id('clubs', 2))
+    await flush(3000)
+    expect(SUITS.map((suit) => foundationTop(suit))).toEqual([id('clubs', 2), id('diamonds', 1), id('hearts', 2), id('spades', 2)])
+    expect(mockLog.shown).toHaveLength(3) // the tap, then the two auto-plays
+    expect(savedMoves(setItem)).toBe(1) // only the tap counts toward the score
+
+    const undoOne = async () => {
+      const before = mockLog.shown.length
+      await undo()
+      await flush(3000)
+      expect(mockLog.shown.length).toBe(before + 1) // one card flies back, and nothing is auto-played again
+      expect(mockLog.dealStarts).toBe(0) // not through the legacy all-at-once cascade undo
+    }
+
+    await undoOne() // the last card auto-played...
+    await undoOne() // ...then the other one
+    expect(SUITS.map((suit) => foundationTop(suit))).toEqual([id('clubs', 2), id('diamonds', 1), id('hearts', 1), id('spades', 1)])
+    expect(screen.queryByTestId(`card-${id('hearts', 2)}`)).not.toBeNull()
+    expect(screen.queryByTestId(`card-${id('spades', 2)}`)).not.toBeNull()
+    await undoOne() // and only then the tap itself
+    expect(SUITS.map((suit) => foundationTop(suit))).toEqual([id('clubs', 1), id('diamonds', 1), id('hearts', 1), id('spades', 1)])
+    expect(mockLog.hidden).toBe(0)
   })
 })
 

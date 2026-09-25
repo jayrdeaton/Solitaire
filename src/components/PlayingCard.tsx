@@ -1,14 +1,16 @@
 import { Pressable } from '@rific/feedback-press'
-import { CardBack, CardFace, DecoratedCardBack, type TableColors, useCardSize } from '@tastic/cards'
+import { CardBack, CardFace, DecoratedCardBack, rankLabel, type TableColors, useCardSize } from '@tastic/cards'
 import React from 'react'
 import { Image, StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
+import { useTheme } from 'react-native-paper'
 import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
 
 import { Card, Rank, Suit } from '@/engine/types'
 import { useProfiles } from '@/stores/profiles'
 import { useSettings } from '@/stores/settings'
 
-import { fadeInDimScrim } from './dimScrimAnimation'
+import { CARD_FACE_BITMAPS } from './cardFaceBitmaps'
+import { DIM_FADE_BACKSTOP_MS, fadeInDimScrim } from './dimScrimAnimation'
 import { startHintPulse } from './hintAnimation'
 import { CARD_RADIUS, cardRadiusForWidth, useTableColors } from './theme'
 
@@ -34,6 +36,19 @@ interface PlayingCardProps {
    * fades in (dimScrimAnimation.ts) instead of darkening the card in a single frame. Only meaningful with `dimmed`;
    * omitted (the default) draws today's plain, instant scrim, and a card that was never held pays nothing extra. */
   dimHold?: boolean
+  /** Makes a scrim that appears on THIS render fade in, as if the card had been held (see `dimHold`) until now - for a
+   * caller whose card becomes dimmed without a true->false `dimHold` transition on this instance: PileView, whose hidden
+   * cards are never dimmed (so a buried card's scrim first appears when its flight lands), and whose whole board turns
+   * dimming on at once after a deal (useDimAfterDeal). Only read when the scrim first mounts; the caller passes false
+   * for a scrim that should just be there (a resumed board's first render - see PileView's `mountedRef`). Only
+   * meaningful alongside `dimHold`. */
+  dimFadeIn?: boolean
+  /** This card is fully invisible (opacity 0) at its OWN call site - a tableau card being dragged, whose floating copy is
+   * the drag ghost (see PileView's DraggableTableauCard). Skips CardFace/CardBack/CardSheen entirely (an empty box stands
+   * in for them) since nothing painted here is visible anyway, while the card itself stays mounted - its gesture is still
+   * tracking the player's touch; `dimOverlay`/`borderOverlay` still render normally. Only the expensive part is skipped
+   * (a court figure's ~90-150 SVG elements, a numeral's pips and corner glyphs, a back's pattern). */
+  hidden?: boolean
   onPress?: () => void
   style?: StyleProp<ViewStyle>
   testID?: string
@@ -43,8 +58,9 @@ interface PlayingCardProps {
 // that toggling `selected`/`hinted` (a thicker, different-colored border) never changes the box's
 // content area - RN sizes borders inward from a fixed width/height, so swapping 1px for 3px would
 // nudge the card's own SVG content by a couple pixels every time it's (de)selected/(un)hinted.
-export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold, onPress, style, testID }: PlayingCardProps) {
+export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold, dimFadeIn, hidden, onPress, style, testID }: PlayingCardProps) {
   const colors = useTableColors()
+  const { dark } = useTheme()
   const { activeProfile } = useProfiles()
   const { settings } = useSettings()
   const { width, height } = useCardSize()
@@ -55,7 +71,7 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold,
   // value, an animated-style mapper and a looping animation, none of which ~every card on the board (almost never
   // hinted) should pay for at mount.
   const borderOverlay = selected ? <View pointerEvents='none' style={styles.selectedRing} /> : hinted ? <HintRing style={styles.hintRing} /> : <View pointerEvents='none' style={styles.border} />
-  const dimOverlay = dimmed ? dimHold === undefined ? <View pointerEvents='none' style={styles.dim} /> : <HeldDimScrim hold={dimHold} style={styles.dim} /> : null
+  const dimOverlay = dimmed ? dimHold === undefined ? <View pointerEvents='none' style={styles.dim} /> : <HeldDimScrim hold={dimHold} initialWasHeld={dimFadeIn} style={styles.dim} /> : null
 
   if (!card.faceUp) {
     return (
@@ -73,8 +89,8 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold,
         style={[styles.card, styles.shadow, cardSize, style]}
       >
         <View style={[styles.clip, styles.back]}>
-          {settings.cardBackStyle === 'geometric' ? <CardBack colors={colors} width={width} height={height} tag={activeProfile?.tag} invertDarkModeColors={settings.invertDarkModeColors} /> : <DecoratedCardBack style={settings.cardBackStyle} colors={colors} width={width} height={height} invertDarkModeColors={settings.invertDarkModeColors} />}
-          <CardSheen />
+          {hidden ? null : settings.cardBackStyle === 'geometric' ? <CardBack colors={colors} width={width} height={height} tag={activeProfile?.tag} invertDarkModeColors={settings.invertDarkModeColors} /> : <DecoratedCardBack style={settings.cardBackStyle} colors={colors} width={width} height={height} invertDarkModeColors={settings.invertDarkModeColors} />}
+          {hidden ? null : <CardSheen />}
         </View>
         {dimOverlay}
         {borderOverlay}
@@ -82,11 +98,16 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold,
     )
   }
 
+  // The face is ONE pre-rasterized Image of CardFace (cardFaceBitmaps.ts, scripts/generate-card-face-bitmaps.mjs) - a live
+  // CardFace is ~14-17 native views (a court card's vector figure alone ~100), and the board's mount cost is its view
+  // count. Every style x (normal, dark-mode invert) is baked in; invert in LIGHT mode draws the normal face - theme.ts's
+  // lightColors mirror the *Inverted tokens so it is meant to be a no-op there.
+  const faceSource = CARD_FACE_BITMAPS[settings.cardStyle][settings.invertDarkModeColors && dark ? 'invert' : 'normal'][card.suit][card.rank - 1]
   return (
     <Pressable testID={testID} onPress={onPress} disabled={disabled} soundDisabled style={[styles.card, styles.shadow, cardSize, style]}>
       <View style={[styles.clip, styles.face]}>
-        <CardFace card={card} colors={colors} width={width} height={height} cardStyle={settings.cardStyle} invertDarkModeColors={settings.invertDarkModeColors} />
-        <CardSheen />
+        {hidden ? null : <Image source={faceSource} style={cardSize} resizeMode='stretch' accessibilityLabel={`${rankLabel(card.rank)} of ${card.suit}`} />}
+        {hidden ? null : <CardSheen />}
       </View>
       {dimOverlay}
       {borderOverlay}
@@ -112,22 +133,40 @@ function HintRing({ style }: { style: StyleProp<ViewStyle> }) {
  * ~30-44 dimmed cards of a fresh deal mount no shared value or animated-style mapper in the (already heavy) deal-start
  * commit; each one's mapper mounts in the small commit of its own landing instead. When `hold` drops on a card that WAS
  * held, the animated FadingDimScrim mounts (from transparent) and fades in. A card that was never held (a resumed save, a
- * card that only becomes dimmed later in play) keeps today's plain, instant scrim and pays for no animation at all. */
-function HeldDimScrim({ hold, style }: { hold: boolean; style: StyleProp<ViewStyle> }) {
-  const [held, setHeld] = React.useState(hold)
+ * card that only becomes dimmed later in play) keeps today's plain, instant scrim and pays for no animation at all.
+ * `initialWasHeld` (PlayingCard's own `dimFadeIn` - see its doc comment) seeds this as already-having-been-held on a
+ * FRESH mount that already knows, from outside, that it stands in for a card that was conceptually held a moment ago
+ * (a flight just landed it) even though no earlier mounted instance of THIS component ever actually held it - without
+ * this, such a mount looks identical to "never held" and silently keeps the plain, instant scrim instead of fading. */
+function HeldDimScrim({ hold, initialWasHeld, style }: { hold: boolean; initialWasHeld?: boolean; style: StyleProp<ViewStyle> }) {
+  const [held, setHeld] = React.useState(hold || !!initialWasHeld)
+  // Once the fade has finished, the scrim is the plain View again (see FadingDimScrim for why). Reset whenever the card is
+  // held again, so its next release fades in again rather than popping.
+  const [faded, setFaded] = React.useState(false)
   if (hold && !held) setHeld(true)
+  if (hold && faded) setFaded(false)
+  const handleFaded = React.useCallback(() => setFaded(true), [])
   if (hold) return null
-  return held ? <FadingDimScrim style={style} /> : <View pointerEvents='none' style={style} />
+  return held && !faded ? <FadingDimScrim style={style} onDone={handleFaded} /> : <View pointerEvents='none' style={style} />
 }
 
 /** The animated scrim itself: mounts fully transparent (so the frame it first appears in is still the ghost's look) and
- * fades to opaque (fadeInDimScrim). Only ever mounted at the moment a held card is released. */
-function FadingDimScrim({ style }: { style: StyleProp<ViewStyle> }) {
+ * fades to opaque (fadeInDimScrim). Only ever mounted at the moment a held card is released, and only until its fade has
+ * finished: `onDone` then swaps it for the plain scrim in one commit (same colour, same frame, so nothing visibly
+ * changes). The finished, fully-dim state must be React's own prop, not a value Reanimated last wrote: on iOS this
+ * build commits animated props through the shadow tree (IOS_SYNCHRONOUSLY_UPDATE_UI_PROPS is off), where they race
+ * React's own commits, and the final opacity was measurably lost - a whole deal's first row of buried cards stayed
+ * undimmed (pixel-checked on the Simulator) while JS had rendered them dimmed and every fade reported `finished`. The
+ * plain scrim is what a resumed board draws, and that never failed. `DIM_FADE_BACKSTOP_MS` hands over even if the
+ * completion callback never arrives. */
+function FadingDimScrim({ style, onDone }: { style: StyleProp<ViewStyle>; onDone: () => void }) {
   const opacity = useSharedValue(0)
   const animatedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }))
   React.useEffect(() => {
-    fadeInDimScrim(opacity)
-  }, [opacity])
+    fadeInDimScrim(opacity, onDone)
+    const backstop = setTimeout(onDone, DIM_FADE_BACKSTOP_MS)
+    return () => clearTimeout(backstop)
+  }, [opacity, onDone])
   return <Animated.View pointerEvents='none' style={[style, animatedStyle]} />
 }
 

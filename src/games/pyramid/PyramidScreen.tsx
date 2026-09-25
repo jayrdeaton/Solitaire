@@ -38,6 +38,7 @@ import { DiscardCell } from '@/games/shared/DiscardCell'
 import { MoveInfo } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
+import { useDimAfterDeal } from '@/games/shared/useDimAfterDeal'
 import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
@@ -347,6 +348,9 @@ function PyramidScreenInner() {
   const triangleViewRef = useRef<View>(null)
   const discardViewRef = useRef<View>(null)
   const [pyramidHiddenIds, setPyramidHiddenIds] = useState<Set<string>>(new Set())
+  // Covered cells are not dimmed while the deal is in the air; the whole pyramid dims at once when it has landed (see
+  // useDimAfterDeal - fed through `dimHold` below, so the release fades each covered cell in instead of popping it on).
+  const dimAfterDeal = useDimAfterDeal()
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const ghost = useDragGhost()
@@ -829,6 +833,7 @@ function PyramidScreenInner() {
 
     const dealtIds = new Set(s.pyramid.filter((c): c is Card => !!c).map((c) => c.id))
     setPyramidHiddenIds(dealtIds)
+    dimAfterDeal.hold()
     scheduleDeal(myToken)
     commitState(s)
   }
@@ -852,6 +857,7 @@ function PyramidScreenInner() {
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
     setPyramidHiddenIds(new Set())
+    dimAfterDeal.releaseNow()
     commitState(saved.state)
   }
 
@@ -884,6 +890,7 @@ function PyramidScreenInner() {
     if (dealTokenRef.current !== token) return
     if (!stockOrigin || !triangleOrigin) {
       setPyramidHiddenIds(new Set())
+      dimAfterDeal.release()
       return
     }
 
@@ -900,6 +907,7 @@ function PyramidScreenInner() {
     })
     if (entries.length === 0) {
       setPyramidHiddenIds(new Set())
+      dimAfterDeal.release()
       return
     }
 
@@ -915,7 +923,10 @@ function PyramidScreenInner() {
           return next
         })
       },
-      () => {}
+      () => {
+        if (dealTokenRef.current !== token) return
+        dimAfterDeal.release()
+      }
     )
   }
 
@@ -1651,7 +1662,7 @@ function PyramidScreenInner() {
               const cardStyle = [styles.pyramidCard, { left, top, zIndex: row }]
 
               if (!exposed) {
-                return <PlayingCard key={card.id} card={card} disabled dimmed dimHold={isHidden} style={[cardStyle, isHidden && styles.hiddenCard]} testID={`pyramid-${index}`} />
+                return <PlayingCard key={card.id} card={card} disabled dimmed dimHold={isHidden || dimAfterDeal.held} style={[cardStyle, isHidden && styles.hiddenCard]} testID={`pyramid-${index}`} />
               }
 
               return (

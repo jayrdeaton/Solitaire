@@ -12,21 +12,14 @@ import { buildTriPeaksPreview } from '@/games/tripeaks/previewLayout'
 import { buildYukonPreview } from '@/games/yukon/previewLayout'
 
 import { PREVIEW_CARD_HEIGHT, PREVIEW_CARD_WIDTH, type PreviewCardPlacement } from '../../components/GamePreview'
-import { buildMergedPreview, isStripSafe, roundedRectPath, transformPath } from '../../components/previewGeometry'
+import { buildBackStrips, isStripSafe, roundedRectPath } from '../../components/previewGeometry'
 
 const METRICS = { cardWidth: PREVIEW_CARD_WIDTH, cardHeight: PREVIEW_CARD_HEIGHT }
-const STYLE = { cardRadius: 2.6, backFrame: 1.4, pipScale: 0.85, pipInsetX: 3.2, pipInsetY: 1.8, medallionHalf: 6 }
+const STYLE = { cardRadius: 2.6, backFrame: 1.4 }
 
 const card = (suit: Card['suit'], faceUp = true) => ({ id: `${suit}-1-0`, suit, rank: 1, faceUp }) as Card
 const place = (x: number, y: number, suit: Card['suit'], faceUp = true): PreviewCardPlacement => ({ x, y, card: card(suit, faceUp), faceUp })
 const subpaths = (d: string) => (d.match(/M/g) ?? []).length
-
-describe('transformPath', () => {
-  it('scales then translates every coordinate of an absolute M/L/C/Z path', () => {
-    expect(transformPath('M1 2 L3 4 Z', 2, 10, 20)).toBe('M12.00 24.00 L16.00 28.00 Z')
-    expect(transformPath('M0 0 C1 1 2 2 3 3 Z', 1, 5, 7)).toBe('M5.00 7.00 C6.00 8.00 7.00 9.00 8.00 10.00 Z')
-  })
-})
 
 describe('isStripSafe', () => {
   it('accepts stacked columns that never overlap sideways', () => {
@@ -63,45 +56,23 @@ describe('isStripSafe', () => {
   })
 })
 
-describe('buildMergedPreview', () => {
+describe('buildBackStrips', () => {
   it('returns null for an overlapping layout', () => {
-    expect(buildMergedPreview(buildPyramidPreview(), METRICS, STYLE)).toBeNull()
+    expect(buildBackStrips(buildPyramidPreview(), METRICS, STYLE)).toBeNull()
   })
 
-  it('draws one strip per card, split by face and back, with a pip per face-up card', () => {
+  it('draws one strip per face-down card and nothing for a face-up one (those are the pre-rendered image)', () => {
     const placements = buildKlondikePreview()
-    const faceUp = placements.filter((p) => p.faceUp).length
-    const merged = buildMergedPreview(placements, METRICS, STYLE)!
+    const faceDown = placements.filter((p) => !p.faceUp).length
 
-    expect(subpaths(merged.faces)).toBe(faceUp)
-    expect(subpaths(merged.backs)).toBe(placements.length - faceUp)
-    // A pip is one subpath, except the club's four (three lobes + stem).
-    const clubs = placements.filter((p) => p.faceUp && p.card?.suit === 'clubs').length
-    expect(subpaths(merged.redPips) + subpaths(merged.blackPips)).toBe(faceUp - clubs + clubs * 4)
+    expect(subpaths(buildBackStrips(placements, METRICS, STYLE)!)).toBe(faceDown)
+    expect(buildBackStrips([place(10, 0, 'hearts')], METRICS, STYLE)).toBe('')
   })
 
-  it('shows only the visible strip of a covered card, and the whole last card', () => {
-    // A face-down card with a face-up one 5 units below it: 5 units of the back show, the full card of the face.
-    const merged = buildMergedPreview([place(10, 0, 'hearts', false), place(10, 5, 'spades')], METRICS, STYLE)!
-
-    // The covered back is inset by half the frame on every side and only 5 units tall (minus the frame).
-    expect(merged.backs).toBe(roundedRectPath(10 + 0.7, 0 + 0.7, PREVIEW_CARD_WIDTH - 1.4, 5 - 1.4, 2.6, true))
-    expect(merged.faces).toBe(roundedRectPath(10, 5, PREVIEW_CARD_WIDTH, PREVIEW_CARD_HEIGHT, 2.6, false))
-    // No medallion on a covered back.
-    expect(merged.medallions).toBe('')
-  })
-
-  it('keeps a lone face-down card whole, medallion included', () => {
-    const merged = buildMergedPreview([place(10, 0, 'hearts', false)], METRICS, STYLE)!
-
-    expect(subpaths(merged.medallions)).toBe(1)
-  })
-
-  it('puts pips of red suits and black suits in separate paths', () => {
-    const merged = buildMergedPreview([place(10, 0, 'hearts'), place(60, 0, 'diamonds'), place(110, 0, 'spades')], METRICS, STYLE)!
-
-    expect(subpaths(merged.redPips)).toBe(2)
-    expect(subpaths(merged.blackPips)).toBe(1)
+  it('shows only the visible strip of a covered back, and the whole of an uncovered one', () => {
+    // A face-down card with a face-up one 5 units below it: 5 units of the back show.
+    expect(buildBackStrips([place(10, 0, 'hearts', false), place(10, 5, 'spades')], METRICS, STYLE)).toBe(roundedRectPath(10 + 0.7, 0 + 0.7, PREVIEW_CARD_WIDTH - 1.4, 5 - 1.4, 2.6, true))
+    expect(buildBackStrips([place(10, 0, 'hearts', false)], METRICS, STYLE)).toBe(roundedRectPath(10 + 0.7, 0 + 0.7, PREVIEW_CARD_WIDTH - 1.4, PREVIEW_CARD_HEIGHT - 1.4, 2.6, false))
   })
 
   // The whole point of merging: nothing overlaps, so a stroke can never bleed across a neighbour.
@@ -121,6 +92,6 @@ describe('buildMergedPreview', () => {
         expect(col[i].y + visible).toBeLessThanOrEqual(col[i + 1].y + 1e-6)
       }
     })
-    expect(buildMergedPreview(placements, METRICS, STYLE)).not.toBeNull()
+    expect(buildBackStrips(placements, METRICS, STYLE)).not.toBeNull()
   })
 })

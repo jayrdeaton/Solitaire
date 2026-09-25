@@ -5,13 +5,15 @@ import { PileView } from '@/components/PileView'
 import type { Card } from '@/engine/types'
 
 const mockRenders: Record<string, number> = {}
+const mockDimmed: Record<string, boolean> = {}
 const mockGhost = { cardRegistry: { register: jest.fn(), unregister: jest.fn() }, showLive: jest.fn() }
 
 jest.mock('@/components/PlayingCard', () => {
   const { View } = require('react-native')
   return {
-    PlayingCard: ({ card }: { card: { id: string } }) => {
+    PlayingCard: ({ card, dimmed }: { card: { id: string }; dimmed?: boolean }) => {
       mockRenders[card.id] = (mockRenders[card.id] ?? 0) + 1
+      mockDimmed[card.id] = !!dimmed
       return <View testID={`card-${card.id}`} />
     },
     EmptySlot: () => <View />
@@ -97,6 +99,35 @@ describe('PileView card memoization', () => {
     // The top card is the selected one; only it re-renders.
     expect(mockRenders[ids[4]]).toBe(2)
     expect(rendersOf().slice(0, 4)).toEqual([1, 1, 1, 1])
+  })
+
+  // FreeCell's run counts also depend on its supermove capacity - the freecells and empty columns ELSEWHERE on the board -
+  // which is not in any column's own props. A memoized column must re-read them when that changes, or a run that has just
+  // become movable stays dimmed and undraggable (and one that no longer fits stays lit).
+  it('re-reads its run counts when runCountKey changes, even though its own cards did not', async () => {
+    const capacity = { current: 1 }
+    const capDrag = { registry: { hitTest: async () => null }, getRunCount: (indexFromTop: number) => (indexFromTop < capacity.current ? 1 : 0), onDrop: async () => false } as never
+    // Every other prop identical across the two renders (a stable onPressCard too - pile()'s default is a fresh one each
+    // time, which would re-render the pile on its own and hide exactly what this pins).
+    const onPressCard = () => {}
+    const { rerender } = await render(pile({ drag: capDrag, onPressCard, dimUnplayable: true, runCountKey: capacity.current }))
+    expect(ids.map((id) => mockDimmed[id])).toEqual([true, true, true, true, false])
+
+    capacity.current = 3 // a freecell emptied somewhere else on the board
+    await rerender(pile({ drag: capDrag, onPressCard, dimUnplayable: true, runCountKey: capacity.current }))
+
+    expect(ids.map((id) => mockDimmed[id])).toEqual([true, true, false, false, false])
+  })
+
+  // Every game's deal (all but FreeCell's), and every tap-to-move or drop onto a tableau column in every game, finds where
+  // to fly by measuring the real destination card through CardRegistry. A card whose flight has not landed must therefore
+  // be mounted and registered - hidden, not skipped. Skipping it once dropped eight games' deal animations (the cards just
+  // appeared) and every tableau-bound flight.
+  it('keeps a card whose flight has not landed mounted and registered, just hidden', async () => {
+    mockGhost.cardRegistry.register.mockClear()
+    await render(pile({ hiddenCardIds: new Set(ids) }))
+
+    expect(mockGhost.cardRegistry.register.mock.calls.map((call) => call[0]).sort()).toEqual([...ids].sort())
   })
 
   it('a card without a press handler is not pressable at all (it must not swallow taps meant for what is behind it)', async () => {

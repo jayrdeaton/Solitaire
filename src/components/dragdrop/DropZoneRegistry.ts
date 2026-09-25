@@ -38,6 +38,16 @@ export class DropZoneRegistry {
     this.zones.delete(key(ref))
   }
 
+  /** The registered zone's current on-screen rect (or null if unregistered/unmeasurable) - the same
+   * per-zone measurement hitTest already does internally, exposed directly for a caller that already
+   * knows which zone it wants (a deal computing a column's own container position analytically, for
+   * instance) rather than needing to hit-test a point against every zone on the board. */
+  async measure(ref: PileRef): Promise<Rect | null> {
+    const view = this.zones.get(key(ref))?.current
+    if (!view) return null
+    return measure(view)
+  }
+
   /** Find the registered zone (if any) whose current screen rect contains (x, y). */
   async hitTest(x: number, y: number): Promise<PileRef | null> {
     const entries = Array.from(this.zones.entries())

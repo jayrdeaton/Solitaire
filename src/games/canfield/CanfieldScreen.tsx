@@ -251,6 +251,8 @@ function CanfieldScreenInner() {
     controllerRef.current = createCanfieldController(settings.canfieldDraw)
     setCanfieldDraw(settings.canfieldDraw)
     const s = controllerRef.current.newGame(randomSeed())
+    // A still-armed cascade must not fire on the new deal (see useAutoFoundationCascade's disarm).
+    cascade.disarm()
     setUndoStack([])
     setHint(null)
     hintsUsedRef.current = false
@@ -278,6 +280,7 @@ function CanfieldScreenInner() {
     const draw = saved.config === 1 || saved.config === 3 ? saved.config : settings.canfieldDraw
     controllerRef.current = createCanfieldController(draw)
     setCanfieldDraw(draw)
+    cascade.disarm()
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
     hintsUsedRef.current = false
@@ -564,6 +567,10 @@ function CanfieldScreenInner() {
   async function handleUndo() {
     if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
+    // Every auto-played step is its own undo entry, so an undo can land on a board with a safe card
+    // (or a whole sweep) waiting - a still-armed cascade must not play straight back what the player
+    // just took back. Nothing re-arms it until the player's next foundation move or starter reveal.
+    cascade.disarm()
     if (won) {
       setWon(false)
       winCascade.clear()
@@ -627,8 +634,9 @@ function CanfieldScreenInner() {
 
     const sourcePile = resolvePile(move.to)
     // A foundation move's own card can sit BURIED under silent auto-plays that landed on the same
-    // pile after it (they are not on the undo stack) - so it is found by id, not assumed to be on
-    // top, or the ghost would carry the wrong card.
+    // pile after it, in an entry from a save written before auto-plays became their own undo steps
+    // (see applyMove) - so it is found by id, not assumed to be on top, or the ghost would carry the
+    // wrong card.
     const buriedAt = move.to.zone === 'foundation' && sourcePile ? sourcePile.findIndex((c) => c.id === move.anchorCardId) : -1
     const movingCards = sourcePile ? (buriedAt >= 0 ? [sourcePile[buriedAt]] : sourcePile.slice(sourcePile.length - move.count)) : []
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
@@ -652,9 +660,12 @@ function CanfieldScreenInner() {
     }
   }
 
-  // `silent` is for the auto-play-to-foundation feature (see maybeAutoPlay/fireAutoMove below): an
-  // auto-played card isn't a player decision, so it skips the undo stack entirely and doesn't
-  // count toward the moves/score the player is judged on.
+  // `silent` is for the auto-play-to-foundation feature (see firePlay below): an auto-played card
+  // isn't a player decision, so it doesn't count toward the moves/score the player is judged on or
+  // arm the cascade itself. It still pushes its OWN undo entry (the board right before it), like
+  // every other automatic step here (handleDrawStock's sweep draws/recycles, fireDrawAndPlay), so
+  // one Undo takes back exactly one step, with that step's own flight, and the player can stop
+  // anywhere between the move that set a cascade off and its last auto-played card.
   function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean }) {
     // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
     // closure's `state` - two actions can now be triggered back-to-back before React re-renders
@@ -665,7 +676,7 @@ function CanfieldScreenInner() {
     if (!current) return false
     const result = controllerRef.current.tryMove(current, { from, to, count })
     if (result) {
-      if (!opts?.silent) pushUndo(current, { from, to, count, anchorCardId })
+      pushUndo(current, { from, to, count, anchorCardId })
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
@@ -742,9 +753,11 @@ function CanfieldScreenInner() {
   // to its foundation (see engine/autoFoundation.ts's 'drawAndPlay' step) - draws AND plays it in
   // one committed state change, animated as one continuous flight straight from the stock pile,
   // skipping the ordinary "land on waste first" stop entirely (the confirmed sweep visual). Not a
-  // player decision, so - matching applyMove's own silent branch - this never touches the undo
-  // stack at all (Canfield excludes every silent move from undo, unlike Klondike's cascaded-entry
-  // approach).
+  // player decision, so it doesn't count toward moves/score - but, like every automatic step (see
+  // applyMove's `silent`), it is undoable on its own. As TWO entries, the draw and then the play,
+  // each an ordinary kind handleUndo already flies: the first Undo sends the card from the
+  // foundation back to the waste, the next flies the draw back into the stock. One entry for the
+  // combined step would have no flight that fits it (stock -> foundation is no move kind).
   async function fireDrawAndPlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
     const current = stateRef.current
     if (!current || !controllerRef.current.drawStock) return
@@ -752,6 +765,8 @@ function CanfieldScreenInner() {
     if (!afterDraw) return
     const result = controllerRef.current.tryMove(afterDraw, { from: entry.ref, to, count: 1 })
     if (!result) return
+    const drawnTop = top(afterDraw.waste)
+    if (!drawnTop) return
     startFlights(1)
 
     const origin = await measureView(stockViewRef.current)
@@ -763,6 +778,8 @@ function CanfieldScreenInner() {
     cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying(to, 1)
+    pushUndo(current, { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: afterDraw.waste.length - current.waste.length, anchorCardId: drawnTop.id })
+    pushUndo(afterDraw, { from: entry.ref, to, count: 1, anchorCardId: entry.card.id })
     commitState(result)
     checkWin(result, session.moves)
     pendingFlightRef.current.push({ cardId: entry.card.id, to, gen: dealTokenRef.current, flyingId, flight, sweep: opts.sweep })
@@ -794,8 +811,8 @@ function CanfieldScreenInner() {
   // per-deal-config shape Klondike's own draw setting already has.
   // `opts.sweep` marks this as an automatic step of the win-completing sweep (see the shared
   // cascade hook's own fireDraw callback above) rather than a genuine player tap - not a player
-  // decision, so (matching applyMove's own silent branch) it never touches the undo stack at all,
-  // and doesn't count toward moves/score.
+  // decision, so it doesn't count toward moves/score, but (like applyMove's own silent branch) it
+  // still pushes its own undo entry, so the sweep can be taken back one draw/recycle at a time.
   async function handleDrawStock(opts?: { sweep?: boolean }) {
     // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
     // Without this, rapid-tapping the stock pile several times before React re-renders drew the
@@ -813,7 +830,7 @@ function CanfieldScreenInner() {
     if (!drawnCard) {
       // Recycling the waste back into the stock, not a single card being drawn - nothing
       // card-shaped to fly, so undo just reverts this instantly (see MoveInfo | null above).
-      if (!opts?.sweep) pushUndo(current, null)
+      pushUndo(current, null)
       commitState(result)
       settleFlight()
       return
@@ -832,7 +849,7 @@ function CanfieldScreenInner() {
 
     if (drawnCount > 1) {
       const drawnCards = result.waste.slice(result.waste.length - drawnCount) // oldest -> newest/top
-      if (!opts?.sweep) pushUndo(current, move)
+      pushUndo(current, move)
       const flyingId = beginFlying({ zone: 'waste', index: 0 }, drawnCount)
       pendingDealDrawRef.current.push({ topCardId: drawnCard.id, drawnCards, gen: dealTokenRef.current, flyingId })
       commitState(result)
@@ -841,7 +858,7 @@ function CanfieldScreenInner() {
 
     const origin = await measureView(stockViewRef.current)
     if (!origin) {
-      if (!opts?.sweep) pushUndo(current, move)
+      pushUndo(current, move)
       commitState(result)
       settleFlight()
       return
@@ -855,7 +872,7 @@ function CanfieldScreenInner() {
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
 
-    if (!opts?.sweep) pushUndo(current, move)
+    pushUndo(current, move)
     commitState(result)
     pendingFlightRef.current.push({ cardId: drawnCard.id, to: { zone: 'waste', index: 0 }, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
   }

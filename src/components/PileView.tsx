@@ -68,6 +68,12 @@ interface PileViewProps {
   shakeCardId?: string
   shakeCount?: number
   shakeToken?: number
+  /** Anything `drag.getRunCount`'s answers depend on besides this pile's own `cards` - e.g. FreeCell's supermove capacity,
+   * which comes from the freecells and empty columns ELSEWHERE on the board. PileView is memoized (see
+   * pileViewPropsEqual), so without this a column whose own cards did not change keeps its old run counts: a run that
+   * just became movable stays dimmed and undraggable, or one that no longer fits stays lit. Only needed by a screen
+   * whose `drag` object is stable across renders; a fresh `drag` every render already re-renders the pile. */
+  runCountKey?: number
 }
 
 interface DraggableTableauCardProps {
@@ -82,6 +88,10 @@ interface DraggableTableauCardProps {
   runCount: number
   indexFromTop: number
   isHidden: boolean
+  /** This card's dim scrim should fade in rather than pop on: it became dimmed after this pile's very first render (its
+   * flight just landed, or dimming was just switched on for the board - see PileView's `mountedRef`). Forwarded to
+   * PlayingCard as `dimFadeIn` - see its own doc comment. */
+  dimFadeIn: boolean
   /** Bumped (to any new value) to play a shake - see shakeAnimation.ts. A counter rather than a
    * boolean so tapping the same stuck card twice in a row re-triggers the shake both times,
    * instead of the second tap being a no-op state transition. */
@@ -132,7 +142,7 @@ interface DraggableTableauCardProps {
  * screen-level auto-move handlers that call `ghost.cardRegistry.measure(cardId)` after applying a
  * move.
  */
-const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected, hinted, dimmed, top, zIndex, runCount, indexFromTop, isHidden, shakeToken, onPress, onDragStart, onDragEnd, originX, originY, dx, dy, startAbsX, startAbsY }: DraggableTableauCardProps) {
+const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected, hinted, dimmed, top, zIndex, runCount, indexFromTop, isHidden, dimFadeIn, shakeToken, onPress, onDragStart, onDragEnd, originX, originY, dx, dy, startAbsX, startAbsY }: DraggableTableauCardProps) {
   const cardStyle = useMemo(() => ({ position: 'absolute' as const, top, left: 0, zIndex }), [top, zIndex])
   const viewRef = useAnimatedRef<Animated.View>()
   const ghost = useDragGhost()
@@ -243,17 +253,44 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
     onPress(card, indexFromTop, () => new Promise((resolve) => view.measureInWindow((x, y) => resolve({ x, y }))))
   }
 
+  // hidden while isHidden: by the time this component renders, a hidden card is the one being dragged (a card whose flight
+  // has not landed is a FlyingCardSlot instead - see PileView). It stays mounted, invisible (styles.hidden), with its art
+  // skipped (PlayingCard's `hidden`), and keeps its GestureDetector attached throughout: the native recognizer is tracking
+  // the player's live touch, and tearing it down mid-gesture cancels it (dragGhostLayer.test.tsx).
+  // dimHold/dimFadeIn: see PlayingCard - a hidden card is never dimmed (PileView's isDimmed), so a dimmed card's scrim
+  // mounts when it is revealed or when dimming turns on, and dimFadeIn makes that a fade rather than a pop.
   return (
     <GestureDetector gesture={pan}>
       <Animated.View ref={viewRef} style={[cardStyle, isHidden && styles.hidden, shakeStyle]}>
-        <PlayingCard card={card} selected={selected} hinted={hinted} dimmed={dimmed} dimHold={isHidden} onPress={onPress ? handlePress : undefined} />
+        <PlayingCard card={card} selected={selected} hinted={hinted} dimmed={dimmed} dimHold={isHidden} dimFadeIn={dimFadeIn} hidden={isHidden} onPress={onPress ? handlePress : undefined} />
       </Animated.View>
     </GestureDetector>
   )
 })
 
+/**
+ * Stands in for a card whose flight (a deal's ghost, a tap-to-move, a drop) has not landed yet: one bare, card-sized View
+ * at the card's own spot, registered in CardRegistry under the card's id - and nothing else. Every game's deal and every
+ * tableau-bound flight finds where to fly by measuring that registration (CardRegistry.measure -> measureInWindow, which
+ * needs a laid-out, non-zero-size view), so the card must be SOMEWHERE in the tree; but mounting the real
+ * DraggableTableauCard hidden (its GestureDetector, two animated views, shared values, a PlayingCard) for every one of a
+ * deal's ~52 cards made the deal start later (0.85-1.25s from tap to first landing, against ~0.6s) and fall further
+ * behind its own ghosts (the last landing reported 3.1-3.4s in, against 2.2-2.5s), measured on the Simulator. The real card
+ * mounts in this one's place when its flight lands.
+ */
+const FlyingCardSlot = memo(function FlyingCardSlot({ cardId, top, width, height }: { cardId: string; top: number; width: number; height: number }) {
+  const ref = useRef<View>(null)
+  const { cardRegistry } = useDragGhost()
+  useEffect(() => {
+    cardRegistry.register(cardId, ref)
+    return () => cardRegistry.unregister(cardId, ref)
+  }, [cardId, cardRegistry])
+  const style = useMemo(() => ({ position: 'absolute' as const, left: 0, top, width, height }), [top, width, height])
+  return <View ref={ref} collapsable={false} pointerEvents='none' style={style} />
+})
+
 /** A vertical fanned stack, used for tableau/reserve columns across every game. */
-export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard, onPressEmpty, faceDownOffset, faceUpOffset, maxHeight, style, drag, hiddenCount = 0, hiddenCardIds, dimUnplayable = false, shakeCardId, shakeCount = 1, shakeToken }: PileViewProps) {
+function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, onPressEmpty, faceDownOffset, faceUpOffset, maxHeight, style, drag, hiddenCount = 0, hiddenCardIds, dimUnplayable = false, shakeCardId, shakeCount = 1, shakeToken }: PileViewProps) {
   const { width: cardWidth, height: cardHeight } = useCardSize()
   // Fan offsets default to a fraction of the current card size, rather than a fixed pixel value,
   // so the fan still looks proportional when the card size scales up/down with the viewport.
@@ -286,6 +323,15 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
   // clears `activeDrag` if no NEWER drag from this column has begun in the meantime - otherwise it
   // would reveal the cards under the new drag's own ghost.
   const dragTokenRef = useRef(0)
+  // False only for this PileView's very first render (a resumed save) - every card dimmed on THAT render keeps the
+  // plain, instant scrim. A card that only becomes dimmed on a LATER render (its flight just landed - a hidden card is
+  // never dimmed - or the board's dimming was just switched on, see useDimAfterDeal) fades its scrim in instead - see
+  // the `dimFadeIn` prop passed below and PlayingCard's own doc comment on it. Flips via an effect (after the first
+  // commit), not during render, so it is already true by the time any later render reads it.
+  const mountedRef = useRef(false)
+  useEffect(() => {
+    mountedRef.current = true
+  }, [])
 
   // Read through a ref (refreshed after every render, like DraggableTableauCard's own `latest`) so the three
   // callbacks handed to every card are STABLE - closing over `cards`/`drag`/`onPressCard` directly would give them a
@@ -361,10 +407,21 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
     scale = (maxHeight - cardHeight) / (y || 1)
   }
 
+  // Split out from isCardHidden below so the runCount-skip optimization in the render loop can tell
+  // "hidden because some OTHER flight (a deal, a tap-to-move) owns it, can't be interacted with at
+  // all" apart from "hidden because THIS card is the one currently being dragged" - the latter still
+  // needs its own runCount computed correctly every render, since `pan.enabled(runCount > 0)` reads
+  // it and toggling that mid-gesture (a card whose own drag is already in progress dropping to
+  // runCount 0 for a render or two) cancels the native gesture recognizer out from under the
+  // player's own still-active touch. Confirmed live: dragGhostLayer.test.tsx's re-grab-mid-hit-test
+  // scenario failed the instant the skip below used the combined isCardHidden instead of this alone.
+  function isFlying(card: Card, indexFromTop: number): boolean {
+    return indexFromTop < hiddenCount || !!hiddenCardIds?.has(card.id)
+  }
+
   function isCardHidden(card: Card, indexFromTop: number): boolean {
     const isPartOfActiveDrag = !!activeDrag && indexFromTop <= activeDrag.indexFromTop && indexFromTop > activeDrag.indexFromTop - activeDrag.count
-    const isFlying = indexFromTop < hiddenCount || !!hiddenCardIds?.has(card.id)
-    return isPartOfActiveDrag || isFlying
+    return isPartOfActiveDrag || isFlying(card, indexFromTop)
   }
 
   // Every card this column currently holds is mid-flight - it was empty before whatever's
@@ -384,14 +441,47 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
   const shakeCardArrayIndex = shakeCardId ? cards.findIndex((c) => c.id === shakeCardId) : -1
   const shakeStartIndexFromTop = shakeCardArrayIndex === -1 ? null : cards.length - 1 - shakeCardArrayIndex
 
+  // react-hooks/refs flags reading a ref's `.current` during render (a component could in principle
+  // render speculatively more than once for one commit under React's concurrent features), and - since
+  // it traces data flow, not just the literal `.current` syntax - flags this WHOLE `cards.map(...)`
+  // below too, for closing over `wasAlreadyMounted` (itself read from `mountedRef.current` here). Both
+  // are safe: `mountedRef` is only ever WRITTEN from an effect (never during render, never from an
+  // event), so a discarded speculative render can only ever read a value at least as fresh as the last
+  // real commit - and the one place this value feeds (dimFadeIn, a cosmetic fade-vs-pop choice for a
+  // dimmed card's scrim on reveal) already has that exact instant-pop fallback as its documented
+  // behavior for a card present on the very first render, so a theoretical stale read here has no
+  // worse an outcome than a case this feature already handles on purpose.
+  /* eslint-disable react-hooks/refs */
+  const wasAlreadyMounted = mountedRef.current
+
   return (
     <View style={[styles.container, { width: cardWidth, height: maxHeight ?? totalHeight }, style]}>
       {cards.map((card, i) => {
         const indexFromTop = cards.length - 1 - i
         const isSelected = indexFromTop < selectedCount
         const isHinted = indexFromTop < hintCount
-        const runCount = drag && card.faceUp ? drag.getRunCount(indexFromTop) : 0
-        const isDimmed = dimUnplayable && !!drag && card.faceUp && runCount === 0
+        const isHidden = isCardHidden(card, indexFromTop)
+        // getRunCount (tableauRunCount -> maxSupermoveCount -> an 8-column scan, plus a
+        // descending-alt-color walk back down the column) is real, non-trivial computation, run
+        // for EVERY card on EVERY render of this pile regardless of whether that card can even be
+        // touched right now. A card hidden because some OTHER flight owns it (a deal, a tap-to-move)
+        // can't be interacted with at all (it is only a FlyingCardSlot - see below), so computing
+        // its runCount is pure waste - but a
+        // card hidden because it's the one CURRENTLY BEING DRAGGED still needs its own runCount
+        // computed for real every render: `pan.enabled(runCount > 0)` reads it, and skipping to 0
+        // mid-gesture cancels the native recognizer out from under the player's still-active touch
+        // (confirmed live: dragGhostLayer.test.tsx's re-grab-mid-hit-test scenario broke the instant
+        // this used the broader isHidden instead of isFlying alone). `isDimmed` has no such
+        // constraint - nothing reads it during a drag, and it's provably unobserved while hidden for
+        // ANY reason too (HeldDimScrim already returns null whenever `dimHold` - fed `isHidden` - is
+        // true, whatever `dimmed` says) - so it skips on the full isHidden. Confirmed live as a real,
+        // previously-unaccounted contributor: a fresh FreeCell deal has most of its 52 cards hidden
+        // for most of the deal, so this ran the full scan+walk for the vast majority of cards on
+        // every one of the ~52 renders a deal's landings drive - real per-render JS-thread cost, not
+        // a one-time mount cost, unlike the fixes above it. Skipped values are corrected the instant
+        // a card is actually revealed (the very next render, driven by that same landing).
+        const runCount = !isFlying(card, indexFromTop) && drag && card.faceUp ? drag.getRunCount(indexFromTop) : 0
+        const isDimmed = !isHidden && dimUnplayable && !!drag && card.faceUp && runCount === 0
         // A card only responds to taps if it's actually a legal move source - the same signal
         // drag already uses to decide whether a gesture may pick it up (runCount > 0 for a
         // face-up card that's either the true top or the head of a fully-valid run beneath it).
@@ -401,8 +491,44 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
         // same way; only the latter should ever shake (or react to a tap) at all.
         const isPressable = runCount > 0
 
-        return <DraggableTableauCard key={card.id} card={card} selected={isSelected} hinted={isHinted} dimmed={isDimmed} top={offsets[i] * scale} zIndex={i} runCount={runCount} indexFromTop={indexFromTop} isHidden={isCardHidden(card, indexFromTop)} shakeToken={shakeStartIndexFromTop !== null && indexFromTop <= shakeStartIndexFromTop && indexFromTop > shakeStartIndexFromTop - shakeCount ? shakeToken : undefined} onPress={isPressable ? pressHandler : undefined} onDragStart={handleDragStart} onDragEnd={handleDragEnd} originX={originX} originY={originY} dx={dx} dy={dy} startAbsX={startAbsX} startAbsY={startAbsY} />
+        // A card whose flight has not landed yet is a FlyingCardSlot (see its doc comment): measurable, and nothing more.
+        // Never skip it from the tree outright - that once dropped eight games' deal animations and every tableau-bound
+        // flight (nothing left to measure, so the card just appeared).
+        if (isFlying(card, indexFromTop)) return <FlyingCardSlot key={card.id} cardId={card.id} top={offsets[i] * scale} width={cardWidth} height={cardHeight} />
+
+        return (
+          <DraggableTableauCard
+            key={card.id}
+            card={card}
+            selected={isSelected}
+            hinted={isHinted}
+            dimmed={isDimmed}
+            top={offsets[i] * scale}
+            zIndex={i}
+            runCount={runCount}
+            indexFromTop={indexFromTop}
+            isHidden={isHidden}
+            // Gated on isDimmed, not just wasAlreadyMounted alone - dimFadeIn only ever affects a
+            // DIMMED card's own rendering (PlayingCard reads it inside `dimmed ? ... : null`), so an
+            // undimmed card should never see its value change (wasAlreadyMounted flips exactly once,
+            // shortly after this pile's own first commit) and lose its memoization over a prop that
+            // was never going to affect what it draws anyway - confirmed live: pileViewMemo.test.tsx's
+            // "no unrelated card re-renders" cases failed the instant this was un-gated.
+            dimFadeIn={isDimmed && wasAlreadyMounted}
+            shakeToken={shakeStartIndexFromTop !== null && indexFromTop <= shakeStartIndexFromTop && indexFromTop > shakeStartIndexFromTop - shakeCount ? shakeToken : undefined}
+            onPress={isPressable ? pressHandler : undefined}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            originX={originX}
+            originY={originY}
+            dx={dx}
+            dy={dy}
+            startAbsX={startAbsX}
+            startAbsY={startAbsY}
+          />
+        )
       })}
+      {/* eslint-enable react-hooks/refs */}
       {allCardsHidden && (
         <View style={StyleSheet.absoluteFill} pointerEvents='none'>
           <EmptySlot />
@@ -411,6 +537,47 @@ export function PileView({ cards, selectedCount = 0, hintCount = 0, onPressCard,
     </View>
   )
 }
+
+// A custom comparator, not a plain memo(PileViewImpl) - every call site shares ONE hiddenCardIds Set
+// across every column (the deal, and undo's cascade-hide, both track "every id hidden anywhere on the
+// board" in one place, not per-column - see FreeCellScreen.tsx's own dealHiddenIds), so a single card
+// landing anywhere replaces that Set's identity and would otherwise invalidate a plain reference-equality
+// memo for all 8 columns on every one of a deal's ~52 landings, not just the one column that actually
+// changed. Once `cards` itself is confirmed identical (same reference - i.e. this pile's own content
+// genuinely didn't change, which structural-sharing cloneState guarantees for every untouched pile on
+// every move/landing), only a genuine membership difference over THIS pile's own cards can change what
+// it renders - checking that is a handful of Set.has() calls, far cheaper than the full render this
+// bails out of (offsets/scale/isFlying/runCount for every card, building N element descriptors, and
+// everything DraggableTableauCard's own memo would otherwise have to individually re-confirm unchanged).
+// Every other prop is compared normally (by reference for objects/functions, by value for primitives) -
+// see FreeCellScreen.tsx's dragConfigs/onPressCardConfigs for why `drag`/`onPressCard` must themselves
+// be stable per column for that reference comparison to ever actually pass.
+function pileViewPropsEqual(prev: Readonly<PileViewProps>, next: Readonly<PileViewProps>): boolean {
+  if (prev.cards !== next.cards) return false
+  if (prev.selectedCount !== next.selectedCount) return false
+  if (prev.hintCount !== next.hintCount) return false
+  if (prev.onPressCard !== next.onPressCard) return false
+  if (prev.onPressEmpty !== next.onPressEmpty) return false
+  if (prev.faceDownOffset !== next.faceDownOffset) return false
+  if (prev.faceUpOffset !== next.faceUpOffset) return false
+  if (prev.maxHeight !== next.maxHeight) return false
+  if (prev.style !== next.style) return false
+  if (prev.drag !== next.drag) return false
+  if (prev.hiddenCount !== next.hiddenCount) return false
+  if (prev.dimUnplayable !== next.dimUnplayable) return false
+  if (prev.shakeCardId !== next.shakeCardId) return false
+  if (prev.shakeCount !== next.shakeCount) return false
+  if (prev.shakeToken !== next.shakeToken) return false
+  if (prev.runCountKey !== next.runCountKey) return false
+  if (prev.hiddenCardIds !== next.hiddenCardIds) {
+    for (const card of next.cards) {
+      if (!!prev.hiddenCardIds?.has(card.id) !== !!next.hiddenCardIds?.has(card.id)) return false
+    }
+  }
+  return true
+}
+
+export const PileView = memo(PileViewImpl, pileViewPropsEqual)
 
 const styles = StyleSheet.create({
   // zIndex on a positioned descendant only stays scoped to this container if the container

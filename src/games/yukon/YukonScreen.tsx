@@ -61,14 +61,16 @@ const TABLEAU_COLUMNS = 7
 // never reads rank/suit.
 const DECK_PLACEHOLDER_CARD: Card = { id: 'yukon-deck-origin', suit: 'spades', rank: 1, faceUp: false }
 
-// Widens the default MoveInfo|null undo-entry shape (see undoTypes.ts) to additionally carry any
-// silently auto-played foundation moves that happened as a direct consequence of `primary` (see
-// maybeAutoPlay/applyMove's `opts.silent` branch below) - undoing `primary` must also reverse-
-// animate every one of these, or they'd just silently snap back along with the rest of the board.
-// Every real Yukon move (unlike Klondike's stock draws) has a genuine card to fly, so - mirroring
-// this file's pre-existing non-nullable UndoEntry<YukonState, MoveInfo> choice - `primary` stays
-// non-nullable too; only applyMove's own non-silent branch ever calls pushUndo, and it always has
-// a real MoveInfo in hand.
+// Widens the default MoveInfo|null undo-entry shape (see undoTypes.ts): `primary` is the move this
+// entry takes back. Every real Yukon move (unlike Klondike's stock draws) has a genuine card to fly,
+// so - mirroring this file's pre-existing non-nullable UndoEntry<YukonState, MoveInfo> choice -
+// `primary` stays non-nullable; applyMove always has a real MoveInfo in hand. Every move, an
+// auto-played one included, now pushes its own entry, so `cascaded` is always empty for a new entry.
+// It is kept only for saves written before that, when each SILENT auto-play-to-foundation move (see
+// applyMove's `opts.silent`) was folded into the entry of the move that set it off, in the order
+// they happened, and one Undo took them all back - undoing such a legacy `primary` still reverse-
+// animates every one of them (see groupCascadedByFoundation and the pendingCascadeUndoRef effect),
+// or they'd just silently snap back along with the rest of the board.
 interface YukonUndoMove {
   primary: MoveInfo
   cascaded: MoveInfo[]
@@ -87,8 +89,8 @@ interface CascadeUndoGroup {
   cards: CascadeReturnCard[]
 }
 
-// Every cascaded move is a single-card tableau->foundation auto-play (the only kind
-// engine/autoFoundation.ts ever produces - see maybeAutoPlay) - grouped by which foundation pile
+// Legacy saves only (see YukonUndoMove). Every cascaded move is a single-card tableau->foundation auto-play (the only kind
+// engine/autoFoundation.ts ever produces - see firePlay) - grouped by which foundation pile
 // each landed on, since that's the one shared, content-independent origin (measureView on that
 // pile's own slot container) every returning card in the group flies FROM; the cards themselves
 // have no CardRegistry entry once buried under a later foundation arrival. `s` must be the state
@@ -225,6 +227,8 @@ function YukonScreenInner() {
 
   function startNewGame() {
     const myToken = ++dealTokenRef.current
+    // An arm left over from the old deal must not fire on this one (see useAutoFoundationCascade's disarm).
+    cascade.disarm()
     const s = controller.newGame(randomSeed())
     setUndoStack([])
     setHint(null)
@@ -251,6 +255,8 @@ function YukonScreenInner() {
   // existed - see SavedGame's own doc comment).
   function restoreGame(saved: SavedGame<YukonState, UndoEntry<YukonState, YukonUndoMove>>) {
     ++dealTokenRef.current
+    // Nothing auto-plays on a resumed board until the player's own next foundation move arms it.
+    cascade.disarm()
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
     hintsUsedRef.current = false
@@ -423,8 +429,9 @@ function YukonScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // Reverse-animates any auto-played cascade that rode along with the move currently being undone
-  // (see applyMove's opts.silent branch / groupCascadedByFoundation above) - runs independently of,
+  // Reverse-animates any auto-played cascade that rode along with the move currently being undone -
+  // only ever an entry restored from a save written before auto-plays became their own undo steps
+  // (see YukonUndoMove / groupCascadedByFoundation above) - runs independently of,
   // and concurrently with, the primary flight's own pendingFlightRef effect just above (separate
   // providers/state, so both animating at once is correct - "everything flies back together").
   // Same measure-after-commit reasoning as every other deferred effect in this file: a cascaded
@@ -659,9 +666,17 @@ function YukonScreenInner() {
   // `flying !== null` and `cascadeUndoBusyRef.current` checks this guard used to also carry - undo
   // still holds full mutual exclusion (see useFlightConcurrency's own undoBusyRef doc comment), it
   // just now waits on one counter instead of three separate flags.
+  //
+  // Each auto-played card is its own entry, so one press takes back one card. An entry from a save
+  // written before that can still carry a `cascaded` list: undoing its `primary` move also
+  // reverse-animates every card the auto-play cascade played on top of it, in one press (see
+  // YukonUndoMove above and the pendingCascadeUndoRef effect above).
   async function handleUndo() {
     if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
+    // A still-armed auto-play cascade must not fire again on the board this undo reverts to - the
+    // player is taking cards back, one at a time, and would otherwise watch them go straight back up.
+    cascade.disarm()
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition - the only move available once it's true is New Game), so any undo reachable while
     // won must be undoing the winning move itself. Clears the "You Won!" banner and stops the
@@ -692,8 +707,8 @@ function YukonScreenInner() {
     startFlights(cascadeGroups.length > 0 ? 2 : 1)
 
     const sourcePile = resolvePile(primary.to)
-    // A foundation move's own card can sit BURIED under the cascaded auto-plays that landed on the
-    // same pile after it (they come back via their own flights below) - so it is found by id, not
+    // A foundation move's own card can sit BURIED under a legacy entry's cascaded auto-plays that
+    // landed on the same pile after it (they come back via their own flights below) - so it is found by id, not
     // assumed to be on top.
     const buriedAt = primary.to.zone === 'foundation' && sourcePile ? sourcePile.findIndex((c) => c.id === primary.anchorCardId) : -1
     const movingCards = sourcePile ? (buriedAt >= 0 ? [sourcePile[buriedAt]] : sourcePile.slice(sourcePile.length - primary.count)) : []
@@ -739,10 +754,9 @@ function YukonScreenInner() {
     }
   }
 
-  // `silent` is for the auto-play-to-foundation feature (see maybeAutoPlay/fireAutoMove below): an
-  // auto-played card isn't a player decision, so it skips the undo stack entirely (one Undo press
-  // reverts the whole triggering move plus any cascade it set off, in one step) and doesn't count
-  // toward the moves/score the player is judged on.
+  // `silent` is for the auto-play-to-foundation feature (see firePlay above): an auto-played card
+  // isn't a player decision, so it doesn't count toward the moves/score the player is judged on. It
+  // is still its own undo step, like any other move.
   function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean }) {
     // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
     // closure's `state` - two actions can now be triggered back-to-back before React re-renders
@@ -753,33 +767,23 @@ function YukonScreenInner() {
     const result = controller.tryMove(current, { from, to, count })
     if (result) {
       const moveInfo: MoveInfo = { from, to, count, anchorCardId }
-      if (opts?.silent) {
-        // A silently auto-played move (see maybeAutoPlay) isn't its own undo-stack entry - it's
-        // folded into the cascade of whichever real move most recently triggered it, so one Undo
-        // press reverses the whole chain (and reverse-animates every card in it - see
-        // groupCascadedByFoundation/pendingCascadeUndoRef's effect) in one step. Dropped (matching
-        // today's behavior) if the stack happens to be empty - shouldn't happen, since a silent
-        // move only ever fires as a reaction to a just-applied real move, which always pushes an
-        // entry first.
-        setUndoStack((stack) => {
-          if (stack.length === 0) return stack
-          const last = stack[stack.length - 1]
-          return [...stack.slice(0, -1), { ...last, move: { ...last.move, cascaded: [...last.move.cascaded, moveInfo] } }]
-        })
-      } else {
-        pushUndo(current, { primary: moveInfo, cascaded: [] })
-      }
+      // Every move gets its own undo entry, an auto-played one included (the finish sweep too - it
+      // plays through the same firePlay), so one Undo press takes back one card and the player can
+      // stop exactly where they want (an auto-play used to be folded into the entry of the move that
+      // set it off, see YukonUndoMove).
+      pushUndo(current, { primary: moveInfo, cascaded: [] })
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
-      if (!opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
+      // (Never armed while auto-move is off: the cascade could then fire later, after it's back on.)
+      if (settings.autoMoveToFoundation && !opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
       // Reveals an ace: auto-play it immediately as a reward for the move that uncovered it (see
       // useAutoFoundationCascade's armFromAceEvent), regardless of whether THIS move was itself
       // silent - a cascaded tableau-to-foundation play can just as well reveal a fresh ace
       // underneath as a manual one can, and that ace deserves the same instant payoff either way.
       if (from.zone === 'tableau') {
         const revealed = detectRevealedCard(current.tableau[from.index], result.tableau[from.index], count)
-        if (revealed && revealed.rank === 1) {
+        if (settings.autoMoveToFoundation && revealed && revealed.rank === 1) {
           cascade.armFromAceEvent({ ref: from, card: revealed }, { zone: 'foundation', index: SUITS.indexOf(revealed.suit) })
         }
       }

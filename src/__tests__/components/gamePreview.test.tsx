@@ -1,6 +1,7 @@
 import { render } from '@testing-library/react-native'
 
 import { GamePreview, type PreviewCardPlacement } from '@/components/GamePreview'
+import { PREVIEW_FACE_BITMAPS, type PreviewGame } from '@/components/previewFaceBitmaps'
 import { lightColors } from '@/components/theme'
 import { buildAcesUpPreview } from '@/games/acesup/previewLayout'
 import { buildCanfieldPreview } from '@/games/canfield/previewLayout'
@@ -15,7 +16,7 @@ import { buildTriPeaksPreview } from '@/games/tripeaks/previewLayout'
 import { buildYukonPreview } from '@/games/yukon/previewLayout'
 import { DEFAULT_SETTINGS, SettingsProvider } from '@/stores/settings'
 
-const ALL_PREVIEWS: Record<string, PreviewCardPlacement[]> = {
+const ALL_PREVIEWS: Record<PreviewGame, PreviewCardPlacement[]> = {
   acesup: buildAcesUpPreview(),
   canfield: buildCanfieldPreview(),
   fortythieves: buildFortyThievesPreview(),
@@ -37,10 +38,10 @@ function countNodes(node: unknown): number {
   return 1 + (children ?? []).reduce<number>((sum, child) => sum + countNodes(child), 0)
 }
 
-async function renderPreview(placements: PreviewCardPlacement[]) {
+async function renderPreview(game: PreviewGame, placements: PreviewCardPlacement[]) {
   const screen = await render(
     <SettingsProvider initialValue={DEFAULT_SETTINGS}>
-      <GamePreview placements={placements} colors={lightColors} />
+      <GamePreview game={game} placements={placements} colors={lightColors} />
     </SettingsProvider>
   )
   return countNodes(screen.toJSON())
@@ -48,46 +49,36 @@ async function renderPreview(placements: PreviewCardPlacement[]) {
 
 // Home mounts all eleven of these at once, and it used to draw each thumbnail card with the real full-detail
 // @tastic/cards art (~35 elements per card on average, ~12k native views for the menu - 1.3-1.5s of blocked
-// JS thread in a production bundle, 2.6s in dev, every time Home mounted). At ~7pt wide none of that detail
-// is legible, so a thumbnail card is now a Rect plus (face-up only) one suit-pip Path. This budget is
-// deliberately generous for that shape but far below the old one, so bringing the heavy art back fails here.
-const MAX_NODES_PER_CARD = 4 // the per-card fallback (Pyramid/TriPeaks): a Rect plus a pip Path, or a Rect plus a medallion
-const FIXED_OVERHEAD = 6 // wrapper View + Svg + a little slack
-// Column layouts are merged into a handful of Paths (see previewGeometry.ts), independent of how many cards there are.
-const MERGED_MAX_NODES = 12
+// JS thread in a production bundle, 2.6s in dev, every time Home mounted). Now the face-up cards are one pre-rendered
+// Image per tile and the backs are live SVG (a merged Path for column layouts, a Rect per back otherwise). This budget
+// is deliberately generous for that shape but far below the old one, so bringing the per-card art back fails here.
+const FIXED_OVERHEAD = 6 // wrapper View + Svg + Image + a little slack
 const OVERLAPPING_LAYOUTS = ['pyramid', 'tripeaks']
 
 describe('GamePreview weight', () => {
-  it.each(Object.entries(ALL_PREVIEWS))('%s tile stays lightweight', async (_name, placements) => {
-    const nodes = await renderPreview(placements)
+  it.each(Object.entries(ALL_PREVIEWS) as [PreviewGame, PreviewCardPlacement[]][])('%s tile stays lightweight', async (game, placements) => {
+    const nodes = await renderPreview(game, placements)
+    const backs = placements.filter((p) => !p.faceUp).length
 
     expect(placements.length).toBeGreaterThan(0)
-    if (OVERLAPPING_LAYOUTS.includes(_name)) expect(nodes).toBeLessThanOrEqual(placements.length * MAX_NODES_PER_CARD + FIXED_OVERHEAD)
-    else expect(nodes).toBeLessThanOrEqual(MERGED_MAX_NODES)
+    // One node per back for the per-card layouts, one Path for all of them otherwise - never one per face-up card.
+    expect(nodes).toBeLessThanOrEqual((OVERLAPPING_LAYOUTS.includes(game) ? backs : 1) + FIXED_OVERHEAD)
   })
 
-  it('keeps the whole menu to a few hundred nodes', async () => {
+  it('keeps the whole menu to a few dozen nodes', async () => {
     let total = 0
-    for (const placements of Object.values(ALL_PREVIEWS)) total += await renderPreview(placements)
+    for (const [game, placements] of Object.entries(ALL_PREVIEWS) as [PreviewGame, PreviewCardPlacement[]][]) total += await renderPreview(game, placements)
 
     // Was ~12,000 with the full card art (and ~780 with one Rect per card).
-    expect(total).toBeLessThan(300)
+    expect(total).toBeLessThan(100)
   })
 
-  it('draws every placement (the face/back split is preserved)', async () => {
-    const placements = ALL_PREVIEWS.klondike
-    const faceUp = placements.filter((p) => p.faceUp).length
-    const faceDown = placements.length - faceUp
-    const screen = await render(
-      <SettingsProvider initialValue={DEFAULT_SETTINGS}>
-        <GamePreview placements={placements} colors={lightColors} />
-      </SettingsProvider>
-    )
-
-    // Klondike's starting deal is 7 up / 21 down, drawn as merged strips: back strips, face strips and pips.
-    expect(faceUp).toBe(7)
-    expect(faceDown).toBe(21)
-    const nodes = countNodes(screen.toJSON())
-    expect(nodes).toBeGreaterThanOrEqual(5) // wrapper + Svg + backs + faces + pips (the medallion path only exists for a fully visible back)
+  it('has a face layer for every game, card style and ink', () => {
+    for (const game of Object.keys(ALL_PREVIEWS) as PreviewGame[]) {
+      for (const style of ['compact', 'numeric', 'tarot', 'decorated'] as const) {
+        expect(PREVIEW_FACE_BITMAPS[game][style].normal).toBeDefined()
+        expect(PREVIEW_FACE_BITMAPS[game][style].invert).toBeDefined()
+      }
+    }
   })
 })

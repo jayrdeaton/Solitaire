@@ -2,7 +2,7 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
@@ -14,7 +14,7 @@ import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostL
 import { scaledMs } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
-import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { CARD_HEIGHT_RATIO, useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
@@ -37,6 +37,7 @@ import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFinish } from '@/games/shared/useAutoFinish'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
+import { useDimAfterDeal } from '@/games/shared/useDimAfterDeal'
 import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
@@ -81,13 +82,13 @@ export const FINISH_LAST_CARD_WAIT_MS = scaledMs(600)
 // Card-shaped, since a face-down PlayingCard never reads rank/suit.
 const DECK_PLACEHOLDER_CARD: Card = { id: 'freecell-deck-origin', suit: 'spades', rank: 1, faceUp: false }
 
-/** FreeCell's own undo-move shape: `primary` is the player's actual move (kept nullable only for
- * parity with the shared MoveInfo | null shape - every real FreeCell move has a card to fly, so
- * this is never actually null in practice), and `cascaded` collects every SILENT auto-play-to-
- * foundation move (see applyMove's `opts.silent`) that fired as a direct consequence of it, in the
- * order they happened. These used to just be dropped from the undo stack entirely - the state
- * revert still included them, but nothing ever flew them back, so they silently snapped instead
- * (see handleUndo's own doc comment below). */
+/** FreeCell's own undo-move shape: `primary` is the move this entry takes back (kept nullable only
+ * for parity with the shared MoveInfo | null shape - every real FreeCell move has a card to fly, so
+ * this is never actually null in practice). Every move, an auto-played one included, now pushes
+ * its own entry, so `cascaded` is always empty for a new entry. It is kept only for saves written
+ * before that, when each SILENT auto-play-to-foundation move (see applyMove's `opts.silent`) was
+ * folded into the entry of the move that set it off, in the order they happened, and one Undo took
+ * them all back (see handleUndo and the pendingCascadeUndoRef effect, which still fly those back). */
 interface FreeCellUndoMove {
   primary: MoveInfo | null
   cascaded: MoveInfo[]
@@ -194,6 +195,8 @@ function FreeCellScreenInner() {
   // placeholder should read as exhausted the moment the LAST card actually leaves it, not once
   // every card has finished landing. See runDeal's onCardDealt for the timing.
   const [deckVisible, setDeckVisible] = useState(false)
+  // Nothing is dimmed while the deal is in the air; the whole board dims at once when it has landed (see useDimAfterDeal).
+  const dimAfterDeal = useDimAfterDeal()
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
@@ -265,35 +268,56 @@ function FreeCellScreenInner() {
   // stock pile - FreeCell has none. Unlike Klondike's runDeal, the flying card isn't forced
   // face-down: real FreeCell deals every card face up from the start (rules.ts's newGame already
   // sets faceUp: true on the whole deck), so step.card's own faceUp is left as-is.
+  //
+  // Destinations are computed ANALYTICALLY (this column's own measured container + PileView's own
+  // fan-offset formula, mirrored exactly below) instead of by measuring each real destination CARD
+  // via CardRegistry, the way this used to work - because a hidden tableau card is no longer mounted
+  // at all while the deal hasn't reached it yet (see PileView's own `isFlying` doc comment), so there
+  // is no real card there to measure anymore. Only the 8 column CONTAINERS are measured (via
+  // DropZoneRegistry, already tracking them for hit-testing - see its own `measure` doc comment),
+  // once each, not once per card - the same "measure a stable container, compute each card's offset
+  // from it" idiom Pyramid/TriPeaks already use for their own analytical destinations.
   async function runDeal(s: FreeCellState, token: number) {
     const sequence = buildFreeCellDealSequence(s.tableau)
-    const [origin, destinations] = await Promise.all([measureView(dealOriginRef.current), Promise.all(sequence.map((step) => ghost.cardRegistry.measure(step.cardId)))])
+    const cardHeight = cardWidth * CARD_HEIGHT_RATIO
+    const faceUpOffset = faceUpFanOffset(cardWidth)
+    const [origin, columnRects] = await Promise.all([measureView(dealOriginRef.current), Promise.all(s.tableau.map((_, colIndex) => dropZones.measure({ zone: 'tableau', index: colIndex })))])
     if (dealTokenRef.current !== token) return
     if (!origin) {
       setDealHiddenIds(new Set())
       setDeckVisible(false)
+      dimAfterDeal.release()
       return
     }
 
+    // Each column's own fan scale (mirrors PileView's `offsets`/`scale` computation exactly - see its
+    // own doc comment) - once per column, not per card, since every card sharing a column shares it.
+    const columnScale = s.tableau.map((col) => {
+      const rawHeight = col.length * faceUpOffset
+      const totalHeight = rawHeight + cardHeight
+      return tableauMaxHeight && totalHeight > tableauMaxHeight ? (tableauMaxHeight - cardHeight) / (rawHeight || 1) : 1
+    })
+
     const built: DealCardSpec[] = []
-    // A card whose destination measurement comes back null (while its siblings in the same batch
-    // resolve fine) can't be flown - but it must still be unhidden right away instead of staying
-    // in dealHiddenIds forever, which would otherwise soft-lock it out of play permanently (and
-    // keep dealHiddenIds.size from ever reaching 0, which also permanently disables the
+    // A column whose container measurement comes back null (the DropZone hasn't mounted/laid out
+    // yet) can't fly any of its cards - but they must still be unhidden right away instead of
+    // staying in dealHiddenIds forever, which would otherwise soft-lock them out of play permanently
+    // (and keep dealHiddenIds.size from ever reaching 0, which also permanently disables the
     // moves===0-gated auto-play effect above). Mirrors the same fallback this file's own
     // runWinCascade/handleUndo use for an equivalent measurement failure.
     const unresolvedIds: string[] = []
-    sequence.forEach((step, i) => {
-      const dest = destinations[i]
-      if (!dest) {
+    sequence.forEach((step) => {
+      const rect = columnRects[step.colIndex]
+      if (!rect) {
         unresolvedIds.push(step.cardId)
         return
       }
+      const top = step.rowIndex * faceUpOffset * columnScale[step.colIndex]
       built.push({
         cardId: step.cardId,
         card: step.card,
         from: origin,
-        to: { x: dest.x, y: dest.y },
+        to: { x: rect.x, y: rect.y + top },
         delayMs: step.visitOrder * dealStaggerMs(sequence.length)
       })
     })
@@ -310,6 +334,7 @@ function FreeCellScreenInner() {
     if (entries.length === 0) {
       setDealHiddenIds(new Set())
       setDeckVisible(false)
+      dimAfterDeal.release()
       return
     }
 
@@ -322,7 +347,6 @@ function FreeCellScreenInner() {
     // cards had really left. A skip reports every not-yet-taken-off card through onCardDealt too.
     // Same dealTokenRef guard as every other async step here.
     const lastCardId = entries.reduce((a, b) => (b.delayMs > a.delayMs ? b : a)).cardId
-
     deal.start(
       entries,
       cardWidth,
@@ -340,6 +364,7 @@ function FreeCellScreenInner() {
         // route the last take-off report took (a skip reports every remaining card at once).
         if (dealTokenRef.current !== token) return
         setDeckVisible(false)
+        dimAfterDeal.release()
       },
       (cardId) => {
         if (dealTokenRef.current !== token) return
@@ -546,6 +571,7 @@ function FreeCellScreenInner() {
     const dealtIds = new Set(s.tableau.flat().map((c) => c.id))
     setDealHiddenIds(dealtIds)
     setDeckVisible(true)
+    dimAfterDeal.hold()
     scheduleDeal(myToken)
     commitState(s)
   }
@@ -569,6 +595,7 @@ function FreeCellScreenInner() {
     recordedWinRef.current = false
     setDealHiddenIds(new Set())
     setDeckVisible(false)
+    dimAfterDeal.releaseNow()
     commitState(saved.state)
   }
 
@@ -610,10 +637,10 @@ function FreeCellScreenInner() {
   // state), then revert and mark `move.from` as incoming so it flies the rest of the way there
   // exactly like a fresh move would.
   //
-  // applyMove never pushes a new undo entry for a SILENT auto-played move (see its own doc comment)
-  // - instead it folds that move into THIS entry's own `cascaded` list, so undoing the one recorded
-  // `primary` move also reverse-animates every card the auto-play cascade silently played on top of
-  // it, in one Undo press (see FreeCellUndoMove above and the pendingCascadeUndoRef effect above).
+  // An entry from a save written before auto-plays became their own undo steps can still carry a
+  // `cascaded` list: undoing its `primary` move also reverse-animates every card the auto-play
+  // cascade played on top of it, in one Undo press (see FreeCellUndoMove above and the
+  // pendingCascadeUndoRef effect above).
   async function handleUndo() {
     if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
     undoBusyRef.current = true
@@ -686,9 +713,8 @@ function FreeCellScreenInner() {
   }
 
   // `silent` is for the auto-play-to-foundation feature (see maybeAutoPlay/fireAutoMove below): an
-  // auto-played card isn't a player decision, so it skips the undo stack entirely (one Undo press
-  // reverts the whole triggering move plus any cascade it set off, in one step) and doesn't count
-  // toward the moves/score the player is judged on.
+  // auto-played card isn't a player decision, so it doesn't count toward the moves/score the player
+  // is judged on. It is still its own undo step, like any other move.
   function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean; viaTap?: boolean }) {
     // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
     // closure's `state` - two actions can now be triggered back-to-back before React re-renders
@@ -704,20 +730,10 @@ function FreeCellScreenInner() {
     const result = FreeCellController.tryMove(current, { from, to, count })
     if (result) {
       const moveInfo: MoveInfo = { from, to, count, anchorCardId }
-      if (opts?.silent) {
-        // An auto-played move isn't a player decision (see maybeAutoPlay/fireAutoMove below) - fold
-        // it into the LAST undo entry's own cascade list instead of dropping it, so a later Undo
-        // can reverse-animate it too (see handleUndo/FreeCellUndoMove). No-op if the stack happens
-        // to be empty - matches this move's prior behavior of not being recorded at all.
-        setUndoStack((stack) => {
-          if (stack.length === 0) return stack
-          const last = stack[stack.length - 1]
-          const updated = { ...last, move: { ...last.move, cascaded: [...last.move.cascaded, moveInfo] } }
-          return [...stack.slice(0, -1), updated]
-        })
-      } else {
-        pushUndo(current, moveInfo)
-      }
+      // Every move gets its own undo entry, an auto-played one included, so one Undo press takes back one card and the
+      // player can stop exactly where they want (an auto-play used to be folded into the entry of the move that set it
+      // off, see FreeCellUndoMove).
+      pushUndo(current, moveInfo)
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
@@ -917,15 +933,65 @@ function FreeCellScreenInner() {
   // right after some other concurrent action just committed a newer board but before this
   // component has re-rendered, and a stale read here could dim/undim a run against the wrong
   // freecell/column occupancy.
-  function tableauRunCount(colIndex: number, indexFromTop: number): number {
-    const current = stateRef.current
-    if (!current) return 0
-    const runLen = runCountFrom(current.tableau[colIndex], indexFromTop, isDescendingAltColor)
-    if (runLen > 1 && runLen > maxSupermoveCount(current, -1)) return 0
-    return runLen
-  }
+  // useCallback'd (not a plain function like every other handler here) specifically so it can sit in
+  // dragConfigs' own useMemo deps below and actually stay stable there - its body only ever reads
+  // stateRef.current (never the render closure's `state`), so it genuinely never needs to change
+  // identity at all.
+  const tableauRunCount = useCallback(
+    (colIndex: number, indexFromTop: number): number => {
+      const current = stateRef.current
+      if (!current) return 0
+      const runLen = runCountFrom(current.tableau[colIndex], indexFromTop, isDescendingAltColor)
+      if (runLen > 1 && runLen > maxSupermoveCount(current, -1)) return 0
+      return runLen
+    },
+    [stateRef]
+  )
+
+  // Every other handler above (completeMove, handleCardTap, startFlights/settleFlight from
+  // useFlightConcurrency) is a plain function/hook return rebuilt fresh every render - fine for a
+  // normal event handler, but it means a naive per-column `drag`/`onPressCard` object built inline in
+  // the JSX below (as this used to be) gets a brand-new identity every render too. PileView is now
+  // memoized (see its own doc comment) specifically so a card landing during a deal only re-renders
+  // the ONE column it actually landed in - but that only works if the other 7 columns' own props,
+  // `drag`/`onPressCard` included, are genuinely unchanged objects across that render. Routing the
+  // unstable pieces through a ref (refreshed every render, read only from inside a later callback -
+  // never during render) lets dragConfigs/onPressCardConfigs below be built ONCE and stay stable for
+  // this screen's whole lifetime, exactly the `latest`-ref idiom PileView.tsx's own onPressCard/drag
+  // plumbing already relies on, one level up.
+  const latestRef = useRef({ completeMove, startFlights, settleFlight, handleCardTap })
+  useEffect(() => {
+    latestRef.current = { completeMove, startFlights, settleFlight, handleCardTap }
+  })
+
+  // One stable PileDragConfig per tableau column, built once (colIndex never changes for a given
+  // array slot) instead of a fresh object every render - see latestRef's own doc comment above for why.
+  const dragConfigs = useMemo(
+    () =>
+      Array.from({ length: TABLEAU_COLUMNS }, (_, colIndex): PileDragConfig => ({
+        registry: dropZones,
+        getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
+        onDrop: (to, count, anchorCardId, flight) => {
+          if (undoBusyRef.current) return false
+          latestRef.current.startFlights(1)
+          if (!latestRef.current.completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)) {
+            latestRef.current.settleFlight()
+            return false
+          }
+          return true
+        }
+      })),
+    [dropZones, tableauRunCount, undoBusyRef]
+  )
+
+  // Same reasoning as dragConfigs above - a fresh `(card, indexFromTop, measure) => handleCardTap(...)`
+  // arrow every render defeated PileView's memoization on its own, independently of dragConfigs.
+  const onPressCardConfigs = useMemo(() => Array.from({ length: TABLEAU_COLUMNS }, (_, colIndex) => (card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) => latestRef.current.handleCardTap({ zone: 'tableau', index: colIndex }, card.id, measure, indexFromTop)), [])
 
   if (!state) return <GameLoading />
+
+  // What every column's run counts depend on besides its own cards (see tableauRunCount above and PileView's runCountKey).
+  const supermoveCap = maxSupermoveCount(state, -1)
 
   return (
     <CardSizeProvider width={cardWidth}>
@@ -989,29 +1055,10 @@ function FreeCellScreenInner() {
 
         <View style={[styles.tableauRow, { gap }]}>
           {state.tableau.map((col, colIndex) => {
-            const dragConfig: PileDragConfig = {
-              registry: dropZones,
-              getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
-              // Claims a flight slot (see activeFlightCountRef's doc comment above) purely so undo
-              // sees this drop as in-flight for its whole duration, not just once completeMove
-              // lands one - PileView.tsx (shared, not ours to edit) already ran its own hitTest
-              // await before invoking this callback, so this is the earliest point FreeCellScreen
-              // gets a look-in. Rejects outright if undo is running (see attemptDrop's identical
-              // comment on why undo holds full mutual exclusion, not just a one-way wait).
-              onDrop: (to, count, anchorCardId, flight) => {
-                if (undoBusyRef.current) return false
-                startFlights(1)
-                if (!completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)) {
-                  settleFlight()
-                  return false
-                }
-                return true
-              }
-            }
             const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === colIndex).reduce((sum, f) => sum + f.count, 0)
             return (
               <DropZone key={colIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: colIndex }} style={[styles.tableauColumn, { width: cardWidth }]}>
-                <PileView cards={col} onPressCard={(card, indexFromTop, measure) => handleCardTap({ zone: 'tableau', index: colIndex }, card.id, measure, indexFromTop)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} dimUnplayable={settings.dimUnplayable} shakeCardId={shake?.cardId} shakeCount={shake?.count} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} />
+                <PileView cards={col} onPressCard={onPressCardConfigs[colIndex]} maxHeight={tableauMaxHeight} drag={dragConfigs[colIndex]} runCountKey={supermoveCap} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} dimUnplayable={settings.dimUnplayable && !dimAfterDeal.held} shakeCardId={shake?.cardId} shakeCount={shake?.count} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} />
               </DropZone>
             )
           })}

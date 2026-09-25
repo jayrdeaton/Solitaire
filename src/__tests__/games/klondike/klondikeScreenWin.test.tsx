@@ -183,11 +183,12 @@ jest.mock('@/games/shared/FoundationCell', () => {
   return { FoundationCell: MockFoundationCell }
 })
 jest.mock('@/components/StockWaste', () => {
-  const { Pressable: MockPressable, View: MockView } = require('react-native')
+  const { Pressable: MockPressable, Text: MockText, View: MockView } = require('react-native')
   function MockWasteTop({ card, onPress }: { card: { id: string }; onPress: (measure: () => Promise<{ x: number; y: number }>) => void }) {
     return (
       <MockPressable testID='waste-top' onPress={() => onPress(async () => ({ x: 10, y: 10 }))}>
         <MockRegister cardId={card.id} />
+        <MockText testID='top-of-waste'>{card.id}</MockText>
       </MockPressable>
     )
   }
@@ -229,11 +230,13 @@ jest.mock('@/components/GameChrome', () => {
   const { Pressable: MockPressable, Text: MockText, View: MockView } = require('react-native')
   return {
     GAME_CONTENT_PADDING: 6,
-    GameChrome: ({ children, onUndo, onNewGame, won }: { children: unknown; onUndo: () => void; onNewGame: () => void; won: boolean }) => (
+    GameChrome: ({ children, onUndo, onNewGame, won, movesCount, undoDisabled }: { children: unknown; onUndo: () => void; onNewGame: () => void; won: boolean; movesCount: number; undoDisabled: boolean }) => (
       <MockView>
         <MockPressable testID='undo' onPress={onUndo} />
         <MockPressable testID='new-game' onPress={onNewGame} />
         <MockText testID='chrome-won'>{String(won)}</MockText>
+        <MockText testID='chrome-moves'>{String(movesCount)}</MockText>
+        <MockText testID='chrome-undo-disabled'>{String(undoDisabled)}</MockText>
         {children}
       </MockView>
     )
@@ -256,7 +259,7 @@ function board(parts: { tableau?: Card[][]; foundation: Card[][]; stock?: Card[]
 const KING_IN_COLUMN = () => board({ tableau: [[card('clubs', 13)]], foundation: foundations({ clubs: 12, diamonds: 13, hearts: 13, spades: 13 }) })
 /** The same, with the King on the waste. */
 const KING_ON_WASTE = () => board({ waste: [card('clubs', 13)], foundation: foundations({ clubs: 12, diamonds: 13, hearts: 13, spades: 13 }) })
-/** Tapping the Queen wins, in two steps: the Queen goes up, then auto-play sends the King (bared by it) up as a cascaded move. */
+/** Tapping the Queen wins, in two steps: the Queen goes up, then auto-play sends the King (bared by it) up. */
 const KING_AUTOPLAYED = () => board({ tableau: [[card('clubs', 13), card('clubs', 12)]], foundation: foundations({ clubs: 11, diamonds: 13, hearts: 13, spades: 13 }) })
 /** Tapping the Queen wins, with the King still in the stock: auto-play draws it and sends it straight up (drawAndPlay). */
 const KING_FROM_STOCK = () => board({ tableau: [[card('clubs', 12)]], stock: [card('clubs', 13, false)], foundation: foundations({ clubs: 11, diamonds: 13, hearts: 13, spades: 13 }) })
@@ -288,8 +291,9 @@ async function flushUntil(done: () => boolean, maxMs = 2000) {
   for (let t = 0; !done() && t < maxMs; t += STEP_MS) await flush(STEP_MS)
 }
 
-async function mount(state: KlondikeState, expectedCards: number) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack: [], moves: 0, elapsedSeconds: 0, config: 1 }) : null))
+/** `undoStack`/`moves` seed the save too (an old save's undo entries, for the legacy-shape tests). */
+async function mount(state: KlondikeState, expectedCards: number, undoStack: unknown[] = [], moves = 0) {
+  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack, moves, elapsedSeconds: 0, config: 1 }) : null))
   await render(<KlondikeScreen />)
   await flush() // loadGameInProgress -> restoreGame
   expect(screen.queryAllByTestId(/^card-|^waste-top/).length).toBe(expectedCards)
@@ -299,6 +303,10 @@ const foundationTop = (suit: Suit) => screen.getByTestId(`foundation-${suit}`).p
 /** What the foundation pile shows under its incoming ghost(s): a card id, 'empty' (the bare slot), or 'none' (nothing is flying there). */
 const underGhost = (suit: Suit) => screen.getByTestId(`under-ghost-${suit}`).props.children as string
 const cardsOnBoard = () => screen.queryAllByTestId(/^card-|^waste-top/).length
+const movesCount = () => screen.getByTestId('chrome-moves').props.children as string
+const undoDisabled = () => screen.getByTestId('chrome-undo-disabled').props.children as string
+/** The waste's top card id, or 'none'. */
+const wasteTop = () => (screen.queryByTestId('top-of-waste')?.props.children as string | undefined) ?? 'none'
 const pileIds = (index: number) => [...mockPiles.values()][index]?.cards.map((c) => c.id)
 
 async function tap(testID: string) {
@@ -572,25 +580,91 @@ describe('Klondike screen - a card never moves without its own flight', () => {
     expect(mockLog.hides).toBe(0)
   })
 
-  it('undoing a foundation move that auto-play has since buried flies that card out of its pile', async () => {
-    await mount(FIVE_THEN_SIX(), 4)
-
-    await tapCard(id('hearts', 5))
-    await flush(2000) // the tap's flight, then auto-play sends 6 of hearts up on top of it
-    expect(mockLog.shown).toEqual([id('hearts', 5), id('hearts', 6)])
-    expect(foundationTop('hearts')).toBe(id('hearts', 6)) // 5 of hearts is now buried: not the top, so it is not a measurable card
+  it('undoing a foundation move that auto-play has since buried (an old save that folded the auto-play into it) flies that card out of its pile', async () => {
+    // A save written before every auto-play became its own undo step: the board after the tap on 5 of hearts and the
+    // auto-play of 6 of hearts on top of it, with both recorded in ONE entry (the auto-play in `cascaded`).
+    const hearts = SUITS.indexOf('hearts')
+    const after = board({ tableau: [[], [], [card('diamonds', 1, false), card('diamonds', 2)]], foundation: foundations({ clubs: 13, spades: 13, hearts: 6 }) })
+    const folded = { state: FIVE_THEN_SIX(), move: { primary: { from: { zone: 'tableau', index: 0 }, to: { zone: 'foundation', index: hearts }, count: 1, anchorCardId: id('hearts', 5) }, cascaded: [{ from: { zone: 'tableau', index: 1 }, to: { zone: 'foundation', index: hearts }, count: 1, anchorCardId: id('hearts', 6) }] } }
+    await mount(after, 2, [folded], 1)
+    expect(foundationTop('hearts')).toBe(id('hearts', 6)) // 5 of hearts is buried: not the top, so it is not a measurable card
     expect(mockRegistered.has(id('hearts', 5))).toBe(false)
-    mockLog.shown = []
 
     await tap('undo')
     await flush(2000)
 
     expect(mockLog.shown).toEqual([id('hearts', 5)]) // the undone card has a ghost of its own (the buried card, not whatever is on top)...
-    expect(mockLog.dealt).toEqual([id('hearts', 6)]) // ...alongside the auto-played card returning
+    expect(mockLog.dealt).toEqual([id('hearts', 6)]) // ...alongside the auto-played card returning, in the same Undo press
     expect(mockLog.hides).toBe(0)
     expect(pileIds(0)).toEqual([id('hearts', 5)])
     expect(pileIds(1)).toEqual([id('hearts', 6)])
     expect(foundationTop('hearts')).toBe(id('hearts', 4))
+    expect(undoDisabled()).toBe('true')
+  })
+})
+
+describe('Klondike screen - every auto-played step is its own undo step', () => {
+  it('every auto-played card is its own undo step, taken back one at a time before the tap that set them off', async () => {
+    await mount(FIVE_THEN_SIX(), 4)
+
+    await tapCard(id('hearts', 5))
+    await flush(2000) // the tap's flight, then auto-play sends 6 of hearts up on top of it
+    expect(mockLog.shown).toEqual([id('hearts', 5), id('hearts', 6)])
+    expect(foundationTop('hearts')).toBe(id('hearts', 6))
+    expect(movesCount()).toBe('1') // the auto-play is not a move of the player's
+    mockLog.shown = []
+
+    await tap('undo') // takes back only the auto-played 6 of hearts...
+    await flush(2000)
+    expect(mockLog.shown).toEqual([id('hearts', 6)]) // ...which flies home on a ghost of its own (the ordinary undo flight)
+    expect(mockLog.dealt).toEqual([])
+    expect(pileIds(1)).toEqual([id('hearts', 6)])
+    expect(pileIds(0)).toEqual([])
+    expect(foundationTop('hearts')).toBe(id('hearts', 5)) // the tap's own card stays up, and auto-play does not send the 6 straight back
+    expect(undoDisabled()).toBe('false')
+    mockLog.shown = []
+
+    await tap('undo') // then the tap itself
+    await flush(2000)
+    expect(mockLog.shown).toEqual([id('hearts', 5)])
+    expect(pileIds(0)).toEqual([id('hearts', 5)])
+    expect(pileIds(1)).toEqual([id('hearts', 6)])
+    expect(foundationTop('hearts')).toBe(id('hearts', 4))
+    expect(undoDisabled()).toBe('true')
+    expect(mockLog.hides).toBe(0)
+  })
+
+  it("a card the sweep draws and sends straight up is two undo steps (back onto the waste, then back into the stock), each before the player's tap", async () => {
+    await mount(KING_FROM_STOCK(), 1)
+
+    await tapCard(id('clubs', 12))
+    await flush(10000)
+    expect(screen.getByTestId('chrome-won').props.children).toBe('true')
+    expect(movesCount()).toBe('1') // neither the draw nor the play counts
+    mockLog.shown = []
+
+    await tap('undo') // the King drops from its foundation onto the waste
+    await flush(2000)
+    expect(screen.getByTestId('chrome-won').props.children).toBe('false')
+    expect(mockLog.shown).toEqual([id('clubs', 13)])
+    expect(foundationTop('clubs')).toBe(id('clubs', 12))
+    expect(wasteTop()).toBe(id('clubs', 13)) // and stays there: auto-play does not send it back up
+    mockLog.shown = []
+
+    await tap('undo') // then the draw goes back into the stock
+    await flush(2000)
+    expect(mockLog.shown).toEqual([id('clubs', 13)])
+    expect(wasteTop()).toBe('none')
+    expect(foundationTop('clubs')).toBe(id('clubs', 12))
+    mockLog.shown = []
+
+    await tap('undo') // and only then the player's own tap
+    await flush(2000)
+    expect(mockLog.shown).toEqual([id('clubs', 12)])
+    expect(pileIds(0)).toEqual([id('clubs', 12)])
+    expect(foundationTop('clubs')).toBe(id('clubs', 11))
+    expect(undoDisabled()).toBe('true')
+    expect(mockLog.hides).toBe(0)
   })
 })
 

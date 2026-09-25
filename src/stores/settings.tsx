@@ -62,6 +62,19 @@ export interface Settings {
   // rest of the fleet's own games expose. Defaults false, matching every existing app's own default
   // for this setting (nothing pins the layout until the player deliberately opts in).
   lockOrientation: boolean
+  // Global, not per-game: skips every DealAnimator-driven flight (the initial deal, stock draws,
+  // undo/recycle returns, Pyramid's win sweep - see components/dealing/DealLayer.tsx) straight to
+  // its landed state, with no ghost ever mounted or flown - the same instant-land outcome a mid-deal
+  // skip tap already produces (DealProvider.start reuses that exact path when this is on), just
+  // applied automatically rather than waiting for a tap. A standard "Reduce Motion" accessibility
+  // preference, matching the same intent as iOS's own systemwide setting of that name - for players
+  // who find the fly-in animation distracting, motion-sensitive, or just want to get into a game
+  // faster, not a performance workaround (the deal's own pace already accounts for that - see
+  // dealSpring.ts's FACE_UP_TARGET_TOTAL_MS). Does not touch drag/tap-to-move flights
+  // (dragdrop/DragGhostLayer.tsx) or the win cascade (WinCascadeLayer.tsx), which are separate
+  // animation systems - a future extension, not covered here. Defaults false: today's animated deal
+  // stays the default experience.
+  reduceMotion: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -77,7 +90,8 @@ export const DEFAULT_SETTINGS: Settings = {
   cardStyle: 'compact',
   cardBackStyle: 'geometric',
   invertDarkModeColors: false,
-  lockOrientation: false
+  lockOrientation: false,
+  reduceMotion: false
 }
 
 const KEY = 'solitaire.settings.v1'

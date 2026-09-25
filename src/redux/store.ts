@@ -1,10 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { combineReducers, configureStore, type Middleware } from '@reduxjs/toolkit'
 import { defaultSoundSettings, hapticReducer, soundReducer, type SoundSettings } from '@rific/feedback-press'
+import { createReturningPlayerMigrate } from '@tastic/hud/guide'
 import { profilesReducer } from '@tastic/profile'
 import { FLUSH, PAUSE, PERSIST, persistReducer, persistStore, PURGE, REGISTER, REHYDRATE } from 'redux-persist'
 
 import activeProfile from './activeProfileSlice'
+import guide, { LEGACY_STORAGE_KEYS } from './guideSlice'
 import tableColor from './tableColorSlice'
 
 const hasError = (action: unknown): action is { error?: unknown } => typeof action === 'object' && action !== null && 'error' in action && Boolean(action.error)
@@ -36,12 +38,20 @@ const rootReducer = combineReducers({
   // The live table-felt color plus guest's own remembered pick - see tableColorSlice.ts's own doc
   // for why `override` is safe to persist unconditionally despite only guest's picks being
   // meaningfully "remembered."
-  tableColor
+  tableColor,
+  // Which version of the how-to-play flow this player has finished or skipped. Its own key rather than
+  // a Settings field, so it survives Reset Stats and never touches the hand-rolled settings store.
+  // See guideSlice.ts's own doc.
+  guide
 })
 
-const persistConfig = {
+export const persistConfig = {
   key: 'root',
-  storage: AsyncStorage
+  storage: AsyncStorage,
+  // Grandfathers players from the shipped pre-redux builds (last one 25532f0, otaVersion 3) past the
+  // guide: they have no root store yet, only that build's own keys, which would otherwise look like a
+  // fresh install. A no-op once a root store exists. See LEGACY_STORAGE_KEYS in guideSlice.ts.
+  migrate: createReturningPlayerMigrate(AsyncStorage, LEGACY_STORAGE_KEYS)
 }
 
 const persistedReducer = persistReducer(persistConfig, rootReducer)

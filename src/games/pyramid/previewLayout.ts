@@ -1,5 +1,5 @@
 import { FACE_UP_OFFSET_RATIO } from '@/components/CardSizeContext'
-import { centerVertically, PREVIEW_CANVAS_WIDTH, PREVIEW_CARD_HEIGHT, PREVIEW_CARD_WIDTH, PREVIEW_SEED, PreviewCardPlacement } from '@/components/GamePreview'
+import { centerVertically, PREVIEW_CANVAS_WIDTH, PREVIEW_CARD_HEIGHT, PREVIEW_CARD_WIDTH, PREVIEW_SEED, PreviewCardPlacement } from '@/components/previewCanvas'
 
 import { flatIndex, PyramidController } from './rules'
 

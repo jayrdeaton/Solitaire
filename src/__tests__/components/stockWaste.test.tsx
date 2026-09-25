@@ -1,4 +1,4 @@
-import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
+import { CardSizeProvider, faceUpFanOffset, RANK_INK_RIGHT_FRACTION } from '@tastic/cards'
 import { render, screen } from '@testing-library/react-native'
 import { StyleSheet, ViewStyle } from 'react-native'
 
@@ -80,13 +80,12 @@ describe('StockWaste - what the waste slot paints under flying draws', () => {
   })
 })
 
-// Where the '10' of a compact/numeric/tarot corner ends, as a fraction of card width, in the @tastic/cards versions that export
-// RANK_INK_RIGHT_FRACTION (4 decimals of the package's own value) - passed in by hand so these tests mean the same against the version
-// that predates the export.
+// Where the '10' of a compact/numeric/tarot corner ends, as a fraction of card width: @tastic/cards' RANK_INK_RIGHT_FRACTION to 4
+// decimals, written out so a change to the package's value shows up here (see wasteFanStepFor's tests).
 const TEN_INK_RIGHT = 0.5073
 
 describe('wasteFanStep - how far apart the draw-3 fan spreads its cards', () => {
-  it('is exactly the plain face-up strip while the rank ink extent is unknown (a @tastic/cards without the export)', () => {
+  it('is exactly the plain face-up strip when no rank ink extent is given', () => {
     for (const w of [28, 38.86, 46.71, 50.57, 61.04, 96]) {
       expect(wasteFanStep(w)).toBe(faceUpFanOffset(w))
       expect(wasteFanStep(w, undefined)).toBe(faceUpFanOffset(w))
@@ -115,38 +114,18 @@ describe('wasteFanStep - how far apart the draw-3 fan spreads its cards', () => 
   })
 })
 
-describe('wasteFanStepFor - reading the export defensively', () => {
-  // Loads a private copy of wasteFan.ts against a @tastic/cards with (or without) the export, whatever version is installed.
-  function stepFor(cardWidth: number, ink: number | 'absent', widen?: boolean): number {
-    let step = NaN
-    jest.isolateModules(() => {
-      jest.doMock('@tastic/cards', () => {
-        const mocked: Record<string, unknown> = { ...jest.requireActual('@tastic/cards') }
-        if (ink === 'absent') delete mocked.RANK_INK_RIGHT_FRACTION
-        else mocked.RANK_INK_RIGHT_FRACTION = ink
-        return mocked
-      })
-      step = (require('@/components/wasteFan') as typeof import('@/components/wasteFan')).wasteFanStepFor(cardWidth, widen)
-    })
-    jest.dontMock('@tastic/cards')
-    return step
-  }
-
-  it("without the export it is today's step exactly", () => {
-    expect(stepFor(50.57, 'absent')).toBe(faceUpFanOffset(50.57))
+describe('wasteFanStepFor - the installed @tastic/cards export', () => {
+  it("is the package's own RANK_INK_RIGHT_FRACTION (the '10' ink extent these tests assume)", () => {
+    expect(RANK_INK_RIGHT_FRACTION).toBeCloseTo(TEN_INK_RIGHT, 4)
   })
 
-  it('with the export it widens to clear the ink', () => {
-    expect(stepFor(50.57, TEN_INK_RIGHT)).toBeCloseTo((TEN_INK_RIGHT + WASTE_FAN_CLEAR_MARGIN_FRACTION) * 50.57, 10)
+  it('widens to clear the ink', () => {
+    expect(wasteFanStepFor(50.57)).toBeCloseTo((RANK_INK_RIGHT_FRACTION + WASTE_FAN_CLEAR_MARGIN_FRACTION) * 50.57, 10)
+    expect(wasteFanStepFor(50.57)).toBeGreaterThan(faceUpFanOffset(50.57))
   })
 
-  it('widen false is the plain strip even when the export is present (a screen whose fan has no room to spread)', () => {
-    expect(stepFor(50.57, TEN_INK_RIGHT, false)).toBe(faceUpFanOffset(50.57))
-    expect(stepFor(50.57, 'absent', false)).toBe(faceUpFanOffset(50.57))
-  })
-
-  it('agrees with the pure function for whichever @tastic/cards is installed', () => {
-    expect(wasteFanStepFor(64)).toBeGreaterThanOrEqual(faceUpFanOffset(64))
+  it('widen false is the plain strip (a screen whose fan has no room to spread)', () => {
+    expect(wasteFanStepFor(50.57, false)).toBe(faceUpFanOffset(50.57))
   })
 })
 

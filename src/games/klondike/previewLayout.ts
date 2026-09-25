@@ -1,4 +1,4 @@
-import { centerVertically, layoutColumns, PREVIEW_SEED, type PreviewCardPlacement } from '@/components/GamePreview'
+import { centerVertically, layoutColumns, PREVIEW_SEED, type PreviewCardPlacement } from '@/components/previewCanvas'
 
 import { createKlondikeController } from './rules'
 

@@ -2,6 +2,7 @@ import { Provider as ThemeProvider, type ThemeSettings, useAutoPaperTheme, useTh
 import { FeedbackPressProvider, hapticActions, type HapticSettings, soundActions, type SoundSettings } from '@rific/feedback-press'
 import { Toaster, ToastProvider } from '@rific/toaster'
 import { OrientationProvider, useThemedRootBackground } from '@tastic/core'
+import { ProfileColorProvider } from '@tastic/profile'
 import { DarkTheme, Stack, ThemeProvider as NavigationThemeProvider } from 'expo-router'
 import { DeviceMotion } from 'expo-sensors'
 import * as SplashScreen from 'expo-splash-screen'
@@ -14,6 +15,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { Provider as ReduxProvider, useDispatch, useSelector } from 'react-redux'
 import { PersistGate } from 'redux-persist/integration/react'
 
+import { GuideHost } from '@/components/GuideHost'
 import { createLockableDeviceMotion } from '@/components/lockableDeviceMotion'
 import { RotatedFrame } from '@/components/RotatedScreen'
 import { TableBackground } from '@/components/TableBackground'
@@ -157,6 +159,16 @@ function ProfileThemeSync() {
   return null
 }
 
+/** Draws every profile color app-wide (each ProfileChip, the picker's selected row, the profile
+ * editor's swatches, and @tastic/hud components that show a ProfileChip) through the same
+ * previewCardBack blend the card backs and ProfileThemeSync use, so a profile never shows as its raw,
+ * vivid swatch next to the muted table. Must sit inside ThemeProvider for the `dark` read. */
+function MutedProfileColors({ children }: { children: ReactNode }) {
+  const { dark } = useAutoPaperTheme()
+  const preview = useCallback((hex: string) => previewCardBack(hex, dark), [dark])
+  return <ProfileColorProvider preview={preview}>{children}</ProfileColorProvider>
+}
+
 /** Mounted once, wrapping every route via ThemedStack below AND the root overlays (toaster, update dialog) -
  * every screen's rotated frame (see RotatedScreen, and withGameProviders for the games) reads the live rotation
  * this provides via @tastic/core's useRotation()/RotatedGameView. Only needs useSettings() (the plain
@@ -282,17 +294,27 @@ export default function RootLayout() {
                   move to wrap the whole app; only the two providers with a real dependency on it
                   did. See this app's CLAUDE.md for the fuller version of this reasoning. */}
                   <ProfilesProvider>
-                    <GameStatsProvider>
-                      <FeedbackBridge playCardSound={playCardSound} playInvalidSound={playInvalidSound}>
-                        <ToastProvider>
-                          <ProfileThemeSync />
-                          <OrientationBridge>
-                            <ThemedStack />
-                            <RootOverlays />
-                          </OrientationBridge>
-                        </ToastProvider>
-                      </FeedbackBridge>
-                    </GameStatsProvider>
+                    <MutedProfileColors>
+                      <GameStatsProvider>
+                        <FeedbackBridge playCardSound={playCardSound} playInvalidSound={playInvalidSound}>
+                          <ToastProvider>
+                            <ProfileThemeSync />
+                            <OrientationBridge>
+                              {/* Wraps the stack (rather than sitting beside it like RootOverlays) because
+                            Home's useAutoShowGuide() and its Settings "How to Play" row reach it through
+                            context (see GuideHost's own doc). Must stay inside PersistGate (the seen
+                            version is read already rehydrated), FeedbackBridge (the card portals into
+                            FeedbackPressProvider's Portal.Host) and OrientationBridge (it reads the
+                            live tilt). */}
+                              <GuideHost>
+                                <ThemedStack />
+                              </GuideHost>
+                              <RootOverlays />
+                            </OrientationBridge>
+                          </ToastProvider>
+                        </FeedbackBridge>
+                      </GameStatsProvider>
+                    </MutedProfileColors>
                   </ProfilesProvider>
                 </PersistGate>
               </ReduxProvider>

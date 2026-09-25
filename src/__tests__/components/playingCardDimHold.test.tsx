@@ -1,9 +1,9 @@
 import { CardSizeProvider } from '@tastic/cards'
-import { render, screen } from '@testing-library/react-native'
+import { act, render, screen } from '@testing-library/react-native'
 import { StyleSheet } from 'react-native'
 import type { SharedValue } from 'react-native-reanimated'
 
-import { DIM_FADE_MS, fadeInDimScrim } from '@/components/dimScrimAnimation'
+import { DIM_FADE_BACKSTOP_MS, DIM_FADE_MS, fadeInDimScrim } from '@/components/dimScrimAnimation'
 import { PileView } from '@/components/PileView'
 import { PlayingCard } from '@/components/PlayingCard'
 import type { Card } from '@/engine/types'
@@ -11,7 +11,7 @@ import type { Card } from '@/engine/types'
 // Every dim scrim in the tree is found by this sentinel fill (the real one is a translucent black).
 const SCRIM_COLOR = '#123456'
 
-const mockTiming = jest.fn((toValue: number, config: { duration: number }) => ({ __timing: true, toValue, config }))
+const mockTiming = jest.fn((toValue: number, config: { duration: number }, _whenFinished?: (finished: boolean) => void) => ({ __timing: true, toValue, config }))
 // `sharedValues` counts shared values CREATED (one per mount, however often the component re-renders): the scrim of a card
 // that was never held must not allocate one.
 const mockCounters = { sharedValues: 0 }
@@ -38,7 +38,7 @@ jest.mock('react-native-reanimated', () => {
   }
   return {
     ...base,
-    withTiming: (...args: [number, { duration: number }]) => mockTiming(...args),
+    withTiming: (...args: [number, { duration: number }, ((finished: boolean) => void)?]) => mockTiming(...args),
     useSharedValue: (initial: unknown) => {
       const ref = useRef(null as Shared | null)
       if (!ref.current) {
@@ -119,12 +119,25 @@ describe('fadeInDimScrim', () => {
 
     fadeInDimScrim(opacity)
 
-    expect(mockTiming).toHaveBeenCalledWith(1, { duration: DIM_FADE_MS })
+    expect(mockTiming).toHaveBeenCalledWith(1, { duration: DIM_FADE_MS }, expect.any(Function))
     expect(opacity.value).toMatchObject({ __timing: true, toValue: 1 })
   })
 
   it('is shorter than the 270ms a following card takes to cover this one', () => {
     expect(DIM_FADE_MS).toBeLessThan(270)
+  })
+
+  it('reports a finished fade to onDone - and not one that was cut short', () => {
+    const opacity = { value: 0 } as SharedValue<number>
+    const onDone = jest.fn()
+
+    fadeInDimScrim(opacity, onDone)
+    const whenFinished = mockTiming.mock.calls[0][2]!
+
+    whenFinished(false)
+    expect(onDone).not.toHaveBeenCalled()
+    whenFinished(true)
+    expect(onDone).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -158,7 +171,7 @@ describe('PlayingCard dim scrim hand-off', () => {
     expect(scrims()).toHaveLength(1)
     expect(scrimOpacity()).toBe(0)
     expect(mockTiming).toHaveBeenCalledTimes(1)
-    expect(mockTiming).toHaveBeenCalledWith(1, { duration: DIM_FADE_MS })
+    expect(mockTiming).toHaveBeenCalledWith(1, { duration: DIM_FADE_MS }, expect.any(Function))
 
     // The mock's value has "finished" by the next render.
     await rerender(playing({ dimmed: true, dimHold: false }))
@@ -181,7 +194,7 @@ describe('PlayingCard dim scrim hand-off', () => {
     mockTiming.mockClear()
     await rerender(playing({ dimmed: true, dimHold: false }))
     expect(scrimOpacity()).toBe(0)
-    expect(mockTiming).toHaveBeenCalledWith(1, { duration: DIM_FADE_MS })
+    expect(mockTiming).toHaveBeenCalledWith(1, { duration: DIM_FADE_MS }, expect.any(Function))
   })
 
   it('a card that was never held pays for no animation: plain scrim, no shared value, however dimHold stays', async () => {
@@ -204,7 +217,7 @@ describe('PlayingCard dim scrim hand-off', () => {
     expect(scrims()).toHaveLength(0)
 
     await rerender(playing({ dimmed: true, dimHold: false }))
-    expect(mockTiming).toHaveBeenCalledWith(1, { duration: DIM_FADE_MS })
+    expect(mockTiming).toHaveBeenCalledWith(1, { duration: DIM_FADE_MS }, expect.any(Function))
   })
 
   it('a card that only becomes dimmed after being held is simply dimmed at once (no fade from an earlier hold)', async () => {
@@ -232,7 +245,58 @@ describe('PlayingCard dim scrim hand-off', () => {
     expect(scrims()).toHaveLength(0)
 
     await rerender(playing({ card: card(false), dimmed: true, dimHold: false }))
-    expect(mockTiming).toHaveBeenCalledWith(1, { duration: DIM_FADE_MS })
+    expect(mockTiming).toHaveBeenCalledWith(1, { duration: DIM_FADE_MS }, expect.any(Function))
+  })
+})
+
+describe('PlayingCard dim scrim - the finished state is the plain scrim', () => {
+  // On iOS the fade's final opacity reaches the view through commits that race React's own, and was measurably lost (a whole
+  // row of buried cards left undimmed after a deal). Once the fade is over the card must be drawn by the plain, React-owned
+  // scrim a resumed board uses - never left depending on the last value an animation wrote.
+  it('swaps the animated scrim for the plain one as soon as the fade reports it has finished', async () => {
+    const { rerender } = await render(playing({ dimmed: true, dimHold: true }))
+    await rerender(playing({ dimmed: true, dimHold: false }))
+    expect(scrimOpacity()).toBe(0) // the animated scrim, starting transparent
+
+    const whenFinished = mockTiming.mock.calls[0][2]!
+    await act(async () => whenFinished(true))
+
+    expect(scrims()).toHaveLength(1)
+    expect(scrimOpacity()).toBeUndefined() // the plain, fully opaque scrim
+  })
+
+  it('still fades in again the next time the card is held and released', async () => {
+    const { rerender } = await render(playing({ dimmed: true, dimHold: true }))
+    await rerender(playing({ dimmed: true, dimHold: false }))
+    await act(async () => mockTiming.mock.calls[0][2]!(true))
+    expect(scrimOpacity()).toBeUndefined()
+
+    await rerender(playing({ dimmed: true, dimHold: true }))
+    expect(scrims()).toHaveLength(0)
+    mockTiming.mockClear()
+    await rerender(playing({ dimmed: true, dimHold: false }))
+    expect(scrimOpacity()).toBe(0)
+    expect(mockTiming).toHaveBeenCalledTimes(1)
+  })
+
+  it('hands over to the plain scrim after DIM_FADE_BACKSTOP_MS even if the fade never reports back', async () => {
+    jest.useFakeTimers()
+    try {
+      const { rerender } = await render(playing({ dimmed: true, dimHold: true }))
+      await rerender(playing({ dimmed: true, dimHold: false }))
+      expect(scrimOpacity()).toBe(0)
+
+      await act(async () => {
+        jest.advanceTimersByTime(DIM_FADE_BACKSTOP_MS - 1)
+      })
+      expect(scrimOpacity()).toBe(0)
+      await act(async () => {
+        jest.advanceTimersByTime(1)
+      })
+      expect(scrimOpacity()).toBeUndefined()
+    } finally {
+      jest.useRealTimers()
+    }
   })
 })
 
@@ -281,7 +345,7 @@ describe('PileView hands its hidden cards to the scrim as a hold', () => {
     // Then the middle one: only that scrim appears (transparent, then fading in); the still-flying bottom card stays bare.
     await rerender(pile({ hiddenCardIds: new Set([bottom]) }))
     expect(mockTiming).toHaveBeenCalledTimes(1)
-    expect(mockTiming).toHaveBeenCalledWith(1, { duration: DIM_FADE_MS })
+    expect(mockTiming).toHaveBeenCalledWith(1, { duration: DIM_FADE_MS }, expect.any(Function))
     expect(opacities()).toEqual([0])
     await rerender(pile({ hiddenCardIds: new Set([bottom]) }))
     expect(opacities()).toEqual([1])
@@ -291,6 +355,21 @@ describe('PileView hands its hidden cards to the scrim as a hold', () => {
     await rerender(pile({ hiddenCardIds: new Set() }))
     expect(mockTiming).toHaveBeenCalledTimes(2)
     expect(opacities()).toEqual([1, 1])
+  })
+
+  it('dimming switched on once the deal has landed fades every buried card in together (useDimAfterDeal)', async () => {
+    // A deal: the pile renders first with every card in the air, then they land with dimming still held off.
+    const hidden = new Set(CARDS.map((c) => c.id))
+    const { rerender } = await render(pile({ hiddenCardIds: hidden, dimUnplayable: false }))
+    await rerender(pile({ hiddenCardIds: new Set(), dimUnplayable: false }))
+    await rerender(pile({ hiddenCardIds: new Set(), dimUnplayable: false }))
+    expect(scrims()).toHaveLength(0) // every card lands looking exactly like its (undimmed) ghost
+    expect(mockTiming).not.toHaveBeenCalled()
+
+    // The deal has settled: both buried cards start their fade in the same commit.
+    await rerender(pile({ hiddenCardIds: new Set(), dimUnplayable: true }))
+    expect(mockTiming).toHaveBeenCalledTimes(2)
+    expect(scrims()).toHaveLength(2)
   })
 
   it('dimUnplayable off draws no scrim, hidden or not', async () => {

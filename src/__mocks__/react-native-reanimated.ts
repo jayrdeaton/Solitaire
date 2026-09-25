@@ -15,7 +15,10 @@ const Animated = {
   useAnimatedProps: (updater?: () => unknown) => (typeof updater === 'function' ? updater() : {}),
   useDerivedValue: (updater?: () => unknown) => ({ value: typeof updater === 'function' ? updater() : undefined }),
   withTiming: passthrough,
-  withSpring: passthrough,
+  // A real jest.fn (not a bare function reference) so a test can override its behavior for one case
+  // (e.g. simulating a spring that hasn't actually reached its target yet - see dealLayer.test.tsx's
+  // settle-verification tests) while every other test keeps today's default passthrough.
+  withSpring: jest.fn(passthrough),
   withDelay: (_ms: number, value: unknown) => value,
   withRepeat: (value: unknown) => value,
   withSequence: passthroughLast,

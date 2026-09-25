@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react-native'
 import { Profiler, useEffect } from 'react'
 import { StyleSheet, type ViewStyle } from 'react-native'
+import { cancelAnimation, withSpring } from 'react-native-reanimated'
 
 import { type DealAnimator, type DealCardSpec, dealPoolSize, DealProvider, ghostPoolSize, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_SPRING, DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
@@ -17,10 +18,52 @@ const mockRenderLatency = { ids: new Set<string>(), ms: 60 }
 jest.mock('@/components/useCardSounds', () => ({
   useCardSoundEffects: () => ({ playCardSound: mockPlayCardSound, hapticCard: mockHapticCard })
 }))
-jest.mock('@/components/overlayFrame', () => ({
-  useOverlayFrame: () => ({ overlayRef: { current: null }, frame: {} }),
-  toLocal: () => ({ x: 0, y: 0 })
-}))
+// The repo-wide reanimated mock's useSharedValue returns a FRESH {value} object on every call, which is fine for the
+// rest of this file (every existing assertion here reads tx/ty through the SAME closure a slot's own [job] effect
+// captured once, never through a re-render), but breaks any assertion that reads a shared value's current position
+// off the RENDERED style: useAnimatedStyle's updater is a fresh closure on every render, so on real Reanimated
+// (where useSharedValue keeps the same object across a component's whole lifetime, exactly as playingCardDimHold's
+// own override already documents) it sees the SAME mutated object checkSettled just wrote to; here, without this,
+// it would get yet another freshly-defaulted one on the very next render and silently show the initial value again.
+// Only useSharedValue is overridden - everything else (withSpring, withDelay, cancelAnimation, useAnimatedRef...)
+// stays exactly the shared mock this file already relies on for its other assertions.
+jest.mock('react-native-reanimated', () => {
+  const { useRef } = require('react')
+  const base = jest.requireActual('../../__mocks__/react-native-reanimated')
+  return {
+    ...base,
+    useSharedValue: (initial: unknown) => {
+      const ref: { current: { value: unknown } | null } = useRef(null)
+      if (!ref.current) ref.current = { value: initial }
+      return ref.current
+    }
+  }
+})
+// `ready` needs to be genuinely REACTIVE (a real useState inside the mock, not a closed-over plain
+// value) so a test can flip it from false to true on an already-mounted provider and prove the
+// deal's own [generation, frameReady] effect re-runs - the exact race the fix closes. `initialReady`
+// controls what a fresh render starts at; `setReady` (populated by the hook's own effect while
+// mounted) lets a test flip it later. Reset both in afterEach so one test's override never leaks.
+const overlayFrameControl: { initialReady: boolean; setReady: ((ready: boolean) => void) | null } = { initialReady: true, setReady: null }
+jest.mock('@/components/overlayFrame', () => {
+  const { useEffect: useMockEffect, useState: useMockState } = require('react')
+  return {
+    useOverlayFrame: () => {
+      const [ready, setReady] = useMockState(overlayFrameControl.initialReady)
+      useMockEffect(() => {
+        overlayFrameControl.setReady = setReady
+        return () => {
+          overlayFrameControl.setReady = null
+        }
+      }, [setReady])
+      return { overlayRef: { current: null }, frame: {}, ready }
+    },
+    // A pass-through (not a fixed {0,0}) so a test can read a ghost's actual tx/ty off its rendered
+    // transform style - needed to verify the settle-verification timeout backstop snaps the ghost to
+    // its real destination before notify() fires, not just that notify() eventually fires at all.
+    toLocal: (tx: number, ty: number) => ({ x: tx, y: ty })
+  }
+})
 jest.mock('@/components/PlayingCard', () => {
   const { View } = require('react-native')
   const { useEffect: useMockEffect } = require('react')
@@ -36,9 +79,15 @@ jest.mock('@/components/PlayingCard', () => {
   }
 })
 jest.mock('@tastic/core', () => ({ useRotation: () => 0, rotateInsets: (insets: unknown) => insets }))
+// A plain mutable holder, not @infinitetoken/jest-config's usual "stable object" trick (see
+// playingCardDimHold.test.tsx) - these tests set it once, before the provider mounts, never mid-render,
+// so there's no reactivity to prove here, only what start() does with whatever it read at that point.
+const mockReduceMotion = { value: false }
+jest.mock('@/stores/settings', () => ({ useSettings: () => ({ settings: { reduceMotion: mockReduceMotion.value } }) }))
 
 const CARD_WIDTH = 64
 const LOOKAHEAD_MS = 150
+const SETTLE_MAX_EXTRA_MS = 1000
 
 function makeEntries(count: number, prefix = 'c', faceUp = false, stagger = DEAL_STAGGER_MS): DealCardSpec[] {
   return Array.from({ length: count }, (_, i) => {
@@ -61,6 +110,17 @@ const styleOf = (node: { props: { style?: unknown } }): ViewStyle => StyleSheet.
 const opacityOf = (node: { props: { style?: unknown } }) => styleOf(node).opacity
 // A slot is "flying" (or waiting to) whenever it is not the hidden idle one.
 const flying = () => ghosts().filter((node) => opacityOf(node) !== 0)
+// The ghost's OWN rendered position - its inner Animated.View (the outer `deal-ghost-*` node's only
+// child) carries the translateX/Y that toLocal's pass-through (see the overlayFrame mock above)
+// reflects straight from tx.value/ty.value, so this reads the ghost's real current position rather
+// than trusting that it settled correctly.
+const positionOf = (node: { children: readonly (string | { props: { style?: unknown } })[] }) => {
+  const inner = node.children[0] as { props: { style?: unknown } }
+  const transform = (styleOf(inner).transform ?? []) as { translateX?: number; translateY?: number }[]
+  const x = transform.find((t) => t.translateX !== undefined)?.translateX
+  const y = transform.find((t) => t.translateY !== undefined)?.translateY
+  return { x, y }
+}
 
 // Steps the fake clock in small increments, flushing React between them like real time would - a single big
 // jump inside one act() would batch every state update to the very end.
@@ -306,6 +366,146 @@ describe('DealProvider ghost pool', () => {
     expect(secondLanded.every((id) => id.startsWith('b'))).toBe(true)
   })
 
+  // Bug: cancel() cleared its own JS timers/refs but never stopped the slot's actual Reanimated
+  // spring (tx/ty/opacity) and never reset React state `job` - a slot cancelled mid-flight kept
+  // animating toward ITS OLD deal's destination on the UI thread and then just sat there, frozen,
+  // rendering as if still flying (a real zIndex, not the idle style), until this same slot index was
+  // eventually reused by the new deal's own launch() - whose plain shared-value writes finally
+  // overwrote it. Confirmed live: rapid repeated "New Game" taps made a card visibly fly to a stale,
+  // meaningless position and sit there before "snapping" once its slot was recycled. Every actively
+  // flying slot replaced by a new deal must have its spring stopped synchronously, in the SAME tick
+  // start() cancels it - not whenever its generation-keyed unmount eventually commits.
+  it("stops every one of deal A's mounted slots' springs the instant deal B replaces it, mid-flight", async () => {
+    await renderProvider()
+    const entriesA = makeEntries(30, 'a')
+    const poolSizeA = dealPoolSize(entriesA.map((e) => e.delayMs))
+    await act(async () => controller.start(entriesA, CARD_WIDTH, jest.fn(), jest.fn()))
+    await advance(200) // several of the 30 are launched (mid-spring) by now, none landed yet
+    expect(flying().length).toBeGreaterThan(0) // sanity: this run really does exercise a mid-flight replace
+    ;(cancelAnimation as jest.Mock).mockClear()
+
+    await act(async () => controller.start(makeEntries(12, 'b'), CARD_WIDTH, jest.fn(), jest.fn()))
+
+    // start() cancels every one of deal A's mounted slots (flying or still idle-waiting) - 3 shared
+    // values (tx, ty, opacity) stopped per slot, not just the ones caught mid-spring at this instant.
+    expect(cancelAnimation).toHaveBeenCalledTimes(poolSizeA * 3)
+  })
+
+  // Bug: useOverlayFrame's cx/cy/lw/lh start at 0 until its own async measureInWindow lands - on a
+  // fresh game screen's very first deal, that can still be in flight when this provider's own
+  // [generation, launchDue] effect would otherwise start the clock (both fire around the same
+  // mount). The first cards then computed toLocal() against a zero'd frame - a wrong, SHARED
+  // position (every such card converges on the same spot, since they all divide by the same zero) -
+  // and jumped to their real one the instant the real measurement landed and reactively recomputed
+  // every still-mounted ghost's style. Confirmed live: "a small percentage" of a deal's earliest
+  // cards flying to nowhere before snapping into place - never the middle or tail of a deal.
+  it('does not start launching until the overlay frame has actually been measured', async () => {
+    overlayFrameControl.initialReady = false
+    try {
+      await renderProvider()
+      await act(async () => controller.start(makeEntries(5, 'a'), CARD_WIDTH, jest.fn(), jest.fn()))
+      await advance(LOOKAHEAD_MS + 50) // well past when the first card would have launched, were it not gated
+
+      expect(flying().length).toBe(0) // nothing has launched - not even into a wrong position
+
+      await act(async () => overlayFrameControl.setReady?.(true)) // the overlay's real measurement finally lands
+      await advance(LOOKAHEAD_MS + 50)
+
+      expect(flying().length).toBeGreaterThan(0) // now it proceeds, for the first time
+    } finally {
+      overlayFrameControl.initialReady = true
+    }
+  })
+
+  // Bug: the landing timer was a blind `setTimeout(notify, wait + duration)` - correct only if the UI
+  // thread actually ran the spring on schedule, which a busy commit (this deal's own ~52-card initial
+  // board mount, worst right at a deal's start) can't guarantee. The JS timer keeps time regardless,
+  // so it could fire while the ghost's OWN shared values were still sitting at (or near) its origin -
+  // the real card then popped in far from where the ghost had visibly gotten to. Confirmed live,
+  // reproduced, and reported as "a small percentage of cards fly to nowhere, then teleport" - never
+  // every card (most launch once the initial congestion has cleared) and never the same handful twice
+  // (real device JS/UI thread scheduling, not a fixed one). checkSettled polls the ghost's actual
+  // tx/ty instead of trusting the clock, so notify() only ever fires once it has genuinely arrived (or
+  // SETTLE_MAX_EXTRA_MS has passed - see the next test for that backstop).
+  describe('landing settle-verification', () => {
+    afterEach(() => {
+      ;(withSpring as jest.Mock).mockImplementation((value: number) => value)
+    })
+
+    it('does not land a card until its ghost actually reads at the destination, even once the nominal wait+duration has passed', async () => {
+      // Every axis "arrives" 1000 short of its real target - the UI thread never actually got there.
+      ;(withSpring as jest.Mock).mockImplementation((value: number) => value - 1000)
+      await renderProvider()
+      const landed: string[] = []
+      await act(async () => controller.start(makeEntries(1, 'a'), CARD_WIDTH, (id) => landed.push(id), jest.fn()))
+
+      await advance(LOOKAHEAD_MS + (DEAL_SPRING.duration ?? 0) + 50) // well past the old, unconditional timer's own deadline
+      expect(landed).toHaveLength(0) // still not landed - checkSettled correctly finds it 1000 away, not close enough
+
+      // Now let the UI thread "catch up" - future calls resolve to the real target.
+      ;(withSpring as jest.Mock).mockImplementation((value: number) => value)
+      await advance(SETTLE_MAX_EXTRA_MS) // covers the next dealSpring's own delayed launch below and a poll cycle
+      // Still nothing: mockImplementation only affects a FUTURE withSpring call (a fresh launch), not
+      // the shared value this card's flight already resolved to 1000 short of target - matching a real
+      // "the UI thread never gets a chance to redo this exact flight" case, which SETTLE_MAX_EXTRA_MS
+      // (not a spontaneous catch-up) is what actually has to resolve it. See the next test for that.
+    })
+
+    it('gives up and lands the card anyway once SETTLE_MAX_EXTRA_MS has passed, so a truly stuck ghost cannot stall the deal forever', async () => {
+      ;(withSpring as jest.Mock).mockImplementation((value: number) => value - 1000) // never actually arrives
+      await renderProvider()
+      const landed: string[] = []
+      const allLanded = jest.fn()
+      await act(async () => controller.start(makeEntries(1, 'a'), CARD_WIDTH, (id) => landed.push(id), allLanded))
+
+      await advance(LOOKAHEAD_MS + (DEAL_SPRING.duration ?? 0) + 50)
+      expect(landed).toHaveLength(0) // not yet - see the previous test
+
+      await advance(SETTLE_MAX_EXTRA_MS + 100) // the backstop's own deadline passes
+      expect(landed).toEqual(['a0']) // lands anyway - the deal is never stuck waiting on a ghost forever
+      expect(allLanded).toHaveBeenCalledTimes(1)
+    })
+
+    // The backstop above used to call notify() with no position check at all - reporting a card
+    // "landed" while its ghost was still exactly wherever it got stranded (here, 1000px short on
+    // both axes). That is the ORIGINAL bug this whole mechanism exists to prevent, just reached via
+    // the timeout path instead of a blind clock - confirmed live: a direct JS-thread lag probe showed
+    // this path is far from rare (the thread was stalled more than it was free for over half of a
+    // real deal), so "eventually gives up" without a position guarantee reproduces the exact symptom
+    // reported ("cards fly to nowhere, then teleport") on a bad enough device. checkSettled must snap
+    // the ghost to its true destination before notify() fires, so the reveal itself is never wrong.
+    it('snaps the ghost to its true destination before giving up, so the backstop never reveals the real card in the wrong place', async () => {
+      // Three cards, only the middle one ever gets the "stuck 1000px short" treatment: a0 resolves
+      // normally and lands fast, a1 is the one under test, and a3-late's huge delay keeps it
+      // unlaunched (and so the deal still "in progress") through the whole test - otherwise, with
+      // only the stuck card left to land, its own landing would ALSO be the deal's last one, and the
+      // whole ghost pool (dealing && poolSize > 0) unmounts in that very same commit, taking the
+      // rendered proof of the snap down with it before this test could ever observe it.
+      let calls = 0
+      ;(withSpring as jest.Mock).mockImplementation((value: number) => {
+        calls++
+        return calls <= 2 ? value : value - 1000 // a0's tx/ty (calls 1-2) resolve for real; a1's (3-4) never do
+      })
+      await renderProvider()
+      const landed: string[] = []
+      const entries = [...makeEntries(2, 'a'), { ...makeEntries(1, 'z')[0], delayMs: 60_000 }]
+      await act(async () => controller.start(entries, CARD_WIDTH, (id) => landed.push(id), jest.fn()))
+
+      await advance(DEAL_STAGGER_MS + LOOKAHEAD_MS + (DEAL_SPRING.duration ?? 0) + 50)
+      expect(landed).toEqual(['a0']) // a0 landed for real; a1 is still stuck 1000px short; z0 hasn't even launched
+      const stuckGhost = flying().find((node) => within(node).queryByTestId('ghost-a1') !== null)
+      expect(stuckGhost).toBeDefined()
+      const slotTestId = stuckGhost!.props.testID as string
+
+      await advance(SETTLE_MAX_EXTRA_MS + 100) // a1's backstop deadline passes
+      expect(landed).toEqual(['a0', 'a1']) // z0 still not due - the deal (and its pool) is still open
+      // The same slot, now idle - its last rendered position must be a1's REAL destination (10, 20
+      // per makeEntries), not the -990/-980 it was actually stuck at when checkSettled gave up.
+      const settledSlot = ghosts().find((node) => node.props.testID === slotTestId)
+      expect(positionOf(settledSlot!)).toEqual({ x: 10, y: 20 })
+    })
+  })
+
   // The old slots stay mounted (timers live) until the commit AFTER start() - a timer firing in that gap used to feed the new
   // deal foreign card ids and out-of-range slot numbers (a reproduced permanent stall at 15 of 40 cards).
   it('a deal replaced before its old slots unmount cannot report into the new one', async () => {
@@ -495,6 +695,40 @@ describe('DealProvider ghost pool', () => {
 
     expect(landed).toEqual(['c0'])
     expect(onAllLanded).toHaveBeenCalledTimes(1)
+  })
+})
+
+// A ghost slot must never lay out as an exactly-zero frame at the overlay's origin - the wrapper's only child is
+// absolutely positioned and the card box is empty until its first launch, so without an explicit size both would.
+// That zero frame is what let a React Native (Fabric, iOS) view-recycling bug leave a slot's UIView at its PREVIOUS
+// life's position for the whole deal: a recycled view's stored layout is reset to a zero frame, so a new zero frame
+// reads as "unchanged" and its center/bounds are never reset. Every ghost such a slot flew landed exactly N fan
+// steps below its column (the recycled view had been a tableau card at index N), while the shared values, the
+// shadow tree and measureInWindow all said it was right - see GhostSlot's slotSize comment for the full account.
+// Pinned here because nothing else about the layout ever needed the size, so it is exactly the kind of "harmless
+// cleanup" a later pass would otherwise remove.
+describe('DealProvider ghost slot frames', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+  })
+  afterEach(() => {
+    jest.useRealTimers()
+  })
+
+  it('gives every slot wrapper and its card box an explicit, non-zero card-sized frame', async () => {
+    await renderProvider()
+    await act(async () => controller.start(makeEntries(6), CARD_WIDTH, jest.fn(), jest.fn()))
+
+    const slots = ghosts()
+    expect(slots.length).toBeGreaterThan(0)
+    for (const slot of slots) {
+      const wrapper = styleOf(slot)
+      expect(wrapper.width).toBe(CARD_WIDTH)
+      expect(wrapper.height).toBeGreaterThan(0)
+      const inner = styleOf(slot.children[0] as { props: { style?: unknown } })
+      expect(inner.width).toBe(CARD_WIDTH)
+      expect(inner.height).toBeGreaterThan(0)
+    }
   })
 })
 
@@ -958,5 +1192,111 @@ describe('DealProvider onCardDealt (take-off)', () => {
     await advance(3000)
 
     expect(dealt).toHaveLength(before)
+  })
+})
+
+// Settings.reduceMotion (a standard "Reduce Motion" accessibility preference - see stores/settings.tsx):
+// start() lands every card in the same tick it's called, with no ghost ever mounted - the same instant-land
+// outcome a mid-deal skip tap already produces for an unlaunched card, just reached without a tap.
+describe('DealProvider reduceMotion', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+    mockPlayCardSound.mockClear()
+    mockHapticCard.mockClear()
+    mockMounts.count = 0
+    mockShown.length = 0
+    mockReduceMotion.value = true
+  })
+  afterEach(() => {
+    jest.useRealTimers()
+    mockReduceMotion.value = false
+  })
+
+  it('lands every card synchronously, in entries order, with no ghost ever mounted and no skip layer shown', async () => {
+    await renderProvider()
+    const entries = makeEntries(20, 'c', true)
+    const landed: string[] = []
+    const onAllLanded = jest.fn()
+
+    await act(async () => controller.start(entries, CARD_WIDTH, (id) => landed.push(id), onAllLanded))
+
+    expect(landed).toEqual(entries.map((e) => e.cardId)) // every card, once each, in order - no animation to reorder them
+    expect(onAllLanded).toHaveBeenCalledTimes(1)
+    expect(ghosts()).toHaveLength(0) // no slot ever mounted - not even a hidden idle one
+    expect(mockMounts.count).toBe(0)
+    expect(screen.queryByTestId('deal-skip-layer')).toBeNull() // dealing never becomes true
+  })
+
+  it("still fires onCardDealt once per card - playCardSound too (it throttles internally, invisible to this mock - handleDealt calls it unconditionally, matching a real deal's per-card click), and hapticCard throttled down to one for the whole deal (that gate lives in handleDealt itself, and every call lands in the same fake-timers tick)", async () => {
+    await renderProvider()
+    const entries = makeEntries(20, 'c', true)
+    const dealt: string[] = []
+
+    await act(async () => controller.start(entries, CARD_WIDTH, jest.fn(), jest.fn(), (id) => dealt.push(id)))
+
+    expect(dealt).toEqual(entries.map((e) => e.cardId))
+    expect(mockPlayCardSound).toHaveBeenCalledTimes(20)
+    expect(mockHapticCard).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports a duplicated card id once, same as the animated path', async () => {
+    await renderProvider()
+    const entries = [...makeEntries(3, 'c', true), { ...makeEntries(1, 'c', true)[0], cardId: 'c1' }] // a second entry for c1
+    const landed: string[] = []
+    const dealt: string[] = []
+
+    await act(async () =>
+      controller.start(
+        entries,
+        CARD_WIDTH,
+        (id) => landed.push(id),
+        jest.fn(),
+        (id) => dealt.push(id)
+      )
+    )
+
+    expect(landed.filter((id) => id === 'c1')).toHaveLength(1)
+    expect(dealt.filter((id) => id === 'c1')).toHaveLength(1)
+  })
+
+  it('replacing a reduceMotion deal with another cleanly - the first never reports into the second', async () => {
+    await renderProvider()
+    const firstLanded: string[] = []
+    const secondLanded: string[] = []
+    const secondAll = jest.fn()
+
+    await act(async () => controller.start(makeEntries(10, 'a', true), CARD_WIDTH, (id) => firstLanded.push(id), jest.fn()))
+    await act(async () => controller.start(makeEntries(8, 'b', true), CARD_WIDTH, (id) => secondLanded.push(id), secondAll))
+
+    expect(firstLanded).toHaveLength(10) // the first deal still completed on its own callbacks...
+    expect(secondLanded).toHaveLength(8) // ...and the second, independently, on its own
+    expect(secondLanded.every((id) => id.startsWith('b'))).toBe(true)
+    expect(secondAll).toHaveBeenCalledTimes(1)
+  })
+
+  it('still takes the empty-entries fast path (onAllLanded only, no per-card callbacks) when there is nothing to deal', async () => {
+    await renderProvider()
+    const onAllLanded = jest.fn()
+    const onCardLanded = jest.fn()
+
+    await act(async () => controller.start([], CARD_WIDTH, onCardLanded, onAllLanded))
+
+    expect(onCardLanded).not.toHaveBeenCalled()
+    expect(onAllLanded).toHaveBeenCalledTimes(1)
+  })
+
+  it('behaves exactly as the animated path when reduceMotion is off - a same-session regression guard', async () => {
+    mockReduceMotion.value = false
+    await renderProvider()
+    const entries = makeEntries(12, 'c', true)
+    const landed: string[] = []
+
+    await act(async () => controller.start(entries, CARD_WIDTH, (id) => landed.push(id), jest.fn()))
+    // Unlike the reduceMotion case above, nothing has landed yet right after start() - it takes real (fake) time.
+    expect(landed).toHaveLength(0)
+    expect(ghosts().length).toBeGreaterThan(0)
+
+    await advance(totalMs(12))
+    expect(landed).toHaveLength(12)
   })
 })

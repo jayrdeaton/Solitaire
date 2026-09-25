@@ -26,6 +26,8 @@ const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
 const SAVE_KEY = 'solitaire.game-in-progress.v1.fortythieves'
 
 const mockRecordWon = jest.fn()
+/** Settings' Auto-Move to Foundation - off unless a test is about the auto-play. */
+const mockSettings = { autoMove: false }
 /** How long a flight stays in the air - a test can stretch it past the celebration's own hold. */
 let mockFlightMs = FLIGHT_MS
 let mockPileInstance = 0
@@ -148,7 +150,7 @@ jest.mock('@/stores/gameStats', () => ({ useGameStats: () => ({ recordDealWon: m
 jest.mock('@/stores/lastActiveGame', () => ({ useLastActiveGame: () => ({ setLastActiveGame: () => {}, clearLastActiveGame: () => {} }) }))
 jest.mock('@/stores/settings', () => {
   const actual = jest.requireActual('@/stores/settings')
-  return { ...actual, useSettings: () => ({ settings: { ...actual.DEFAULT_SETTINGS, autoMoveToFoundation: false } }) }
+  return { ...actual, useSettings: () => ({ settings: { ...actual.DEFAULT_SETTINGS, autoMoveToFoundation: mockSettings.autoMove } }) }
 })
 jest.mock('@/components/theme', () => {
   const actual = jest.requireActual('@/components/theme')
@@ -240,11 +242,12 @@ jest.mock('@/components/PileView', () => {
   }
 })
 jest.mock('@/components/GameChrome', () => {
-  const { Pressable: MockPressable, View: MockView } = require('react-native')
+  const { Pressable: MockPressable, Text: MockText, View: MockView } = require('react-native')
   return {
     GAME_CONTENT_PADDING: 6,
-    GameChrome: ({ children, onUndo, onNewGame }: { children: unknown; onUndo: () => void; onNewGame: () => void }) => (
+    GameChrome: ({ children, onUndo, onNewGame, movesCount }: { children: unknown; onUndo: () => void; onNewGame: () => void; movesCount: number }) => (
       <MockView>
+        <MockText testID='moves'>{String(movesCount)}</MockText>
         <MockPressable testID='undo' onPress={onUndo} />
         <MockPressable testID='new-game' onPress={onNewGame} />
         {children}
@@ -331,6 +334,7 @@ beforeEach(() => {
   mockNoSlot.clear()
   mockRecordWon.mockClear()
   mockFlightMs = FLIGHT_MS
+  mockSettings.autoMove = false
 })
 afterEach(async () => {
   await act(async () => {
@@ -506,7 +510,7 @@ describe('Forty Thieves screen - a card never moves without its own flight', () 
   })
 
   it('undoing a foundation move whose card is buried under an auto-played card flies THAT card (not the one on top) from the pile', async () => {
-    // The player sent the 3 of clubs up; the auto-play then put the 4 on top of it (a silent move: not on the undo stack).
+    // The player sent the 3 of clubs up; the auto-play then put the 4 on top of it (a save from before auto-plays were their own undo steps).
     const foundationWith = (clubs: Card[]) => [clubs, [], [], [], [], [], [], []]
     const before = board({ tableau: [[card('clubs', 3)], [card('clubs', 4)]], foundation: foundationWith(pile('clubs', 2)) })
     const after = board({ foundation: foundationWith(pile('clubs', 4)) })
@@ -550,5 +554,64 @@ describe('Forty Thieves screen - a foundation pile keeps showing the card that h
     await flush(10)
     expect(underGhost(0)).toBe('none')
     expect(foundationTop('foundation-0')).toBe(id('clubs', 3))
+  })
+})
+
+describe('Forty Thieves screen - every auto-played step is its own undo step', () => {
+  // Every card is home except: the Jack of clubs (column 0, the player's tap), the Queen over the King of clubs (column 1),
+  // and the Queen then King of diamonds in the stock (the King drawn first). Once the Jack is up the rest finishes itself
+  // in five automatic steps: the Queen and King of clubs (plays), the King of diamonds (a plain draw - the Queen is not up
+  // yet), the Queen of diamonds (a draw-and-play, straight from the stock), then the King of diamonds off the waste.
+  const JACK_FINISHES_IT = () =>
+    board({
+      tableau: [[card('clubs', 11, 1)], [card('clubs', 13, 1), card('clubs', 12, 1)]],
+      foundation: [pile('clubs', 13), pile('diamonds', 13), pile('hearts', 13), pile('spades', 13), pile('clubs', 10, 1), pile('diamonds', 11, 1), pile('hearts', 13, 1), pile('spades', 13, 1)],
+      stock: [card('diamonds', 12, 1), card('diamonds', 13, 1)]
+    })
+  const CLUBS = 'foundation-4'
+  const DIAMONDS = 'foundation-5'
+  const moves = () => screen.getByTestId('moves').props.children as string
+  const wasteIds = () => screen.queryAllByTestId(/^waste-/).map((el) => (el.props.testID as string).slice('waste-'.length))
+
+  it('the tap and each automatic step after it are taken back one at a time, each with its own flight, newest first', async () => {
+    mockSettings.autoMove = true
+    await mount(JACK_FINISHES_IT(), [], 4)
+
+    await press(`card-${id('clubs', 11, 1)}`)
+    await flush(3000)
+    expect(mockRecordWon).toHaveBeenCalledTimes(1) // it finished itself (the celebration has taken the piles over by now)
+    expect(screen.queryAllByTestId(/^card-|^waste-|^stock-/)).toEqual([])
+    expect(mockLog.shown).toHaveLength(6) // the tap, then the five automatic steps
+    expect(moves()).toBe('1') // only the tap counts as a move - none of the auto-plays do
+
+    const undo = async () => {
+      const before = mockLog.shown.length
+      await press('undo')
+      await flush(1000)
+      expect(mockLog.shown.length).toBe(before + 1) // exactly one card flies back, and nothing is auto-played again
+      expect(mockLog.inAir).toBe(0)
+    }
+
+    await undo() // the King of diamonds, off the foundation back onto the waste
+    expect(foundationTop(DIAMONDS)).toBe(id('diamonds', 12, 1))
+    expect(wasteIds()).toEqual([id('diamonds', 13, 1)])
+    await undo() // the draw-and-play's play: the Queen of diamonds back onto the waste, over the King
+    expect(foundationTop(DIAMONDS)).toBe(id('diamonds', 11, 1))
+    expect(wasteIds()).toEqual([id('diamonds', 12, 1)])
+    await undo() // ...then its draw: the Queen back into the stock
+    expect(wasteIds()).toEqual([id('diamonds', 13, 1)])
+    await undo() // the plain draw of the King of diamonds
+    expect(wasteIds()).toEqual([])
+    await undo() // the King of clubs
+    expect(foundationTop(CLUBS)).toBe(id('clubs', 12, 1))
+    await undo() // the Queen of clubs
+    expect(foundationTop(CLUBS)).toBe(id('clubs', 11, 1))
+    await undo() // and only then the tap itself
+    expect(foundationTop(CLUBS)).toBe(id('clubs', 10, 1))
+    expect(screen.queryByTestId(`card-${id('clubs', 11, 1)}`)).not.toBeNull()
+
+    expect(mockLog.shown.slice(-7)).toEqual([id('diamonds', 13, 1), id('diamonds', 12, 1), id('diamonds', 12, 1), id('diamonds', 13, 1), id('clubs', 13, 1), id('clubs', 12, 1), id('clubs', 11, 1)])
+    expect(mockLog.hidden).toBe(0) // every one of them really flew
+    expect(moves()).toBe('1')
   })
 })
