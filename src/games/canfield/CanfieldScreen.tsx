@@ -19,6 +19,7 @@ import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { FLIGHT_SPRING } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
@@ -224,14 +225,13 @@ function CanfieldScreenInner() {
    * remove exactly its own `flying` entry once it lands - see the [state]-effect below. `viaStock`
    * measures via stockViewRef (a plain View, not per-card) instead of CardRegistry - only undoing a
    * stock draw flies back toward the stock; every other destination (including the reserve, on an
-   * undo) is a real per-card-registered pile. `fast` marks a fireAutoMove-triggered flight, passed
-   * on to flight.flyTo for the quicker auto-play-to-foundation timing. `gen` is the dealTokenRef
+   * undo) is a real per-card-registered pile. `gen` is the dealTokenRef
    * value at the moment this flight was queued - re-checked once the async measurement below
    * resolves, so a flight queued against a game that's since been replaced by "New Game" doesn't
    * measure/land against the new deal's DOM (card ids are shuffle-independent and reused across
    * deals - see deck.ts). `to` is the pile the card is headed for, so a foundation landing can fall
    * back to that pile's own slot container when the card itself can't be measured. */
-  const pendingFlightRef = useRef<{ cardId: string; to: PileRef; viaStock?: boolean; fast?: boolean; sweep?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
+  const pendingFlightRef = useRef<{ cardId: string; to: PileRef; viaStock?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
   /** Draw-3 stock draws awaiting their post-commit measurement + deal.start() - a list for the same
    * overlapping-actions reason as pendingFlightRef above. Analogous shape, for the multi-card
    * deal-style flight (see the [state]-effect below and handleDrawStock) - drawnCards is
@@ -418,15 +418,10 @@ function CanfieldScreenInner() {
           settleFlight()
           return
         }
-        p.flight.flyTo(
-          landed.x,
-          landed.y,
-          () => {
-            endFlying(p.flyingId)
-            settleFlight()
-          },
-          { fast: p.fast, sweep: p.sweep }
-        )
+        p.flight.flyTo(landed.x, landed.y, () => {
+          endFlying(p.flyingId)
+          settleFlight()
+        })
       })()
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -488,7 +483,9 @@ function CanfieldScreenInner() {
           () => {
             endFlying(p.flyingId)
             settleFlight()
-          }
+          },
+          undefined,
+          FLIGHT_SPRING // every card move's flight time, not the deal's (see DealAnimator.start)
         )
       })()
     })
@@ -502,6 +499,8 @@ function CanfieldScreenInner() {
   const cascade = useAutoFoundationCascade<CanfieldState>({
     state,
     settled,
+    isSettled: () => activeFlightCountRef.current === 0 && dealHiddenIds.size === 0,
+    getState: () => stateRef.current,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     computeNextStep,
@@ -623,7 +622,9 @@ function CanfieldScreenInner() {
           () => {},
           () => {
             settleFlight()
-          }
+          },
+          undefined,
+          FLIGHT_SPRING // the fan flies back on the same flight it came on
         )
       } else {
         commitState(prevState)
@@ -699,10 +700,10 @@ function CanfieldScreenInner() {
   // Shared tail for every successful move, whichever triggered it (tap-to-move, a manual drag's
   // drop, or an auto-play) - applies the move, then marks the destination "incoming" and stashes
   // the anchor card id for the pendingFlightRef effect above to measure and fly the ghost onto.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
     const flyingId = beginFlying(to, count)
-    pendingFlightRef.current.push({ cardId: anchorCardId, to, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
+    pendingFlightRef.current.push({ cardId: anchorCardId, to, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 
@@ -733,20 +734,24 @@ function CanfieldScreenInner() {
   // the card's current position itself, which is the one place this feature has an await gap
   // before applying its move. Guard against something else changing state during that gap by
   // snapshotting stateRef before the await and bailing if it no longer matches after.
-  async function firePlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
+  // Resolves once the move is COMMITTED (true) or refused (false), not when it lands - which is what
+  // lets the cascade send the next card while this one is still flying.
+  async function firePlay(entry: AccessibleCard, to: PileRef): Promise<boolean> {
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
     if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current) {
       settleFlight()
-      return
+      return false
     }
     cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: !opts.sweep, sweep: opts.sweep })) {
+    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true })) {
       flight.hide()
       settleFlight()
+      return false
     }
+    return true
   }
 
   // Only ever called by the win-completing sweep once a stock card is provably about to go straight
@@ -758,7 +763,7 @@ function CanfieldScreenInner() {
   // each an ordinary kind handleUndo already flies: the first Undo sends the card from the
   // foundation back to the waste, the next flies the draw back into the stock. One entry for the
   // combined step would have no flight that fits it (stock -> foundation is no move kind).
-  async function fireDrawAndPlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
+  async function fireDrawAndPlay(entry: AccessibleCard, to: PileRef) {
     const current = stateRef.current
     if (!current || !controllerRef.current.drawStock) return
     const afterDraw = controllerRef.current.drawStock(current)
@@ -782,7 +787,7 @@ function CanfieldScreenInner() {
     pushUndo(afterDraw, { from: entry.ref, to, count: 1, anchorCardId: entry.card.id })
     commitState(result)
     checkWin(result, session.moves)
-    pendingFlightRef.current.push({ cardId: entry.card.id, to, gen: dealTokenRef.current, flyingId, flight, sweep: opts.sweep })
+    pendingFlightRef.current.push({ cardId: entry.card.id, to, gen: dealTokenRef.current, flyingId, flight })
   }
 
   async function attemptDrop(from: PileRef, count: number, absoluteX: number, absoluteY: number, anchorCardId: string, flight: DragFlightHandle): Promise<boolean> {
@@ -874,7 +879,7 @@ function CanfieldScreenInner() {
 
     pushUndo(current, move)
     commitState(result)
-    pendingFlightRef.current.push({ cardId: drawnCard.id, to: { zone: 'waste', index: 0 }, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
+    pendingFlightRef.current.push({ cardId: drawnCard.id, to: { zone: 'waste', index: 0 }, gen: dealTokenRef.current, flyingId, flight })
   }
 
   function resolvePile(ref: PileRef): Card[] | null {

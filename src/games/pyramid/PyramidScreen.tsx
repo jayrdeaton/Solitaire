@@ -15,7 +15,7 @@ import { dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView, ScreenPoint } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
-import { AUTO_MOVE_SPRING, autoMoveSpringFor, springSettleMs } from '@/components/dragdrop/dragSpring'
+import { FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useGameLayout } from '@/components/gameLayout'
@@ -60,9 +60,10 @@ interface RemovedCardRef {
   ref: PileRef
 }
 
-/** How long the slowest single flight (a full-distance autoMove) keeps its ghost up: dragSpring.ts's springSettleMs of AUTO_MOVE_SPRING,
- * ~675ms at the default FLIGHT_TIME_SCALE. Derived, so re-pacing the flights re-paces everything below that has to outlast one. */
-const SLOWEST_FLIGHT_MS = springSettleMs(AUTO_MOVE_SPRING)
+/** How long the slowest single flight keeps its ghost up: every flight here is dragSpring.ts's FLIGHT_SPRING (a drag never flies on its own -
+ * its drop hands over to the pair flight, or snaps back), so springSettleMs of that, ~483ms at the default FLIGHT_TIME_SCALE. Derived, so
+ * re-pacing the flights re-paces everything below that has to outlast one. */
+const SLOWEST_FLIGHT_MS = springSettleMs(FLIGHT_SPRING)
 
 /** A deferred action (a tap on a card still flying onto the waste, a draw waiting out a recycle flight) never waits longer than this
  * for the flight it is waiting on: a flight that never reports back must cost the player a moment, not the tap. Three times the
@@ -208,12 +209,11 @@ export function winHoldView(won: PyramidState, entry: { state: PyramidState; rem
   return { discardCards: won.discard.slice(0, kept), wasteCards: won.discard.slice(kept, kept + wasteSwept), stockCards: won.discard.slice(kept + wasteSwept) }
 }
 
-/** One card's independent leg of a pair's removal flight (see PairFlightGhosts) - its own spring,
- * scaled to its own distance from the discard pile, the same distance-scaled shape every other
- * flight in this app uses (see dragSpring.ts's autoMoveSpringFor), so a card starting closer
- * settles sooner than one starting further away instead of both being forced to move in lockstep.
- * Settlement is a plain timer matching the spring's own real end (springSettleMs) rather than the
- * spring's completion callback - confirmed elsewhere in this codebase (DragGhostLayer.tsx/DealLayer.tsx)
+/** One card's independent leg of a pair's removal flight (see PairFlightGhosts) - its own spring
+ * from its own spot, taking the same time as every other flight in this app (dragSpring.ts's
+ * FLIGHT_SPRING), so the two cards of a pair leave together and land together. Settlement is a
+ * plain timer matching the spring's own real end (springSettleMs) rather than the spring's
+ * completion callback - confirmed elsewhere in this codebase (DragGhostLayer.tsx/DealLayer.tsx)
  * not to reliably fire on this app's web target. */
 function FlyingPairCard({ card, from, to, frame, cardWidth, onLanded }: { card: Card; from: ScreenPoint; to: ScreenPoint; frame: OverlayFrame; cardWidth: number; onLanded: () => void }) {
   const cardHeight = cardWidth / CARD_ASPECT
@@ -222,16 +222,15 @@ function FlyingPairCard({ card, from, to, frame, cardWidth, onLanded }: { card: 
   const notified = useRef(false)
 
   useEffect(() => {
-    const config = autoMoveSpringFor(Math.hypot(to.x - from.x, to.y - from.y))
-    tx.value = withSpring(to.x, config)
-    ty.value = withSpring(to.y, config)
+    tx.value = withSpring(to.x, FLIGHT_SPRING)
+    ty.value = withSpring(to.y, FLIGHT_SPRING)
     // The spring's real end, not its bare `duration` (which is only its perceptual length and starts a
     // frame or two before the UI thread does) - see dragSpring.ts's springSettleMs.
     const timer = setTimeout(() => {
       if (notified.current) return
       notified.current = true
       onLanded()
-    }, springSettleMs(config))
+    }, springSettleMs(FLIGHT_SPRING))
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

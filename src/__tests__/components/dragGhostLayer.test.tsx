@@ -5,7 +5,7 @@ import { makeMutable, SharedValue } from 'react-native-reanimated'
 
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, DragGhostController, DragGhostProvider, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
-import { autoMoveSpringFor, autoPlaySpringFor, SNAP_BACK_SPRING, springSettleMs, winSweepSpringFor } from '@/components/dragdrop/dragSpring'
+import { dropSpringFor, FLIGHT_SPRING, SNAP_BACK_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { PileView } from '@/components/PileView'
 import { Card } from '@/engine/types'
 
@@ -203,16 +203,12 @@ describe('DragGhostProvider - ghost container frame', () => {
 })
 
 describe('DragGhostProvider - when a flight is settled', () => {
-  it.each([
-    ['a tap-to-move', undefined, autoMoveSpringFor],
-    ['an auto-play step', { fast: true }, autoPlaySpringFor],
-    ['a finish/sweep step', { sweep: true }, winSweepSpringFor]
-  ])('%s keeps its ghost up until springSettleMs - not the bare duration, which retired it with the card still short of its target', async (_name, opts, springFor) => {
+  it('a flight keeps its ghost up until springSettleMs - not the bare duration, which retired it with the card still short of its target', async () => {
     await mountProvider()
     const flight = await inAct(() => ghost.show(contentOf(A), { x: 10, y: 20 }))
     const arrived = jest.fn()
-    const config = springFor(300)
-    await inAct(() => flight.flyTo(310, 20, arrived, opts))
+    const config = FLIGHT_SPRING
+    await inAct(() => flight.flyTo(310, 20, arrived))
     const settle = springSettleMs(config)
 
     await advance((config.duration ?? 0) + 1) // the old timer would have fired here
@@ -229,10 +225,50 @@ describe('DragGhostProvider - when a flight is settled', () => {
     expect(arrived).toHaveBeenCalledTimes(1)
   })
 
+  it('every flight takes the same time however far it goes - a short hop and a long flight started together land together', async () => {
+    await mountProvider()
+    const near = await inAct(() => ghost.show(contentOf(A), { x: 10, y: 20 }))
+    const far = await inAct(() => ghost.show(contentOf(B), { x: 10, y: 20 }))
+    const nearArrived = jest.fn()
+    const farArrived = jest.fn()
+    await inAct(() => {
+      near.flyTo(40, 20, nearArrived) // a 30px hop
+      far.flyTo(810, 20, farArrived) // and an 800px flight
+    })
+
+    await advance(springSettleMs(FLIGHT_SPRING) - 1)
+    expect(nearArrived).not.toHaveBeenCalled()
+    expect(farArrived).not.toHaveBeenCalled()
+    await advance(1)
+    expect(nearArrived).toHaveBeenCalledTimes(1)
+    expect(farArrived).toHaveBeenCalledTimes(1)
+  })
+
+  it("a drag's drop is the exception: it only settles the distance the finger left, so a well-aimed one hands over well before a flight would", async () => {
+    await mountProvider()
+    const values = persistentValues()
+    const drop = await inAct(() => ghost.showLive(contentOf(A), values))
+    values.originX.value = 10
+    values.originY.value = 20
+    values.dx.value = 290 // carried to (300, 20) - 10px short of its spot
+    const arrived = jest.fn()
+    await inAct(() => {
+      drop.release()
+      drop.flyTo(310, 20, arrived)
+    })
+    const settle = springSettleMs(dropSpringFor(10))
+    expect(settle).toBeLessThan(springSettleMs(FLIGHT_SPRING))
+
+    await advance(settle - 1)
+    expect(arrived).not.toHaveBeenCalled()
+    await advance(1)
+    expect(arrived).toHaveBeenCalledTimes(1)
+  })
+
   it('a flight started in the very stretch that shows its ghost starts moving - and its settle clock starts - only once the ghost is mounted, so it never first appears partway along its path', async () => {
     await mountProvider()
     const arrived = jest.fn()
-    const config = autoMoveSpringFor(300)
+    const config = FLIGHT_SPRING
     let flight!: DragFlightHandle
     await act(async () => {
       flight = ghost.show(contentOf(A), { x: 10, y: 20 })
@@ -365,7 +401,7 @@ describe('DragGhostProvider - a drag ghost and its persistent gesture values', (
       first.release() // what PileView/DraggableCard do the instant the drag ends
       first.flyTo(300, 400, arrivedFirst)
     })
-    const settleFirst = springSettleMs(autoMoveSpringFor(Math.hypot(260, 320)))
+    const settleFirst = springSettleMs(dropSpringFor(Math.hypot(260, 320)))
 
     // 40ms later the player grabs the next card from the same column/slot: its worklet re-seeds the SAME persistent values, then showLive.
     await advance(40)
@@ -396,7 +432,7 @@ describe('DragGhostProvider - a drag ghost and its persistent gesture values', (
     // Each lands exactly when ITS OWN timer says, whatever the other is doing.
     const landings: [number, jest.Mock][] = [
       [settleFirst, arrivedFirst],
-      [secondStartedAt + springSettleMs(autoMoveSpringFor(Math.hypot(50 - 17, 300 - 32))), arrivedSecond]
+      [secondStartedAt + springSettleMs(dropSpringFor(Math.hypot(50 - 17, 300 - 32))), arrivedSecond]
     ]
     landings.sort((a, b) => a[0] - b[0])
     let now = secondStartedAt

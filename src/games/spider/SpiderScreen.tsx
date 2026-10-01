@@ -11,7 +11,7 @@ import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
 import { measureView, ScreenPoint } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
-import { autoMoveSpringFor, springSettleMs } from '@/components/dragdrop/dragSpring'
+import { FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { TABLEAU_ROW_PADDING_BOTTOM, useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
@@ -124,10 +124,9 @@ interface SequenceFlightInstance {
   cards: SequenceFlightCardSpec[]
 }
 
-/** One card's independent leg of a sequence flight (see SequenceFlightGhosts) - its own spring,
- * scaled to its own distance between origin and destination, the same distance-scaled shape every
- * other flight in this app uses (see dragSpring.ts's autoMoveSpringFor), so a card starting closer
- * settles sooner than one starting further away instead of both moving in lockstep. `delayMs`
+/** One card's independent leg of a sequence flight (see SequenceFlightGhosts) - its own spring
+ * from its own spot, taking the same time as every other flight in this app (dragSpring.ts's
+ * FLIGHT_SPRING), so the cards land in the order their delays send them off. `delayMs`
  * (see SequenceFlightCardSpec) pushes both the flight and its settlement back by the same amount,
  * via withDelay, so a staggered card doesn't visibly move until its own turn arrives. Settlement
  * is a plain timer matching the spring's own real end (springSettleMs) rather than the spring's completion callback
@@ -154,9 +153,8 @@ function FlyingSequenceCard({ card, from, to, delayMs, frame, cardWidth, onDealt
   const notified = useRef(false)
 
   useEffect(() => {
-    const config = autoMoveSpringFor(Math.hypot(to.x - from.x, to.y - from.y))
-    tx.value = withDelay(delayMs, withSpring(to.x, config))
-    ty.value = withDelay(delayMs, withSpring(to.y, config))
+    tx.value = withDelay(delayMs, withSpring(to.x, FLIGHT_SPRING))
+    ty.value = withDelay(delayMs, withSpring(to.y, FLIGHT_SPRING))
     zIndex.value = withDelay(delayMs, withTiming(100 + delayMs, { duration: 0 }))
     const dealtTimer = setTimeout(onDealt, delayMs)
     const timer = setTimeout(
@@ -167,7 +165,7 @@ function FlyingSequenceCard({ card, from, to, delayMs, frame, cardWidth, onDealt
       },
       // The spring's real end, not its bare `duration` (see dragSpring.ts's springSettleMs) - the withDelay
       // above starts on the UI thread, a frame or two after this timer does, just like the spring itself.
-      delayMs + springSettleMs(config)
+      delayMs + springSettleMs(FLIGHT_SPRING)
     )
     return () => {
       clearTimeout(dealtTimer)

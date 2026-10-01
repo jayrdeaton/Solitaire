@@ -1,7 +1,7 @@
 import type { WithSpringConfig } from 'react-native-reanimated'
 
 import { DEAL_SPRING } from '@/components/dealing/dealSpring'
-import { AUTO_MOVE_SPRING, autoMoveSpringFor, autoPlaySpringFor, FLIGHT_SPRING_MASS, FLIGHT_TIME_SCALE, scaledMs, SNAP_BACK_SPRING, SPRING_SETTLE_FACTOR, SPRING_START_LAG_MS, springSettleMs, winSweepSpringFor } from '@/components/dragdrop/dragSpring'
+import { AUTO_PLAY_STAGGER_MS, dropSpringFor, FLIGHT_SPRING, FLIGHT_SPRING_MASS, FLIGHT_TIME_SCALE, scaledMs, SNAP_BACK_SPRING, SPRING_SETTLE_FACTOR, SPRING_START_LAG_MS, springSettleMs, WIN_SWEEP_STAGGER_MS } from '@/components/dragdrop/dragSpring'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // What a flight's timing constants MUST satisfy, measured against Reanimated's OWN spring code (its real `withSpring`, driven
@@ -68,9 +68,8 @@ function realEndMs(config: WithSpringConfig, distance: number): number {
 
 /** Every flight config a play can start, at every distance the table covers: [name, config]. */
 const FLIGHTS: [string, WithSpringConfig][] = DISTANCES.flatMap((distance) => [
-  [`autoMove @${distance}px`, autoMoveSpringFor(distance)],
-  [`autoPlay @${distance}px`, autoPlaySpringFor(distance)],
-  [`sweep @${distance}px`, winSweepSpringFor(distance)],
+  [`flight @${distance}px`, FLIGHT_SPRING],
+  [`drop @${distance}px`, dropSpringFor(distance)],
   [`snapBack @${distance}px`, SNAP_BACK_SPRING]
 ]) as [string, WithSpringConfig][]
 const DISTANCE_OF = (name: string) => Number(name.match(/@(\d+)px/)![1])
@@ -82,21 +81,23 @@ describe('the flight pace knob', () => {
     expect(scaledMs(60)).toBe(Math.round(60 * FLIGHT_TIME_SCALE))
   })
 
-  it('re-paces every play tier from its scale-1 range, keeping the distance-scaled shape and the clamps', () => {
-    const tiers: [string, (distance: number) => WithSpringConfig, number, number][] = [
-      ['autoMove', autoMoveSpringFor, 130, 320],
-      ['autoPlay', autoPlaySpringFor, 75, 170],
-      ['sweep', winSweepSpringFor, 40, 90]
-    ]
-    for (const [name, springFor, min, max] of tiers) {
-      expect([name, springFor(0).duration]).toEqual([name, scaledMs(min)]) // nearer than the clamp: the shortest
-      expect([name, springFor(60).duration]).toEqual([name, scaledMs(min)])
-      expect([name, springFor(360).duration]).toEqual([name, scaledMs(max)]) // and the longest from the far clamp on
-      expect([name, springFor(5000).duration]).toEqual([name, scaledMs(max)])
-      expect(springFor(210).duration).toBeCloseTo((scaledMs(min) + scaledMs(max)) / 2, 6) // linear in between (210px is the middle of 60..360)
-      for (const distance of [60, 100, 250, 360]) expect(springFor(distance)).toMatchObject({ dampingRatio: 1, overshootClamping: true, mass: FLIGHT_SPRING_MASS })
-    }
-    expect(AUTO_MOVE_SPRING.duration).toBe(scaledMs(320))
+  it('re-paces the one flight from its scale-1 225ms: 360ms at the default, the same at every distance', () => {
+    expect(FLIGHT_SPRING).toEqual({ duration: scaledMs(225), dampingRatio: 1, overshootClamping: true, mass: FLIGHT_SPRING_MASS })
+    expect(FLIGHT_SPRING.duration).toBe(360)
+  })
+
+  it("re-paces a drag's drop settle from its scale-1 range, keeping the distance-scaled shape and the clamps", () => {
+    expect(dropSpringFor(0).duration).toBe(scaledMs(130)) // nearer than the clamp: the shortest
+    expect(dropSpringFor(60).duration).toBe(scaledMs(130))
+    expect(dropSpringFor(360).duration).toBe(scaledMs(320)) // and the longest from the far clamp on
+    expect(dropSpringFor(5000).duration).toBe(scaledMs(320))
+    expect(dropSpringFor(210).duration).toBeCloseTo((scaledMs(130) + scaledMs(320)) / 2, 6) // linear in between (210px is the middle of 60..360)
+    for (const distance of [60, 100, 250, 360]) expect(dropSpringFor(distance)).toMatchObject({ dampingRatio: 1, overshootClamping: true, mass: FLIGHT_SPRING_MASS })
+  })
+
+  it('re-paces the auto-play gaps from their scale-1 values', () => {
+    expect(AUTO_PLAY_STAGGER_MS).toBe(scaledMs(120))
+    expect(WIN_SWEEP_STAGGER_MS).toBe(scaledMs(60))
   })
 
   it('leaves the deal and the drag snap-back exactly as they were', () => {
@@ -106,8 +107,8 @@ describe('the flight pace knob', () => {
 
   it('slows every play flight down noticeably at the default pace (the reason the knob exists)', () => {
     expect(FLIGHT_TIME_SCALE).toBeGreaterThanOrEqual(1.5)
-    expect(autoMoveSpringFor(200).duration).toBeGreaterThan(130 * 1.5)
-    expect(winSweepSpringFor(200).duration).toBeGreaterThan(40 * 1.5)
+    expect(FLIGHT_SPRING.duration).toBeGreaterThan(225 * 1.5)
+    expect(dropSpringFor(200).duration).toBeGreaterThan(130 * 1.5)
   })
 })
 
@@ -128,6 +129,21 @@ describe('springSettleMs', () => {
   })
 })
 
+describe('the auto-play gaps', () => {
+  it('send the next card while the one before is still in the air (every flight takes the same time, so they also land in the order they left)', () => {
+    expect(AUTO_PLAY_STAGGER_MS).toBeLessThan(springSettleMs(FLIGHT_SPRING))
+    expect(WIN_SWEEP_STAGGER_MS).toBeLessThan(springSettleMs(FLIGHT_SPRING))
+  })
+
+  it('at the default pace: a card every 192ms, every 96ms in the end-of-game sweep', () => {
+    expect([AUTO_PLAY_STAGGER_MS, WIN_SWEEP_STAGGER_MS]).toEqual([192, 96])
+  })
+
+  it("keep each card its own sound/haptic tick (above useCascadeFeedback's 45ms floor)", () => {
+    expect(WIN_SWEEP_STAGGER_MS).toBeGreaterThan(45)
+  })
+})
+
 describe("against Reanimated's real spring", () => {
   it('every flight config really ends at 1.5 x its duration (to within a frame) - the perceptual-duration fact the settle maths rests on', () => {
     for (const [name, config] of FLIGHTS) {
@@ -138,7 +154,7 @@ describe("against Reanimated's real spring", () => {
 
   it('the play flights keep that at every duration they use - the library default mass would not (its solver caps stiffness: every duration under ~184ms ran as one ~283ms spring)', () => {
     // Documents what FLIGHT_SPRING_MASS works around. If a Reanimated upgrade makes THIS fail, the cap is gone and the override can be dropped.
-    const shortWithDefaultMass = { duration: scaledMs(40), dampingRatio: 1, overshootClamping: true } // the shortest sweep flight, no mass override
+    const shortWithDefaultMass = { duration: scaledMs(40), dampingRatio: 1, overshootClamping: true } // the old shortest sweep flight, no mass override (today's shortest, a 208ms drop, is above the cap - the override keeps a lower FLIGHT_TIME_SCALE safe)
     expect(realEndMs(shortWithDefaultMass, 200)).toBeGreaterThan(250)
     expect(realEndMs({ ...shortWithDefaultMass, mass: FLIGHT_SPRING_MASS }, 200)).toBeLessThan(1.5 * scaledMs(40) + FRAME_MS + 1)
   })
@@ -169,7 +185,7 @@ describe("against Reanimated's real spring", () => {
   })
 
   it('a flat 1.3 x duration would not have been enough once the spring starts two frames late (why the lag is added on top of the factor, not folded into it)', () => {
-    const shortSweep = winSweepSpringFor(100)
+    const shortSweep: WithSpringConfig = { duration: 75, dampingRatio: 1, overshootClamping: true, mass: FLIGHT_SPRING_MASS } // a 100px flight of the old distance-scaled sweep
     expect(worstRemaining(shortSweep, 100, Math.ceil((shortSweep.duration ?? 0) * 1.3), UI_HOP_MS)).toBeGreaterThan(1) // 2.6px measured
     expect(worstRemaining(shortSweep, 100, springSettleMs(shortSweep), UI_HOP_MS)).toBeLessThan(1)
   })

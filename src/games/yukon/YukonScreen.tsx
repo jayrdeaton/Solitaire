@@ -188,14 +188,13 @@ function YukonScreenInner() {
    * clobber each other in a single ref slot, permanently stranding whichever one lost. Each entry
    * carries its own already-created DragFlightHandle (from whichever call site queued it) to
    * fly/hide once measured, and its own flyingId to remove exactly its own `flying` entry once it
-   * lands - see the [state]-effect below. `fast` marks a firePlay-triggered flight, passed on to
-   * flight.flyTo for the quicker auto-play-to-foundation timing. `gen` is the `dealTokenRef` value
+   * lands - see the [state]-effect below. `gen` is the `dealTokenRef` value
    * at the moment this flight was queued - re-checked once the async measurement below resolves, so
    * a flight queued against a game that's since been replaced by "New Game" doesn't measure/land
    * against the new deal's DOM (card ids are shuffle-independent and reused across deals - see
    * deck.ts). `to` is the pile the card is headed for, so a foundation landing can fall back to that
    * pile's own slot container when the card itself can't be measured. */
-  const pendingFlightRef = useRef<{ cardId: string; to: PileRef; fast?: boolean; sweep?: boolean; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
+  const pendingFlightRef = useRef<{ cardId: string; to: PileRef; gen: number; flyingId: number; flight: DragFlightHandle }[]>([])
   /** A cascade-undo return flight awaiting its post-commit per-card measurement, mirroring
    * pendingFlightRef's own deferral reasoning - see the [state]-effect below and
    * groupCascadedByFoundation's doc comment. Independent of pendingFlightRef: the primary card's
@@ -415,15 +414,10 @@ function YukonScreenInner() {
           settleFlight()
           return
         }
-        p.flight.flyTo(
-          landed.x,
-          landed.y,
-          () => {
-            endFlying(p.flyingId)
-            settleFlight()
-          },
-          { fast: p.fast, sweep: p.sweep }
-        )
+        p.flight.flyTo(landed.x, landed.y, () => {
+          endFlying(p.flyingId)
+          settleFlight()
+        })
       })()
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -578,26 +572,32 @@ function YukonScreenInner() {
   // activeFlightCountRef's own doc comment) - mirrors handleCardTap/tableau onDrop's identical
   // undoBusyRef gate, even though the cascade hook's own isBusy check already keeps this from being
   // invoked while undo is running - belt and suspenders against the same race those two guard.
-  async function firePlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }) {
-    if (undoBusyRef.current) return
+  // Resolves once the move is COMMITTED (true) or refused (false), not when it lands - which is what
+  // lets the cascade send the next card while this one is still flying.
+  async function firePlay(entry: AccessibleCard, to: PileRef): Promise<boolean> {
+    if (undoBusyRef.current) return false
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
     if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current) {
       settleFlight()
-      return
+      return false
     }
     cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: !opts.sweep, sweep: opts.sweep })) {
+    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true })) {
       flight.hide()
       settleFlight()
+      return false
     }
+    return true
   }
 
   const cascade = useAutoFoundationCascade<YukonState>({
     state,
     settled,
+    isSettled: () => activeFlightCountRef.current === 0 && dealHiddenIds.size === 0,
+    getState: () => stateRef.current,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     computeNextStep,
@@ -796,10 +796,10 @@ function YukonScreenInner() {
   // drop, or an auto-play) - applies the move, then marks the destination "incoming" and stashes
   // the anchor card id for the pendingFlightRef effect above to measure and fly the ghost onto,
   // instead of it just vanishing/appearing at the destination instantly.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; fast?: boolean; sweep?: boolean }): boolean {
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
     const flyingId = beginFlying(to, count)
-    pendingFlightRef.current.push({ cardId: anchorCardId, to, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flyingId, flight })
+    pendingFlightRef.current.push({ cardId: anchorCardId, to, gen: dealTokenRef.current, flyingId, flight })
     return true
   }
 

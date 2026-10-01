@@ -11,7 +11,7 @@ import { DEAL_STAGGER_MS, dealStaggerMs, paceFaceUpDeal } from '@/components/dea
 import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
-import { scaledMs } from '@/components/dragdrop/dragSpring'
+import { FLIGHT_SPRING, springSettleMs, WIN_SWEEP_STAGGER_MS } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { CARD_HEIGHT_RATIO, useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
@@ -58,23 +58,21 @@ import { countEmptyFreecells, countEmptyTableauColumns, FreeCellController, Free
 // less generously than this, but a screen with real headroom to spare now gets more of it.
 const TABLEAU_MIN_HEIGHT = 460
 const TABLEAU_COLUMNS = 8
-// Gap between one finish card leaving and the next (see useAutoFinish) - each flight is only
-// 64-144ms of perceptual duration (dragSpring.ts's winSweepSpringFor), so a few overlap at once, and
-// the whole sweep reads as one quick stream instead of a card per full flight round trip. Written at
-// scale 1 (60ms against the 40-90ms sweep flights) and re-paced by FLIGHT_TIME_SCALE like the flights
-// themselves, so the stream keeps overlapping them exactly as before when the pace changes: 96ms at
-// the default. Also above useCascadeFeedback's floor, so every card still gets its own sound/haptic tick.
-export const FINISH_STAGGER_MS = scaledMs(60)
+// Gap between one finish card leaving and the next (see useAutoFinish): the same sweep gap the other
+// games' auto-play uses (dragSpring.ts's WIN_SWEEP_STAGGER_MS, 96ms at the default pace) against
+// flights that all take the same time (FLIGHT_SPRING), so ~5 are in the air at once and they land in
+// the order they left - the whole sweep reads as one quick stream.
+export const FINISH_STAGGER_MS = WIN_SWEEP_STAGGER_MS
 const DECK_SIZE = 52
 function foundationCount(s: FreeCellState | null): number {
   return s ? s.foundation.reduce((n, pile) => n + pile.length, 0) : 0
 }
 // A finish's LAST card waits (up to this long) for every earlier flight to land first, so the win
 // cascade doesn't start over foundation cards that are still mid-air. It only bounds the wait (the
-// loop leaves the moment nothing is in flight): 960ms at the default pace, against the slowest sweep
-// flight's ~215ms ghost lifetime (springSettleMs of winSweepSpringFor's ceiling) - and against a
-// tap flight still in the air, which can take ~675ms.
-export const FINISH_LAST_CARD_WAIT_MS = scaledMs(600)
+// loop leaves the moment nothing is in flight): twice a flight's ghost lifetime (springSettleMs of
+// FLIGHT_SPRING, every flight's one time), ~966ms at the default pace - also past the slowest drag
+// drop that may still be settling (~673ms).
+export const FINISH_LAST_CARD_WAIT_MS = 2 * springSettleMs(FLIGHT_SPRING)
 // FreeCell has no stock pile of its own to visually deal from (rules.ts's newGame deals straight
 // into the tableau; freecells start, and stay, empty throughout the deal) - the far-right freecell
 // doubles as the deck the deal animation flies out of instead, showing this face-down placeholder
@@ -165,9 +163,7 @@ function FreeCellScreenInner() {
   const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
-  // `fast` marks a fireAutoMove-triggered flight, so the effect below passes it on to the flight's
-  // own flyTo for the quicker auto-play-to-foundation timing (see dragSpring.ts's autoPlaySpringFor). `gen`
-  // is the `dealTokenRef` value at the moment this flight was queued - re-checked once the async
+  // `gen` is the `dealTokenRef` value at the moment this flight was queued - re-checked once the async
   // measurement below resolves, so a flight queued against a game that's since been replaced by
   // "New Game" doesn't measure/land against the new deal's DOM (card ids are shuffle-independent
   // and reused across deals - see deck.ts). Mirrors exactly how runDeal below already guards itself
@@ -178,7 +174,7 @@ function FreeCellScreenInner() {
   // `isUndo` (Klondike has no equivalent - see its own `viaStock`) no longer distinguishes anything
   // here: the old finishOneUndoAnimation-vs-undoBusyRef split this flag used to pick between has
   // collapsed into a single settleFlight() call for every flight, undo or not.
-  const pendingAutoMoveCardIdRef = useRef<{ cardId: string; to: PileRef; fast?: boolean; sweep?: boolean; gen: number; flight: DragFlightHandle; flyingId: number }[]>([])
+  const pendingAutoMoveCardIdRef = useRef<{ cardId: string; to: PileRef; gen: number; flight: DragFlightHandle; flyingId: number }[]>([])
   // A silently auto-played cascade being reversed by handleUndo (see FreeCellUndoMove above) -
   // measured/flown by its own [state]-effect below, independently of and concurrently with the
   // primary move's own flight(s) (pendingAutoMoveCardIdRef's effect). Stays a single nullable slot
@@ -427,15 +423,10 @@ function FreeCellScreenInner() {
           settleFlight()
           return
         }
-        p.flight.flyTo(
-          landed.x,
-          landed.y,
-          () => {
-            endFlying(p.flyingId)
-            settleFlight()
-          },
-          { fast: p.fast, sweep: p.sweep }
-        )
+        p.flight.flyTo(landed.x, landed.y, () => {
+          endFlying(p.flyingId)
+          settleFlight()
+        })
       })()
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -533,6 +524,8 @@ function FreeCellScreenInner() {
   const cascade = useAutoFoundationCascade<FreeCellState>({
     state,
     settled,
+    isSettled: () => activeFlightCountRef.current === 0 && dealHiddenIds.size === 0,
+    getState: () => stateRef.current,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     computeNextStep: nextSafeCascadeStep,
@@ -826,7 +819,7 @@ function FreeCellScreenInner() {
   // drag's drop) - applies the move, then marks the destination "incoming" and stashes the
   // anchor card id for the [state]-effect above to measure and fly the ghost onto, instead of it
   // just vanishing/appearing at the destination instantly.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; viaTap?: boolean; fast?: boolean; sweep?: boolean }): boolean {
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; viaTap?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) {
       // tableauRunCount's dimming only rules out a run that could NEVER move anywhere (the
       // best-case cap, assuming a non-empty destination - see its own comment). A run that passed
@@ -853,7 +846,7 @@ function FreeCellScreenInner() {
       return false
     }
     const flyingId = beginFlying(to, count)
-    pendingAutoMoveCardIdRef.current.push({ cardId: anchorCardId, to, fast: opts?.fast, sweep: opts?.sweep, gen: dealTokenRef.current, flight, flyingId })
+    pendingAutoMoveCardIdRef.current.push({ cardId: anchorCardId, to, gen: dealTokenRef.current, flight, flyingId })
     return true
   }
 
@@ -863,7 +856,7 @@ function FreeCellScreenInner() {
   // handleUndo - captures everything it needs from the pre-move state synchronously first). Guard
   // against something else changing state during that gap by snapshotting stateRef before the
   // await and bailing if it no longer matches after.
-  async function firePlay(entry: AccessibleCard, to: PileRef, opts: { sweep: boolean }): Promise<boolean> {
+  async function firePlay(entry: AccessibleCard, to: PileRef): Promise<boolean> {
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
@@ -873,7 +866,7 @@ function FreeCellScreenInner() {
     }
     cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
-    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true, fast: !opts.sweep, sweep: opts.sweep })) {
+    if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true })) {
       flight.hide()
       settleFlight()
       return false
@@ -897,7 +890,7 @@ function FreeCellScreenInner() {
     if (!finish.isAllowed() || !settings.autoMoveToFoundation || undoBusyRef.current) return false
     const current = stateRef.current
     const step = current && nextFinishMove(current)
-    return step ? firePlay(step.entry, step.to, { sweep: true }) : false
+    return step ? firePlay(step.entry, step.to) : false
   }
 
   // Drag-and-drop's own entry point into flight bookkeeping (see activeFlightCountRef's doc

@@ -9,7 +9,7 @@ import { OverlayFrame, toLocal, useOverlayFrame } from '../overlayFrame'
 import { PlayingCard } from '../PlayingCard'
 import { useCardSoundEffects } from '../useCardSounds'
 import { CardRegistry, useCardRegistry } from './CardRegistry'
-import { autoMoveSpringFor, autoPlaySpringFor, SNAP_BACK_SPRING, springSettleMs, winSweepSpringFor } from './dragSpring'
+import { dropSpringFor, FLIGHT_SPRING, SNAP_BACK_SPRING, springSettleMs } from './dragSpring'
 
 interface GhostContent {
   cards: Card[]
@@ -40,14 +40,11 @@ export interface DragFlightHandle {
   /** Animate back to the origin, then hide and invoke onSettled (used to restore the source card). */
   snapBack(onSettled: () => void): void
   /** Animate to an arbitrary screen point, then hide and invoke onArrived (used for tap-to-move:
-   * flies from where the card was tapped to wherever it actually landed). `fast` uses the quicker
-   * auto-play-to-foundation timing (see dragSpring.ts's autoPlaySpringFor) instead of the normal
-   * tap-to-move/drag/undo one. `sweep` uses the even quicker win-completing-sweep timing (see
-   * dragSpring.ts's winSweepSpringFor) instead of `fast`'s - the two are mutually exclusive in
-   * practice (every sweep flight is also always a "fast" auto-play flight), but kept as separate
-   * flags rather than a single three-value enum since every caller already has `fast` wired and
-   * only needs to additionally opt into `sweep` on top of it. */
-  flyTo(targetX: number, targetY: number, onArrived: () => void, opts?: { fast?: boolean; sweep?: boolean }): void
+   * flies from where the card was tapped to wherever it actually landed). A flight started by
+   * show() - a tap, an undo, a draw, an auto-played card - takes dragSpring.ts's FLIGHT_SPRING, the
+   * same time at any distance; a drag's drop (a showLive() flight) settles over dropSpringFor the
+   * distance it has left, since the finger has usually brought it most of the way already. */
+  flyTo(targetX: number, targetY: number, onArrived: () => void): void
   /** Hide immediately (used when a drop was applied and the source has already disappeared). */
   hide(): void
   /**
@@ -352,17 +349,13 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
             }
           )
         },
-        flyTo(targetX, targetY, onArrived, opts) {
+        flyTo(targetX, targetY, onArrived) {
           release()
           unregisterOwner()
-          // Distance actually left to travel from wherever the ghost is sitting right now - not
-          // always originX/Y (that's only the flight's start point; a manual drag has already
-          // moved dx/dy away from it by the time flyTo runs) - see autoMoveSpringFor's doc comment
-          // in dragSpring.ts for why this determines the settle duration instead of a fixed one.
-          const curX = own.originX.value + own.dx.value
-          const curY = own.originY.value + own.dy.value
-          const distance = Math.hypot(targetX - curX, targetY - curY)
-          const config = opts?.sweep ? winSweepSpringFor(distance) : opts?.fast ? autoPlaySpringFor(distance) : autoMoveSpringFor(distance)
+          // Every flight takes FLIGHT_SPRING's one fixed time, except a drag's drop (`source`: a showLive flight), whose settle scales with the
+          // distance actually left from wherever the finger let go - own.dx/dy, already moved away from the origin by the drag (see
+          // dropSpringFor's comment in dragSpring.ts).
+          const config = source ? dropSpringFor(Math.hypot(targetX - own.originX.value - own.dx.value, targetY - own.originY.value - own.dy.value)) : FLIGHT_SPRING
           // No hapticCard() here (unlike snapBack's own hapticInvalid above) - a successful flight's
           // sound+haptic pair now fires together the instant the move was confirmed (see
           // useCardSounds.ts), not on arrival, so there's nothing left for this settle to trigger

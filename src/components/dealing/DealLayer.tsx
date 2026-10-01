@@ -2,7 +2,7 @@ import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
 import { rotateInsets, useRotation } from '@tastic/core'
 import { createContext, memo, ReactNode, Ref, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Pressable, StyleSheet, View } from 'react-native'
-import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
+import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue, withDelay, withSpring, WithSpringConfig, withTiming } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { Card } from '@/engine/types'
@@ -34,8 +34,11 @@ export interface DealAnimator {
    * instant that card's own flight begins - its ghost is drawn over the spot it leaves, the same moment its
    * click/buzz plays - never before, and for every card that had not taken off yet when the skip tap landed
    * the whole deal at once. It is silenced by a cancel/restart exactly like onCardLanded (a caller can use it
-   * to empty a source pile only once the last card has actually left it). Omitting it changes nothing. */
-  start(entries: DealCardSpec[], cardWidth: number, onCardLanded: (cardId: string) => void, onAllLanded: () => void, onCardDealt?: (cardId: string) => void): void
+   * to empty a source pile only once the last card has actually left it). Omitting it changes nothing.
+   * The optional `spring` is every card's flight - the deal's own DEAL_SPRING when omitted. Klondike's and Canfield's
+   * draw-3 fans (and their undo) pass dragSpring.ts's FLIGHT_SPRING, so a drawn card flies for the same time as every
+   * other card move; deals keep the deal's pace. */
+  start(entries: DealCardSpec[], cardWidth: number, onCardLanded: (cardId: string) => void, onAllLanded: () => void, onCardDealt?: (cardId: string) => void, spring?: WithSpringConfig): void
 }
 
 const DealContext = createContext<DealAnimator | null>(null)
@@ -103,9 +106,10 @@ export function ghostPoolSize(delays: number[], durationMs: number, lookaheadMs:
   return Math.min(sorted.length, peak + slack)
 }
 
-/** The ghost pool a deal with these flight start delays mounts (see ghostPoolSize for what the numbers mean). */
-export function dealPoolSize(delays: number[]): number {
-  return ghostPoolSize(delays, DEAL_SPRING.duration ?? 0, LOOKAHEAD_MS + SLOT_TURNAROUND_MS, POOL_SLACK)
+/** The ghost pool a deal with these flight start delays mounts, each flight lasting `durationMs` (see ghostPoolSize for what
+ * the numbers mean). */
+export function dealPoolSize(delays: number[], durationMs: number = DEAL_SPRING.duration ?? 0): number {
+  return ghostPoolSize(delays, durationMs, LOOKAHEAD_MS + SLOT_TURNAROUND_MS, POOL_SLACK)
 }
 
 export function useDealAnimator(): DealAnimator {
@@ -115,9 +119,10 @@ export function useDealAnimator(): DealAnimator {
 }
 
 interface GhostSlotHandle {
-  /** Points this slot at `spec` and starts its flight after `spec.delayMs` (already rebased onto this call). `order` is
-   * the card's position in the deal, so a later card always paints above an earlier one whichever slot it landed in. */
-  launch(spec: DealCardSpec, order: number): void
+  /** Points this slot at `spec` and starts its flight after `spec.delayMs` (already rebased onto this call), flying on
+   * `spring` (the deal's - see DealAnimator.start). `order` is the card's position in the deal, so a later card always
+   * paints above an earlier one whichever slot it landed in. */
+  launch(spec: DealCardSpec, order: number, spring: WithSpringConfig): void
   /** Jumps a flight in progress straight to the landing point and notifies immediately, skipping whatever's left of the
    * delay/spring - used when the whole deal is tapped-to-skip. A no-op on an idle slot. */
   completeNow(): void
@@ -169,6 +174,8 @@ interface Job extends QueuedCard {
    * that shows the card takes (a court-card face is tens of ms), the springs and timers below count down from the launch,
    * not from whenever that commit finished - the commit is absorbed by the lookahead instead of pushing the departure late. */
   departAt: number
+  /** The flight's spring (see DealAnimator.start). */
+  spring: WithSpringConfig
 }
 
 // Memoized: props are all stable across the deal (a slot number, stable callbacks, the overlay frame, the card width),
@@ -226,7 +233,7 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
 
   useEffect(() => {
     if (!job) return
-    const { spec, departAt } = job
+    const { spec, departAt, spring } = job
     // What is left of the delay: the commit that got us here has already spent part of it (see Job.departAt). A card whose
     // deadline has already passed leaves now, but no closer than LATE_LAUNCH_MIN_GAP_MS to the card before it (the same
     // spacing launchDue gives late launches); an on-time card keeps its scheduled time exactly.
@@ -235,8 +242,8 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
     if (departAt <= now) takeOffAt = Math.max(takeOffAt, lastTakeOffRef.current + LATE_LAUNCH_MIN_GAP_MS)
     lastTakeOffRef.current = Math.max(lastTakeOffRef.current, takeOffAt)
     const wait = takeOffAt - now
-    tx.value = withDelay(wait, withSpring(spec.to.x, DEAL_SPRING))
-    ty.value = withDelay(wait, withSpring(spec.to.y, DEAL_SPRING))
+    tx.value = withDelay(wait, withSpring(spec.to.x, spring))
+    ty.value = withDelay(wait, withSpring(spec.to.y, spring))
     opacity.value = withDelay(wait, withTiming(1, { duration: 0 }))
     // Deliberately its own timer rather than piggybacked on the settle one below - this card's sound/haptic should fire
     // the instant it's dealt out (the departure), not once it's finished flying.
@@ -251,7 +258,7 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
     // and this is the fix). checkSettled polls the ghost's OWN shared values instead of trusting the clock, and only
     // calls notify() once they genuinely read close to the destination (or SETTLE_MAX_EXTRA_MS has passed, so a truly
     // stuck ghost still resolves rather than stalling the deal forever).
-    const nominalSettleAt = Date.now() + wait + (DEAL_SPRING.duration ?? 0)
+    const nominalSettleAt = Date.now() + wait + (spring.duration ?? 0)
     const checkSettled = () => {
       const dx = Math.abs(tx.value - spec.to.x)
       const dy = Math.abs(ty.value - spec.to.y)
@@ -277,7 +284,7 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
         timeoutRef.current = setTimeout(checkSettled, SETTLE_POLL_MS)
       }
     }
-    timeoutRef.current = setTimeout(checkSettled, wait + (DEAL_SPRING.duration ?? 0))
+    timeoutRef.current = setTimeout(checkSettled, wait + (spring.duration ?? 0))
     return clearTimers
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job])
@@ -302,7 +309,7 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
   useImperativeHandle(
     ref,
     () => ({
-      launch(spec, order) {
+      launch(spec, order, spring) {
         clearTimers()
         dealt.current = false
         notified.current = false
@@ -311,7 +318,7 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
         tx.value = spec.from.x
         ty.value = spec.from.y
         opacity.value = 0
-        const next: Job = { spec, order, departAt: Date.now() + spec.delayMs }
+        const next: Job = { spec, order, departAt: Date.now() + spec.delayMs, spring }
         jobRef.current = next
         setCard((prev) => (prev && !prev.faceUp && !spec.card.faceUp ? prev : spec.card))
         setJob(next)
@@ -420,6 +427,8 @@ export function DealProvider({ children }: { children: ReactNode }) {
   const lastDepartAt = useRef(0)
   const lastTakeOffAt = useRef(0)
   const launchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // The current deal's flight (see DealAnimator.start's `spring`), set by start().
+  const springRef = useRef<WithSpringConfig>(DEAL_SPRING)
   const landedIds = useRef(new Set<string>())
   const callbacksRef = useRef<{ onCardLanded: (cardId: string) => void; onAllLanded: () => void; onCardDealt?: (cardId: string) => void } | null>(null)
   // Cards whose take-off has already been reported to onCardDealt this deal (once per card, whatever route it took).
@@ -521,7 +530,7 @@ export function DealProvider({ children }: { children: ReactNode }) {
       let departAt = Math.max(dueAt, now)
       if (dueAt < now) departAt = Math.max(departAt, lastDepartAt.current + LATE_LAUNCH_MIN_GAP_MS)
       lastDepartAt.current = departAt
-      handle.launch({ ...spec, delayMs: departAt - now }, order)
+      handle.launch({ ...spec, delayMs: departAt - now }, order, springRef.current)
     }
     if (queue.length > 0) launchTimerRef.current = setTimeout(launchDue, capped ? CAPPED_TICK_MS : LAUNCH_TICK_MS)
   }, [])
@@ -604,7 +613,7 @@ export function DealProvider({ children }: { children: ReactNode }) {
 
   const controller = useMemo<DealAnimator>(
     () => ({
-      start(entries, width, onCardLanded, onAllLanded, onCardDealt) {
+      start(entries, width, onCardLanded, onAllLanded, onCardDealt, spring = DEAL_SPRING) {
         // The previous deal (if any) is finished as of THIS line: its slots stay mounted until the commit after this
         // call, so silence them now (cancel) and bump the generation their callbacks are checked against.
         generationRef.current += 1
@@ -614,6 +623,7 @@ export function DealProvider({ children }: { children: ReactNode }) {
         dealtIds.current = new Set()
         totalRef.current = new Set(entries.map((entry) => entry.cardId)).size
         callbacksRef.current = { onCardLanded, onAllLanded, onCardDealt }
+        springRef.current = spring
         setCardWidth(width)
         if (launchTimerRef.current) clearTimeout(launchTimerRef.current)
         launchTimerRef.current = null
@@ -649,7 +659,10 @@ export function DealProvider({ children }: { children: ReactNode }) {
         }
         const sorted = [...entries].sort((a, b) => a.delayMs - b.delayMs)
         queueRef.current = sorted.map((spec, order) => ({ spec, order }))
-        const size = dealPoolSize(sorted.map((entry) => entry.delayMs))
+        const size = dealPoolSize(
+          sorted.map((entry) => entry.delayMs),
+          spring.duration ?? 0
+        )
         freeSlots.current = Array.from({ length: size }, (_, i) => i)
         slotHandles.current = Array.from({ length: size }, () => null)
         // Provisional - the deal's clock is restarted when the slots have actually mounted (the [generation] effect).

@@ -5,6 +5,7 @@ import { cancelAnimation, withSpring } from 'react-native-reanimated'
 
 import { type DealAnimator, type DealCardSpec, dealPoolSize, DealProvider, ghostPoolSize, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_SPRING, DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
+import { FLIGHT_SPRING } from '@/components/dragdrop/dragSpring'
 import type { Card } from '@/engine/types'
 
 const mockPlayCardSound = jest.fn()
@@ -163,6 +164,12 @@ describe('ghostPoolSize', () => {
 
   it('needs a slot per card when they all leave together', () => {
     expect(ghostPoolSize(Array(8).fill(0), 280, LOOKAHEAD_MS, 0)).toBe(8)
+  })
+
+  it('sizes the pool for the flight it was given: a longer flight never gets fewer slots', () => {
+    const delays = makeEntries(24).map((e) => e.delayMs)
+    expect(dealPoolSize(delays)).toBe(dealPoolSize(delays, DEAL_SPRING.duration ?? 0))
+    expect(dealPoolSize(delays, FLIGHT_SPRING.duration ?? 0)).toBeGreaterThan(dealPoolSize(delays))
   })
 
   it('needs fewer slots the more spread out the flights are', () => {
@@ -695,6 +702,31 @@ describe('DealProvider ghost pool', () => {
 
     expect(landed).toEqual(['c0'])
     expect(onAllLanded).toHaveBeenCalledTimes(1)
+  })
+
+  // Klondike's/Canfield's draw-3 fans fly through here but take every other card move's flight (dragSpring.ts's FLIGHT_SPRING),
+  // not the deal's: the spring, the landing check and the pool all have to follow the one passed in.
+  it("flies a batch on the spring it is given, instead of the deal's", async () => {
+    await renderProvider()
+    const landed: string[] = []
+    ;(withSpring as jest.Mock).mockClear()
+
+    await act(async () => controller.start(makeEntries(3), CARD_WIDTH, (id) => landed.push(id), jest.fn(), undefined, FLIGHT_SPRING))
+    await advance(DEAL_STAGGER_MS * 2 + 25)
+    expect((withSpring as jest.Mock).mock.calls.map((call) => call[1])).toEqual(Array(6).fill(FLIGHT_SPRING)) // x and y of each card
+
+    await advance((DEAL_SPRING.duration ?? 0) + 40 - 25) // the last card is past where it would have landed on the deal spring...
+    expect(landed).not.toContain('c2')
+    await advance((FLIGHT_SPRING.duration ?? 0) - (DEAL_SPRING.duration ?? 0) - 40 + 50) // ...and lands on its own
+    expect(landed).toEqual(['c0', 'c1', 'c2'])
+  })
+
+  it('keeps flying a deal on the deal spring when none is given', async () => {
+    await renderProvider()
+    ;(withSpring as jest.Mock).mockClear()
+    await act(async () => controller.start(makeEntries(2), CARD_WIDTH, jest.fn(), jest.fn()))
+    await advance(DEAL_STAGGER_MS + 25)
+    expect((withSpring as jest.Mock).mock.calls.map((call) => call[1])).toEqual(Array(4).fill(DEAL_SPRING))
   })
 })
 

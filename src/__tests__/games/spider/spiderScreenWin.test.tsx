@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { StrictMode } from 'react'
 
-import { autoMoveSpringFor, springSettleMs } from '@/components/dragdrop/dragSpring'
+import { FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { CHAIN_SEGMENT_DELAY_MS } from '@/components/winning/winCascadeMotion'
 import { Card } from '@/engine/types'
 import { SpiderState } from '@/games/spider/rules'
@@ -386,8 +386,8 @@ describe('Spider screen - the winning move never makes a card teleport', () => {
     expect(screen.queryByTestId('fireworks')).toBeNull()
     expect(mockLog.cascadeChains).toBe(-1)
 
-    // The sweep lands (13 cards, 42ms apart, plus the last one's spring): the finished board holds for a beat.
-    await flush(600)
+    // The sweep lands (13 cards, CHAIN_SEGMENT_DELAY_MS apart, plus the last one's flight): the finished board holds for a beat.
+    await flush(12 * CHAIN_SEGMENT_DELAY_MS + springSettleMs(FLIGHT_SPRING) - 300 + 30)
     expect(finalRunFlying()).toBe(false)
     expect(finalKingShown()).toBe(true) // the last King now sits in its slot,
     expect(kingShownInSlot(0)).toBe(true) // beside the other seven
@@ -438,7 +438,7 @@ describe('Spider screen - the winning move never makes a card teleport', () => {
     await flush(FLIGHT_MS) // the Ace lands and the run peels off: King first, the Ace last, one CHAIN_SEGMENT_DELAY_MS apart
     expect(finalRunFlying()).toBe(true)
 
-    const config = autoMoveSpringFor(Math.hypot(10 - 5, 10 - 5)) // from the registry's (10, 10) to the slot's (5, 5)
+    const config = FLIGHT_SPRING // the one flight time, whatever the distance
     const aceDeparts = 12 * CHAIN_SEGMENT_DELAY_MS
     await flush(aceDeparts + (config.duration ?? 0) + 20) // the bare duration - the old timer - has run out for the Ace, the run's last card
     expect(finalRunFlying()).toBe(true)

@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
-import { AUTO_MOVE_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
+import { FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { CHAIN_MAX_SPAN_MS, chainSegmentDelayMs } from '@/components/winning/winCascadeMotion'
 import { Card, Suit } from '@/engine/types'
 import PyramidScreen, { SWEEP_WIN_REVEAL_MAX_WAIT_MS, winHoldView } from '@/games/pyramid/PyramidScreen'
@@ -34,8 +34,8 @@ let mockFlightMs = FLIGHT_MS
 /** How long every measurement (registry, plain view, the tapped card's own measure) takes. */
 let mockMeasureMs = 0
 const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
-/** The longest a real flight keeps its ghost up (a full-distance autoMove: dragSpring.ts's springSettleMs) - derived, so re-pacing the flights re-times the waits below. */
-const SLOWEST_FLIGHT_MS = springSettleMs(AUTO_MOVE_SPRING)
+/** The longest a real flight keeps its ghost up (every flight is dragSpring.ts's FLIGHT_SPRING: springSettleMs of it) - derived, so re-pacing the flights re-times the waits below. */
+const SLOWEST_FLIGHT_MS = springSettleMs(FLIGHT_SPRING)
 const DEAL_SPRING_MS = 280 // dealSpring.ts's DEAL_SPRING.duration - a dealt card lands this long after its own take-off
 const STAGGER_MS = 35 // dealStaggerMs() for any sweep of up to 28 cards
 const SAVE_KEY = 'solitaire.game-in-progress.v1.pyramid'

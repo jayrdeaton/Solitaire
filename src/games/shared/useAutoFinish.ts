@@ -23,9 +23,9 @@ const MAX_CONSECUTIVE_MISSES = 3
 /**
  * The "the game is won, just finish it" sweep: once `canFinish` says every remaining card can go
  * up on its own, fires one card after another, `staggerMs` apart, WITHOUT waiting for each flight
- * to land first (compare useAutoFoundationCascade, whose next step waits for `settled` - a card
- * per full flight-plus-measure round trip). Flights are purely cosmetic overlays on a board that
- * already committed (see useFlightConcurrency), so they overlap freely; the pace is the stagger.
+ * to land first (useAutoFoundationCascade does the same at its own, slower pace). Flights are
+ * purely cosmetic overlays on a board that already committed (see useFlightConcurrency), so they
+ * overlap freely; the pace is the stagger.
  *
  * Only ever starts after a player move (allow) - never from a deal, a resume or an undo (suppress)
  * - and only once `settled`, so the player's own move has landed first. Honors `enabled` (the

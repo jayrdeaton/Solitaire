@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
-import { AUTO_MOVE_SPRING, scaledMs, springSettleMs, winSweepSpringFor } from '@/components/dragdrop/dragSpring'
+import { AUTO_PLAY_STAGGER_MS, dropSpringFor, FLIGHT_SPRING, scaledMs, springSettleMs, WIN_SWEEP_STAGGER_MS } from '@/components/dragdrop/dragSpring'
 import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
 import FreeCellScreen, { FINISH_LAST_CARD_WAIT_MS, FINISH_STAGGER_MS } from '@/games/freecell/FreeCellScreen'
@@ -16,15 +16,16 @@ import { FreeCellController, FreeCellState } from '@/games/freecell/rules'
 //     drag.onDrop(target, count, anchorCardId, flight) - exactly how the real ones drive the screen.
 //   - useDragGhost: a fake ghost whose flights "land" FLIGHT_MS later (the Reanimated mock's withSpring never calls its
 //     completion callback, so the real ghost's flights would never settle and nothing downstream could ever fire).
-//   - useDealAnimator: lands every entry after a beat (the cascade-undo path flies through it).
+//   - useDealAnimator: lands every entry DEAL_MS later (the cascade-undo path flies through it).
 // What is observable: the card ids each stand-in renders (pile/freecell/foundation contents) and every flight started.
 // ---------------------------------------------------------------------------------------------------------------------
 
-const FLIGHT_MS = 80
-/** How long a finish (sweep-tier) flight stays up: the real ghost keeps it up springSettleMs of a winSweepSpringFor spring (~110-215ms over the board's
- * distances; ~160ms for a 200px hop) - derived, so re-pacing the flights (dragSpring.ts's FLIGHT_TIME_SCALE) keeps the stand-in honest. Every other flight
- * stays at FLIGHT_MS. */
-const SWEEP_FLIGHT_MS = springSettleMs(winSweepSpringFor(200))
+/** How long every flight stays up: the real ghost keeps one up springSettleMs of FLIGHT_SPRING (~483ms), whatever the move and however far it goes -
+ * derived, so re-pacing the flights (dragSpring.ts's FLIGHT_TIME_SCALE) keeps the stand-in honest. Longer than the gap between two auto-played cards, as
+ * it is on a phone, so they overlap here too. */
+const FLIGHT_MS = springSettleMs(FLIGHT_SPRING)
+/** How long the stand-in deal layer takes to land a batch. */
+const DEAL_MS = 80
 const SAVE_KEY = 'solitaire.game-in-progress.v1.freecell'
 
 const mockSettings = { autoMove: true }
@@ -47,38 +48,37 @@ interface MockFlightLog {
   /** Commit-time order of the hand-off: 'cascade' when startChains is called, 'blank-<suit>' when a foundation cell commits with no
    * real card (an empty pile mid-game shows up here too, so only tests that start from full piles read it). */
   events: string[]
-  /** The pace flags every flyTo() was asked for, in order - a plain tap/drop asks for neither, a cascade step is `fast`, a
-   * finish step is `sweep` (dragSpring.ts's fastest spring). */
-  paces: { fast?: boolean; sweep?: boolean }[]
+  /** Every flyTo(): the card(s) it flew and when (fake time) it left and landed (-1 while still in the air). */
+  flights: { cards: string; start: number; end: number }[]
 }
-const mockLog: MockFlightLog = { shown: [], inAir: 0, maxInAir: 0, airAtWinCascade: -1, chainsAtWinCascade: -1, foundationsAtWinCascade: null, events: [], paces: [] }
+const mockLog: MockFlightLog = { shown: [], inAir: 0, maxInAir: 0, airAtWinCascade: -1, chainsAtWinCascade: -1, foundationsAtWinCascade: null, events: [], flights: [] }
 /** Suits whose foundation slot container fails to measure (the rare origin-measurement failure). */
 const mockUnmeasurableSlots = new Set<string>()
 /** What every foundation cell shows right now - read from inside the mocked cascade, hence hoisted-mock naming. */
 const mockFoundationsNow = () => SUITS.map((suit) => screen.getByTestId(`foundation-${suit}`).props.children as string)
 
-function mockMakeFlight() {
+function mockMakeFlight(cards = '') {
   return {
     hide: () => {},
-    flyTo: (_x: number, _y: number, onDone?: () => void, opts?: { fast?: boolean; sweep?: boolean }) => {
-      mockLog.paces.push({ fast: opts?.fast, sweep: opts?.sweep })
+    flyTo: (_x: number, _y: number, onDone?: () => void) => {
       mockLog.inAir += 1
       mockLog.maxInAir = Math.max(mockLog.maxInAir, mockLog.inAir)
-      setTimeout(
-        () => {
-          mockLog.inAir -= 1
-          onDone?.()
-        },
-        opts?.sweep ? SWEEP_FLIGHT_MS : FLIGHT_MS
-      )
+      const flight = { cards, start: Date.now(), end: -1 }
+      mockLog.flights.push(flight)
+      setTimeout(() => {
+        mockLog.inAir -= 1
+        flight.end = Date.now()
+        onDone?.()
+      }, FLIGHT_MS)
     }
   }
 }
 const mockGhost = {
   cardRegistry: { register: () => {}, unregister: () => {}, measure: async () => ({ x: 10, y: 10 }) },
   show: (spec: { cards: { id: string }[] }) => {
-    mockLog.shown.push(spec.cards.map((c) => c.id).join('+'))
-    return mockMakeFlight()
+    const cards = spec.cards.map((c) => c.id).join('+')
+    mockLog.shown.push(cards)
+    return mockMakeFlight(cards)
   }
 }
 /** Every deal.start() the screen made (initial deals and cascade-undo batches alike): the entries it flew and the callbacks it handed over. */
@@ -99,7 +99,7 @@ const mockDeal = {
       entries.forEach((e) => onDealt?.(e.cardId))
       entries.forEach((e) => onLanded(e.cardId))
       onDone()
-    }, FLIGHT_MS)
+    }, DEAL_MS)
   },
   cancel: () => {}
 }
@@ -323,7 +323,7 @@ beforeEach(() => {
   mockLog.chainsAtWinCascade = -1
   mockLog.foundationsAtWinCascade = null
   mockLog.events = []
-  mockLog.paces = []
+  mockLog.flights = []
   mockUnmeasurableSlots.clear()
   mockRecordWon.mockClear()
   mockDealCalls.length = 0
@@ -355,8 +355,31 @@ describe('FreeCell screen - the safe-card cascade needs a TAP that went to a fou
     // foundations at Ace). The 2s of clubs/spades still wait on the Ace of diamonds, which is buried.
     expect(foundationTops()).toEqual({ clubs: id('clubs', 1), diamonds: 'empty', hearts: id('hearts', 2), spades: id('spades', 1) })
     expect(mockLog.shown).toHaveLength(4)
-    // The tap flew at the ordinary pace; each follow-up at the (still unhurried) auto-play pace - never the finish's sweep.
-    expect(mockLog.paces).toEqual([{ fast: undefined, sweep: undefined }, ...Array.from({ length: 3 }, () => ({ fast: true, sweep: false }))])
+  })
+
+  it("the follow-up cards leave one stagger apart without waiting for each other to land - only for the tapped card's own flight", async () => {
+    await mount(SAFE_CARDS_BOARD())
+
+    await tap(id('clubs', 1))
+    await flush(3000)
+
+    const [tapFlight, ...followUps] = mockLog.flights
+    expect(tapFlight.cards).toBe(id('clubs', 1))
+    expect(followUps.map((f) => f.cards)).toEqual(expect.arrayContaining([id('hearts', 1), id('spades', 1), id('hearts', 2)]))
+    expect(followUps).toHaveLength(3)
+    // The first follow-up leaves once the tapped card has landed...
+    expect(followUps[0].start).toBeGreaterThanOrEqual(tapFlight.end)
+    for (let i = 1; i < followUps.length; i++) {
+      // ...and each one after it a stagger later (to within one STEP_MS: flights start in an effect, which this harness runs at the end of a step),
+      // while the one before is still in the air.
+      expect(followUps[i].start - followUps[i - 1].start).toBeGreaterThanOrEqual(AUTO_PLAY_STAGGER_MS - STEP_MS)
+      expect(followUps[i].start).toBeLessThan(followUps[i - 1].end)
+    }
+    // Cards headed to the same foundation (the Ace, then the 2 of hearts) land in the order they left.
+    const heartsAce = followUps.find((f) => f.cards === id('hearts', 1))!
+    const heartsTwo = followUps.find((f) => f.cards === id('hearts', 2))!
+    expect(heartsTwo.end).toBeGreaterThan(heartsAce.end)
+    expect(foundationTops()).toEqual({ clubs: id('clubs', 1), diamonds: 'empty', hearts: id('hearts', 2), spades: id('spades', 1) })
   })
 
   it('every auto-played card is its own undo step, taken back one at a time before the tap that set them off', async () => {
@@ -435,10 +458,11 @@ describe('FreeCell screen - once every column is solved the rest finishes itself
     expect(screen.getByTestId('fireworks')).toBeTruthy()
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
     expect(mockLog.shown).toHaveLength(1 + 52) // the tap, then every card of the game
-    // The tap flew at the ordinary pace; all 52 finish flights are sweep-speed (the fastest spring), not the cascade's pace.
-    expect(mockLog.paces).toHaveLength(1 + 52)
-    expect(mockLog.paces[0]).toEqual({ fast: undefined, sweep: undefined })
-    expect(mockLog.paces.slice(1).every((p) => p.sweep === true && p.fast === false)).toBe(true)
+    // The 52 finish cards leave a sweep gap apart (to within one STEP_MS, the harness's resolution) - the end-of-game pace, not the cascade's.
+    const finish = mockLog.flights.slice(1)
+    expect(finish).toHaveLength(52)
+    for (let i = 1; i < finish.length; i++) expect(finish[i].start - finish[i - 1].start).toBeGreaterThanOrEqual(WIN_SWEEP_STAGGER_MS - STEP_MS)
+    expect(finish[1].start - finish[0].start).toBeLessThan(AUTO_PLAY_STAGGER_MS)
   })
 
   it('a DRAG that leaves the board finishable does too', async () => {
@@ -541,7 +565,7 @@ describe('FreeCell screen - the win celebration waits for the winning card to fl
     expect(screen.queryByTestId('fireworks')).toBeNull()
     expect(mockLog.airAtWinCascade).toBe(-1)
 
-    await flush(80) // the flight lands
+    await flush(FLIGHT_MS) // the flight lands
     expect(mockLog.inAir).toBe(0)
     expect(foundationTops().clubs).toBe(id('clubs', 13)) // the completed board holds for a beat
     expect(screen.queryByTestId('win-banner')).toBeNull()
@@ -704,24 +728,19 @@ describe('FreeCell screen - a card never moves without its own flight', () => {
 })
 
 describe('FreeCell finish pacing follows the flight pace', () => {
-  // The finish stream (useAutoFinish) sends a card every FINISH_STAGGER_MS while each flies at the sweep tier. It was tuned at scale 1 - 60ms against
-  // 40-90ms flights - and must keep overlapping them the same way whatever dragSpring.ts's FLIGHT_TIME_SCALE is, so it derives from the same knob.
-  it('the finish stagger keeps the same fraction of a sweep flight at every distance: it is the scale-1 60ms re-paced with the flights', () => {
+  it("the finish sends a card every sweep gap - the same one every game's auto-play sweep uses, re-paced with the flights", () => {
+    expect(FINISH_STAGGER_MS).toBe(WIN_SWEEP_STAGGER_MS)
     expect(FINISH_STAGGER_MS).toBe(scaledMs(60))
-    for (const distance of [60, 100, 200, 300, 360, 900]) {
-      const scale1Flight = 40 + Math.max(0, Math.min(1, (distance - 60) / 300)) * (90 - 40)
-      expect(FINISH_STAGGER_MS / (winSweepSpringFor(distance).duration ?? 0)).toBeCloseTo(60 / scale1Flight, 1)
-    }
   })
 
-  it('the stagger is shorter than the shortest sweep flight stays up, so flights still overlap; and above the cascade feedback floor, so each card keeps its tick', () => {
-    expect(FINISH_STAGGER_MS).toBeLessThan(springSettleMs(winSweepSpringFor(60)))
+  it('the gap is shorter than a flight stays up, so flights still overlap; and above the cascade feedback floor, so each card keeps its tick', () => {
+    expect(FINISH_STAGGER_MS).toBeLessThan(springSettleMs(FLIGHT_SPRING))
     expect(FINISH_STAGGER_MS).toBeGreaterThan(45) // useCascadeFeedback's CASCADE_FEEDBACK_MIN_INTERVAL_MS
   })
 
-  it("the last card's wait comfortably outlasts the slowest sweep flight, and a tap flight that may still be in the air", () => {
-    expect(FINISH_LAST_CARD_WAIT_MS).toBeGreaterThanOrEqual(2 * springSettleMs(winSweepSpringFor(Infinity)))
-    expect(FINISH_LAST_CARD_WAIT_MS).toBeGreaterThanOrEqual(springSettleMs(AUTO_MOVE_SPRING))
+  it("the last card's wait comfortably outlasts a flight, and a drag's drop that may still be settling", () => {
+    expect(FINISH_LAST_CARD_WAIT_MS).toBeGreaterThanOrEqual(2 * springSettleMs(FLIGHT_SPRING))
+    expect(FINISH_LAST_CARD_WAIT_MS).toBeGreaterThanOrEqual(springSettleMs(dropSpringFor(Infinity))) // the slowest drag drop
   })
 })
 
