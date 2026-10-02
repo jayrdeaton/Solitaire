@@ -45,6 +45,11 @@ export interface FlightConcurrency<TState> {
    * sweep, ...) whose cards land one at a time rather than all together - see DealLayer's
    * per-card onCardLanded callback. Never goes below 0. */
   shrinkFlying(flyingId: number): void
+  /** Whether a card is still flying in to `pile` right now - read live (kept in step with every
+   * beginFlying/endFlying/shrinkFlying as it happens, not on React's next render), for a loop that
+   * outlives the render that started it (the auto-play cascade: a card whose own flight hasn't
+   * landed must not be picked up again, or it shows twice). */
+  isLanding(pile: PileRef): boolean
   /** How many independent flight-completions are outstanding right now, summed across every
    * concurrently-active action (tap-to-move, drag, auto-play, stock-draw all run concurrently with
    * each other - see PATTERN_OVERLAP_GATE; undo alone still waits for this to hit 0 before it can
@@ -113,19 +118,30 @@ export function useFlightConcurrency<TState>(): FlightConcurrency<TState> {
 
   const [flying, setFlying] = useState<FlyingEntry[]>([])
   const flyingIdRef = useRef(0)
+  // `flying` as of the last update, not the last render - what isLanding reads.
+  const flyingRef = useRef<FlyingEntry[]>([])
+
+  function updateFlying(update: (f: FlyingEntry[]) => FlyingEntry[]) {
+    flyingRef.current = update(flyingRef.current)
+    setFlying(flyingRef.current)
+  }
 
   function beginFlying(to: PileRef, count: number): number {
     const id = ++flyingIdRef.current
-    setFlying((f) => [...f, { id, to, count }])
+    updateFlying((f) => [...f, { id, to, count }])
     return id
   }
 
   function endFlying(flyingId: number) {
-    setFlying((f) => f.filter((e) => e.id !== flyingId))
+    updateFlying((f) => f.filter((e) => e.id !== flyingId))
   }
 
   function shrinkFlying(flyingId: number) {
-    setFlying((f) => f.map((e) => (e.id === flyingId ? { ...e, count: Math.max(0, e.count - 1) } : e)))
+    updateFlying((f) => f.map((e) => (e.id === flyingId ? { ...e, count: Math.max(0, e.count - 1) } : e)))
+  }
+
+  function isLanding(pile: PileRef): boolean {
+    return flyingRef.current.some((e) => e.count > 0 && e.to.zone === pile.zone && e.to.index === pile.index)
   }
 
   const activeFlightCountRef = useRef(0)
@@ -149,7 +165,7 @@ export function useFlightConcurrency<TState>(): FlightConcurrency<TState> {
     undoBusyRef.current = false
     activeFlightCountRef.current = 0
     setActiveFlightCount(0)
-    setFlying([])
+    updateFlying(() => [])
   }
 
   return {
@@ -160,6 +176,7 @@ export function useFlightConcurrency<TState>(): FlightConcurrency<TState> {
     beginFlying,
     endFlying,
     shrinkFlying,
+    isLanding,
     activeFlightCount,
     activeFlightCountRef,
     startFlights,

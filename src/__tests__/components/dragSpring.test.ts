@@ -1,7 +1,7 @@
 import type { WithSpringConfig } from 'react-native-reanimated'
 
 import { DEAL_SPRING } from '@/components/dealing/dealSpring'
-import { AUTO_PLAY_STAGGER_MS, dropSpringFor, FLIGHT_SPRING, FLIGHT_SPRING_MASS, FLIGHT_TIME_SCALE, scaledMs, SNAP_BACK_SPRING, SPRING_SETTLE_FACTOR, SPRING_START_LAG_MS, springSettleMs, WIN_SWEEP_STAGGER_MS } from '@/components/dragdrop/dragSpring'
+import { AUTO_PLAY_STAGGER_MS, dropSpringFor, FLIGHT_SPRING, FLIGHT_SPRING_MASS, FLIGHT_TIME_SCALE, scaledMs, SNAP_BACK_SPRING, SPRING_SETTLE_FACTOR, SPRING_START_LAG_MS, springSettleMs } from '@/components/dragdrop/dragSpring'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // What a flight's timing constants MUST satisfy, measured against Reanimated's OWN spring code (its real `withSpring`, driven
@@ -95,9 +95,8 @@ describe('the flight pace knob', () => {
     for (const distance of [60, 100, 250, 360]) expect(dropSpringFor(distance)).toMatchObject({ dampingRatio: 1, overshootClamping: true, mass: FLIGHT_SPRING_MASS })
   })
 
-  it('re-paces the auto-play gaps from their scale-1 values', () => {
-    expect(AUTO_PLAY_STAGGER_MS).toBe(scaledMs(120))
-    expect(WIN_SWEEP_STAGGER_MS).toBe(scaledMs(60))
+  it('re-paces the auto-play gap from its scale-1 value', () => {
+    expect(AUTO_PLAY_STAGGER_MS).toBe(scaledMs(60))
   })
 
   it('leaves the deal and the drag snap-back exactly as they were', () => {
@@ -129,18 +128,17 @@ describe('springSettleMs', () => {
   })
 })
 
-describe('the auto-play gaps', () => {
-  it('send the next card while the one before is still in the air (every flight takes the same time, so they also land in the order they left)', () => {
-    expect(AUTO_PLAY_STAGGER_MS).toBeLessThan(springSettleMs(FLIGHT_SPRING))
-    expect(WIN_SWEEP_STAGGER_MS).toBeLessThan(springSettleMs(FLIGHT_SPRING))
+describe('the auto-play gap', () => {
+  it('sends the next card while the one before is still in the air - several at once (every flight takes the same time, so they still land in the order they left)', () => {
+    expect(springSettleMs(FLIGHT_SPRING) / AUTO_PLAY_STAGGER_MS).toBeGreaterThan(4)
   })
 
-  it('at the default pace: a card every 192ms, every 96ms in the end-of-game sweep', () => {
-    expect([AUTO_PLAY_STAGGER_MS, WIN_SWEEP_STAGGER_MS]).toEqual([192, 96])
+  it('at the default pace: a card every 96ms', () => {
+    expect(AUTO_PLAY_STAGGER_MS).toBe(96)
   })
 
-  it("keep each card its own sound/haptic tick (above useCascadeFeedback's 45ms floor)", () => {
-    expect(WIN_SWEEP_STAGGER_MS).toBeGreaterThan(45)
+  it("keeps each card its own sound/haptic tick (above useCascadeFeedback's 45ms floor)", () => {
+    expect(AUTO_PLAY_STAGGER_MS).toBeGreaterThan(45)
   })
 })
 

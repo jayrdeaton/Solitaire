@@ -11,7 +11,7 @@ import { DEAL_STAGGER_MS, dealStaggerMs, paceFaceUpDeal } from '@/components/dea
 import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
-import { FLIGHT_SPRING, springSettleMs, WIN_SWEEP_STAGGER_MS } from '@/components/dragdrop/dragSpring'
+import { AUTO_PLAY_STAGGER_MS, FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { CARD_HEIGHT_RATIO, useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
@@ -58,11 +58,11 @@ import { countEmptyFreecells, countEmptyTableauColumns, FreeCellController, Free
 // less generously than this, but a screen with real headroom to spare now gets more of it.
 const TABLEAU_MIN_HEIGHT = 460
 const TABLEAU_COLUMNS = 8
-// Gap between one finish card leaving and the next (see useAutoFinish): the same sweep gap the other
-// games' auto-play uses (dragSpring.ts's WIN_SWEEP_STAGGER_MS, 96ms at the default pace) against
-// flights that all take the same time (FLIGHT_SPRING), so ~5 are in the air at once and they land in
-// the order they left - the whole sweep reads as one quick stream.
-export const FINISH_STAGGER_MS = WIN_SWEEP_STAGGER_MS
+// Gap between one finish card leaving and the next, the first one included (see useAutoFinish): the
+// same gap as every auto-played card (dragSpring.ts's AUTO_PLAY_STAGGER_MS, 96ms at the default
+// pace) against flights that all take the same time (FLIGHT_SPRING), so ~5 are in the air at once
+// and they land in the order they left - the whole sweep reads as one quick stream.
+export const FINISH_STAGGER_MS = AUTO_PLAY_STAGGER_MS
 const DECK_SIZE = 52
 function foundationCount(s: FreeCellState | null): number {
   return s ? s.foundation.reduce((n, pile) => n + pile.length, 0) : 0
@@ -139,7 +139,7 @@ function FreeCellScreenInner() {
   // exclusion with everything else; tap/drag/auto-play can all run concurrently with each other -
   // PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`, `commitState`,
   // `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<FreeCellState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<FreeCellState>()
   const [undoStack, setUndoStack] = useState<UndoEntry<FreeCellState, FreeCellUndoMove>[]>([])
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -523,8 +523,7 @@ function FreeCellScreenInner() {
   // FreeCell has no stock, so armFromAceEvent is never called here at all.
   const cascade = useAutoFoundationCascade<FreeCellState>({
     state,
-    settled,
-    isSettled: () => activeFlightCountRef.current === 0 && dealHiddenIds.size === 0,
+    isLanding,
     getState: () => stateRef.current,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
@@ -535,7 +534,6 @@ function FreeCellScreenInner() {
   // whatever kind of move (tap, drag, to a column or a freecell) made the board finishable.
   const finish = useAutoFinish<FreeCellState>({
     state,
-    settled,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     getState: () => stateRef.current,
@@ -875,22 +873,28 @@ function FreeCellScreenInner() {
   }
 
   // One card of the finish (see useAutoFinish/autoPlay.ts's canAutoFinish): the same flight as a
-  // cascade step, at sweep pace. Resolves once the move is COMMITTED - not landed - which is what
-  // lets the next card leave before this one arrives. The board's last card is the exception: it
-  // first waits for every earlier flight to land, so the win cascade (which starts the moment the
-  // winning move commits) doesn't begin over foundation cards still in the air.
+  // cascade step. Resolves once the move is COMMITTED - not landed - which is what lets the next
+  // card leave before this one arrives. Two waits, each bounded by FINISH_LAST_CARD_WAIT_MS (two
+  // flights): a card still flying in to its own pile (the one the player's move just put there)
+  // lands first - picked up mid-air it would show twice; and the board's last card waits for every
+  // earlier flight, so the win cascade (which starts the moment the winning move commits) doesn't
+  // begin over foundation cards still in the air.
   async function fireFinishStep(): Promise<boolean> {
+    const nextStep = () => {
+      const current = stateRef.current
+      return current && nextFinishMove(current)
+    }
+    const deadline = Date.now() + FINISH_LAST_CARD_WAIT_MS
+    for (let step = nextStep(); step && isLanding(step.entry.ref) && Date.now() < deadline; step = nextStep()) await new Promise<void>((resolve) => setTimeout(resolve, 16))
     if (foundationCount(stateRef.current) === DECK_SIZE - 1) {
-      const deadline = Date.now() + FINISH_LAST_CARD_WAIT_MS
       while (activeFlightCountRef.current > 0 && Date.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 16))
     }
-    // Re-check AFTER the wait: an undo, a new game, a settings flip or an unmount may have landed
-    // while it ran, and the loop's own checks are already behind us. Also re-read the board - the
+    // Re-check AFTER the waits: an undo, a new game, a settings flip or an unmount may have landed
+    // while they ran, and the loop's own checks are already behind us. Also re-read the board - the
     // player may have moved.
     if (!finish.isAllowed() || !settings.autoMoveToFoundation || undoBusyRef.current) return false
-    const current = stateRef.current
-    const step = current && nextFinishMove(current)
-    return step ? firePlay(step.entry, step.to) : false
+    const step = nextStep()
+    return step && !isLanding(step.entry.ref) ? firePlay(step.entry, step.to) : false
   }
 
   // Drag-and-drop's own entry point into flight bookkeeping (see activeFlightCountRef's doc

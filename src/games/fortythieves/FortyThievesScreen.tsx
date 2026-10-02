@@ -99,7 +99,7 @@ function FortyThievesScreenInner() {
   // each other - PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`,
   // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
   // unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<FortyThievesState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<FortyThievesState>()
   const [undoStack, setUndoStack] = useState<UndoEntry<FortyThievesState>[]>([])
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -347,8 +347,7 @@ function FortyThievesScreenInner() {
   // unlike Klondike/FreeCell/Yukon/Canfield - no computeNextStep fallback to one below either).
   const cascade = useAutoFoundationCascade<FortyThievesState>({
     state,
-    settled,
-    isSettled: () => activeFlightCountRef.current === 0 && dealHiddenIds.size === 0,
+    isLanding,
     getState: () => stateRef.current,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,

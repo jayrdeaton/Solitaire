@@ -156,7 +156,7 @@ function CanfieldScreenInner() {
   // each other - PATTERN_OVERLAP_GATE, mirrors KlondikeScreen's identical adoption of this hook).
   // Destructured below so every existing reference to `state`, `commitState`, `flying`,
   // `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<CanfieldState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<CanfieldState>()
   const [undoStack, setUndoStack] = useState<UndoEntry<CanfieldState>[]>([])
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -498,8 +498,7 @@ function CanfieldScreenInner() {
   // computeNextStep composes.
   const cascade = useAutoFoundationCascade<CanfieldState>({
     state,
-    settled,
-    isSettled: () => activeFlightCountRef.current === 0 && dealHiddenIds.size === 0,
+    isLanding,
     getState: () => stateRef.current,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,

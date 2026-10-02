@@ -125,7 +125,7 @@ function YukonScreenInner() {
   // PATTERN_OVERLAP_GATE, same as Klondike's own extraction of this bookkeeping). Destructured
   // below so every existing reference to `state`, `commitState`, `flying`, `startFlights`,
   // `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<YukonState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<YukonState>()
   // Every Yukon move (tableau->tableau, tableau->foundation) has a real origin/destination to fly -
   // no stock-draw-shaped move that would need a null MoveInfo, unlike Klondike's undo stack. Mirrors
   // FreeCell's own non-nullable UndoEntry<FreeCellState, MoveInfo>.
@@ -595,8 +595,7 @@ function YukonScreenInner() {
 
   const cascade = useAutoFoundationCascade<YukonState>({
     state,
-    settled,
-    isSettled: () => activeFlightCountRef.current === 0 && dealHiddenIds.size === 0,
+    isLanding,
     getState: () => stateRef.current,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,

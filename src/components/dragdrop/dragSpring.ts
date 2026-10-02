@@ -125,10 +125,8 @@ export function dropSpringFor(distance: number): WithSpringConfig {
   return { duration, dampingRatio: 1, overshootClamping: true, mass: FLIGHT_SPRING_MASS }
 }
 
-/** Gap between one auto-played card leaving and the next (useAutoFoundationCascade): far shorter than a flight, so ~2.5 cards are in the air at
- * once. Scale-1 120ms: 192ms at the default. */
-export const AUTO_PLAY_STAGGER_MS = scaledMs(120)
-
-/** Gap between two cards of the end-of-game sweep (the cascade once a draw has latched it, and FreeCell's finish): ~5 cards in the air at once.
- * Scale-1 60ms: 96ms. Also above useCascadeFeedback's 45ms floor, so every card keeps its own sound/haptic tick. */
-export const WIN_SWEEP_STAGGER_MS = scaledMs(60)
+/** Gap between one auto-played card leaving and the next - the player's own card included, so the first follower leaves this long after it while
+ * it is still in the air (useAutoFoundationCascade, and FreeCell's finish). Every flight takes the same time, so the gap only sets how quick the
+ * stream reads; ~5 cards are in the air at once. Scale-1 60ms: 96ms at the default. Above useCascadeFeedback's 45ms floor, so every card keeps its
+ * own sound/haptic tick. */
+export const AUTO_PLAY_STAGGER_MS = scaledMs(60)

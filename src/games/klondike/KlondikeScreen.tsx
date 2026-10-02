@@ -123,7 +123,7 @@ function KlondikeScreenInner() {
   // each other - PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`,
   // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
   // unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<KlondikeState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<KlondikeState>()
   const [undoStack, setUndoStack] = useState<KlondikeUndoEntry[]>([])
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -602,13 +602,12 @@ function KlondikeScreenInner() {
   // Auto-play-to-foundation: only ever fires as a direct consequence of the player's own move - see
   // useAutoFoundationCascade for the trigger model (armFromForwardMove/armFromAceEvent, called from
   // applyMove/handleDrawStock below), and engine/autoFoundation.ts for the two mechanisms
-  // computeNextStep composes. It starts once the player's own tap/drag/stock-draw has landed and
-  // never mid-deal (`settled`); after that its cards leave on a stagger, overlapping each other's
-  // flights (see the hook for what still waits for everything to land).
+  // computeNextStep composes. Its cards follow the player's own one on a short stagger, overlapping
+  // each other's flights (see the hook for the one thing a card still waits for: its own pile to
+  // stop landing).
   const cascade = useAutoFoundationCascade<KlondikeState>({
     state,
-    settled,
-    isSettled: () => activeFlightCountRef.current === 0 && dealHiddenIds.size === 0,
+    isLanding,
     getState: () => stateRef.current,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,

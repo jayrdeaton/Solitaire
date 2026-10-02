@@ -15,12 +15,11 @@ const CASCADE_FEEDBACK_MIN_INTERVAL_MS = 45
  * Gates a screen's own playCardSound+hapticCard pair behind one shared minimum-interval timer, for
  * use inside an auto-play cascade's own per-card feedback (firePlay/fireDraw/fireDrawAndPlay) -
  * every other call site (a manual tap, a drag's drop, undo, a non-sweep manual draw) keeps calling
- * playCardSound/hapticCard directly, fully unthrottled. Harmless to apply even to an ordinary
- * (non-sweep) cascade step: those leave AUTO_PLAY_STAGGER_MS (192ms at the default FLIGHT_TIME_SCALE,
- * see dragSpring.ts) apart, well above this floor. The floor itself is a sound-pool limit, not a
- * flight pace, so it deliberately does NOT follow FLIGHT_TIME_SCALE: slowing the flights only ever
- * spaces the steps further apart, and the throttle then simply never triggers (the sweep stagger,
- * WIN_SWEEP_STAGGER_MS = 96ms at the default, stays above it too).
+ * playCardSound/hapticCard directly, fully unthrottled. Auto-played cards leave AUTO_PLAY_STAGGER_MS
+ * (96ms at the default FLIGHT_TIME_SCALE, see dragSpring.ts) apart, above this floor, so normally
+ * every card keeps its tick. The floor itself is a sound-pool limit, not a flight pace, so it
+ * deliberately does NOT follow FLIGHT_TIME_SCALE: slowing the flights only ever spaces the steps
+ * further apart, and the throttle then simply never triggers.
  */
 export function useCascadeFeedback(playCardSound: () => void, hapticCard: () => void): () => void {
   const lastFiredAtRef = useRef(0)

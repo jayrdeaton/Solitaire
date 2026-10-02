@@ -2,7 +2,8 @@ import { useEffect, useRef } from 'react'
 
 export interface AutoFinish {
   /** Call right after a move the PLAYER made themselves commits (a tap or a drag, to anywhere).
-   * The finish may then start the next time the board settles finishable. */
+   * If that leaves the board finishable, the finish starts at once: its first card follows the
+   * player's own one `staggerMs` later. */
   allow(): void
   /** Call when the board changed for a reason that isn't a player move - an undo, a resumed save,
    * a new deal - and stops a finish that's already running. Nothing starts again until the next
@@ -23,21 +24,19 @@ const MAX_CONSECUTIVE_MISSES = 3
 /**
  * The "the game is won, just finish it" sweep: once `canFinish` says every remaining card can go
  * up on its own, fires one card after another, `staggerMs` apart, WITHOUT waiting for each flight
- * to land first (useAutoFoundationCascade does the same at its own, slower pace). Flights are
- * purely cosmetic overlays on a board that already committed (see useFlightConcurrency), so they
- * overlap freely; the pace is the stagger.
+ * to land first (useAutoFoundationCascade does the same). Flights are purely cosmetic overlays on a
+ * board that already committed (see useFlightConcurrency), so they overlap freely; the pace is the
+ * stagger. The first card follows the player's own move by the same gap, while that one is still in
+ * the air - fireNext itself holds back a card that is still flying in to its pile.
  *
- * Only ever starts after a player move (allow) - never from a deal, a resume or an undo (suppress)
- * - and only once `settled`, so the player's own move has landed first. Honors `enabled` (the
+ * Only ever starts after a player move (allow) - never from a deal, a resume or an undo (suppress).
+ * Honors `enabled` (the
  * Auto-Move to Foundation setting) and `isBusy` (an undo in progress) at every step, and each step
  * re-reads the live board through `getState` and re-checks `canFinish`, so a player move made
  * mid-finish that breaks it just ends the finish instead of playing cards that are no longer safe.
  */
 export function useAutoFinish<TState>(config: {
   state: TState | null
-  /** True once nothing is animating and the initial deal has finished - the same signal
-   * useAutoFoundationCascade takes. */
-  settled: boolean
   enabled: () => boolean
   isBusy: () => boolean
   /** The live board (a ref read, e.g. useFlightConcurrency's stateRef.current), not the render
@@ -72,30 +71,31 @@ export function useAutoFinish<TState>(config: {
     let misses = 0
     try {
       while (allowedRef.current) {
+        // Every card, the first included, leaves one gap after the card before it (the player's own, for the first).
+        await new Promise<void>((resolve) => setTimeout(resolve, latestRef.current.staggerMs))
         const c = latestRef.current
         const s = c.getState()
-        if (!c.enabled() || c.isBusy() || !s || !c.canFinish(s)) return
+        if (!allowedRef.current || !c.enabled() || c.isBusy() || !s || !c.canFinish(s)) return
         if (await c.fireNext(s)) {
           misses = 0
         } else if (++misses >= MAX_CONSECUTIVE_MISSES) {
           allowedRef.current = false
           return
         }
-        await new Promise<void>((resolve) => setTimeout(resolve, latestRef.current.staggerMs))
       }
     } finally {
       runningRef.current = false
     }
   }
 
-  // Deliberately depends on only [state, settled], for the same reason useAutoFoundationCascade's
-  // effect does: every screen passes fresh inline closures for the rest on every render.
+  // Deliberately depends on only [state], for the same reason useAutoFoundationCascade's effect
+  // does: every screen passes fresh inline closures for the rest on every render.
   useEffect(() => {
     if (!allowedRef.current || runningRef.current) return
-    if (!config.enabled() || !config.state || !config.settled || config.isBusy() || !config.canFinish(config.state)) return
+    if (!config.enabled() || !config.state || config.isBusy() || !config.canFinish(config.state)) return
     run()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.state, config.settled])
+  }, [config.state])
 
   return {
     allow() {

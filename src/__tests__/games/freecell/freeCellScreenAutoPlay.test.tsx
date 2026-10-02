@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
-import { AUTO_PLAY_STAGGER_MS, dropSpringFor, FLIGHT_SPRING, scaledMs, springSettleMs, WIN_SWEEP_STAGGER_MS } from '@/components/dragdrop/dragSpring'
+import { AUTO_PLAY_STAGGER_MS, dropSpringFor, FLIGHT_SPRING, scaledMs, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
 import FreeCellScreen, { FINISH_LAST_CARD_WAIT_MS, FINISH_STAGGER_MS } from '@/games/freecell/FreeCellScreen'
@@ -243,6 +243,14 @@ const SAFE_CARDS_BOARD = () => board([column('clubs', 13, 3), column('diamonds',
  * whichever ONE of those 2s is moved - with the Aces of clubs and spades, both safe to play, sitting on top of their columns. */
 const TWO_DEADLOCKS_BOARD = () => board([column('clubs', 13, 3), column('diamonds', 13, 3), column('hearts', 13, 3), column('spades', 13, 1), [card('clubs', 2), card('clubs', 1)], [card('diamonds', 1), card('diamonds', 2)], [card('hearts', 1), card('hearts', 2)]])
 
+/** Only the clubs are left, and their 2 sits on their Ace: moving the 2 off it makes the board finishable, and the finish then wants
+ * the Ace and right after it that same 2 - while the 2 is still flying to its new column. */
+const CLUBS_LEFT_TWO_ON_ACE = (): FreeCellState => ({
+  tableau: [column('clubs', 13, 3), [card('clubs', 1), card('clubs', 2)], [], [], [], [], [], []],
+  freecells: [null, null, null, null],
+  foundation: SUITS.map((suit) => (suit === 'clubs' ? [] : column(suit, 13, 1).reverse()))
+})
+
 /** Every card is home except the King of clubs, sitting alone in a column: tapping it wins the game. */
 const ONE_CARD_FROM_WON = (): FreeCellState => ({
   tableau: [[card('clubs', 13)], [], [], [], [], [], [], []],
@@ -357,7 +365,7 @@ describe('FreeCell screen - the safe-card cascade needs a TAP that went to a fou
     expect(mockLog.shown).toHaveLength(4)
   })
 
-  it("the follow-up cards leave one stagger apart without waiting for each other to land - only for the tapped card's own flight", async () => {
+  it('the follow-up cards leave one stagger apart without waiting for each other to land - the first one stagger after the tapped card, while it is still in the air', async () => {
     await mount(SAFE_CARDS_BOARD())
 
     await tap(id('clubs', 1))
@@ -367,8 +375,9 @@ describe('FreeCell screen - the safe-card cascade needs a TAP that went to a fou
     expect(tapFlight.cards).toBe(id('clubs', 1))
     expect(followUps.map((f) => f.cards)).toEqual(expect.arrayContaining([id('hearts', 1), id('spades', 1), id('hearts', 2)]))
     expect(followUps).toHaveLength(3)
-    // The first follow-up leaves once the tapped card has landed...
-    expect(followUps[0].start).toBeGreaterThanOrEqual(tapFlight.end)
+    // The first follow-up leaves a stagger after the tapped card, without waiting for it to land...
+    expect(followUps[0].start - tapFlight.start).toBeGreaterThanOrEqual(AUTO_PLAY_STAGGER_MS - STEP_MS)
+    expect(followUps[0].start).toBeLessThan(tapFlight.end)
     for (let i = 1; i < followUps.length; i++) {
       // ...and each one after it a stagger later (to within one STEP_MS: flights start in an effect, which this harness runs at the end of a step),
       // while the one before is still in the air.
@@ -458,11 +467,30 @@ describe('FreeCell screen - once every column is solved the rest finishes itself
     expect(screen.getByTestId('fireworks')).toBeTruthy()
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
     expect(mockLog.shown).toHaveLength(1 + 52) // the tap, then every card of the game
-    // The 52 finish cards leave a sweep gap apart (to within one STEP_MS, the harness's resolution) - the end-of-game pace, not the cascade's.
-    const finish = mockLog.flights.slice(1)
+    // The 52 finish cards leave a stagger apart (to within one STEP_MS, the harness's resolution), the first a stagger after the tap - while
+    // the tapped card is still in the air.
+    const [tapFlight, ...finish] = mockLog.flights
     expect(finish).toHaveLength(52)
-    for (let i = 1; i < finish.length; i++) expect(finish[i].start - finish[i - 1].start).toBeGreaterThanOrEqual(WIN_SWEEP_STAGGER_MS - STEP_MS)
-    expect(finish[1].start - finish[0].start).toBeLessThan(AUTO_PLAY_STAGGER_MS)
+    expect(finish[0].start).toBeLessThan(tapFlight.end)
+    for (let i = 1; i < finish.length; i++) expect(finish[i].start - finish[i - 1].start).toBeGreaterThanOrEqual(AUTO_PLAY_STAGGER_MS - STEP_MS)
+    expect(finish[1].start - finish[0].start).toBeLessThan(AUTO_PLAY_STAGGER_MS + 2 * STEP_MS)
+    // ...except the tapped 2 of clubs itself, which goes up only once it has landed on its column (taken mid-air it would show twice).
+    const tappedAgain = finish.find((f) => f.cards === id('clubs', 2))!
+    expect(tappedAgain.start).toBeGreaterThanOrEqual(tapFlight.end)
+  })
+
+  it("a card the player's own move is still flying in to waits for it to land before going up (taken mid-air it would show twice)", async () => {
+    await mount(CLUBS_LEFT_TWO_ON_ACE(), 13)
+
+    await tap(id('clubs', 2)) // off the Ace, onto an empty column
+    await flush(5000)
+
+    const [tapFlight, ...finish] = mockLog.flights
+    expect(tapFlight.cards).toBe(id('clubs', 2))
+    expect(finish.slice(0, 2).map((f) => f.cards)).toEqual([id('clubs', 1), id('clubs', 2)])
+    expect(finish[0].start).toBeLessThan(tapFlight.end) // the Ace is not in the way of anything: it follows at once
+    expect(finish[1].start).toBeGreaterThanOrEqual(tapFlight.end) // the 2 waits for its own flight to land first
+    expect(cardsOnBoard()).toBe(0)
   })
 
   it('a DRAG that leaves the board finishable does too', async () => {
@@ -729,7 +757,7 @@ describe('FreeCell screen - a card never moves without its own flight', () => {
 
 describe('FreeCell finish pacing follows the flight pace', () => {
   it("the finish sends a card every sweep gap - the same one every game's auto-play sweep uses, re-paced with the flights", () => {
-    expect(FINISH_STAGGER_MS).toBe(WIN_SWEEP_STAGGER_MS)
+    expect(FINISH_STAGGER_MS).toBe(AUTO_PLAY_STAGGER_MS)
     expect(FINISH_STAGGER_MS).toBe(scaledMs(60))
   })
 
