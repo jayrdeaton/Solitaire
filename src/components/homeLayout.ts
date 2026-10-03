@@ -2,6 +2,7 @@ import { clamp, rotateInsets, useRotatedWindowDimensions, useRotation } from '@t
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { type LayoutInsets, WIDE_FOOTER_SIDE_WIDTH } from './gameLayout'
+import { HERO_FAN_HEIGHT, HERO_FAN_SPAN } from './heroFan'
 
 /* ---------------------------------------------------------------------------------------------
  * The Home (game select) screen's geometry, both orientations - the counterpart of gameLayout.ts.
@@ -57,10 +58,6 @@ export const HOME_WIDE_MAX_FONT_SCALE = 1.3
 // so the game tiles (the point of the screen) get the height.
 const HOME_HERO_SHORT_WINDOW_MAX_SCALE = 0.8
 const HOME_SHORT_WINDOW_HEIGHT = 500
-// The hero's visual span at scale 1 (five 64pt cards fanned, plus the rotation overhang) and the height
-// its row reserves (a 93pt card + 20pt margin) - HeroCards.tsx's own constants.
-const HOME_HERO_SPAN = 250
-const HOME_HERO_HEIGHT = 113
 // Everything else the left pane stacks under the trophy band besides the hero: the profile chip (60), a
 // gap, the title (33) and the subtitle (2 lines, 37).
 const HOME_LEFT_PANE_FIXED_HEIGHT = 142
@@ -113,7 +110,8 @@ export function computeHomeLayout(windowWidth: number, windowHeight: number, ins
 
   const maxHeroScale = windowHeight < HOME_SHORT_WINDOW_HEIGHT ? HOME_HERO_SHORT_WINDOW_MAX_SCALE : 1
   const heightForHero = windowHeight - insets.top - insets.bottom - HOME_TOP_BAND - HOME_LEFT_PANE_BOTTOM_PADDING - HOME_LEFT_PANE_FIXED_HEIGHT
-  const heroScale = clamp(Math.min(maxHeroScale, (leftPaneWidth - 16) / HOME_HERO_SPAN, heightForHero / HOME_HERO_HEIGHT), HOME_HERO_MIN_SCALE, 1)
+  // HERO_FAN_SPAN/HEIGHT: the hero row's box at scale 1, the resting fan's own bounding box (heroFan.ts).
+  const heroScale = clamp(Math.min(maxHeroScale, (leftPaneWidth - 16) / HERO_FAN_SPAN, heightForHero / HERO_FAN_HEIGHT), HOME_HERO_MIN_SCALE, 1)
 
   return {
     isWide,

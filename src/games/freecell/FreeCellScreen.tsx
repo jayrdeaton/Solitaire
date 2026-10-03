@@ -63,16 +63,11 @@ const TABLEAU_COLUMNS = 8
 // pace) against flights that all take the same time (FLIGHT_SPRING), so ~5 are in the air at once
 // and they land in the order they left - the whole sweep reads as one quick stream.
 export const FINISH_STAGGER_MS = AUTO_PLAY_STAGGER_MS
-const DECK_SIZE = 52
-function foundationCount(s: FreeCellState | null): number {
-  return s ? s.foundation.reduce((n, pile) => n + pile.length, 0) : 0
-}
-// A finish's LAST card waits (up to this long) for every earlier flight to land first, so the win
-// cascade doesn't start over foundation cards that are still mid-air. It only bounds the wait (the
-// loop leaves the moment nothing is in flight): twice a flight's ghost lifetime (springSettleMs of
-// FLIGHT_SPRING, every flight's one time), ~966ms at the default pace - also past the slowest drag
-// drop that may still be settling (~673ms).
-export const FINISH_LAST_CARD_WAIT_MS = 2 * springSettleMs(FLIGHT_SPRING)
+// How long a finish card waits (at most) for a card still flying in to its own pile to land (see
+// fireFinishStep). It only bounds the wait (the loop leaves the moment that pile has landed): twice a
+// flight's ghost lifetime (springSettleMs of FLIGHT_SPRING, every flight's one time), ~966ms at the
+// default pace - also past the slowest drag drop that may still be settling (~673ms).
+export const FINISH_LANDING_WAIT_MS = 2 * springSettleMs(FLIGHT_SPRING)
 // FreeCell has no stock pile of its own to visually deal from (rules.ts's newGame deals straight
 // into the tableau; freecells start, and stay, empty throughout the deal) - the far-right freecell
 // doubles as the deck the deal animation flies out of instead, showing this face-down placeholder
@@ -874,23 +869,21 @@ function FreeCellScreenInner() {
 
   // One card of the finish (see useAutoFinish/autoPlay.ts's canAutoFinish): the same flight as a
   // cascade step. Resolves once the move is COMMITTED - not landed - which is what lets the next
-  // card leave before this one arrives. Two waits, each bounded by FINISH_LAST_CARD_WAIT_MS (two
-  // flights): a card still flying in to its own pile (the one the player's move just put there)
-  // lands first - picked up mid-air it would show twice; and the board's last card waits for every
-  // earlier flight, so the win cascade (which starts the moment the winning move commits) doesn't
-  // begin over foundation cards still in the air.
+  // card leave before this one arrives. One wait, bounded by FINISH_LANDING_WAIT_MS (two flights): a
+  // card still flying in to its own pile (the one the player's move just put there) lands first -
+  // picked up mid-air it would show twice. The board's LAST card does not wait for the rest: it
+  // leaves one stagger after the card before it like every other (holding it until every earlier
+  // flight had landed read as the stream, a pause, then one straggler). The win cascade can't start
+  // over cards still in the air anyway - it waits for winRevealed, i.e. settled (see useWinReveal).
   async function fireFinishStep(): Promise<boolean> {
     const nextStep = () => {
       const current = stateRef.current
       return current && nextFinishMove(current)
     }
-    const deadline = Date.now() + FINISH_LAST_CARD_WAIT_MS
+    const deadline = Date.now() + FINISH_LANDING_WAIT_MS
     for (let step = nextStep(); step && isLanding(step.entry.ref) && Date.now() < deadline; step = nextStep()) await new Promise<void>((resolve) => setTimeout(resolve, 16))
-    if (foundationCount(stateRef.current) === DECK_SIZE - 1) {
-      while (activeFlightCountRef.current > 0 && Date.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 16))
-    }
-    // Re-check AFTER the waits: an undo, a new game, a settings flip or an unmount may have landed
-    // while they ran, and the loop's own checks are already behind us. Also re-read the board - the
+    // Re-check AFTER the wait: an undo, a new game, a settings flip or an unmount may have landed
+    // while it ran, and the loop's own checks are already behind us. Also re-read the board - the
     // player may have moved.
     if (!finish.isAllowed() || !settings.autoMoveToFoundation || undoBusyRef.current) return false
     const step = nextStep()

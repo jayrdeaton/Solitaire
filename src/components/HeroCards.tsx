@@ -2,21 +2,14 @@ import { CardBack, DecoratedCardBack, type TableColors } from '@tastic/cards'
 import { useIsFocused } from 'expo-router'
 import { useEffect, useRef } from 'react'
 import { AppState, StyleSheet, View } from 'react-native'
-import Animated, { cancelAnimation, Easing, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withRepeat, withSequence, withSpring, WithSpringConfig, withTiming } from 'react-native-reanimated'
+import Animated, { cancelAnimation, Easing, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withRepeat, withSpring, WithSpringConfig, withTiming } from 'react-native-reanimated'
 
 import { useProfiles } from '@/stores/profiles'
 import { useSettings } from '@/stores/settings'
 
+import { HERO_CARD_COUNT, HERO_FAN_CARDS, HERO_FAN_CENTER_Y, HERO_FAN_HEIGHT, HERO_FAN_SPAN, HERO_WAVE_CYCLE_MS, heroBumpAt, type HeroFanCard } from './heroFan'
 import { CARD_HEIGHT, CARD_RADIUS, CARD_WIDTH, cardRadiusForWidth, useTableColors } from './theme'
 
-// marginHorizontal on each card - about 37% of CARD_WIDTH overlap per adjacent pair.
-const HERO_FAN_OVERLAP = -12
-// How far each card sits from its neighbor in the fan, applied symmetrically around the center
-// card - rotateDeg widens going outward, restY sinks going outward (the usual fanned-hand look).
-const HERO_FAN_ROTATE_STEP_DEG = 9
-const HERO_FAN_SINK_STEP_PX = 6
-const HERO_CARD_COUNT = 5
-const HERO_CENTER_INDEX = (HERO_CARD_COUNT - 1) / 2
 // Per-card entrance stagger - kept well under dealing/dealSpring.ts's 35ms-for-28-fast-dealt-cards
 // pace, since this fan is meant to be watched one card at a time as it lands, not read as a block.
 const HERO_STAGGER_MS = 90
@@ -30,145 +23,53 @@ const HERO_ENTRANCE_SPRING: WithSpringConfig = { duration: HERO_ENTRANCE_DURATIO
 // has actually landed, since later cards start their entrance later too.
 const HERO_ENTRANCE_TOTAL_MS = (HERO_CARD_COUNT - 1) * HERO_STAGGER_MS + HERO_ENTRANCE_DURATION_MS
 
-// Idle "wave" once the entrance settles - unlike every other animation in this codebase (one-shot
-// springs/shake), this one runs forever, so the hero reads as alive no matter when you land on the
-// home screen (a plain mount-only entrance is easy to miss on first load, and on web never replays
-// at all once you've navigated into a game and back - expo-router's web stack keeps this screen
-// mounted rather than remounting it, see the ProfilesManager web note in .claude/CLAUDE.md for the
-// same underlying behavior elsewhere in this app).
+// The idle wave (heroFan.ts) runs forever, so the hero reads as alive no matter when you land on the
+// home screen (a plain mount-only entrance is easy to miss on first load, and on web never replays at
+// all once you've navigated into a game and back - expo-router's web stack keeps this screen mounted
+// rather than remounting it, see the ProfilesManager web note in .claude/CLAUDE.md for the same
+// underlying behavior elsewhere in this app).
 //
-// Each card pops up and settles back in turn, left to right, followed by a rest beat before it
-// repeats. Two earlier shapes were tried and rejected: a single shared value moving every card in
-// unison read as static/flat, while giving each card its own continuously-running, evenly
-// phase-shifted sine wave meant that at any instant most cards were always moving the same
-// direction against the rest, which flips over time and reads as noise rather than a clear
-// sequence. A discrete one-at-a-time bump, all other cards otherwise motionless, is unambiguous.
-//
-// HERO_BUMP_STAGGER_MS (how soon the next card starts) is deliberately shorter than one card's own
-// up+down time (HERO_BUMP_UP_MS + HERO_BUMP_DOWN_MS, ~500ms) - the next card starts while the
-// previous one is still mid-bump, which is what makes it read as a domino/ripple ("one moves
-// because the other moved") instead of a strict take-turns relay where each card waits for the
-// last to fully finish. Kept above half the bump time (>250ms) so at most 2 *adjacent* cards are
-// ever mid-bump together - below that threshold, 5 cards means a 3rd (non-adjacent) card joins in
-// before the 1st finishes, which reads as several cards moving at once rather than a clean sweep.
-const HERO_BUMP_UP_MS = 240
-const HERO_BUMP_DOWN_MS = 260
-const HERO_BUMP_STAGGER_MS = 260
-const HERO_BUMP_REST_MS = 500
+// How far a card pops out of the fan at the top of its bump - along its own axis (away from the
+// fan's pivot), the way a card is drawn up out of a held hand, rather than straight up.
 const HERO_BUMP_RISE_PX = 8
-// Room under the fan for the sunk/rotated cards' overshoot before whatever sits below it.
-const HERO_ROW_MARGIN_BOTTOM = 20
+// Beat before the wave (re)starts: after the entrance has landed, or on coming back to the screen.
+const HERO_WAVE_LEAD_IN_MS = 500
 
-interface HeroCardSpec {
-  key: string
-  rotateDeg: number
-  restY: number
-  zIndex: number
-  delayMs: number
-  // This card's position in the left-to-right bump sequence (0-based).
-  turnIndex: number
+// The one wave clock every card reads (see heroBumpAt): milliseconds into the current wave, counting
+// 0 -> HERO_WAVE_CYCLE_MS and starting over, forever. leadInMs delays only this run's first wave.
+function startWave(wave: SharedValue<number>, leadInMs: number) {
+  // Snap back to rest first - resuming from wherever the clock was frozen mid-wave would carry that
+  // stale pose into the new run instead of a clean restart.
+  wave.value = 0
+  wave.value = withDelay(leadInMs, withRepeat(withTiming(HERO_WAVE_CYCLE_MS, { duration: HERO_WAVE_CYCLE_MS, easing: Easing.linear }), -1, false))
 }
 
-const HERO_CARD_SPECS: HeroCardSpec[] = Array.from({ length: HERO_CARD_COUNT }, (_, i) => {
-  const offsetFromCenter = i - HERO_CENTER_INDEX
-  return {
-    key: `card-${i}`,
-    rotateDeg: offsetFromCenter * HERO_FAN_ROTATE_STEP_DEG,
-    restY: Math.abs(offsetFromCenter) * HERO_FAN_SINK_STEP_PX,
-    // Left-behind-right stacking, like an actual hand of cards fanned out in the order they were
-    // picked up - not peaked at center. This also happens to keep every card fully visible during
-    // its own bump: the animation sweeps left to right in the same direction as the stack, so a
-    // card popping up is never tucked behind a still-settling neighbor closer to center.
-    zIndex: i + 1,
-    delayMs: i * HERO_STAGGER_MS,
-    turnIndex: i
-  }
-})
-
-// Every card's own sequence is the same total length (the staggered starts + the last card's own
-// bump + the rest beat), just shifted by its turnIndex - that keeps every card repeating in
-// lockstep forever, never drifting apart, while still overlapping mid-sequence as intended.
-// leadInMs is the delay before this run's very first cycle only; every repeat after it keeps the
-// same rhythm regardless of what leadInMs was.
-function startBumpLoop(bump: SharedValue<number>, spec: HeroCardSpec, leadInMs: number) {
-  const trailingHoldMs = (HERO_CARD_SPECS.length - 1 - spec.turnIndex) * HERO_BUMP_STAGGER_MS + HERO_BUMP_REST_MS
-  bump.value = withDelay(
-    leadInMs,
-    withRepeat(
-      withSequence(
-        withDelay(spec.turnIndex * HERO_BUMP_STAGGER_MS, withTiming(1, { duration: HERO_BUMP_UP_MS, easing: Easing.out(Easing.quad) })),
-        withTiming(0, { duration: HERO_BUMP_DOWN_MS, easing: Easing.in(Easing.quad) }),
-        withTiming(0, { duration: trailingHoldMs }) // holds at 0 - a wait, not a visible animation
-      ),
-      -1,
-      false
-    )
-  )
-}
-
-function HeroCard({ spec, colors, tag, cardBackStyle, invertDarkModeColors, scale }: { spec: HeroCardSpec; colors: TableColors; tag?: string; cardBackStyle: 'geometric' | 'ornate' | 'plain'; invertDarkModeColors?: boolean; scale: number }) {
+function HeroCard({ card, wave, colors, tag, cardBackStyle, invertDarkModeColors, scale }: { card: HeroFanCard; wave: SharedValue<number>; colors: TableColors; tag?: string; cardBackStyle: 'geometric' | 'ornate' | 'plain'; invertDarkModeColors?: boolean; scale: number }) {
   // Every length below is the natural (scale 1) one times `scale`; rotation is never scaled. At scale 1
   // the width/height/radius are exactly CARD_WIDTH/CARD_HEIGHT/CARD_RADIUS.
   const width = Math.round(CARD_WIDTH * scale)
   const height = Math.round(CARD_HEIGHT * scale)
   const radius = scale === 1 ? CARD_RADIUS : cardRadiusForWidth(width)
   const lift = useSharedValue(0)
-  const bump = useSharedValue(0)
-  const hasStartedLoop = useRef(false)
-
-  // Home stays mounted underneath a game (or Achievements/Profiles) once navigated away from, so an
-  // unfocused hero would otherwise keep 5 forever-running loops alive for as long as that other
-  // screen is open - all wasted, since none of it is on screen. Pausing them costs nothing on return:
-  // the loop simply restarts from rest.
-  const focused = useIsFocused()
 
   useEffect(() => {
-    lift.value = withDelay(spec.delayMs, withSpring(1, HERO_ENTRANCE_SPRING))
+    lift.value = withDelay(card.turnIndex * HERO_STAGGER_MS, withSpring(1, HERO_ENTRANCE_SPRING))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  useEffect(() => {
-    if (!focused) return
-
-    // The loop's first-ever cycle waits for the whole fan to actually land (HERO_ENTRANCE_TOTAL_MS)
-    // plus its own rest beat, rather than starting mid-entrance - otherwise the earliest cards'
-    // bumps would overlap their own entrance motion instead of the fan getting a beat to settle
-    // first. A restart after coming back to the screen skips that (the fan is long since landed).
-    startBumpLoop(bump, spec, hasStartedLoop.current ? HERO_BUMP_REST_MS : HERO_ENTRANCE_TOTAL_MS + HERO_BUMP_REST_MS)
-    hasStartedLoop.current = true
-
-    // Browsers pause or heavily throttle a hidden tab's render loop - and Reanimated's timers with
-    // it - so 5 independently-running loops can each "catch up" to a different point once the tab
-    // is visible again, falling out of the lockstep that made this read as one continuous sweep
-    // rather than 5 separate ones. Restarting clean on every return to the foreground sidesteps
-    // that entirely instead of trusting 5 separate catch-up computations to agree. react-native-web
-    // maps AppState's 'active' to the browser's visibilitychange event, so this also covers a real
-    // user switching tabs and back on web, not just this dev preview.
-    const subscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState !== 'active') return
-      // Snap back to rest first - resuming the new sequence from wherever this was frozen mid-bump
-      // would carry that stale pose into it instead of a clean restart.
-      bump.value = 0
-      startBumpLoop(bump, spec, HERO_BUMP_REST_MS)
-    })
-
-    return () => {
-      subscription.remove()
-      // Blurred (or unmounting): stop the forever-loop and rest the card, so nothing keeps ticking
-      // on the UI thread for a screen that isn't visible.
-      cancelAnimation(bump)
-      bump.value = 0
+  const animatedStyle = useAnimatedStyle(() => {
+    const bump = heroBumpAt(wave.value, card.turnIndex) * HERO_BUMP_RISE_PX
+    return {
+      opacity: lift.value,
+      transform: [{ translateX: (card.x + card.outX * bump) * scale }, { translateY: (card.y + (1 - lift.value) * HERO_RISE_PX + card.outY * bump) * scale }, { rotate: `${card.angleDeg * lift.value}deg` }]
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focused])
+  })
 
-  const animatedStyle = useAnimatedStyle(() => ({
-    opacity: lift.value,
-    transform: [{ translateY: (spec.restY + (1 - lift.value) * HERO_RISE_PX - bump.value * HERO_BUMP_RISE_PX) * scale }, { rotate: `${spec.rotateDeg * lift.value}deg` }]
-  }))
+  // Every card starts stacked on the centre card's spot; its transform fans it out from there.
+  const position = { left: (HERO_FAN_SPAN * scale - width) / 2, top: HERO_FAN_CENTER_Y * scale - height / 2 }
 
   return (
-    <Animated.View style={[styles.cardShadow, { borderRadius: radius, width, height, marginHorizontal: HERO_FAN_OVERLAP * scale, zIndex: spec.zIndex }, animatedStyle]}>
+    <Animated.View style={[styles.cardShadow, position, { borderRadius: radius, width, height, zIndex: card.zIndex }, animatedStyle]}>
       <View style={[styles.cardClip, { borderRadius: radius }]}>{cardBackStyle === 'geometric' ? <CardBack colors={colors} width={width} height={height} tag={tag} invertDarkModeColors={invertDarkModeColors} /> : <DecoratedCardBack style={cardBackStyle} colors={colors} width={width} height={height} invertDarkModeColors={invertDarkModeColors} />}</View>
     </Animated.View>
   )
@@ -183,11 +84,48 @@ export function HeroCards({ scale = 1 }: { scale?: number } = {}) {
   const colors = useTableColors()
   const { activeProfile } = useProfiles()
   const { settings } = useSettings()
+  const wave = useSharedValue(0)
+  const hasStartedWave = useRef(false)
+
+  // Home stays mounted underneath a game (or Achievements/Profiles) once navigated away from, so an
+  // unfocused hero would otherwise keep its forever-running wave alive for as long as that other
+  // screen is open - all wasted, since none of it is on screen. Pausing it costs nothing on return:
+  // the wave simply restarts from rest.
+  const focused = useIsFocused()
+
+  useEffect(() => {
+    if (!focused) return
+
+    // The first-ever wave waits for the whole fan to actually land (HERO_ENTRANCE_TOTAL_MS) plus its own
+    // beat, rather than starting mid-entrance - otherwise the earliest cards' bumps would overlap their
+    // own entrance motion instead of the fan getting a beat to settle first. A restart after coming
+    // back to the screen skips that (the fan is long since landed).
+    startWave(wave, hasStartedWave.current ? HERO_WAVE_LEAD_IN_MS : HERO_ENTRANCE_TOTAL_MS + HERO_WAVE_LEAD_IN_MS)
+    hasStartedWave.current = true
+
+    // Browsers pause or heavily throttle a hidden tab's render loop - and Reanimated's timers with it -
+    // and a backgrounded app's frames stop, so the wave restarts clean on every return to the
+    // foreground rather than catching up from wherever it froze. react-native-web maps AppState's
+    // 'active' to the browser's visibilitychange event, so this also covers a real user switching
+    // tabs and back on web, not just this dev preview.
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') startWave(wave, HERO_WAVE_LEAD_IN_MS)
+    })
+
+    return () => {
+      subscription.remove()
+      // Blurred (or unmounting): stop the forever-loop and rest the fan, so nothing keeps ticking on
+      // the UI thread for a screen that isn't visible.
+      cancelAnimation(wave)
+      wave.value = 0
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focused])
 
   return (
-    <View style={[styles.row, { marginBottom: HERO_ROW_MARGIN_BOTTOM * scale }]} pointerEvents='none'>
-      {HERO_CARD_SPECS.map((spec) => (
-        <HeroCard key={spec.key} spec={spec} colors={colors} tag={activeProfile?.tag} cardBackStyle={settings.cardBackStyle} invertDarkModeColors={settings.invertDarkModeColors} scale={scale} />
+    <View style={{ width: HERO_FAN_SPAN * scale, height: HERO_FAN_HEIGHT * scale }} pointerEvents='none'>
+      {HERO_FAN_CARDS.map((card) => (
+        <HeroCard key={card.key} card={card} wave={wave} colors={colors} tag={activeProfile?.tag} cardBackStyle={settings.cardBackStyle} invertDarkModeColors={settings.invertDarkModeColors} scale={scale} />
       ))}
     </View>
   )
@@ -208,13 +146,10 @@ const styles = StyleSheet.create({
   cardShadow: {
     borderRadius: CARD_RADIUS,
     elevation: 4,
+    position: 'absolute',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 3
-  },
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'center'
   }
 })

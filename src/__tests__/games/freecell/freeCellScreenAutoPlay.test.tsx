@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { AUTO_PLAY_STAGGER_MS, dropSpringFor, FLIGHT_SPRING, scaledMs, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
-import FreeCellScreen, { FINISH_LAST_CARD_WAIT_MS, FINISH_STAGGER_MS } from '@/games/freecell/FreeCellScreen'
+import FreeCellScreen, { FINISH_LANDING_WAIT_MS, FINISH_STAGGER_MS } from '@/games/freecell/FreeCellScreen'
 import { FreeCellController, FreeCellState } from '@/games/freecell/rules'
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -513,14 +513,18 @@ describe('FreeCell screen - once every column is solved the rest finishes itself
     expect(cardsOnBoard()).toBe(52)
   })
 
-  it('the last card waits for the earlier flights to land, so the win cascade does not start over cards still in the air', async () => {
+  it('the last card leaves one stagger after the card before it, like every other - no pause in front of it - and the win cascade still waits for it to land', async () => {
     await mount(ONE_MOVE_FROM_FINISHABLE())
 
     await tap(id('clubs', 2))
     await flush(10000)
 
-    expect(mockLog.airAtWinCascade).toBeGreaterThanOrEqual(0) // it did start
-    expect(mockLog.airAtWinCascade).toBeLessThanOrEqual(1) // at most the winning card's own flight
+    const finish = mockLog.flights.slice(1) // after the player's own card
+    expect(finish.length).toBeGreaterThan(2)
+    const [beforeLast, last] = finish.slice(-2)
+    expect(last.start - beforeLast.start).toBeLessThanOrEqual(FINISH_STAGGER_MS + STEP_MS)
+    expect(last.start).toBeLessThan(beforeLast.end) // it left while the card before it was still in the air
+    expect(mockLog.airAtWinCascade).toBe(0) // the celebration still waited for every flight, the last one's too
   })
 
   it('flights overlap - it does not wait for each card to land before sending the next', async () => {
@@ -766,9 +770,9 @@ describe('FreeCell finish pacing follows the flight pace', () => {
     expect(FINISH_STAGGER_MS).toBeGreaterThan(45) // useCascadeFeedback's CASCADE_FEEDBACK_MIN_INTERVAL_MS
   })
 
-  it("the last card's wait comfortably outlasts a flight, and a drag's drop that may still be settling", () => {
-    expect(FINISH_LAST_CARD_WAIT_MS).toBeGreaterThanOrEqual(2 * springSettleMs(FLIGHT_SPRING))
-    expect(FINISH_LAST_CARD_WAIT_MS).toBeGreaterThanOrEqual(springSettleMs(dropSpringFor(Infinity))) // the slowest drag drop
+  it("the landing wait comfortably outlasts a flight, and a drag's drop that may still be settling", () => {
+    expect(FINISH_LANDING_WAIT_MS).toBeGreaterThanOrEqual(2 * springSettleMs(FLIGHT_SPRING))
+    expect(FINISH_LANDING_WAIT_MS).toBeGreaterThanOrEqual(springSettleMs(dropSpringFor(Infinity))) // the slowest drag drop
   })
 })
 

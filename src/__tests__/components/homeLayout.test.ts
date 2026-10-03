@@ -1,11 +1,11 @@
 import { type LayoutInsets, WIDE_FOOTER_SIDE_WIDTH } from '@/components/gameLayout'
+import { HERO_FAN_HEIGHT, HERO_FAN_SPAN } from '@/components/heroFan'
 import { computeHomeLayout, HOME_GRID_GAP, HOME_HERO_MIN_SCALE, HOME_LEFT_PANE_MAX, HOME_LEFT_PANE_MIN, HOME_MAX_COLUMNS, HOME_MIN_TILE_WIDTH, HOME_TILE_PADDING, HOME_TITLE_FONT_SIZE, HOME_WIDE_EDGE_PADDING, HOME_WIDE_MAX_CONTENT_WIDTH, HOME_WIDE_PANE_GAP, HOME_WIDE_RIGHT_GUTTER, HOME_WIDE_TITLE_FONT_SIZE } from '@/components/homeLayout'
 
 const NO_INSETS: LayoutInsets = { top: 0, right: 0, bottom: 0, left: 0 }
 
-// HeroCards' visual span at scale 1 (homeLayout.ts keeps this private; it is the width the hero must fit in
-// the left pane minus 16pt of breathing room).
-const HERO_SPAN = 250
+// The hero's span at scale 1 (HERO_FAN_SPAN, 251) must fit in the left pane minus 16pt of breathing room; its
+// height (HERO_FAN_HEIGHT, 123) is what the pane's height budget sets aside for it.
 const HERO_PANE_BREATHING_ROOM = 16
 
 // The two-pane row's padding is `edge/gutter + own inset + slack` on each side, so everything on the row
@@ -128,7 +128,7 @@ describe('computeHomeLayout - a phone held sideways (874x402)', () => {
   })
 
   it('shrinks the hero to the short-window cap of 0.8', () => {
-    // height for the hero = 402 - 0 - 0 - 56 - 16 - 142 = 188 (1.66 heroes), width allows (268 - 16) / 250 = 1.008
+    // height for the hero = 402 - 0 - 0 - 56 - 16 - 142 = 188 (1.66 heroes), width allows (268 - 16) / 251 = 1.004
     expect(computeHomeLayout(874, 402, { top: 0, right: 34, bottom: 0, left: 62 }).heroScale).toBe(0.8)
     expect(computeHomeLayout(874, 402, { top: 0, right: 62, bottom: 0, left: 34 }).heroScale).toBe(0.8)
   })
@@ -154,7 +154,7 @@ describe('computeHomeLayout - exact pane math across devices', () => {
     {
       // usable 667, inner 595, content 595; left round(226.1) -> floor 260 (room: 595 - 156 = 439); right 595 - 16 - 260 = 319;
       // columns floor(331 / 152 = 2.18) = 2; tile floor(307 / 2 = 153.5) = 153; preview 133.
-      // hero: short window -> 0.8 cap; height 161/113 = 1.42; width (260 - 16)/250 = 0.976 -> 0.8
+      // hero: short window -> 0.8 cap; height 161/123 = 1.31; width (260 - 16)/251 = 0.972 -> 0.8
       name: 'a small phone, 667x375, no insets',
       width: 667,
       height: 375,
@@ -171,7 +171,7 @@ describe('computeHomeLayout - exact pane math across devices', () => {
     {
       // usable 812 - 88 = 724, inner 652, content 652; left round(247.76) -> floor 260; right 652 - 16 - 260 = 376;
       // columns floor(388 / 152 = 2.55) = 2; tile floor(364 / 2) = 182; preview 162.
-      // hero: 0.8 cap (height for hero = 375 - 21 - 56 - 16 - 142 = 140 -> 1.24, width 0.976)
+      // hero: 0.8 cap (height for hero = 375 - 21 - 56 - 16 - 142 = 140 -> 1.14, width 0.972)
       name: 'an iPhone X-class phone, 812x375, insets 44/44/21',
       width: 812,
       height: 375,
@@ -188,7 +188,7 @@ describe('computeHomeLayout - exact pane math across devices', () => {
     {
       // usable 1194, inner 1122, content min(1122, 1100) = 1100, slack 11; left round(418) -> ceiling 340; right 1100 - 16 - 340 = 744;
       // columns floor(756 / 152 = 4.97) -> capped 3; tile floor((744 - 24) / 3) = 240; preview 220.
-      // hero: tall -> may reach 1 (height for hero 834 - 24 - 20 - 56 - 16 - 142 = 576 -> 5.1, width 324/250 = 1.3)
+      // hero: tall -> may reach 1 (height for hero 834 - 24 - 20 - 56 - 16 - 142 = 576 -> 4.7, width 324/251 = 1.29)
       name: 'an iPad, 1194x834',
       width: 1194,
       height: 834,
@@ -465,7 +465,7 @@ describe('computeHomeLayout - heroScale', () => {
   })
 
   it('reaches the full size only from a 500pt-tall window up', () => {
-    // 1194: the left pane is 340 wide -> (340 - 16) / 250 = 1.296, so only the height cap can hold it below 1
+    // 1194: the left pane is 340 wide -> (340 - 16) / 251 = 1.291, so only the height cap can hold it below 1
     expect(computeHomeLayout(1194, 499, NO_INSETS).heroScale).toBe(0.8)
     expect(computeHomeLayout(1194, 500, NO_INSETS).heroScale).toBe(1)
   })
@@ -479,15 +479,15 @@ describe('computeHomeLayout - heroScale', () => {
   })
 
   it('is limited by the available height when that is the tightest bound', () => {
-    // 874x300: 300 - 56 (trophy band) - 16 - 142 = 86 -> 86 / 113 = 0.761 (< the 0.8 cap and the width bound of 1.008)
-    expect(computeHomeLayout(874, 300, { top: 0, right: 34, bottom: 0, left: 62 }).heroScale).toBeCloseTo(86 / 113, 10)
-    // the top/bottom insets eat into that height too: 86 - 10 - 10 = 66 -> 66 / 113 = 0.584
-    expect(computeHomeLayout(874, 300, { top: 10, right: 34, bottom: 10, left: 62 }).heroScale).toBeCloseTo(66 / 113, 10)
+    // 874x300: 300 - 56 (trophy band) - 16 - 142 = 86 -> 86 / 123 = 0.699 (< the 0.8 cap and the width bound of 1.004)
+    expect(computeHomeLayout(874, 300, { top: 0, right: 34, bottom: 0, left: 62 }).heroScale).toBeCloseTo(86 / HERO_FAN_HEIGHT, 10)
+    // the top/bottom insets eat into that height too: 86 - 5 - 5 = 76 -> 76 / 123 = 0.618
+    expect(computeHomeLayout(874, 300, { top: 5, right: 34, bottom: 5, left: 62 }).heroScale).toBeCloseTo(76 / HERO_FAN_HEIGHT, 10)
   })
 
   it('is limited by the left pane width when that is the tightest bound', () => {
-    // 420x400: left pane 192 -> (192 - 16) / 250 = 0.704 (height allows 1.65, cap 0.8)
-    expect(computeHomeLayout(420, 400, NO_INSETS).heroScale).toBeCloseTo(176 / 250, 10)
+    // 420x400: left pane 192 -> (192 - 16) / 251 = 0.701 (height allows 1.51, cap 0.8)
+    expect(computeHomeLayout(420, 400, NO_INSETS).heroScale).toBeCloseTo(176 / HERO_FAN_SPAN, 10)
   })
 
   it.each([
@@ -526,11 +526,11 @@ describe('computeHomeLayout - heroScale', () => {
   ] as [number, number, LayoutInsets][])('is never wider than the left pane allows (%ix%i %j)', (width, height, insets) => {
     const layout = computeHomeLayout(width, height, insets)
     if (layout.heroScale > HOME_HERO_MIN_SCALE) {
-      expect(layout.heroScale * HERO_SPAN).toBeLessThanOrEqual(layout.leftPaneWidth - HERO_PANE_BREATHING_ROOM + 1e-9)
+      expect(layout.heroScale * HERO_FAN_SPAN).toBeLessThanOrEqual(layout.leftPaneWidth - HERO_PANE_BREATHING_ROOM + 1e-9)
     } else {
       // at the floor: the pane may be too small for the hero's 16pt of breathing room, but still holds its span
       expect(layout.heroScale).toBe(HOME_HERO_MIN_SCALE)
-      expect(layout.heroScale * HERO_SPAN).toBeLessThanOrEqual(layout.leftPaneWidth)
+      expect(layout.heroScale * HERO_FAN_SPAN).toBeLessThanOrEqual(layout.leftPaneWidth)
     }
   })
 })
