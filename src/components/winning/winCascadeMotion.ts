@@ -90,17 +90,8 @@ export interface ChainPath {
   secondX: number
   hHalfPeriodMs: number
   initialLegMs: number
-  /** performance.now() at the instant this chain launched - the one shared "t=0" every card in
-   * the chain measures its own elapsed time against (elapsed = frameInfo.timestamp - chainStartMs
-   * - delayMs, see ChainGhostCard). frameInfo.timestamp comes from the SAME requestAnimationFrame
-   * timestamp Reanimated's frame-callback registry passes to every registered callback in a given
-   * tick (see FrameCallbackRegistryUI.ts's single shared rAF loop) - the same clock domain as
-   * performance.now() - so every card's position is a pure, stateless function of real elapsed
-   * time, computed fresh every frame. That's what makes two cards' relative offset exactly
-   * delayMs apart forever, with nothing to drift or coalesce - unlike the old design, where each
-   * card ran its own independent setTimeout chain and 20ms-apart chains could get coalesced by the
-   * browser's timer scheduler into firing at the same tick, locking pairs of cards together. */
-  chainStartMs: number
+  // No start time of its own: every card's elapsed time counts from the whole cascade's one clock, which only starts once
+  // its ghosts are on screen (WinCascadeLayer's CascadeChains, startMs) - a path is built before that.
 }
 
 function easeInQuad(f: number): number {
@@ -121,7 +112,7 @@ function easeOutQuad(f: number): number {
  * rise-to-apex/fall-to-floor cycle, each leg exactly vHalfPeriodMs long. Being pure is the whole
  * point: two cards evaluate the exact same function, just at elapsedMs values exactly delayMs
  * apart, so their relative offset can never drift or coalesce the way independently-scheduled
- * timers could (see ChainPath's chainStartMs doc comment). */
+ * timers could (see CascadeChains' startMs in WinCascadeLayer). */
 export function verticalYAtElapsed(path: ChainPath, elapsedMs: number): number {
   'worklet'
   if (elapsedMs <= 0) return path.origin.y
@@ -188,7 +179,8 @@ export function cardYAtElapsed(path: ChainPath, elapsedMs: number, offsetY: numb
  * (chains - 1) * CHAIN_ENTRANCE_STAGGER_MS, real cards vanishing with no ghost.
  *
  * `alwaysVisible` cards (a chain's head - the one card the real pile showed - and any card with a
- * position of its own) are drawn from the first frame. The rest of a chain all start on the head's
+ * position of its own) are drawn from the cascade's first frame (the one it shows in, once these faces have painted - see
+ * WinCascadeLayer's CascadeChains). The rest of a chain all start on the head's
  * spot, hidden under it in the real pile, so they only appear once the card ahead of them has left
  * (one CHAIN_SEGMENT_DELAY_MS before their own start): the pile peels off one card at a time with
  * no gap, instead of a dozen shadowed cards stacked on one point darkening it. `segmentDelayMs` is the chain's

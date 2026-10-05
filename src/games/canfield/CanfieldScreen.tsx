@@ -25,6 +25,7 @@ import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { wasteFanScreenShift } from '@/components/overlayFrame'
+import { PileOverlay } from '@/components/PileOverlay'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
 import { StockWaste } from '@/components/StockWaste'
@@ -32,6 +33,7 @@ import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
 import { useGameSession } from '@/components/useGameSession'
+import { useTakeOffHold } from '@/components/useTakeOffHold'
 import { wasteFanStepFor } from '@/components/wasteFan'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
@@ -125,16 +127,27 @@ function foundationStarter(s: CanfieldState): Card | undefined {
  * defeating the hide entirely. `isFlyingHere` (real moves onto the reserve, i.e. only ever an
  * undo - see its own doc comment below) is never true on a component's first render, so it has a
  * genuine prior frame for useFrozenWhileHidden to freeze and keeps using that overlay untouched. */
-function ReserveCell({ card, isFlyingHere, dealHidden, shakeToken, highlighted, onPress, onDrop }: { card: Card | undefined; isFlyingHere: boolean; dealHidden?: boolean; shakeToken?: number; highlighted?: boolean; onPress: (measure: () => Promise<{ x: number; y: number }>) => void; onDrop: (x: number, y: number, flight: DragFlightHandle) => Promise<boolean> | boolean }) {
+export function ReserveCell({ card, isFlyingHere, dealHidden, shakeToken, highlighted, onPress, onDrop }: { card: Card | undefined; isFlyingHere: boolean; dealHidden?: boolean; shakeToken?: number; highlighted?: boolean; onPress: (measure: () => Promise<{ x: number; y: number }>) => void; onDrop: (x: number, y: number, flight: DragFlightHandle) => Promise<boolean> | boolean }) {
   const frozen = useFrozenWhileHidden(card, isFlyingHere)
+  const underlay = isFlyingHere ? frozen : card
+  // Take-off hold: keeps drawing a card that has just left while its ghost is not on screen yet (useTakeOffHold).
+  const { shown, holding, revealing } = useTakeOffHold(card)
+  // An undo landing here hides the real card under the overlay - but never a held card (the painted copy of the card that
+  // just left, which must stay drawn until its ghost shows), the same gate as every other single-card pile. (An undo
+  // can't start while a reserve card is still taking off - undo waits out every flight - so this is for consistency.)
+  const flyingHere = isFlyingHere && !holding
+  // While the card a take-off uncovered is revealed (useTakeOffHold), the overlay - showing `card` since the move's own
+  // commit - stands in for the real card, whose Image has just been re-sourced from the departed card. Not while the deal
+  // still hides that card (`dealHidden`: nothing may show here until its deal flight lands - card ids repeat across deals).
+  const overlayVisible = flyingHere || (revealing && !dealHidden)
   return (
     <View>
-      {card ? <DraggableCard card={card} hidden={isFlyingHere || dealHidden} shakeToken={shakeToken} hinted={highlighted} emptyFallback={<EmptySlot />} onPress={onPress} onDrop={onDrop} testID='reserve-top' /> : <EmptySlot testID='reserve-top' hinted={highlighted} />}
-      {isFlyingHere && (
-        <View style={StyleSheet.absoluteFill} pointerEvents='none'>
-          {frozen ? <PlayingCard card={frozen} /> : <EmptySlot />}
-        </View>
-      )}
+      {/* A held card is inert - no drag, no tap, even with a card under it: the same call as StockWaste's waste top (a tap
+      there is a repeat tap on what still looks like the card that left; passing it on would send a card never seen, and
+      drawn nowhere until its own ghost painted). */}
+      {shown ? <DraggableCard card={shown} hidden={flyingHere || dealHidden || revealing} disabled={holding} registryId={holding ? (card?.id ?? null) : undefined} shakeToken={holding ? undefined : shakeToken} hinted={highlighted && !holding} emptyFallback={<EmptySlot />} onPress={holding ? undefined : onPress} onDrop={holding ? undefined : onDrop} testID='reserve-top' /> : <EmptySlot testID='reserve-top' hinted={highlighted} />}
+      {/* Mounted (invisible) whenever there is a card, not just while an undo is landing here - see PileOverlay. */}
+      {(isFlyingHere || card) && <PileOverlay visible={overlayVisible}>{underlay ? <PlayingCard card={underlay} disabled /> : <EmptySlot />}</PileOverlay>}
     </View>
   )
 }
@@ -204,10 +217,10 @@ function CanfieldScreenInner() {
   // last card has flown in and landed, so it is never hidden mid-flight (which used to make it
   // simply appear) and the finished board reads for a beat first.
   const winRevealed = useWinReveal(won, settled)
-  // The board the win cascade has taken over from, and which piles it took over (set together with startChains, see
-  // runWinCascade): once it IS the current state, and the win is revealed, exactly those piles blank their real cards -
-  // not a moment earlier. Compared by identity (state is replaced wholesale on every change), so an undo or a New Game
-  // un-blanks the piles with no reset to remember.
+  // The board the win cascade has taken over from, and which piles it took over (set once its ghosts are on screen -
+  // startChains' onShown, see runWinCascade): once it IS the current state, and the win is revealed, exactly those piles
+  // blank their real cards - not a moment earlier. Compared by identity (state is replaced wholesale on every change), so
+  // an undo or a New Game un-blanks the piles with no reset to remember.
   const [cascadeHandoff, setCascadeHandoff] = useState<{ state: CanfieldState; piles: ReadonlySet<number> } | null>(null)
   /** One ref per foundation slot's own container (see FoundationCell's slotRef) - measured
    * independently of CardRegistry so the win cascade can still find each pile's screen position
@@ -374,11 +387,14 @@ function CanfieldScreenInner() {
   // pushed first, so reversing gives the right order - true regardless of which rank a given pile
   // actually started/ended at). Same dealTokenRef guard as every other async measurement here.
   //
-  // The real cards blank only when the ghosts that replace them mount, in the SAME commit (cascadeHandoff, set right
-  // beside startChains - React batches the two): blanking them when the win is revealed instead, and starting the
-  // chains from the async continuation that follows, left every pile empty for the frames in between. A pile whose
-  // chain could not start (no measurable slot) keeps its real cards, and if no chain can start at all the piles simply
-  // stay up under the banner instead of vanishing.
+  // The real cards blank only once the ghosts that replace them are on screen (cascadeHandoff, set from startChains'
+  // onShown - in the commit the ghosts appear, which waits for their parked faces to paint; see WinCascadeLayer's
+  // CascadeChains): blanking them when the win is revealed instead, and starting the chains from the async continuation
+  // that follows, left every pile empty for the frames in between, and blanking them in the commit that mounted the
+  // ghosts showed blank-faced cards for a frame or two. An undo or New Game before then clears the cascade, which drops
+  // the callback (and the hand-off is keyed to `s` anyway). A pile whose chain could not start (no measurable slot) keeps
+  // its real cards, and if no chain can start at all the piles simply stay up under the banner instead of vanishing (an
+  // empty cascade never calls onShown).
   async function runWinCascade(s: CanfieldState, gen: number) {
     const origins = await Promise.all(foundationSlotRefs.current.map((view) => measureView(view)))
     if (dealTokenRef.current !== gen) return
@@ -390,8 +406,7 @@ function CanfieldScreenInner() {
       chains.push({ cards: pile.slice().reverse(), origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
       handedOff.add(suit)
     })
-    winCascade.startChains(chains, cardWidth)
-    if (chains.length > 0) setCascadeHandoff({ state: s, piles: handedOff })
+    winCascade.startChains(chains, cardWidth, () => setCascadeHandoff({ state: s, piles: handedOff }))
   }
 
   // Same race as the deal effect above: measuring CardRegistry synchronously right after the

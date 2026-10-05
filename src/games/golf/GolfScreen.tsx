@@ -145,11 +145,11 @@ function GolfScreenInner() {
   // the very card the winning flight was measuring to land on, so that flight could not fly at all
   // and the card simply appeared (see the [state] flight effect below).
   const winRevealed = useWinReveal(won, settled)
-  // The board the win cascade has taken over from (set together with startChains, see runWinCascade): once it IS the
-  // current state, and the win is revealed, the real waste top blanks - not a moment earlier. Blanking on winRevealed
-  // alone left the waste slot EMPTY for the few frames it takes runWinCascade to measure and mount the ghosts (the
-  // pile teleported away, then the ghosts appeared). Compared by identity (state is replaced wholesale on every
-  // change) so an undo or a New Game un-blanks the pile with no reset to remember.
+  // The board the win cascade has taken over from (set once its ghosts are on screen - startChains' onShown, see
+  // runWinCascade): once it IS the current state, and the win is revealed, the real waste top blanks - not a moment
+  // earlier. Blanking on winRevealed alone left the waste slot EMPTY for the few frames it takes runWinCascade to measure
+  // and mount the ghosts (the pile teleported away, then the ghosts appeared). Compared by identity (state is replaced
+  // wholesale on every change) so an undo or a New Game un-blanks the pile with no reset to remember.
   const [cascadeHandoffFor, setCascadeHandoffFor] = useState<GolfState | null>(null)
   /** Flights awaiting their post-commit measurement + ghost.flyTo, queued by tap-to-move
    * (handleCardTap), drawing from the stock (handleDrawStock), and undo - a list (not a single
@@ -319,16 +319,18 @@ function GolfScreenInner() {
   // leads the chain, same convention as Pyramid's discard-pile cascade. Origin is wasteViewRef (see
   // its own doc comment above) - always mounted and card-sized whether or not the real top card is
   // drawn - rather than a per-card CardRegistry lookup. The measurement runs while the real waste top
-  // is STILL on screen and the pile blanks only afterwards, in the SAME commit that mounts the ghosts
-  // (cascadeHandoffFor, set right beside startChains - React batches the two into one commit from this
-  // async continuation): blanking first left the waste empty until the ghosts arrived. If no chain can
-  // start (an unmeasurable slot), the pile simply stays up under the banner instead of vanishing.
+  // is STILL on screen and the pile blanks only afterwards, once the ghosts are on screen
+  // (cascadeHandoffFor, set from startChains' onShown - in the commit the ghosts appear, which waits
+  // for the parked head's face to paint; see WinCascadeLayer's CascadeChains): blanking first left the
+  // waste empty until the ghosts arrived, and blanking in the commit that mounted them showed a
+  // blank-faced card there for a frame or two. An undo or New Game before then clears the cascade,
+  // which drops the callback (and the hand-off is keyed to `s` anyway). If no chain can start (an
+  // unmeasurable slot), the pile simply stays up under the banner instead of vanishing.
   // Same dealTokenRef guard as every other async measurement here.
   async function runWinCascade(s: GolfState, gen: number) {
     const origin = await measureView(wasteViewRef.current)
     if (dealTokenRef.current !== gen || !origin || s.waste.length === 0) return
-    winCascade.startChains([{ cards: s.waste.slice().reverse(), origin, entranceDelayMs: 0 }], cardWidth)
-    setCascadeHandoffFor(s)
+    winCascade.startChains([{ cards: s.waste.slice().reverse(), origin, entranceDelayMs: 0 }], cardWidth, () => setCascadeHandoffFor(s))
   }
 
   // Same race as the deal effect above: measuring CardRegistry/a view ref synchronously inside
@@ -577,7 +579,7 @@ function GolfScreenInner() {
 
   // Hidden only once the win is REVEALED, not the moment it is won - the winning card is still flying
   // onto this pile until then, and its flight measures the registered waste top to land on - AND the
-  // cascade has taken over (cascadeHandoffFor === state): its ghosts mount in the very commit this
+  // cascade has taken over (cascadeHandoffFor === state): its ghosts are on screen by the commit this
   // blanks, so the pile is never seen empty. Not on winRevealed alone: runWinCascade measures first.
   const wasteTopCard = winRevealed && cascadeHandoffFor === state ? undefined : top(state.waste)
   // Combines two independent reasons the waste top slot might need to stay visually covered by a

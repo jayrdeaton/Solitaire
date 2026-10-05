@@ -22,6 +22,7 @@ import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
 import { useGameSession } from '@/components/useGameSession'
+import { useTakeOffHold } from '@/components/useTakeOffHold'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { FREECELL_RULES } from '@/constants/gameRules'
@@ -91,7 +92,7 @@ interface FreeCellUndoMove {
  * and registered (via DraggableCard, just hidden by opacity) so the flight has something to
  * measure, while a frozen, decorative copy of whatever was there before (always empty, for a
  * freecell - see useFrozenWhileHidden) covers it while flying. */
-function FreecellCell({
+export function FreecellCell({
   card,
   isFlyingHere,
   shakeToken,
@@ -111,10 +112,18 @@ function FreecellCell({
   onDrop: (x: number, y: number, flight: DragFlightHandle) => Promise<boolean> | boolean
 }) {
   const frozen = useFrozenWhileHidden(card, isFlyingHere)
+  // Take-off hold: keeps drawing a card that has just left while its ghost is not on screen yet (useTakeOffHold).
+  const { shown, holding } = useTakeOffHold(card)
+  // A card flying in hides the real card under the frozen copy - but not while a departing card is still held here: a
+  // card can be sent to this freecell the moment the one that left it is gone from state (two quick taps), and hiding the
+  // held card then made it vanish before its ghost had appeared - the take-off flash. The arriving card is registered
+  // all along (registryId), so its flight can measure it; it is hidden once the hold ends. No reveal phase here: a
+  // freecell holds one card, so a card that leaves always leaves it empty (and the frozen copy is the empty slot).
+  const flyingHere = isFlyingHere && !holding
   return (
     <View>
-      {card ? <DraggableCard card={card} hidden={isFlyingHere} shakeToken={shakeToken} hinted={highlighted} emptyFallback={<EmptySlot />} onPress={onPress} onDrop={onDrop} /> : <EmptySlot hinted={highlighted} />}
-      {isFlyingHere && (
+      {shown ? <DraggableCard card={shown} hidden={flyingHere} disabled={holding} registryId={holding ? (card?.id ?? null) : undefined} shakeToken={holding ? undefined : shakeToken} hinted={highlighted && !holding} emptyFallback={<EmptySlot />} onPress={holding ? undefined : onPress} onDrop={onDrop} /> : <EmptySlot hinted={highlighted} />}
+      {flyingHere && (
         <View style={StyleSheet.absoluteFill} pointerEvents='none'>
           {frozen ? <PlayingCard card={frozen} /> : <EmptySlot />}
         </View>
@@ -200,10 +209,10 @@ function FreeCellScreenInner() {
   // last card has flown in and landed, so it is never hidden mid-flight (which used to make it
   // simply appear) and the finished board reads for a beat first.
   const winRevealed = useWinReveal(won, settled)
-  // The board the win cascade has taken over from, and which suits' piles it took (set together with startChains, see
-  // runWinCascade): once that state IS the current one, and the win is revealed, those piles' real cards blank - not a
-  // moment earlier, or the piles would sit empty for the frames between the reveal commit and the commit that mounts the
-  // cascade's ghosts. Compared by identity (state is replaced wholesale on every change) so an undo or a New Game
+  // The board the win cascade has taken over from, and which suits' piles it took (set once its ghosts are on screen -
+  // startChains' onShown, see runWinCascade): once that state IS the current one, and the win is revealed, those piles'
+  // real cards blank - not a moment earlier, or the piles would sit empty (or under blank ghosts) until the cascade's
+  // ghosts can be seen. Compared by identity (state is replaced wholesale on every change) so an undo or a New Game
   // un-blanks the piles with nothing to reset, and a re-win after an undo (which never relaunches the cascade) can
   // never blank piles with no ghosts. A suit whose chain could not start keeps its real card showing.
   const [cascadeHandoff, setCascadeHandoff] = useState<{ state: FreeCellState; suits: ReadonlySet<number> } | null>(null)
@@ -371,12 +380,15 @@ function FreeCellScreenInner() {
   // built bottom-up, Ace pushed first, so reversing gives the right order).
   //
   // This runs while the real foundation cards are STILL on screen: the piles blank only afterwards,
-  // in the SAME commit that mounts the cascade's ghosts (cascadeHandoff, set right beside
-  // startChains - React batches the two, being one async continuation). Blanking on winRevealed
-  // alone left every pile empty for the frames this measurement takes (~140ms in a dev bundle)
-  // before the ghosts appeared. A suit whose slot measurement failed (rare) gets no chain and so
-  // keeps its real card, rather than vanishing with nothing to replace it; if no chain can start the
-  // piles simply stay up under the banner. Same dealTokenRef guard as every other async
+  // once the cascade's ghosts are on screen (cascadeHandoff, set from startChains' onShown - in the
+  // commit the ghosts appear, which waits for their parked faces to paint; see WinCascadeLayer's
+  // CascadeChains). Blanking on winRevealed alone left every pile empty for the frames this
+  // measurement takes (~140ms in a dev bundle) before the ghosts appeared; blanking in the commit
+  // that mounted them showed blank-faced Kings for a frame or two. An undo or New Game before then
+  // clears the cascade, which drops the callback (and the hand-off is keyed to `s` anyway). A suit
+  // whose slot measurement failed (rare) gets no chain and so keeps its real card, rather than
+  // vanishing with nothing to replace it; if no chain can start the piles simply stay up under the
+  // banner (an empty cascade never calls onShown). Same dealTokenRef guard as every other async
   // measurement here, for the same "New Game tapped mid-measurement" reason.
   async function runWinCascade(s: FreeCellState, gen: number) {
     const origins = await Promise.all(foundationSlotRefs.current.map((view) => measureView(view)))
@@ -389,8 +401,7 @@ function FreeCellScreenInner() {
       chains.push({ cards: pile.slice().reverse(), origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
       handedOff.add(suit)
     })
-    winCascade.startChains(chains, cardWidth)
-    if (handedOff.size > 0) setCascadeHandoff({ state: s, suits: handedOff })
+    winCascade.startChains(chains, cardWidth, () => setCascadeHandoff({ state: s, suits: handedOff }))
   }
 
   // Measuring CardRegistry synchronously right after the commitState in applyMove would find the

@@ -15,6 +15,7 @@ import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
+import { markGhostPending } from '@/components/cardFacePaint'
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
@@ -210,7 +211,15 @@ function ScorpionScreenInner() {
    * above - undo itself is still fully serialized (guarded by undoBusyRef AND
    * activeFlightCountRef === 0, see handleUndo's own guard), so at most one of these is ever pending
    * at a time, mirroring Klondike's own pendingCascadeUndoRef for the identical reason. */
-  const pendingUndoStockDealRef = useRef<{ entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null }[]; token: number } | null>(null)
+  const pendingUndoStockDealRef = useRef<{ entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null; releasePending: () => void }[]; token: number } | null>(null)
+  /** Every take-off hold (cardFacePaint.ts) the latest stock-deal undo took on the cards it flies back (handleUndo). Each one
+   * also travels with its own card - pendingUndoStockDealRef, runUndoStockDeal, then deal.start, which gives it back at that
+   * card's take-off - and is kept here too so New Game/restore can give back, ahead of their own commit, whatever is still out
+   * at whichever of those stages: the deal's own cancel only comes with the fresh game's initial deal, a commit and a
+   * measurement later, and until then each card still held would be drawn by its column over the fresh board. A release is
+   * safe to run twice (markGhostPending), so this is never pruned, only replaced by the next stock-deal undo - which waits for
+   * every flight to settle, so the previous one's holds have all been given back by then. Same as Spider's undoDealHoldsRef. */
+  const undoStockDealHoldsRef = useRef<(() => void)[]>([])
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
   // Which card (if any) should play its "nowhere to go" shake right now - see handleCardTap and
@@ -233,6 +242,8 @@ function ScorpionScreenInner() {
     pendingFlightRef.current = []
     pendingStockDealRef.current = []
     pendingUndoStockDealRef.current = null
+    // Before the fresh board commits: a card a stock-deal undo still holds would be drawn over it (see undoStockDealHoldsRef).
+    undoStockDealHoldsRef.current.forEach((release) => release())
     session.reset()
     recordedWinRef.current = false
     winCascade.clear()
@@ -263,6 +274,7 @@ function ScorpionScreenInner() {
     pendingFlightRef.current = []
     pendingStockDealRef.current = []
     pendingUndoStockDealRef.current = null
+    undoStockDealHoldsRef.current.forEach((release) => release()) // see startNewGame
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
     setDealHiddenIds(new Set())
@@ -340,11 +352,14 @@ function ScorpionScreenInner() {
   // ghost - so every card also carries the spot it really stands on (`cardOrigins`), and its ghost waits there, then
   // converges onto the racked chain. Those spots come from CardRegistry (the real, measured positions - including
   // PileView's height compression - rather than a copy of its fan math that could drift), which only knows cards that
-  // are still rendered. So this runs while the columns are still on screen and the columns blank only afterwards, in the
-  // SAME commit that mounts the ghosts (cascadeHandoffFor, set right beside startChains): measuring after the reveal
-  // blanked them finds nothing, and blanking first leaves the fan empty until the ghosts arrive. A card whose position
-  // cannot be measured falls back to the King's slot (the chain origin) - correct, just collapsed - and if no chain can
-  // start at all the columns simply stay up under the banner instead of vanishing.
+  // are still rendered. So this runs while the columns are still on screen and the columns blank only afterwards, once the
+  // ghosts are on screen (cascadeHandoffFor, set from startChains' onShown - in the commit the ghosts appear, which waits for
+  // every parked face, here each card of each run, to paint; see WinCascadeLayer's CascadeChains): measuring after the reveal
+  // blanked them finds nothing, blanking first leaves the fan empty until the ghosts arrive, and blanking in the commit that
+  // mounted them showed a fan of blank-faced cards for a frame or two. An undo or New Game before then clears the cascade,
+  // which drops the callback (and the hand-off is keyed to `s` anyway). A card whose position cannot be measured falls back
+  // to the King's slot (the chain origin) - correct, just collapsed - and if no chain can start at all the columns simply
+  // stay up under the banner instead of vanishing (an empty cascade never calls onShown).
   async function runWinCascade(s: ScorpionState, gen: number) {
     const completed = s.tableau.map((col, index) => ({ col, index })).filter(({ col }) => col.length === 13)
     const [origins, cardRects] = await Promise.all([Promise.all(completed.map(({ index }) => measureView(tableauColumnRefs.current[index]))), Promise.all(completed.map(({ col }) => Promise.all(col.map((card) => ghost.cardRegistry.measure(card.id)))))])
@@ -356,8 +371,7 @@ function ScorpionScreenInner() {
       const rects = cardRects[i].slice().reverse()
       chains.push({ cards: col.slice().reverse(), origin, cardOrigins: rects.map((rect) => (rect ? { x: rect.x, y: rect.y } : origin)), entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
     })
-    winCascade.startChains(chains, cardWidth)
-    if (chains.length > 0) setCascadeHandoffFor(s)
+    winCascade.startChains(chains, cardWidth, () => setCascadeHandoffFor(s))
   }
 
   // Held back until the win is revealed (see winRevealed): the pending token is set the moment the winning move
@@ -464,18 +478,24 @@ function ScorpionScreenInner() {
   // undoBusyRef-clearing this used to have across its own two early bails plus handleUndo's own
   // measurement-failure bail) - consolidated so the one startFlights(1) claim handleUndo made up
   // front for this branch is always settled exactly once, regardless of which path gets taken.
-  async function runUndoStockDeal(entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null }[], token: number) {
+  // Likewise each card's take-off hold (handleUndo marks it, so its column keeps drawing it where it was): it goes to
+  // deal.start with its card, which gives it back at that card's take-off, and every way out of here without a flight for
+  // a card gives its hold back at once, so a column never keeps drawing a card that is not going to leave it.
+  async function runUndoStockDeal(entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null; releasePending: () => void }[], token: number) {
+    const releaseAll = () => entries.forEach((e) => e.releasePending())
     const destination = await ghost.cardRegistry.measure(STOCK_PACKET_ID)
     if (dealTokenRef.current !== token || !destination) {
+      releaseAll()
       settleFlight()
       return
     }
     const dealEntries: DealCardSpec[] = []
     entries.forEach((e) => {
       if (!e.origin) return
-      dealEntries.push({ cardId: e.card.id, card: e.card, from: e.origin, to: destination, delayMs: e.delayMs })
+      dealEntries.push({ cardId: e.card.id, card: e.card, from: e.origin, to: destination, delayMs: e.delayMs, releasePending: e.releasePending })
     })
     if (dealEntries.length === 0) {
+      releaseAll()
       settleFlight()
       return
     }
@@ -494,8 +514,9 @@ function ScorpionScreenInner() {
     // A stray token mismatch here (e.g. a "New Game" that fired between handleUndo queuing this and
     // this effect running) settles directly rather than falling into runUndoStockDeal, which would
     // otherwise never get called at all for this entry - previously this just left the ref (and its
-    // startFlights claim) stranded.
+    // startFlights claim) stranded. Its cards' take-off holds go back with it.
     if (pending.token !== dealTokenRef.current) {
+      pending.entries.forEach((e) => e.releasePending())
       settleFlight()
       return
     }
@@ -639,10 +660,24 @@ function ScorpionScreenInner() {
       const dealtColumns = current.tableau.map((col, colIndex) => ({ col, colIndex })).filter(({ col, colIndex }) => col.length === prevState.tableau[colIndex].length + 1)
       const dealtCards = dealtColumns.map(({ col }) => col[col.length - 1])
       const origins = await Promise.all(dealtCards.map((c) => ghost.cardRegistry.measure(c.id)))
+      // New Game/restore replaced the game while these were measured (Spider's handleUndo has the same guard): `prevState` is
+      // the old game's board, and every claim (this undo's included) was reset with it - so nothing is committed, marked or
+      // settled. (A draw, the only other thing that bumps the token, is refused while undo is busy.)
+      if (dealTokenRef.current !== myToken) return
 
       setUndoStack((stack) => stack.slice(0, -1))
+      // Taking off from their columns: the commit below takes these cards out of them, but each card's ghost only shows once
+      // the packet has been measured (the commit after this one), the deal pool has mounted and the card's own stagger has run
+      // out (its column x DEAL_STAGGER_MS: 140-210ms for columns 4-6) - and the columns used to drop them at once, so the
+      // dealt cards vanished from the board and came back as ghosts one by one. Each is marked here, in the same synchronous
+      // stretch as the commit, with a mark of its own (cardFacePaint.ts), so its column keeps drawing the very card it had
+      // (PileView's held cards) until that card's own ghost takes off over it - DealLayer gives each back then
+      // (releasePending), and runUndoStockDeal/its effect/New Game give back any that will never fly. A card that could not
+      // be measured gets no ghost, so it holds nothing.
+      const entries = dealtCards.map((c, i) => ({ card: c, delayMs: dealtColumns[i].colIndex * DEAL_STAGGER_MS, origin: origins[i], releasePending: origins[i] ? markGhostPending([c.id]) : () => {} }))
+      undoStockDealHoldsRef.current = entries.map((e) => e.releasePending)
       pendingUndoStockDealRef.current = {
-        entries: dealtCards.map((c, i) => ({ card: c, delayMs: dealtColumns[i].colIndex * DEAL_STAGGER_MS, origin: origins[i] })),
+        entries,
         token: myToken
       }
       commitState(prevState)
@@ -755,8 +790,9 @@ function ScorpionScreenInner() {
               // those cards now (see runWinCascade), the same way Spider's own completed-sequence slots
               // go blank once their cascade takes over. NOT keyed on `won`: that flips with the winning
               // move, and blanking the columns then would unregister the card its ghost is flying to. And
-              // not on `winRevealed` alone either: runWinCascade measures the still-rendered cards first
-              // (cascadeHandoffFor), so the ghosts land in the very commit the columns blank.
+              // not on `winRevealed` alone either: runWinCascade measures the still-rendered cards first, and
+              // the columns blank only once the ghosts are on screen with their faces painted (cascadeHandoffFor,
+              // set from startChains' onShown).
               const cards = winRevealed && cascadeHandoffFor === state ? [] : col
               return (
                 <DropZone key={colIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: colIndex }} style={[styles.tableauColumn, { width: cardWidth }]}>

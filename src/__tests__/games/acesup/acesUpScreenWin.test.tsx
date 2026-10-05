@@ -37,10 +37,17 @@ interface MockLog {
   airAtWinCascade: number
   /** How many real cards the piles were drawing at the instant the cascade started (-1: it never did). */
   cardsAtCascade: number
-  /** Renders of a pile with NO cards before the cascade started: a pile blanked ahead of its ghosts sat empty until they arrived. */
-  blankPileRendersBeforeCascade: number
+  /** The same, at the instant the cascade's ghosts showed (its onShown; -1: they never did). */
+  cardsAtGhostsShown: number
+  /** Renders of a pile with NO cards before the cascade's ghosts showed: a pile blanked ahead of its ghosts sat empty until they
+   * arrived (or, blanked with startChains, under blank-faced ghosts until their faces painted). */
+  blankPileRendersBeforeGhosts: number
 }
-const mockLog: MockLog = { shown: [], inAir: 0, chains: null, airAtWinCascade: -1, cardsAtCascade: -1, blankPileRendersBeforeCascade: 0 }
+const mockLog: MockLog = { shown: [], inAir: 0, chains: null, airAtWinCascade: -1, cardsAtCascade: -1, cardsAtGhostsShown: -1, blankPileRendersBeforeGhosts: 0 }
+/** The real cascade shows - and calls startChains' onShown - only once its parked ghosts' faces have painted, a frame or two after
+ * startChains (WinCascadeLayer's CascadeChains); the mock stands in for that wait with a timer. */
+const MOCK_GHOSTS_SHOW_MS = 16
+let mockGhostsShowTimer: ReturnType<typeof setTimeout> | undefined
 let mockFlightsLand = true
 /** Card ids a pile stand-in is drawing right now, each at its pile's own point - exactly what CardRegistry.measure can find. */
 const mockRegistered = new Map<string, { x: number; y: number }>()
@@ -77,15 +84,26 @@ const mockDeal = { start: () => {}, cancel: () => {} }
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/components/winning/WinCascadeLayer', () => ({
-  WinCascadeProvider: ({ children }: { children: unknown }) => children,
+  // Unmounting drops a cascade that has not shown yet, like the real provider (a test can end mid-wait).
+  WinCascadeProvider: ({ children }: { children: unknown }) => {
+    require('react').useEffect(() => () => clearTimeout(mockGhostsShowTimer), [])
+    return children
+  },
   WinCascadeGhosts: () => null,
   useWinCascade: () => ({
-    startChains: (chains: { cards: { id: string }[]; origin: { x: number; y: number } }[]) => {
+    startChains: (chains: { cards: { id: string }[]; origin: { x: number; y: number } }[], _cardWidth: number, onShown?: () => void) => {
       mockLog.chains = chains.map((c) => ({ ids: c.cards.map((card) => card.id), origin: c.origin }))
       mockLog.airAtWinCascade = mockLog.inAir
       mockLog.cardsAtCascade = mockCardsNow()
+      // Like the real controller: never for an empty cascade, and dropped by clear() or a newer startChains.
+      clearTimeout(mockGhostsShowTimer)
+      if (chains.length > 0 && onShown)
+        mockGhostsShowTimer = setTimeout(() => {
+          mockLog.cardsAtGhostsShown = mockCardsNow()
+          onShown()
+        }, MOCK_GHOSTS_SHOW_MS)
     },
-    clear: () => {}
+    clear: () => clearTimeout(mockGhostsShowTimer)
   })
 }))
 jest.mock('@/components/dealing/measureView', () => ({ measureView: async (view: unknown) => (view ? { x: 5, y: 5 } : null) }))
@@ -134,7 +152,7 @@ jest.mock('@/components/PileView', () => {
   return {
     PileView: (props: { cards: Card[]; onPressCard: (card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) => void }) => {
       const pile = useRef(mockPileInstance++).current % 4
-      if (props.cards.length === 0 && mockLog.chains === null) mockLog.blankPileRendersBeforeCascade += 1
+      if (props.cards.length === 0 && mockLog.cardsAtGhostsShown === -1) mockLog.blankPileRendersBeforeGhosts += 1
       // Like PileView's own per-card registration: every card drawn is measurable (at its pile's point), nothing else is.
       const key = props.cards.map((c) => c.id).join(',')
       useEffect(() => {
@@ -223,7 +241,8 @@ beforeEach(() => {
   mockLog.chains = null
   mockLog.airAtWinCascade = -1
   mockLog.cardsAtCascade = -1
-  mockLog.blankPileRendersBeforeCascade = 0
+  mockLog.cardsAtGhostsShown = -1
+  mockLog.blankPileRendersBeforeGhosts = 0
   mockRegistered.clear()
   mockRegistryMisses.clear()
   mockPileInstance = 0
@@ -321,10 +340,13 @@ describe('Aces Up screen - the winning discard', () => {
       { ids: [id('diamonds', 1)], origin: pilePoint(2) },
       { ids: [id('clubs', 1)], origin: pilePoint(3) }
     ])
-    // The cascade measured (and mounted its parked ghosts) while all four Aces were still drawn, and no pile ever sat empty before that:
-    // blanking on the reveal alone left the four piles empty for the few frames the measurement takes, then the ghosts appeared.
+    // The cascade measured (and mounted its parked ghosts) while all four Aces were still drawn and kept them drawn until the ghosts
+    // were on screen (their faces paint a frame or two after they mount: blanking with startChains showed four blank-faced Aces),
+    // and no pile ever sat empty before that: blanking on the reveal alone left the four piles empty for the few frames the
+    // measurement takes, then the ghosts appeared.
     expect(mockLog.cardsAtCascade).toBe(4)
-    expect(mockLog.blankPileRendersBeforeCascade).toBe(0)
+    expect(mockLog.cardsAtGhostsShown).toBe(4)
+    expect(mockLog.blankPileRendersBeforeGhosts).toBe(0)
     expect(cardsOnBoard()).toHaveLength(0) // and they are blank now
     expect(screen.getByTestId('win-banner')).toBeTruthy()
   })

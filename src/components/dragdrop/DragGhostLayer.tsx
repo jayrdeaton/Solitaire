@@ -1,10 +1,12 @@
 import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
-import React, { createContext, memo, useCallback, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useRotation } from '@tastic/core'
+import React, { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 import Animated, { makeMutable, SharedValue, useAnimatedStyle, withSpring, WithSpringConfig } from 'react-native-reanimated'
 
 import { Card } from '@/engine/types'
 
+import { FaceLoadTrackingContext, LANDED_GHOST_MAX_MS, markGhostPending, useGhostPaintGate, whenCardsSettled } from '../cardFacePaint'
 import { OverlayFrame, toLocal, useOverlayFrame } from '../overlayFrame'
 import { PlayingCard } from '../PlayingCard'
 import { useCardSoundEffects } from '../useCardSounds'
@@ -69,7 +71,14 @@ export interface DragGhostController {
    * continuous pointer to track (tap-to-move, auto-play, undo, stock draw/recycle). Allocates its
    * own position tracking internally; never interrupted by another show()/showLive() call
    * happening anywhere else, and never interrupts one either - many of these can be in flight at
-   * once, each animating independently to its own destination.
+   * once, each animating independently to its own destination. The one thing they share is a
+   * place in DragGhostProvider's start queue (startQueueRef): a show() flight's motion is never let
+   * go before every show() flight started before it has shown its ghost. Its motion then starts at
+   * the later of that and its own flyTo - the queue orders when each flight MAY start, not the
+   * flyTo calls themselves. So callers that call flyTo in start order land in start order (every
+   * one of them takes the same FLIGHT_SPRING): every screen's streams do, since their destination
+   * measurements resolve first-in, first-out. A flight shown earlier whose flyTo comes later starts,
+   * and lands, later.
    */
   show(content: GhostContent, origin: { x: number; y: number }): DragFlightHandle
   /**
@@ -98,9 +107,11 @@ interface FlightValues {
   dy: SharedValue<number>
 }
 
-/** Holds a flight's motion back until its ghost view exists (see FlightGhostCard's onMounted): a flight the caller starts in the very stretch that
- * shows its ghost - flyTo right after show(), the screen's own re-render and commit still ahead - would otherwise be moving for however long that
- * commit takes (tens to hundreds of ms on a phone) before there was anything to see, and the ghost would first appear already partway along its path. */
+/** Holds a flight's motion back until its ghost is on screen (see FlightGhostCard's onVisible) - and, for a show() flight, until every show()
+ * flight started before it has had its own gate opened (DragGhostProvider's startQueueRef; an open gate only lets a flight move once its flyTo
+ * or snapBack asks it to). Otherwise a flight the caller starts in the very stretch that shows its
+ * ghost - flyTo right after show(), the screen's own re-render and commit still ahead - would be moving for however long that commit
+ * takes (tens to hundreds of ms on a phone) before there was anything to see, and the ghost would first appear already partway along its path. */
 interface MountGate {
   run(fn: () => void): void
   open(): void
@@ -120,9 +131,30 @@ function createMountGate(): MountGate {
   }
 }
 
+/** A show() flight's place in DragGhostProvider's start queue (startQueueRef): `ready` once its ghost is visible, `open`
+ * starts its motion (its MountGate). */
+interface StartTicket {
+  id: number
+  ready: boolean
+  open: () => void
+}
+
 interface FlightEntry {
   id: number
+  /** The ghost's React key: the flight's id, or - when this flight ADOPTED a landed ghost of the same cards (see
+   * adoptable) - that ghost's key, so the already-painted ghost instance carries on instead of a fresh, blank one. */
+  key: number
   mountGate: MountGate
+  /** Ends this flight's take-off hold (cardFacePaint.ts's ghost-pending mark on its face-up cards): called once the ghost
+   * is visible, or when the flight goes before it ever was. A no-op for an adopted ghost (nothing was marked). */
+  releasePending: () => void
+  /** The ghost is already painted (an adopted landed ghost): visible from its first render. */
+  prePainted: boolean
+  /** See FlightGhostCardProps.onVisible: shown + releasePending, and mountGate.open - for a show() flight, once its turn in the start queue
+   * comes (DragGhostProvider's startQueueRef). */
+  onVisible: () => void
+  /** Whether this ghost has been on screen (set by onVisible) - only a ghost that has can be adopted (it is painted). */
+  shown: { current: boolean }
   content: GhostContent
   /** What the ghost follows while a drag is in progress: the caller's persistent gesture values for a
    * showLive() flight, the flight's own for a show() one (the same object as `own`). */
@@ -134,15 +166,64 @@ interface FlightEntry {
    * from JS AFTER `own` has been written, so the switch lands on the identical position with no
    * re-render and no remount - the ghost reads both sets from its very first render. */
   handedOff: SharedValue<number>
+  /** Set in the commit that reveals the real card under this ghost (its settle): the flight is over, and the ghost only
+   * stays until that card's face has painted - see LANDED_GHOST_MAX_MS. */
+  landed?: boolean
+  /** Where a flyTo flight came to rest (screen space, top-left + size), so a newer card landing on the same spot can
+   * retire it - see land(). Unset for a snap-back. */
+  rest?: { x: number; y: number; width: number; height: number }
+}
+
+// How long a landed ghost may wait for the card under it to paint: cardFacePaint.ts's LANDED_GHOST_MAX_MS (re-exported).
+export { LANDED_GHOST_MAX_MS }
+
+/** The cards a ghost must have painted before it shows: its face-up cards, or - for a group stacked with no fan
+ * (offsetStep 0, e.g. a recycle's whole waste) - only the top one, the only one anyone can see. */
+function visibleFaceIds(content: GhostContent): string[] {
+  const seen = content.offsetStep === 0 ? content.cards.slice(-1) : content.cards
+  return seen.filter((c) => c.faceUp).map((c) => c.id)
+}
+
+/** A ghost that has been on screen, of exactly these cards (same ids in the same order, same faces, size and fan): a new
+ * flight can carry on with it - it is painted, so the new flight needs no take-off hold at all. */
+function adoptable(entry: FlightEntry, content: GhostContent): boolean {
+  if (!entry.shown.current || entry.content.cardWidth !== content.cardWidth || entry.content.offsetStep !== content.offsetStep) return false
+  const a = entry.content.cards
+  const b = content.cards
+  return a.length === b.length && a.every((c, i) => c.id === b[i].id && c.faceUp === b[i].faceUp)
+}
+
+// No shadow on a landed ghost: the real card under it draws its own, and two would darken it for as long as both show.
+const LANDED_CARD_STYLE = { shadowOpacity: 0, elevation: 0 }
+
+/** A landed group's screen-space footprint, from its head card's measured screen top-left: `width` x `height`
+ * (the fan runs down) unrotated. Under a quarter turn the head card is `cardHeight` wide and `width` tall on screen and the
+ * fan runs sideways - which way depends on the turn - so the rect covers the fan's length on both sides of the head card
+ * (a little too wide rather than missing an overlap). */
+function restRect(x: number, y: number, width: number, height: number, cardHeight: number, quarterTurn: boolean) {
+  if (!quarterTurn) return { x, y, width, height }
+  const fan = height - cardHeight
+  return { x: x - fan, y, width: cardHeight + 2 * fan, height: width }
+}
+
+function rectsOverlap(a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }) {
+  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
 }
 
 interface FlightGhostCardProps {
-  onMounted: () => void
+  /** Called in the commit the ghost becomes visible (a layout effect): releases its take-off hold and lets the flight start
+   * moving (opens its MountGate - at once, unless an earlier show() flight's gate has not opened yet, i.e. its ghost has not
+   * shown: see startQueueRef). */
+  onVisible: () => void
+  /** Releases the take-off hold if the ghost goes (or is handed to another flight) before it ever showed. */
+  releasePending: () => void
+  prePainted: boolean
   content: GhostContent
   live: FlightValues
   own: FlightValues
   handedOff: SharedValue<number>
   frame: OverlayFrame
+  landed: boolean
 }
 
 // Memoized: several of these can be mounted at once (see DragGhostProvider's `flights`), and every
@@ -150,10 +231,16 @@ interface FlightGhostCardProps {
 // is only ever set once at creation; the shared values and `frame` never change
 // identity) - without this, every remaining ghost would re-render whenever any sibling's own
 // landing removed it from `flights`, same reasoning as DealLayer.tsx's GhostSlot.
-const FlightGhostCard = memo(function FlightGhostCard({ onMounted, content, live, own, handedOff, frame }: FlightGhostCardProps) {
+const FlightGhostCard = memo(function FlightGhostCard({ onVisible, releasePending, prePainted, content, live, own, handedOff, frame, landed }: FlightGhostCardProps) {
   const cardHeight = content.cardWidth / CARD_ASPECT
-  // In the commit that mounts the ghost (a layout effect: the view is in the tree by then) - see MountGate.
-  useLayoutEffect(() => onMounted(), [onMounted])
+  // Invisible until its visible faces have painted (visibleFaceIds; see useGhostPaintGate): a ghost is a freshly mounted
+  // Image, blank for a frame or two, while the source keeps drawing the departing card meanwhile (cardFacePaint.ts's ghost
+  // pending). A face-down card is SVG and draws at once; an adopted ghost is painted already. onVisible runs in the commit
+  // it shows - see MountGate (and startQueueRef: a ghost can be on screen, still at its origin, waiting for its turn to move).
+  const faceIds = useMemo(() => (prePainted ? [] : visibleFaceIds(content)), [prePainted, content])
+  const { shown: visible, markPainted } = useGhostPaintGate(faceIds, onVisible)
+  // A ghost removed before it ever showed (hide() mid-take-off, a New Game) must not leave its source holding.
+  useEffect(() => releasePending, [releasePending])
   // Plain locals rather than the two objects: the worklet below should capture each SharedValue on
   // its own, exactly like every other ghost in this app.
   const { originX: liveOriginX, originY: liveOriginY, dx: liveDx, dy: liveDy } = live
@@ -175,13 +262,15 @@ const FlightGhostCard = memo(function FlightGhostCard({ onMounted, content, live
   const groupHeight = cardHeight + Math.max(0, content.cards.length - 1) * content.offsetStep
   return (
     <CardSizeProvider width={content.cardWidth}>
-      <Animated.View style={[styles.ghostLayer, { width: content.cardWidth, height: groupHeight }, animatedStyle]}>
-        {content.cards.map((c, i) => (
-          <View key={c.id} style={[styles.stackedCard, { top: i * content.offsetStep }]}>
-            <PlayingCard card={c} />
-          </View>
-        ))}
-      </Animated.View>
+      <FaceLoadTrackingContext.Provider value={false}>
+        <Animated.View style={[styles.ghostLayer, { width: content.cardWidth, height: groupHeight }, !visible && styles.unpainted, animatedStyle]}>
+          {content.cards.map((c, i) => (
+            <View key={c.id} style={[styles.stackedCard, { top: i * content.offsetStep }]}>
+              <PlayingCard card={c} style={landed ? LANDED_CARD_STYLE : undefined} onFacePainted={c.faceUp ? () => markPainted(c.id) : undefined} />
+            </View>
+          ))}
+        </Animated.View>
+      </FaceLoadTrackingContext.Provider>
     </CardSizeProvider>
   )
 })
@@ -204,6 +293,12 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
   const [flights, setFlights] = useState<FlightEntry[]>([])
   const cardRegistry = useCardRegistry()
   const { overlayRef, frame } = useOverlayFrame()
+  // Read when a flight lands (its rest rect): a card's screen footprint is its height x width under a quarter turn.
+  const rotation = useRotation()
+  const rotationRef = useRef(rotation)
+  useEffect(() => {
+    rotationRef.current = rotation
+  }, [rotation])
   const nextIdRef = useRef(0)
   // originX/Y and flyTo's targetX/Y are all screen-space (measureInWindow/Reanimated's own
   // measure(), both viewport-relative on web - see CardRegistry.ts/PileView.tsx), but this overlay
@@ -239,8 +334,151 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
   // each such flight by its persistent originX.
   const liveOwnersRef = useRef(new Map<SharedValue<number>, DragFlightHandle>())
 
-  const removeFlight = useCallback((id: number) => {
-    setFlights((prev) => prev.filter((f) => f.id !== id))
+  // The show() flights whose MountGate has not opened yet, in the order they were started - so a flight is never let go
+  // before every flight started ahead of it has been.
+  //
+  // A flight can start moving once its ghost turns visible (onVisible, see FlightGhostCard), and that moment varies per
+  // flight: a fresh ghost waits for its face Image's bitmap (useGhostPaintGate - a frame or two, up to GHOST_PAINT_MAX_MS
+  // counted from its OWN commit), while an adopted ghost (already painted) or a face-down one is visible in its first
+  // commit. Left to that alone, a card started later could start first: an auto-play stream's next card (sent 96ms after
+  // the last, often adopting its own just-landed ghost) against a card whose fresh face was slow to come back on a busy JS
+  // thread. Landing first on a shared foundation, it drew the earlier, still-airborne card on the pile (FoundationCell's
+  // settledCard counts the cards in the air by position) with that card's ghost over it - the later card blinked to the
+  // earlier one's rank until it landed: the overtaking the fixed flight time exists to rule out. Before the paint gate,
+  // gates opened in commit order (at the ghost's mount), which is show() order; this keeps that.
+  //
+  // So a show() flight's MountGate opens only once its ghost is visible AND every flight queued before it has opened.
+  // onVisible still marks the ghost shown and releases its take-off hold at once (the ghost is on screen, exactly at its
+  // origin, so the source can let go), then waits here for its turn. The wait is bounded: the head of the queue opens at
+  // its own paint, or GHOST_PAINT_MAX_MS after its own commit, and a flight that goes - hide() (a New Game, a refused
+  // move), even before its ghost ever mounted - leaves the queue (applyFlights prunes every flight no longer in the model)
+  // and lets the next one go. A flight with no unopened gate ahead of it opens in its own onVisible, exactly as before.
+  // An adopted flight takes its turn too: being visible in its first commit is precisely how it could overtake.
+  //
+  // What this orders is gate OPENINGS, not motion: an open gate runs a flight's spring only once its flyTo (or snapBack)
+  // asks for it (settleAfter), so a flight moves at the later of its gate and its flyTo. A flight that has shown but is
+  // not sent anywhere yet (its destination still being measured) does not hold later ones back, and if a later flight's
+  // flyTo comes first, the later flight starts and lands first. Holding every later flight until each earlier one's
+  // flyTo as well was not done: a caller sits between show() and flyTo for as long as its destination takes to measure
+  // (Pyramid's draws wait a whole render and commit first, see its pendingFlightRef), so every unrelated flight would
+  // queue behind every earlier one's measurement, and a flight that was never sent anywhere nor hidden would hold every
+  // later one back for good - where the wait for a gate is bounded (GHOST_PAINT_MAX_MS, above).
+  // Landing order therefore also needs the callers to call flyTo in start order, which every screen's streams do (their
+  // destination measurements resolve first-in, first-out), so - every flight taking the same FLIGHT_SPRING - a stream
+  // lands in the order it was started.
+  //
+  // showLive (drag) flights are left out: the ghost follows the finger whatever its gate does, and a drop settles over the
+  // distance the finger left (dropSpringFor), so their landings were never in start order anyway.
+  const startQueueRef = useRef<StartTicket[]>([])
+  const drainStarts = useCallback(() => {
+    const queue = startQueueRef.current
+    while (queue.length > 0 && queue[0].ready) queue.shift()!.open()
+  }, [])
+
+  // `flights` as of now, not the last render - every change goes through applyFlights, which updates this first. Adoption
+  // reads it: a ghost can land and its card take off again in one task (a deferred King on a just-drawn card, an
+  // auto-play poll), before any commit. It also drops a flight that has left the model from the start queue, whichever
+  // way it left, so nothing queued behind it waits on a ghost that will never show.
+  const modelRef = useRef<FlightEntry[]>([])
+  const applyFlights = useCallback(
+    (update: (prev: FlightEntry[]) => FlightEntry[]) => {
+      modelRef.current = update(modelRef.current)
+      const queue = startQueueRef.current
+      if (queue.length > 0) {
+        const ids = new Set(modelRef.current.map((f) => f.id))
+        const before = queue.length
+        for (let i = queue.length - 1; i >= 0; i--) if (!ids.has(queue[i].id)) queue.splice(i, 1)
+        if (queue.length !== before) drainStarts()
+      }
+      setFlights(modelRef.current)
+    },
+    [drainStarts]
+  )
+  // The flight id behind each handle, for showLive's adoption of the snap-back it ends.
+  const handleIdsRef = useRef(new WeakMap<DragFlightHandle, number>())
+
+  const removeFlight = useCallback(
+    (id: number) => {
+      applyFlights((prev) => prev.filter((f) => f.id !== id))
+    },
+    [applyFlights]
+  )
+
+  // The settle of a flight: marks it landed (in the same commit as the caller's reveal of the real card - both are set
+  // from the settle timer) instead of removing it; the effect below removes it once that card's face has painted. A
+  // ghost still waiting over a spot a newer card has just landed on is retired here: the newer ghost covers it now, and
+  // it would otherwise be drawn over the newer real card once that ghost was gone (the overlay sits above the board).
+  const land = useCallback(
+    (id: number, rest: FlightEntry['rest']) => {
+      applyFlights((prev) => prev.filter((f) => f.id === id || !(f.landed && rest && f.rest && rectsOverlap(f.rest, rest))).map((f) => (f.id === id ? { ...f, landed: true, rest } : f)))
+    },
+    [applyFlights]
+  )
+
+  // Adds a new flight's ghost. If a ghost of exactly these cards that has been on screen is still there - a landed one
+  // waiting over the spot the card is now leaving, or (showLive) the snap-back a re-grab ends - the flight carries on
+  // with that ghost instance (its key): it is painted, so nothing needs holding. Otherwise the flight's visible face-up
+  // cards are marked as taking off (cardFacePaint.ts) right here, synchronously - before the move's own commit renders -
+  // so their sources (and any other landed ghost of them, see the paint wait below) keep drawing them until this ghost
+  // shows. A show() flight (`inStartOrder`) also joins the start queue (startQueueRef), adopted or not.
+  const addFlight = useCallback(
+    (id: number, mountGate: MountGate, content: GhostContent, live: FlightValues, own: FlightValues, handedOff: SharedValue<number>, inStartOrder: boolean, candidate?: FlightEntry) => {
+      const adopted = candidate && adoptable(candidate, content) ? candidate : modelRef.current.find((f) => f.landed && adoptable(f, content))
+      const releasePending = adopted ? () => {} : markGhostPending(visibleFaceIds(content))
+      const shown = { current: false }
+      const ticket: StartTicket | null = inStartOrder ? { id, ready: false, open: () => mountGate.open() } : null
+      const onVisible = () => {
+        shown.current = true
+        if (ticket) {
+          ticket.ready = true
+          drainStarts()
+        } else mountGate.open()
+        releasePending()
+      }
+      const entry: FlightEntry = { id, key: adopted ? adopted.key : id, mountGate, releasePending, prePainted: !!adopted, onVisible, shown, content, live, own, handedOff }
+      // Queued before the model changes, so the prune in applyFlights finds it among the flights it keeps.
+      if (ticket) startQueueRef.current.push(ticket)
+      applyFlights((prev) => [...(adopted ? prev.filter((f) => f.id !== adopted.id) : prev), entry])
+      return releasePending
+    },
+    [applyFlights, drainStarts]
+  )
+
+  // Retires each landed ghost once none of its cards has a face still loading on the board and none is taking off with a
+  // ghost not on screen yet (whenCardsSettled - at once if neither: a layout effect, so in the same frame as the reveal,
+  // exactly as before), or after LANDED_GHOST_MAX_MS. Runs after the board's own layout effects in the landing commit
+  // (this provider is an ancestor of the board), so the face the reveal mounted has already reported itself as loading.
+  // A newer flight of the same card leaves it in place until that flight's ghost shows (it is drawn above this one), so
+  // a card that takes off again right after landing is never missing or blank for a frame.
+  const paintWaitsRef = useRef(new Map<number, () => void>())
+  useLayoutEffect(() => {
+    const waits = paintWaitsRef.current
+    for (const [id, cancel] of waits) {
+      if (!flights.some((f) => f.id === id)) {
+        cancel()
+        waits.delete(id)
+      }
+    }
+    for (const f of flights) {
+      if (!f.landed || waits.has(f.id)) continue
+      // Every card of the ghost, whatever its own face: only the board's faces are ever loading (a ghost's are not
+      // tracked), so a card that lands face-down simply has nothing to wait for, and one the reveal turns face-up does.
+      const ids = f.content.cards.map((c) => c.id)
+      let painted = false
+      const cancel = whenCardsSettled(ids, LANDED_GHOST_MAX_MS, () => {
+        painted = true
+        waits.delete(f.id)
+        removeFlight(f.id)
+      })
+      if (!painted) waits.set(f.id, cancel)
+    }
+  }, [flights, removeFlight])
+  useEffect(() => {
+    const waits = paintWaitsRef.current
+    return () => {
+      waits.forEach((cancel) => cancel())
+      waits.clear()
+    }
   }, [])
 
   // Builds the imperative handle for one flight - entirely self-contained (its own generation
@@ -254,7 +492,7 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
   // `source` is the caller's persistent originX (a showLive flight) or null (a show flight, which
   // never had persistent values and is born released).
   const createFlight = useCallback(
-    (id: number, mountGate: MountGate, live: FlightValues, own: FlightValues, handedOff: SharedValue<number>, source: SharedValue<number> | null): DragFlightHandle => {
+    (id: number, mountGate: MountGate, content: GhostContent, live: FlightValues, own: FlightValues, handedOff: SharedValue<number>, source: SharedValue<number> | null, releasePending: () => void): DragFlightHandle => {
       let generation = 0
       let pendingSettle: (() => void) | null = null
       let released = source === null
@@ -295,9 +533,12 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
       // regardless of whether dx/dy had anything to actually move (a stock-to-waste draw has dy
       // already at its target, since the two sit on the same row).
       //
-      // `animate` (the withSpring writes) and this timer both start once the ghost view exists (MountGate) - a flight started in the same
-      // stretch as show() would otherwise be moving, unseen, for as long as the commit that mounts its ghost takes.
-      function settleAfter(config: WithSpringConfig, onSettled: () => void, animate: () => void) {
+      // `animate` (the withSpring writes) and this timer both start once the ghost is on screen (MountGate) - a flight started in the same
+      // stretch as show() would otherwise be moving, unseen, for as long as the commit that mounts its ghost takes - and, for a show() flight,
+      // its turn in the start queue has come (startQueueRef), so it can never start before a flight started ahead of it has shown its ghost.
+      // Called before the gate opens, it waits for it; called after, it starts at once - so a flight starts at the later of the two, and one
+      // whose flyTo comes after a later flight's lands after it (see startQueueRef).
+      function settleAfter(config: WithSpringConfig, onSettled: () => void, animate: () => void, rest?: FlightEntry['rest']) {
         const gen = ++generation
         pendingSettle = onSettled
         mountGate.run(() => {
@@ -306,7 +547,9 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
           setTimeout(() => {
             if (generation !== gen) return
             pendingSettle = null
-            removeFlight(id)
+            // Landed, not removed: the ghost stays over the card onSettled reveals until that card's face has painted
+            // (see the paint-wait effect in DragGhostProvider). Same task as onSettled, so one commit.
+            land(id, rest)
             onSettled()
           }, springSettleMs(config))
         })
@@ -360,10 +603,15 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
           // sound+haptic pair now fires together the instant the move was confirmed (see
           // useCardSounds.ts), not on arrival, so there's nothing left for this settle to trigger
           // beyond the caller's own onArrived.
-          settleAfter(config, onArrived, () => {
-            own.dx.value = withSpring(targetX - own.originX.value, config)
-            own.dy.value = withSpring(targetY - own.originY.value, config)
-          })
+          settleAfter(
+            config,
+            onArrived,
+            () => {
+              own.dx.value = withSpring(targetX - own.originX.value, config)
+              own.dy.value = withSpring(targetY - own.originY.value, config)
+            },
+            restRect(targetX, targetY, content.cardWidth, content.cardWidth / CARD_ASPECT + Math.max(0, content.cards.length - 1) * content.offsetStep, content.cardWidth / CARD_ASPECT, Math.abs(rotationRef.current) === 90)
+          )
         },
         hide() {
           // Also lets go of the persistent values (copying the position, so a later read still
@@ -372,12 +620,15 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
           unregisterOwner()
           flushPendingSettle()
           generation += 1
+          // And of its take-off hold: a ghost hidden before it ever mounted has no unmount to release it.
+          releasePending()
           removeFlight(id)
         }
       }
+      handleIdsRef.current.set(handle, id)
       return handle
     },
-    [playInvalidSound, hapticInvalid, removeFlight]
+    [playInvalidSound, hapticInvalid, removeFlight, land]
   )
 
   const controller = useMemo<DragGhostController>(
@@ -388,24 +639,29 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
         const own = { originX: makeMutable(origin.x), originY: makeMutable(origin.y), dx: makeMutable(0), dy: makeMutable(0) }
         const handedOff = makeMutable(1)
         const mountGate = createMountGate()
-        setFlights((prev) => [...prev, { id, mountGate, content, live: own, own, handedOff }])
-        return createFlight(id, mountGate, own, own, handedOff, null)
+        const releasePending = addFlight(id, mountGate, content, own, own, handedOff, true)
+        return createFlight(id, mountGate, content, own, own, handedOff, null, releasePending)
       },
       showLive(content, values) {
         // A flight still on these values is a snap-back to be ended by this pick-up (or a drag that
-        // never released) - see liveOwnersRef. A released, in-flight one is not in the map.
-        liveOwnersRef.current.get(values.originX)?.hide()
+        // never released) - see liveOwnersRef. A released, in-flight one is not in the map. Its ghost (painted, showing
+        // this very card) carries on as the new drag's: a fresh one would leave the card back at its source for the
+        // frame or two it takes to paint.
+        const claimed = liveOwnersRef.current.get(values.originX)
+        const claimedId = claimed && handleIdsRef.current.get(claimed)
+        const candidate = claimedId === undefined ? undefined : modelRef.current.find((f) => f.id === claimedId)
+        claimed?.hide()
         const id = ++nextIdRef.current
         const own = { originX: makeMutable(0), originY: makeMutable(0), dx: makeMutable(0), dy: makeMutable(0) }
         const handedOff = makeMutable(0)
         const mountGate = createMountGate()
-        setFlights((prev) => [...prev, { id, mountGate, content, live: values, own, handedOff }])
-        const handle = createFlight(id, mountGate, values, own, handedOff, values.originX)
+        const releasePending = addFlight(id, mountGate, content, values, own, handedOff, false, candidate)
+        const handle = createFlight(id, mountGate, content, values, own, handedOff, values.originX, releasePending)
         liveOwnersRef.current.set(values.originX, handle)
         return handle
       }
     }),
-    [cardRegistry, createFlight]
+    [cardRegistry, createFlight, addFlight]
   )
 
   return (
@@ -416,7 +672,7 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
       which needs the view to already exist. */}
       <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
         {flights.map((flight) => (
-          <FlightGhostCard key={flight.id} onMounted={flight.mountGate.open} content={flight.content} live={flight.live} own={flight.own} handedOff={flight.handedOff} frame={frame} />
+          <FlightGhostCard key={flight.key} onVisible={flight.onVisible} releasePending={flight.releasePending} prePainted={flight.prePainted} content={flight.content} live={flight.live} own={flight.own} handedOff={flight.handedOff} frame={frame} landed={!!flight.landed} />
         ))}
       </View>
     </DragGhostContext.Provider>
@@ -432,5 +688,8 @@ const styles = StyleSheet.create({
   stackedCard: {
     left: 0,
     position: 'absolute'
+  },
+  unpainted: {
+    opacity: 0
   }
 })

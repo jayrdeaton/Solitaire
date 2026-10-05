@@ -3,8 +3,9 @@ import { act, render, screen } from '@testing-library/react-native'
 import { ReactNode, useEffect } from 'react'
 import { makeMutable, SharedValue } from 'react-native-reanimated'
 
+import { GHOST_PAINT_MAX_MS, isGhostPending, markGhostPending, trackFaceLoad } from '@/components/cardFacePaint'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
-import { DragFlightHandle, DragGhostController, DragGhostProvider, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { DragFlightHandle, DragGhostController, DragGhostProvider, LANDED_GHOST_MAX_MS, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { dropSpringFor, FLIGHT_SPRING, SNAP_BACK_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { PileView } from '@/components/PileView'
 import { Card } from '@/engine/types'
@@ -102,9 +103,24 @@ jest.mock('react-native-gesture-handler', () => {
   }
   return { Gesture: { Pan: pan }, GestureDetector: ({ children }: { children: unknown }) => children }
 })
+/** Ghost faces report their bitmap painted once mounted, as a loaded Image does (a ghost is invisible until then - see
+ * cardFacePaint.ts's useGhostPaintGate) - unless `defer` is on, when the reports wait in `waiting` for paintAll(). */
+const mockPaint = { defer: false, waiting: [] as (() => void)[], mounts: {} as Record<string, number> }
 jest.mock('@/components/PlayingCard', () => {
   const { View } = require('react-native')
-  return { PlayingCard: ({ card }: { card: { id: string } }) => <View testID={`card:${card.id}`} />, EmptySlot: () => <View /> }
+  const { useEffect: useMockEffect } = require('react')
+  function MockPlayingCard({ card, onFacePainted }: { card: { id: string }; onFacePainted?: () => void }) {
+    useMockEffect(() => {
+      mockPaint.mounts[card.id] = (mockPaint.mounts[card.id] ?? 0) + 1
+    }, [card.id])
+    useMockEffect(() => {
+      if (!onFacePainted) return
+      if (mockPaint.defer) mockPaint.waiting.push(onFacePainted)
+      else onFacePainted()
+    }, [onFacePainted])
+    return <View testID={`card:${card.id}`} />
+  }
+  return { PlayingCard: MockPlayingCard, EmptySlot: () => <View /> }
 })
 jest.mock('@/components/overlayFrame', () => {
   // toLocal with this frame is the identity on a screen point (the overlay sits at the window origin, unrotated).
@@ -175,6 +191,9 @@ const B = card('spades-8-0')
 
 beforeEach(() => {
   jest.useFakeTimers()
+  mockPaint.defer = false
+  mockPaint.waiting.length = 0
+  for (const key of Object.keys(mockPaint.mounts)) delete mockPaint.mounts[key]
   mockPans.length = 0
   mockMeasured.x = 10
   mockMeasured.y = 400
@@ -330,6 +349,168 @@ describe('DragGhostProvider - when a flight is settled', () => {
     expect(arrived).toHaveBeenCalledTimes(1)
     await advance(2000)
     expect(arrived).toHaveBeenCalledTimes(1)
+  })
+})
+
+// The real card a ghost lands on is revealed in the settle's commit, and its face is an Image whose bitmap React Native
+// delivers asynchronously - often a frame or two after the view appears, a blank face until then (cardFacePaint.ts). So
+// a landed ghost stays over the card until its face has painted. Here a board face "loading" is trackFaceLoad, called
+// from the arrival (the commit the real card mounts in), and "loaded" is calling what it returns.
+describe('DragGhostProvider - a landed ghost waits for the card under it to paint', () => {
+  // The registry is module-level: whatever a test leaves loading would hold back every later landing of that card.
+  const loadingFaces: (() => void)[] = []
+  const faceLoading = (id: string) => {
+    const done = trackFaceLoad(id)
+    loadingFaces.push(done)
+    return done
+  }
+  afterEach(() => loadingFaces.splice(0).forEach((done) => done()))
+
+  async function landWithFaceLoading(id: Card, at: { x: number; y: number }) {
+    const flight = await inAct(() => ghost.show(contentOf(id), { x: 0, y: 0 }))
+    let loaded!: () => void
+    const arrived = jest.fn(() => {
+      loaded = faceLoading(id.id)
+    })
+    await inAct(() => flight.flyTo(at.x, at.y, arrived))
+    await advance(springSettleMs(FLIGHT_SPRING))
+    return { arrived, loaded: () => loaded() }
+  }
+
+  it('stays over the revealed card while its face is still loading, and goes the moment it has loaded', async () => {
+    await mountProvider()
+    const { arrived, loaded } = await landWithFaceLoading(A, { x: 200, y: 0 })
+    expect(arrived).toHaveBeenCalledTimes(1) // the real card was revealed at the settle, as before
+    expect(ghostIds()).toEqual([A.id]) // but its face is not there yet: the ghost still covers it
+    await inAct(() => loaded())
+    expect(ghostIds()).toEqual([])
+  })
+
+  it('goes at the settle, as before, when nothing under it is loading', async () => {
+    await mountProvider()
+    const flight = await inAct(() => ghost.show(contentOf(A), { x: 0, y: 0 }))
+    await inAct(() => flight.flyTo(200, 0, () => {}))
+    await advance(springSettleMs(FLIGHT_SPRING))
+    expect(ghostIds()).toEqual([])
+  })
+
+  it('waits no longer than LANDED_GHOST_MAX_MS for a face that never reports', async () => {
+    await mountProvider()
+    const { loaded } = await landWithFaceLoading(A, { x: 200, y: 0 })
+    await advance(LANDED_GHOST_MAX_MS - 1)
+    expect(ghostIds()).toEqual([A.id])
+    await advance(1)
+    expect(ghostIds()).toEqual([])
+    loaded()
+  })
+
+  it('a new flight of the same card ends the wait at once - the card is leaving that spot, and must not be drawn there too', async () => {
+    await mountProvider()
+    const { loaded } = await landWithFaceLoading(A, { x: 200, y: 0 })
+    await inAct(() => ghost.show(contentOf(A), { x: 200, y: 0 }))
+    expect(ghostsAt(A.id)).toHaveLength(1) // only the new flight's ghost
+    loaded()
+  })
+
+  it('a card landing on the spot of a ghost still waiting there retires it - it would otherwise be drawn over the newer card', async () => {
+    await mountProvider()
+    const { loaded } = await landWithFaceLoading(A, { x: 200, y: 0 })
+    const next = await inAct(() => ghost.show(contentOf(B), { x: 0, y: 300 }))
+    await inAct(() => next.flyTo(200, 10, () => {}))
+    await advance(springSettleMs(FLIGHT_SPRING))
+    expect(ghostIds()).toEqual([])
+    loaded()
+  })
+
+  it('a ghost waiting elsewhere is left alone by a landing that does not overlap it', async () => {
+    await mountProvider()
+    const first = await inAct(() => ghost.show(contentOf(A), { x: 0, y: 0 }))
+    let loaded!: () => void
+    await inAct(() => first.flyTo(200, 0, () => (loaded = faceLoading(A.id))))
+    const next = await inAct(() => ghost.show(contentOf(B), { x: 0, y: 300 }))
+    await advance(100)
+    await inAct(() => next.flyTo(0, 500, () => {}))
+    await advance(springSettleMs(FLIGHT_SPRING) - 100) // A lands, its face still loading
+    expect(ghostIds()).toEqual([A.id, B.id].sort())
+    await advance(100) // B lands far from A, well inside A's wait
+    expect(ghostIds()).toEqual([A.id])
+    await inAct(() => loaded())
+    expect(ghostIds()).toEqual([])
+  })
+})
+
+// The take-off side (cardFacePaint.ts): a ghost is a fresh Image too, blank for a frame or two, so it stays invisible -
+// and its flight does not start - until its face has painted, while its source keeps drawing the card (a ghost-pending
+// hold, released in the commit the ghost shows).
+describe('DragGhostProvider - a new ghost shows only once its face has painted', () => {
+  const opacityOf = (id: string) => ([screen.getByTestId(`ghost:${id}`).props.style].flat(Infinity) as { opacity?: number }[]).reduce((o, st) => (st && st.opacity !== undefined ? st.opacity : o), 1)
+  const paintAll = () => mockPaint.waiting.splice(0).forEach((painted) => painted())
+
+  it('is invisible, does not move, and holds its source until its face has painted - then shows, releases the hold and flies', async () => {
+    mockPaint.defer = true
+    await mountProvider()
+    const flight = await inAct(() => ghost.show(contentOf(A), { x: 10, y: 20 }))
+    const arrived = jest.fn()
+    await inAct(() => flight.flyTo(310, 20, arrived))
+    expect(opacityOf(A.id)).toBe(0)
+    expect(isGhostPending(A.id)).toBe(true)
+    await advance(50)
+    expect(ghostAt(A.id)).toEqual({ x: 10, y: 20 }) // not on its way yet
+    await inAct(() => paintAll())
+    expect(opacityOf(A.id)).toBe(1)
+    expect(isGhostPending(A.id)).toBe(false)
+    await advance(springSettleMs(FLIGHT_SPRING)) // its settle clock started when it showed
+    expect(arrived).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows (and flies) anyway after GHOST_PAINT_MAX_MS if its face never reports', async () => {
+    mockPaint.defer = true
+    await mountProvider()
+    const flight = await inAct(() => ghost.show(contentOf(A), { x: 10, y: 20 }))
+    await inAct(() => flight.flyTo(310, 20, () => {}))
+    await advance(GHOST_PAINT_MAX_MS)
+    expect(opacityOf(A.id)).toBe(1)
+    expect(isGhostPending(A.id)).toBe(false)
+  })
+
+  it('hide() before the ghost ever showed releases the hold - the source must not keep drawing a card that has gone', async () => {
+    mockPaint.defer = true
+    await mountProvider()
+    const flight = await inAct(() => ghost.show(contentOf(A), { x: 0, y: 0 }))
+    expect(isGhostPending(A.id)).toBe(true)
+    await inAct(() => flight.hide())
+    expect(isGhostPending(A.id)).toBe(false)
+  })
+
+  it("a new flight of exactly a landed ghost's cards carries on with that (painted) ghost: no fresh mount, no hold, on screen at once", async () => {
+    await mountProvider()
+    const first = await inAct(() => ghost.show(contentOf(A), { x: 0, y: 0 }))
+    let loaded!: () => void
+    await inAct(() => first.flyTo(200, 0, () => (loaded = trackFaceLoad(A.id))))
+    await advance(springSettleMs(FLIGHT_SPRING)) // landed, waiting for the board face
+    const mountsBefore = mockPaint.mounts[A.id]
+    mockPaint.defer = true // a fresh ghost would now stay invisible
+    const again = await inAct(() => ghost.show(contentOf(A), { x: 200, y: 0 }))
+    expect(isGhostPending(A.id)).toBe(false)
+    expect(mockPaint.mounts[A.id]).toBe(mountsBefore)
+    expect(ghostIds()).toEqual([A.id])
+    expect(opacityOf(A.id)).toBe(1)
+    const arrived = jest.fn()
+    await inAct(() => again.flyTo(0, 300, arrived))
+    await advance(springSettleMs(FLIGHT_SPRING))
+    expect(arrived).toHaveBeenCalledTimes(1)
+    await inAct(() => loaded())
+  })
+
+  it('a landed ghost stays while its card is taking off again with a ghost not on screen yet (it is the only painted copy), and goes once that one shows', async () => {
+    await mountProvider()
+    const flight = await inAct(() => ghost.show(contentOf(A), { x: 0, y: 0 }))
+    await inAct(() => flight.flyTo(200, 0, () => {}))
+    const elsewhere = markGhostPending([A.id]) // e.g. Spider sweeping the run this card just completed
+    await advance(springSettleMs(FLIGHT_SPRING))
+    expect(ghostIds()).toEqual([A.id])
+    await inAct(() => elsewhere())
+    expect(ghostIds()).toEqual([])
   })
 })
 
@@ -667,6 +848,45 @@ describe('PileView - rapid drags from one column', () => {
 
 describe('DraggableCard - rapid drags from one slot', () => {
   const SLOT_CARD = card('hearts-4-0')
+
+  it("an applied drop keeps the slot as it looked during the drag until the NEXT card's face has painted - not the dragged card's stale bitmap", async () => {
+    const NEXT = card('hearts-3-0')
+    const onDrop = async () => true
+    const view = await mountProvider(<DraggableCard card={SLOT_CARD} onDrop={onDrop} />)
+    await act(async () => {
+      mockPans[0].onStart!({ absoluteX: 50, absoluteY: 320 })
+    })
+    expect(boardHidden(SLOT_CARD.id)).toBe(true)
+    // The drop applies: the slot now shows the next card - the same Image re-sourced, its bitmap still loading.
+    const loaded = trackFaceLoad(NEXT.id)
+    await view.rerender(tree(<DraggableCard card={NEXT} onDrop={onDrop} />))
+    await act(async () => {
+      mockPans[0].onEnd!({ absoluteX: 80, absoluteY: 380 })
+    })
+    expect(boardHidden(NEXT.id)).toBe(true)
+    await act(async () => loaded())
+    expect(boardHidden(NEXT.id)).toBe(false)
+  })
+
+  it('a re-grab of a card whose snap-back is still returning carries on with that (painted) ghost: no fresh mount, no hold', async () => {
+    const onDrop = async () => false
+    await mountProvider(<DraggableCard card={SLOT_CARD} onDrop={onDrop} />)
+    await act(async () => {
+      mockPans[0].onStart!({ absoluteX: 50, absoluteY: 320 })
+    })
+    await act(async () => {
+      mockPans[0].onEnd!({ absoluteX: 120, absoluteY: 420 }) // invalid: snaps back
+    })
+    const mountsBefore = mockPaint.mounts[SLOT_CARD.id]
+    mockPaint.defer = true // a fresh ghost would stay invisible, the card held back at its slot
+    await act(async () => {
+      mockPans[0].onStart!({ absoluteX: 50, absoluteY: 320 })
+    })
+    expect(mockPaint.mounts[SLOT_CARD.id]).toBe(mountsBefore)
+    expect(isGhostPending(SLOT_CARD.id)).toBe(false)
+    expect(boardHidden(SLOT_CARD.id)).toBe(true)
+    expect(ghostsAt(SLOT_CARD.id)).toHaveLength(1)
+  })
 
   it("a slow drop that resolves after the next drag has begun applies with the first drag's own ghost, leaves that ghost flying, and does not un-hide the card under the new drag", async () => {
     const flights: DragFlightHandle[] = []

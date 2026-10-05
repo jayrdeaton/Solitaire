@@ -48,22 +48,39 @@ interface MockLog {
   deals: number
   /** How many Kings the completed-run slots were still drawing the moment the win cascade started (-1: it never did). */
   slotKingsAtCascade: number
+  /** The same, the moment the cascade's ghosts showed (its onShown; -1: they never did). */
+  slotKingsAtGhostsShown: number
 }
 /** How many completed-run slots are drawing a King right now - read from inside the mocked cascade, hence hoisted-mock naming. */
 const mockSlotKingsNow = () => screen.queryAllByTestId(/^pc-spades-13-/).length
-const mockLog: MockLog = { shown: [], inAir: 0, hidden: 0, cascadeChains: -1, cascadeCards: 0, deals: 0, slotKingsAtCascade: -1 }
+const mockLog: MockLog = { shown: [], inAir: 0, hidden: 0, cascadeChains: -1, cascadeCards: 0, deals: 0, slotKingsAtCascade: -1, slotKingsAtGhostsShown: -1 }
+/** The real cascade shows - and calls startChains' onShown - only once its parked ghosts' faces have painted, a frame or two after
+ * startChains (WinCascadeLayer's CascadeChains); the mock stands in for that wait with a timer. */
+const MOCK_GHOSTS_SHOW_MS = 16
+let mockGhostsShowTimer: ReturnType<typeof setTimeout> | undefined
 
 function mockMakeFlight() {
+  let landing: { timer: ReturnType<typeof setTimeout>; onDone?: () => void } | null = null
   return {
+    // Like the real handle's hide(): a flight still in the air goes at once, and its landing callback runs right there
+    // (DragGhostLayer's flushPendingSettle) instead of when it would have landed.
     hide: () => {
       mockLog.hidden += 1
+      if (!landing) return
+      const { timer, onDone } = landing
+      landing = null
+      clearTimeout(timer)
+      mockLog.inAir -= 1
+      onDone?.()
     },
     flyTo: (_x: number, _y: number, onDone?: () => void) => {
       mockLog.inAir += 1
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        landing = null
         mockLog.inAir -= 1
         onDone?.()
       }, FLIGHT_MS)
+      landing = { timer, onDone }
     }
   }
 }
@@ -84,10 +101,14 @@ const mockGhost = {
     return mockMakeFlight()
   }
 }
+/** While set, a deal started from now on stays in the air until it resolves - see holdDeals. */
+let mockDealGate: Promise<void> | null = null
 const mockDeal = {
   start: (entries: { cardId: string }[], _w: number, onLanded: (id: string) => void, onDone?: () => void) => {
     mockLog.deals += 1
-    setTimeout(() => {
+    const gate = mockDealGate
+    setTimeout(async () => {
+      if (gate) await gate
       entries.forEach((e) => onLanded(e.cardId))
       onDone?.()
     }, FLIGHT_MS)
@@ -98,15 +119,26 @@ const mockDeal = {
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/components/winning/WinCascadeLayer', () => ({
-  WinCascadeProvider: ({ children }: { children: unknown }) => children,
+  // Unmounting drops a cascade that has not shown yet, like the real provider (a test can end mid-wait).
+  WinCascadeProvider: ({ children }: { children: unknown }) => {
+    require('react').useEffect(() => () => clearTimeout(mockGhostsShowTimer), [])
+    return children
+  },
   WinCascadeGhosts: () => null,
   useWinCascade: () => ({
-    startChains: (chains: { cards: unknown[] }[]) => {
+    startChains: (chains: { cards: unknown[] }[], _cardWidth: number, onShown?: () => void) => {
       mockLog.cascadeChains = chains.length
       mockLog.cascadeCards = chains.reduce((total, chain) => total + chain.cards.length, 0)
       mockLog.slotKingsAtCascade = mockSlotKingsNow()
+      // Like the real controller: never for an empty cascade, and dropped by clear() or a newer startChains.
+      clearTimeout(mockGhostsShowTimer)
+      if (chains.length > 0 && onShown)
+        mockGhostsShowTimer = setTimeout(() => {
+          mockLog.slotKingsAtGhostsShown = mockSlotKingsNow()
+          onShown()
+        }, MOCK_GHOSTS_SHOW_MS)
     },
-    clear: () => {}
+    clear: () => clearTimeout(mockGhostsShowTimer)
   })
 }))
 jest.mock('@/components/dealing/measureView', () => ({ measureView: () => mockMeasureView() }))
@@ -140,7 +172,14 @@ jest.mock('@/components/theme', () => {
 // sweep flight's ghost - so "the last run is still in the air" reads as its Ace (which no slot ever shows) being on screen.
 jest.mock('@/components/PlayingCard', () => {
   const { View: MockView } = require('react-native')
-  return { PlayingCard: ({ card }: { card: { id: string } }) => <MockView testID={`pc-${card.id}`} />, EmptySlot: () => <MockView /> }
+  const { useEffect: useMockEffect } = require('react')
+  // A face reports its bitmap painted once mounted, as a loaded Image does - a run's ghosts are invisible until then (see
+  // cardFacePaint.ts's useGhostPaintGate).
+  function MockPlayingCard({ card, onFacePainted }: { card: { id: string }; onFacePainted?: () => void }) {
+    useMockEffect(() => onFacePainted?.(), [onFacePainted])
+    return <MockView testID={`pc-${card.id}`} />
+  }
+  return { PlayingCard: MockPlayingCard, EmptySlot: () => <MockView /> }
 })
 jest.mock('@/components/PileView', () => {
   const { Pressable: MockPressable, View: MockView } = require('react-native')
@@ -204,13 +243,15 @@ function oneMoveFromWon(): SpiderState {
 
 /** The first of the eight runs is one move from done, with every column occupied and a whole deal left in the stock: the Ace
  * (deck 0) moves onto the 2, completing King..Ace on a 6 that stays behind. Column 1 keeps a card under the Ace, so a stock deal
- * stays legal while the run is still assembled - exactly what the sweep must hold off. */
+ * stays legal while the run is still assembled - exactly what the sweep must hold off. The stock's 5s are decks 10-19, clear of
+ * the run's own 5 (deck 0): a deck-0 5 in the stock was a second copy of a card already on the board, and dealing it put two
+ * `spades-5-0` cards in one column (two children with one React key, and a registry that answered for either). */
 function firstRunOneMoveAway(): SpiderState {
   const tableau: Card[][] = Array.from({ length: 10 }, () => [])
   tableau[0] = [card(6, 8), ...run(13, 2, 0)]
   tableau[1] = [card(9, 1), card(1, 0)]
   for (let col = 2; col < 10; col++) tableau[col] = [card(9, col)]
-  const stock = Array.from({ length: 10 }, (_, d) => ({ ...card(5, d), faceUp: false }))
+  const stock = Array.from({ length: 10 }, (_, d) => ({ ...card(5, 10 + d), faceUp: false }))
   return { tableau, stock, completed: [], completedRuns: [] }
 }
 
@@ -226,7 +267,7 @@ function dealCompletesFirstRun(): SpiderState {
 /** The first board again, but with two deals left in the stock and nothing that a deal could complete. */
 function twoDealsLeft(): SpiderState {
   const state = firstRunOneMoveAway()
-  state.stock = Array.from({ length: 20 }, (_, d) => ({ ...card(5, 20 + d), faceUp: false })) // decks 20+: clear of the run's own 5 (deck 0)
+  state.stock = Array.from({ length: 20 }, (_, d) => ({ ...card(5, 20 + d), faceUp: false })) // decks 20+: clear of the run's own 5 (deck 0) and of firstRunOneMoveAway's stock (decks 10-19)
   return state
 }
 
@@ -320,6 +361,19 @@ function gateRegistry(packetsPass = false) {
   return open
 }
 
+/** Keeps every deal started from now on in the air (its flight claim held) until the returned function lands it. */
+function holdDeals() {
+  let land: () => void = () => {}
+  mockDealGate = new Promise<void>((resolve) => {
+    land = resolve
+  })
+  return async () => {
+    mockDealGate = null
+    land()
+    await flush(10)
+  }
+}
+
 const stockPackets = () => screen.queryAllByTestId('pc-stock-packet').length
 const cardsOnBoard = () => screen.queryAllByTestId(/^card-/).length
 /** The last run's Ace: shown nowhere but by that run's own sweep flight (a slot only ever shows its King). */
@@ -340,8 +394,10 @@ beforeEach(() => {
   mockLog.cascadeCards = 0
   mockLog.deals = 0
   mockLog.slotKingsAtCascade = -1
+  mockLog.slotKingsAtGhostsShown = -1
   mockMeasureGate = null
   mockGatePassesPackets = false
+  mockDealGate = null
   mockRecordWon.mockClear()
   mockMeasureView.mockClear()
   mockMeasureView.mockImplementation(async () => ({ x: 5, y: 5 }))
@@ -608,8 +664,8 @@ describe('Spider screen - nothing can move a run that is waiting to be swept', (
     expect(cardsOnBoard()).toBe(19) // the run left anyway, instead of standing assembled in column 0 forever
     expect(kingShownInSlot(0)).toBe(true)
 
-    await tap(id(5, 1)) // the 5 dealt on column 1 goes onto the 6 left in column 0: nothing is locked
-    expect(mockLog.shown).toEqual([id(5, 1)])
+    await tap(id(5, 11)) // the 5 dealt on column 1 goes onto the 6 left in column 0: nothing is locked
+    expect(mockLog.shown).toEqual([id(5, 11)])
   })
 })
 
@@ -633,10 +689,12 @@ describe('Spider screen - a New Game while a run waits to be swept leaves a clea
 
     await tap(id(1, FINAL_DECK))
     await flush(10)
+    expect(mockLog.inAir).toBe(1)
     await act(async () => {
       fireEvent.press(screen.getByTestId('new-game'))
     })
-    await flush(FLIGHT_MS + 3000) // the old ghost still lands, on a board that has since been dealt anew
+    expect(mockLog.inAir).toBe(0) // the old ghost goes with its game instead of landing on the fresh deal
+    await flush(FLIGHT_MS + 3000)
 
     await expectCleanFreshGame()
   })
@@ -660,16 +718,225 @@ describe('Spider screen - a New Game while a run waits to be swept leaves a clea
   })
 })
 
+// A run's flight to or from its slot lasts about a second (12 x CHAIN_SEGMENT_DELAY_MS, plus the flight) and New Game is never
+// disabled meanwhile. The old game's ghosts used to keep flying over the fresh deal, and their landing then ran the old game's
+// callbacks on the new one: a settleFlight() that took away a claim the fresh game held, and - for an undo's restore flight -
+// finishMoveUndo, which committed the old game's board over the fresh deal.
+/** The sweep (or a restore): every card leaves CHAIN_SEGMENT_DELAY_MS after the one before, then takes a whole flight. */
+const RUN_FLIGHT_MS = 12 * CHAIN_SEGMENT_DELAY_MS + springSettleMs(FLIGHT_SPRING)
+
+describe('Spider screen - a New Game while a run flies to or from its slot leaves a clean fresh game', () => {
+  const runGhosts = () => screen.queryAllByTestId(/^pc-spades-/).length // no slot holds a King in these games: only ghosts
+
+  it("while the run sweeps to its slot: its ghosts go at once, and their landing settles none of the fresh game's claims", async () => {
+    await mount(firstRunOneMoveAway())
+    await tap(id(1, 0))
+    await flush(FLIGHT_MS + 10 + 100) // the Ace has landed and the completed run is on its way to slot 0
+    expect(runGhosts()).toBe(13)
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('new-game'))
+    })
+    expect(runGhosts()).toBe(0) // gone with the game they belonged to
+
+    await flush(FLIGHT_MS + 10) // the fresh deal lands
+    expect(cardsOnBoard()).toBe(54)
+    const landDeal = holdDeals()
+    await tapStock() // a draw in the fresh game: its claim holds undo off until its own deal has landed
+    await flush(RUN_FLIGHT_MS) // ...past the moment the old run would have landed in its slot
+    expect(runGhosts()).toBe(0)
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+    await flush(10)
+    expect(stockPackets()).toBe(4) // refused: the old run's landing did not settle the draw's claim out from under it
+
+    await landDeal()
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+    await flush(FLIGHT_MS + 10)
+    expect(stockPackets()).toBe(5) // and undo works once the draw really has landed
+  })
+
+  it('while an undo flies the run back out of its slot: the old board never comes back over the fresh deal', async () => {
+    await mount(firstRunOneMoveAway())
+    await tap(id(1, 0))
+    await flush(FLIGHT_MS + 10 + RUN_FLIGHT_MS + 50) // the run has gone to its slot
+    expect(cardsOnBoard()).toBe(10)
+    expect(kingShownInSlot(0)).toBe(true)
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+    await flush(200) // the run is flying back to column 0
+    expect(runGhosts()).toBe(13)
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('new-game'))
+    })
+    expect(runGhosts()).toBe(0)
+    await flush(3000) // long past the moment the old restore would have landed and sent the Ace home
+
+    expect(cardsOnBoard()).toBe(54) // the whole fresh deal, not the old game's board
+    expect(stockPackets()).toBe(5)
+    expect(runGhosts()).toBe(0)
+    expect(mockLog.shown).toEqual([id(1, 0)]) // the old undo never sent its Ace home: the tap's own ghost is the only one
+
+    await tapStock() // and nothing of the old undo is left holding the fresh game
+    await flush(FLIGHT_MS + 10)
+    expect(stockPackets()).toBe(4)
+  })
+
+  it('restoring a saved game over one whose run is sweeping drops the run and its claim the same way', async () => {
+    // restoreGame over a game in progress is the mount effect's second run under StrictMode - see the restore tests below.
+    const saves = [firstRunOneMoveAway(), firstRunOneMoveAway()].map((state) => JSON.stringify({ state, undoStack: [], moves: 5, elapsedSeconds: 30, config: 1 }))
+    const answers: (() => void)[] = []
+    jest.spyOn(AsyncStorage, 'getItem').mockImplementation(
+      (key: string) =>
+        new Promise<string | null>((resolve) => {
+          if (key === SAVE_KEY) answers.push(() => resolve(saves[answers.length - 1]))
+          else resolve(null)
+        })
+    )
+    await render(
+      <StrictMode>
+        <SpiderScreen />
+      </StrictMode>
+    )
+    await flush()
+    await act(async () => answers[0]())
+    await flush()
+
+    await tap(id(1, 0))
+    await flush(FLIGHT_MS + 10 + 100) // the first game's run is on its way to slot 0
+    expect(runGhosts()).toBe(13)
+
+    await act(async () => answers[1]())
+    await flush()
+    expect(runGhosts()).toBe(0)
+    expect(cardsOnBoard()).toBe(23) // the restored board, whole
+
+    const landDeal = holdDeals()
+    await tapStock()
+    await flush(RUN_FLIGHT_MS)
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+    await flush(10)
+    expect(stockPackets()).toBe(0) // refused while the restored game's own deal is in the air
+
+    await landDeal()
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+    await flush(FLIGHT_MS + 10)
+    expect(stockPackets()).toBe(1)
+  })
+})
+
+// A tap's, a drop's or an undo's own ghost (the shared drag-ghost layer) is a claim too, settled when it lands. One still in the
+// air - or still measuring where it lands - when New Game is confirmed belonged to the game that is gone, but it used to carry on:
+// its landing settled whatever claim the fresh game held by then (a draw's, so Undo was taken while that draw's deal was still in
+// the air), and one still measuring went on to fly to wherever its card id - ids repeat from deal to deal - sat in the fresh deal.
+describe("Spider screen - a New Game while a card's own ghost flies leaves none of it in the fresh game", () => {
+  it("while an undo sends the run's top card home (its second phase): the ghost goes at once, and settles none of the fresh game's claims", async () => {
+    await mount(firstRunOneMoveAway())
+    await tap(id(1, 0))
+    await flush(FLIGHT_MS + 10 + RUN_FLIGHT_MS + 50) // the run has gone to its slot
+    expect(kingShownInSlot(0)).toBe(true)
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+    await flush(RUN_FLIGHT_MS + 20) // the run is back in column 0, and the Ace is on its way home to column 1
+    expect(mockLog.shown).toEqual([id(1, 0), id(1, 0)])
+    expect(mockLog.inAir).toBe(1)
+
+    const landDeal = holdDeals() // from here on the fresh game's deals stay in the air until landDeal
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('new-game'))
+    })
+    expect(mockLog.inAir).toBe(0) // the Ace's ghost went with its game
+    expect(mockLog.hidden).toBe(1)
+    expect(cardsOnBoard()).toBe(54)
+
+    await tapStock() // a draw in the fresh game: its claim holds Undo off until its own deal has landed
+    expect(stockPackets()).toBe(4)
+    await flush(200) // long past the moment the old ghost would have landed
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+    await flush(10)
+    expect(stockPackets()).toBe(4) // refused: the old ghost's landing did not settle the draw's claim out from under it
+
+    await landDeal()
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+    await flush(FLIGHT_MS + 10)
+    expect(stockPackets()).toBe(5) // and Undo works once the draw really has landed
+    expect(mockLog.shown).toEqual([id(1, 0), id(1, 0)])
+  })
+
+  it("while a tap's ghost is still measuring where it lands: it never sets off, and settles none of the fresh game's claims", async () => {
+    const state = twoDealsLeft()
+    state.tableau[2] = [card(9, 2), card(8, 40)] // the 8 goes onto a 9: a plain move, nothing completes
+    await mount(state)
+    const open = gateRegistry() // the tap's ghost measures its destination - and waits there
+
+    await tap(id(8, 40))
+    await flush(10)
+    expect(mockLog.shown).toEqual([id(8, 40)])
+    expect(mockLog.inAir).toBe(0) // shown over the card, not flying yet
+
+    const landDeal = holdDeals()
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('new-game'))
+    })
+    mockMeasureGate = null // the fresh game measures freely; only the old ghost's measurement is still waiting
+    expect(mockLog.hidden).toBe(1) // the waiting ghost went with its game
+
+    await tapStock()
+    expect(stockPackets()).toBe(4)
+    // Card ids repeat from deal to deal: let the old measurement find "its" card in the fresh deal, as it would whenever the
+    // fresh deal has one with that id on the board.
+    mockRegistered.set(id(8, 40), {})
+    open()
+    await flush(10)
+    expect(mockLog.inAir).toBe(0) // the retired ghost never set off for it
+    expect(mockLog.hidden).toBe(1)
+    await flush(200) // long past the moment it would have landed there
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+    await flush(10)
+    expect(stockPackets()).toBe(4) // refused: the draw's claim is still its own
+
+    mockRegistered.delete(id(8, 40))
+    await landDeal()
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+    await flush(FLIGHT_MS + 10)
+    expect(stockPackets()).toBe(5)
+    expect(mockLog.shown).toEqual([id(8, 40)])
+  })
+})
+
 // The cascade's ghosts park at each slot, so the slot's own King must stay up until they are mounted. The reveal used to blank the
 // slots at once and the cascade only started after measuring them (a later commit), leaving every slot empty in between.
-describe('Spider screen - the win cascade takes the slots over in one commit', () => {
+describe('Spider screen - the win cascade takes the slots over once its ghosts show', () => {
   /** Plays the winning move and lets the last run land in its slot, stopping there with the celebration still to come. */
   async function winAndLandLastRun() {
     await tap(id(1, FINAL_DECK))
     await flush(FLIGHT_MS + 10) // the Ace has landed and the run's sweep is under way (its own slot measurement is already answered)
   }
 
-  it('keeps every King in its slot while the cascade measures them, and blanks the slots in the commit that starts it', async () => {
+  it('keeps every King in its slot while the cascade measures them and until its ghosts show, and blanks the slots in the commit right after', async () => {
     await mount(oneMoveFromWon())
     await winAndLandLastRun()
     const held = holdAllSlotMeasurements() // from here on, only the cascade measures slots
@@ -683,8 +950,14 @@ describe('Spider screen - the win cascade takes the slots over in one commit', (
     held.resolve()
     await flush(10)
     expect(mockLog.cascadeChains).toBe(8)
-    expect(mockLog.slotKingsAtCascade).toBe(8) // the cascade started while all eight were still drawn (the commit that mounts its ghosts blanks them)
-    expect(screen.queryAllByTestId(/^pc-spades-13-/)).toHaveLength(0) // and they are blank from that commit on
+    expect(mockLog.slotKingsAtCascade).toBe(8) // the cascade started while all eight were still drawn...
+    // ...and they stay drawn while its ghosts are mounted but not on screen yet (their faces still painting: blanking them with
+    // startChains showed eight blank-faced Kings for a frame or two)...
+    expect(screen.queryAllByTestId(/^pc-spades-13-/)).toHaveLength(8)
+
+    await flush(MOCK_GHOSTS_SHOW_MS)
+    expect(mockLog.slotKingsAtGhostsShown).toBe(8) // ...up to the moment the ghosts show...
+    expect(screen.queryAllByTestId(/^pc-spades-13-/)).toHaveLength(0) // ...and they are blank from the commit right after it on
     expect(mockLog.hidden).toBe(0)
   })
 
@@ -760,8 +1033,8 @@ describe('Spider screen - overlapping stock deals', () => {
     expect(cardsOnBoard()).toBe(19) // its run swept to the slot exactly once
     expect(kingShownInSlot(0)).toBe(true)
 
-    await tap(id(5, 1)) // the 5 dealt on column 1 onto the 6 left in column 0: the sweep's claim was released, nothing is locked
-    expect(mockLog.shown).toEqual([id(5, 1)])
+    await tap(id(5, 11)) // the 5 dealt on column 1 onto the 6 left in column 0: the sweep's claim was released, nothing is locked
+    expect(mockLog.shown).toEqual([id(5, 11)])
     await flush(FLIGHT_MS + 10)
 
     // ...and the flight claim was too: undo takes the move back (it refuses while any claim is outstanding).
@@ -769,7 +1042,7 @@ describe('Spider screen - overlapping stock deals', () => {
       fireEvent.press(screen.getByTestId('undo'))
     })
     await flush(FLIGHT_MS + 10)
-    expect(mockLog.shown).toEqual([id(5, 1), id(5, 1)])
+    expect(mockLog.shown).toEqual([id(5, 11), id(5, 11)])
   })
 
   it('a second draw while the first deal is still in the air is ignored, and works once the first has landed', async () => {

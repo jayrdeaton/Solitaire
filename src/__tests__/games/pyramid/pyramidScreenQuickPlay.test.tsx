@@ -163,7 +163,14 @@ jest.mock('@/components/theme', () => {
 })
 jest.mock('@/components/PlayingCard', () => {
   const { View: MockView } = require('react-native')
-  return { PlayingCard: ({ card, testID }: { card: { id: string }; testID?: string }) => <MockView testID={testID ?? `ghost-${card.id}`} />, EmptySlot: () => <MockView /> }
+  const { useEffect: useMockEffect } = require('react')
+  // A face reports its bitmap painted once mounted, as a loaded Image does - a pair's ghosts are invisible until then (see
+  // cardFacePaint.ts's useGhostPaintGate).
+  function MockPlayingCard({ card, testID, onFacePainted }: { card: { id: string }; testID?: string; onFacePainted?: () => void }) {
+    useMockEffect(() => onFacePainted?.(), [onFacePainted])
+    return <MockView testID={testID ?? `ghost-${card.id}`} />
+  }
+  return { PlayingCard: MockPlayingCard, EmptySlot: () => <MockView /> }
 })
 jest.mock('@/components/dragdrop/DropZone', () => ({ DropZone: ({ children }: { children: unknown }) => children }))
 jest.mock('@/components/dragdrop/DraggableCard', () => {

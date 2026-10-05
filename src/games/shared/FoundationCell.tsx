@@ -1,9 +1,11 @@
 import { useEffect, useRef } from 'react'
-import { StyleSheet, View } from 'react-native'
+import { View } from 'react-native'
 
 import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { PileOverlay } from '@/components/PileOverlay'
 import { FoundationSlot, PlayingCard } from '@/components/PlayingCard'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
+import { useTakeOffHold } from '@/components/useTakeOffHold'
 import { Card, Rank, Suit } from '@/engine/types'
 
 // Plain (theme-independent) style - FoundationCell is a module-level component, so it can't reach
@@ -47,6 +49,14 @@ export function FoundationCell({ card, isFlyingHere, suit, rank, highlighted, sl
   const viewRef = useRef<View>(null)
   const frozenCopy = useFrozenWhileHidden(card, isFlyingHere)
   const frozen = settledCard === undefined ? frozenCopy : settledCard
+  const underlay = isFlyingHere ? frozen : card
+  // Take-off hold: keeps drawing a card that has just left while its ghost is not on screen yet (useTakeOffHold).
+  const { shown, holding, revealing } = useTakeOffHold(card)
+  // The overlay stands in for the real card while a flight is landing here (not over a held card: that is still the
+  // painted copy of the card that just left, and must stay drawn until its ghost shows), and while the card an undo
+  // uncovered is revealed (useTakeOffHold's `revealing`: the real card's Image has just been re-sourced from the departed
+  // card and would show its stale bitmap; the overlay's has shown `card` since the undo's own commit).
+  const overlayVisible = (isFlyingHere && !holding) || revealing
 
   useEffect(() => {
     if (!card) return
@@ -63,12 +73,11 @@ export function FoundationCell({ card, isFlyingHere, suit, rank, highlighted, sl
       }}
       collapsable={false}
     >
-      {card ? <PlayingCard card={card} hinted={highlighted} style={isFlyingHere && HIDDEN_CARD_STYLE} /> : <FoundationSlot suit={suit} rank={rank} hinted={highlighted} />}
-      {isFlyingHere && (
-        <View style={StyleSheet.absoluteFill} pointerEvents='none'>
-          {frozen ? <PlayingCard card={frozen} /> : <FoundationSlot suit={suit} rank={rank} />}
-        </View>
-      )}
+      {shown ? <PlayingCard card={shown} hinted={highlighted && !holding} style={overlayVisible && HIDDEN_CARD_STYLE} /> : <FoundationSlot suit={suit} rank={rank} hinted={highlighted} />}
+      {/* Mounted (invisible) whenever there is a card, not just while a flight is in the air: the copy that shows under an
+      incoming ghost is then the card that was already on top, already painted, instead of a new Image that would show a
+      blank face for a frame or two as the flight starts (see PileOverlay). */}
+      {(isFlyingHere || card) && <PileOverlay visible={overlayVisible}>{underlay ? <PlayingCard card={underlay} disabled /> : <FoundationSlot suit={suit} rank={rank} />}</PileOverlay>}
     </View>
   )
 }

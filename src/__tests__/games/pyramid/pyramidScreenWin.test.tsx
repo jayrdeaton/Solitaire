@@ -72,8 +72,11 @@ interface MockLog {
   atCascade: { discard: string; stock: string; waste: string } | null
   /** How many dealt cards had not landed yet when the cascade started. */
   dealPendingAtCascade: number
-  /** Renders of the DISCARD showing nothing before the cascade started: a pile blanked ahead of its ghosts sat empty until they arrived. */
-  blankDiscardRendersBeforeCascade: number
+  /** The same, at the instant the cascade's ghosts showed (its onShown) - null: they never did. */
+  atGhostsShown: { discard: string; stock: string; waste: string } | null
+  /** Renders of the DISCARD showing nothing before the cascade's ghosts showed: a pile blanked ahead of its ghosts sat empty until
+   * they arrived (or, blanked with startChains, under blank-faced ghosts until their faces painted). */
+  blankDiscardRendersBeforeGhosts: number
   /** Every deal the screen started (a sweep, or a new game's initial deal), each with its entries; the empty start()s (cancels) counted apart. */
   deals: MockDealEntry[][]
   cancelled: number
@@ -90,7 +93,11 @@ interface MockLog {
   bannerAt: number | null
   chainsAt: number | null
 }
-const mockLog: MockLog = { shown: [], shownFrom: [], flown: [], inAir: 0, chains: null, airAtWinCascade: -1, atCascade: null, dealPendingAtCascade: -1, blankDiscardRendersBeforeCascade: 0, deals: [], cancelled: 0, landed: [], takenOff: [], takenOffAt: {}, airAtDealStart: [], allLandedAt: null, bannerAt: null, chainsAt: null }
+const mockLog: MockLog = { shown: [], shownFrom: [], flown: [], inAir: 0, chains: null, airAtWinCascade: -1, atCascade: null, dealPendingAtCascade: -1, atGhostsShown: null, blankDiscardRendersBeforeGhosts: 0, deals: [], cancelled: 0, landed: [], takenOff: [], takenOffAt: {}, airAtDealStart: [], allLandedAt: null, bannerAt: null, chainsAt: null }
+/** The real cascade shows - and calls startChains' onShown - only once its parked ghosts' faces have painted, a frame or two after
+ * startChains (WinCascadeLayer's CascadeChains); the mock stands in for that wait with a timer. */
+const MOCK_GHOSTS_SHOW_MS = 16
+let mockGhostsShowTimer: ReturnType<typeof setTimeout> | undefined
 /** Read from inside the mocked cascade, hence hoisted-mock naming. */
 const mockText = (testID: string) => screen.getByTestId(testID).props.children as string
 /** Card ids whose registry lookup fails (a card that isn't registered/mounted at the instant it is measured). */
@@ -210,17 +217,28 @@ jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/engine/rng', () => ({ ...jest.requireActual('@/engine/rng'), randomSeed: () => mockSeed }))
 jest.mock('@/components/winning/WinCascadeLayer', () => ({
-  WinCascadeProvider: ({ children }: { children: unknown }) => children,
+  // Unmounting drops a cascade that has not shown yet, like the real provider (a test can end mid-wait).
+  WinCascadeProvider: ({ children }: { children: unknown }) => {
+    require('react').useEffect(() => () => clearTimeout(mockGhostsShowTimer), [])
+    return children
+  },
   WinCascadeGhosts: () => null,
   useWinCascade: () => ({
-    startChains: (chains: { cards: { id: string }[]; origin: { x: number; y: number }; segmentDelayMs?: number }[]) => {
+    startChains: (chains: { cards: { id: string }[]; origin: { x: number; y: number }; segmentDelayMs?: number }[], _cardWidth: number, onShown?: () => void) => {
       mockLog.chains = chains.map((c) => ({ ids: c.cards.map((card) => card.id), origin: c.origin, segmentDelayMs: c.segmentDelayMs }))
       mockLog.chainsAt = Date.now()
       mockLog.airAtWinCascade = mockLog.inAir
       mockLog.dealPendingAtCascade = mockDealActive ? mockDealActive.total - mockDealActive.landed.size : 0
       mockLog.atCascade = { discard: mockText('discard-top'), stock: mockText('stock-top'), waste: mockText('waste-top') }
+      // Like the real controller: never for an empty cascade, and dropped by clear() or a newer startChains.
+      clearTimeout(mockGhostsShowTimer)
+      if (chains.length > 0 && onShown)
+        mockGhostsShowTimer = setTimeout(() => {
+          mockLog.atGhostsShown = { discard: mockText('discard-top'), stock: mockText('stock-top'), waste: mockText('waste-top') }
+          onShown()
+        }, MOCK_GHOSTS_SHOW_MS)
     },
-    clear: () => {}
+    clear: () => clearTimeout(mockGhostsShowTimer)
   })
 }))
 // Every plain container measures somewhere different (each stand-in below tags its own host view), so a chain's origin says which
@@ -311,7 +329,7 @@ jest.mock('@/games/shared/DiscardCell', () => {
       const frozenCopy = useFrozenWhileHidden(card, isFlyingHere)
       const under = settledCard === undefined ? frozenCopy : settledCard
       const painted = isFlyingHere ? under : card
-      if (!card && mockLog.chains === null) mockLog.blankDiscardRendersBeforeCascade += 1
+      if (!card && mockLog.atGhostsShown === null) mockLog.blankDiscardRendersBeforeGhosts += 1
       return (
         <MockView ref={mockTagRef('discard', viewRef)} collapsable={false}>
           <MockText testID='discard-top'>{card ? card.id : 'empty'}</MockText>
@@ -420,7 +438,8 @@ beforeEach(() => {
   mockLog.airAtWinCascade = -1
   mockLog.atCascade = null
   mockLog.dealPendingAtCascade = -1
-  mockLog.blankDiscardRendersBeforeCascade = 0
+  mockLog.atGhostsShown = null
+  mockLog.blankDiscardRendersBeforeGhosts = 0
   mockLog.deals = []
   mockLog.cancelled = 0
   mockLog.landed = []
@@ -592,7 +611,7 @@ describe('Pyramid screen - a winning King', () => {
     expect(chains[0].segmentDelayMs).toBe(chainSegmentDelayMs(7)) // a short chain keeps the usual per-card delay
   })
 
-  it('hands the discard over to the cascade in ONE commit: its real top is still drawn when the cascade starts, and it was never blank before that', async () => {
+  it('hands the discard over to the cascade once its ghosts show: its real top is still drawn when the cascade starts and when its ghosts appear, and it was never blank before that', async () => {
     await mount(KING_WITH_PILES())
     await winAndStartSweep()
     await flush(3000)
@@ -600,9 +619,12 @@ describe('Pyramid screen - a winning King', () => {
     expect(mockLog.chains).toHaveLength(1)
     // The cascade measured (and mounted its parked ghosts) while the pile still showed its top (the swept piles are empty by then: the sweep emptied them)...
     expect(mockLog.atCascade).toEqual({ discard: id('diamonds', 6), stock: 'empty', waste: 'empty' })
+    // ...and kept it up until the ghosts were on screen (their faces paint a frame or two after they mount: blanking with
+    // startChains showed a blank-faced head there)...
+    expect(mockLog.atGhostsShown).toEqual({ discard: id('diamonds', 6), stock: 'empty', waste: 'empty' })
     // ...and the discard never sat empty before that: blanking on the reveal alone left it empty for the few frames runWinCascade
     // takes to measure, then the ghosts appeared (a pile that teleported away).
-    expect(mockLog.blankDiscardRendersBeforeCascade).toBe(0)
+    expect(mockLog.blankDiscardRendersBeforeGhosts).toBe(0)
     expect(text('discard-top')).toBe('empty') // and it is blank now
   })
 

@@ -2,15 +2,16 @@ import { faceUpFanOffset, useCardSize } from '@tastic/cards'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
-import Animated, { measure, runOnJS, SharedValue, useAnimatedRef, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
+import Animated, { measure, runOnJS, SharedValue, useAnimatedRef, useSharedValue } from 'react-native-reanimated'
 
 import { PileRef } from '@/engine/gameTypes'
 import { Card } from '@/engine/types'
 
+import { isGhostPending, useGhostPendingAmong } from './cardFacePaint'
 import { DragFlightHandle, useDragGhost } from './dragdrop/DragGhostLayer'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
 import { EmptySlot, PlayingCard } from './PlayingCard'
-import { playShake } from './shakeAnimation'
+import { useShakeStyle } from './shakeAnimation'
 import { useCardSoundEffects } from './useCardSounds'
 
 export interface PileDragConfig {
@@ -92,6 +93,10 @@ interface DraggableTableauCardProps {
    * flight just landed, or dimming was just switched on for the board - see PileView's `mountedRef`). Forwarded to
    * PlayingCard as `dimFadeIn` - see its own doc comment. */
   dimFadeIn: boolean
+  /** A card that has already left this column, drawn only until its ghost is on screen (PileView's take-off hold): it
+   * takes no touch (a tap meant for the card it uncovered goes through) and is not registered in CardRegistry (the card
+   * is measured where it went, never here). */
+  held?: boolean
   /** Bumped (to any new value) to play a shake - see shakeAnimation.ts. A counter rather than a
    * boolean so tapping the same stuck card twice in a row re-triggers the shake both times,
    * instead of the second tap being a no-op state transition. */
@@ -142,17 +147,11 @@ interface DraggableTableauCardProps {
  * screen-level auto-move handlers that call `ghost.cardRegistry.measure(cardId)` after applying a
  * move.
  */
-const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected, hinted, dimmed, top, zIndex, runCount, indexFromTop, isHidden, dimFadeIn, shakeToken, onPress, onDragStart, onDragEnd, originX, originY, dx, dy, startAbsX, startAbsY }: DraggableTableauCardProps) {
+const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected, hinted, dimmed, top, zIndex, runCount, indexFromTop, isHidden, dimFadeIn, held = false, shakeToken, onPress, onDragStart, onDragEnd, originX, originY, dx, dy, startAbsX, startAbsY }: DraggableTableauCardProps) {
   const cardStyle = useMemo(() => ({ position: 'absolute' as const, top, left: 0, zIndex }), [top, zIndex])
   const viewRef = useAnimatedRef<Animated.View>()
   const ghost = useDragGhost()
-  const shakeX = useSharedValue(0)
-  const shakeStyle = useAnimatedStyle(() => ({ transform: [{ translateX: shakeX.value }] }))
-  useEffect(() => {
-    if (!shakeToken) return
-    playShake(shakeX)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shakeToken])
+  const shakeStyle = useShakeStyle(shakeToken, card.id)
   const latest = useRef({ runCount, indexFromTop, onDragStart, onDragEnd, cardId: card.id })
   // Updated in an effect rather than directly during render (mutating a ref during render isn't
   // allowed) - still fresh well before handleStart/handleEnd below can actually run, since those
@@ -177,10 +176,11 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
   const wasDraggingRef = useRef(false)
 
   useEffect(() => {
+    if (held) return
     cardRegistry.register(card.id, viewRef)
     return () => cardRegistry.unregister(card.id, viewRef)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [card.id, cardRegistry])
+  }, [card.id, cardRegistry, held])
 
   const handleStart = useCallback(() => {
     wasDraggingRef.current = true
@@ -261,7 +261,7 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
   // mounts when it is revealed or when dimming turns on, and dimFadeIn makes that a fade rather than a pop.
   return (
     <GestureDetector gesture={pan}>
-      <Animated.View ref={viewRef} style={[cardStyle, isHidden && styles.hidden, shakeStyle]}>
+      <Animated.View ref={viewRef} style={[cardStyle, isHidden && styles.hidden, held && styles.noTouch, shakeStyle]}>
         <PlayingCard card={card} selected={selected} hinted={hinted} dimmed={dimmed} dimHold={isHidden} dimFadeIn={dimFadeIn} hidden={isHidden} onPress={onPress ? handlePress : undefined} />
       </Animated.View>
     </GestureDetector>
@@ -289,6 +289,56 @@ const FlyingCardSlot = memo(function FlyingCardSlot({ cardId, top, width, height
   return <View ref={ref} collapsable={false} pointerEvents='none' style={style} />
 })
 
+/** A card that has just left this column while its ghost is not on screen yet, drawn where it was (see PileViewImpl). */
+interface DepartingCard {
+  card: Card
+  /** Where it was drawn when it left, kept as it is for as long as it is held (it never moves while it is on screen). */
+  top: number
+  /** Its slot in the column when it left (its index there) - also its paint order, as every card's index is. */
+  zIndex: number
+  /** How many slots the fan it was drawn in had (columnTops' `slots` for that layout): `top` is its place in THAT fan, so the
+   * column keeps that fan under it for as long as it is held (see columnTops). */
+  slots: number
+}
+const NO_DEPARTING: readonly DepartingCard[] = []
+
+/**
+ * Each card's top (already compressed) in a column of `cards`: the fan, scaled down to fit `maxHeight` if it must be, and
+ * how many slots that fan has (`slots`).
+ *
+ * `held` are the cards that have left the column but are still drawn over it (PileViewImpl's `departing`), each in the
+ * slot it left, frozen at its top in the fan it was drawn in (its own `slots`). While any is held, the column is laid out
+ * in the largest of those fans - so a compressed column doesn't re-spread under a card still drawn there - and no larger:
+ *   - A card ARRIVING while one is held takes the slot that card left (the slot is the newcomer's now; the held card is
+ *     only drawn over it until its ghost shows). Counting the held card on top of the newcomer squeezed every card under
+ *     them one card tighter for a frame or two, then spread them back out when the hold ended - and a flight into the
+ *     column that measured its slot in between aimed a few points off.
+ *   - It is the fan each held card was DRAWN in, not one only as tall as the highest slot still held. Two cards leaving
+ *     one after the other (the next card of an auto-play stream going while the first's ghost still waits for its face)
+ *     are both drawn in the fan from before either left, and the first one's ghost shows first; sized by the highest slot
+ *     left, the column then re-spread to one card fewer under the second card, still frozen in the old fan - the card
+ *     under it slid ~12pt up beneath it, its corner index mostly covered, until the second ghost showed too.
+ * The cost of the second: a card arriving after the first of two such holds ends but before the second does lands in the
+ * older, tighter fan and moves once the second ends. That needs an arrival inside what is left of the second card's hold
+ * (a frame or two: its ghost shows once its face paints, GHOST_PAINT_MAX_MS after it mounts at most), where the case it
+ * fixes follows every overlap of two holds. A slot above the top that no held card is in counts as face-up, as whatever is
+ * above a column's top is: it is a held card's that has gone (only a face-up card's ghost waits for its face, so that card
+ * was face-up too), or - practically unreachable - one that left without a hold from under one that has one.
+ */
+function columnTops(cards: readonly Card[], held: readonly DepartingCard[], faceUpOffset: number, faceDownOffset: number, cardHeight: number, maxHeight: number | undefined) {
+  const offsets: number[] = []
+  let y = 0
+  for (const card of cards) {
+    offsets.push(y)
+    y += card.faceUp ? faceUpOffset : faceDownOffset
+  }
+  const slots = held.reduce((most, d) => Math.max(most, d.slots), cards.length)
+  for (let slot = cards.length; slot < slots; slot++) y += held.find((d) => d.zIndex === slot)?.card.faceUp === false ? faceDownOffset : faceUpOffset
+  const totalHeight = y + cardHeight
+  const scale = maxHeight && totalHeight > maxHeight ? (maxHeight - cardHeight) / (y || 1) : 1
+  return { tops: offsets.map((offset) => offset * scale), totalHeight, slots }
+}
+
 /** A vertical fanned stack, used for tableau/reserve columns across every game. */
 function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, onPressEmpty, faceDownOffset, faceUpOffset, maxHeight, style, drag, hiddenCount = 0, hiddenCardIds, dimUnplayable = false, shakeCardId, shakeCount = 1, shakeToken }: PileViewProps) {
   const { width: cardWidth, height: cardHeight } = useCardSize()
@@ -302,9 +352,41 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
   // evenly-clipped edge).
   const resolvedFaceDownOffset = faceDownOffset ?? cardHeight * 0.13
   const resolvedFaceUpOffset = faceUpOffset ?? faceUpFanOffset(cardWidth)
+  // Take-off hold (cardFacePaint.ts's ghost pending): a card's ghost is a fresh Image, invisible until its face has
+  // painted, so a card that has just LEFT this column keeps being drawn where it was - the same DraggableTableauCard
+  // instance, its face already painted - until its ghost is on screen; and a card being picked up by a drag stays
+  // un-hidden until its drag ghost is. Without it the card flashed blank (or vanished) at its source as it took off.
+  // Only a card this column last DREW can be held - one that was still a FlyingCardSlot (its own flight in had not landed)
+  // has no painted face here to keep - so the hidden-flight props of the last render are remembered with its cards.
+  const [last, setLast] = useState({ cards, hiddenCount, hiddenCardIds })
+  const [departing, setDeparting] = useState<readonly DepartingCard[]>(NO_DEPARTING)
+  let nextDeparting = departing
+  if (cards !== last.cards || hiddenCount !== last.hiddenCount || hiddenCardIds !== last.hiddenCardIds) {
+    setLast({ cards, hiddenCount, hiddenCardIds })
+    if (cards !== last.cards) {
+      const stillHere = new Set(cards.map((card) => card.id))
+      // Where each card that is leaving now was DRAWN: the layout the last render laid out, with whatever it still held
+      // (`departing` is exactly that render's `held`) - not `last.cards` alone. In a compressed column that is a looser fan,
+      // so a second card leaving while the first was still held (the next card of an auto-play stream, its ghost's face
+      // slow to paint) was held several points lower than it had been painted, half over the first, then reappeared as
+      // its ghost back where it had been.
+      const was = columnTops(last.cards, departing, resolvedFaceUpOffset, resolvedFaceDownOffset, cardHeight, maxHeight)
+      const wasDrawn = (card: Card, i: number) => !(last.cards.length - 1 - i < last.hiddenCount || last.hiddenCardIds?.has(card.id))
+      const leaving = last.cards.flatMap((card, i) => (!stillHere.has(card.id) && wasDrawn(card, i) && isGhostPending(card.id) ? [{ card, top: was.tops[i], zIndex: i, slots: was.slots }] : []))
+      nextDeparting = [...departing.filter((d) => !stillHere.has(d.card.id)), ...leaving]
+    }
+  }
+  const pendingKey = useGhostPendingAmong(useMemo(() => [...cards.map((card) => card.id), ...nextDeparting.map((d) => d.card.id)], [cards, nextDeparting]))
+  const pendingIds = useMemo(() => new Set(pendingKey ? pendingKey.split('|') : []), [pendingKey])
+  // An entry goes for good the moment its hold ends: kept, it would come back - as a fresh, blank mount at its old spot -
+  // when the same card later takes off again from wherever it went.
+  const held = nextDeparting.filter((d) => pendingIds.has(d.card.id))
+  if (held.length !== departing.length || held.some((d, i) => d !== departing[i])) setDeparting(held.length === 0 ? NO_DEPARTING : held)
   const ghost = useDragGhost()
   const { playCardSound } = useCardSoundEffects()
-  const [activeDrag, setActiveDrag] = useState<{ indexFromTop: number; count: number } | null>(null)
+  // The cards a drag in progress has picked up, by id (not by position: the commit that moves them and the one that ends
+  // the drag are not always the same, and a stale position range would hide whatever cards slid into it).
+  const [activeDrag, setActiveDrag] = useState<ReadonlySet<string> | null>(null)
   // This column's own persistent position-tracking values, tied to this PileView instance's own
   // lifetime (it stays mounted across every card the column ever holds - see DraggableTableauCard's
   // own doc comment) rather than sourced dynamically per-drag, so DraggableTableauCard's gesture
@@ -343,13 +425,13 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
   })
 
   const handleDragStart = useCallback(
-    (indexFromTop: number, runCount: number) => {
+    (_indexFromTop: number, runCount: number) => {
       const { cards: current, resolvedFaceUpOffset: offsetStep, cardWidth: width } = latest.current
       const runCards = current.slice(current.length - runCount)
       dragTokenRef.current += 1
       flightRef.current = ghost.showLive({ cards: runCards, offsetStep, cardWidth: width }, { originX, originY, dx, dy })
       playCardSound()
-      setActiveDrag({ indexFromTop, count: runCount })
+      setActiveDrag(new Set(runCards.map((c) => c.id)))
     },
     [ghost, playCardSound, originX, originY, dx, dy]
   )
@@ -386,7 +468,7 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
   // swallow taps meant for whatever is behind it) - a boolean, so this stays the same identity across renders.
   const pressHandler = onPressCard ? handleCardPress : undefined
 
-  if (cards.length === 0) {
+  if (cards.length === 0 && held.length === 0) {
     return (
       <View style={[styles.container, { width: cardWidth }, style]}>
         <EmptySlot onPress={onPressEmpty} hinted={hintCount > 0} />
@@ -394,18 +476,10 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
     )
   }
 
-  // Compute offsets, compressing if the column would exceed maxHeight.
-  const offsets: number[] = []
-  let y = 0
-  for (let i = 0; i < cards.length; i++) {
-    offsets.push(y)
-    y += cards[i].faceUp ? resolvedFaceUpOffset : resolvedFaceDownOffset
-  }
-  let scale = 1
-  const totalHeight = y + cardHeight
-  if (maxHeight && totalHeight > maxHeight) {
-    scale = (maxHeight - cardHeight) / (y || 1)
-  }
+  // Each card's top, compressing the fan if the column would exceed maxHeight - laid out as tall as it was drawn while any
+  // card is still taking off from the top of it, so a compressed column doesn't re-spread under that card while it is
+  // still drawn here (see columnTops).
+  const { tops, totalHeight } = columnTops(cards, held, resolvedFaceUpOffset, resolvedFaceDownOffset, cardHeight, maxHeight)
 
   // Split out from isCardHidden below so the runCount-skip optimization in the render loop can tell
   // "hidden because some OTHER flight (a deal, a tap-to-move) owns it, can't be interacted with at
@@ -420,7 +494,8 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
   }
 
   function isCardHidden(card: Card, indexFromTop: number): boolean {
-    const isPartOfActiveDrag = !!activeDrag && indexFromTop <= activeDrag.indexFromTop && indexFromTop > activeDrag.indexFromTop - activeDrag.count
+    // Not until its drag ghost is on screen (take-off hold - see `departing` above).
+    const isPartOfActiveDrag = !!activeDrag?.has(card.id) && !pendingIds.has(card.id)
     return isPartOfActiveDrag || isFlying(card, indexFromTop)
   }
 
@@ -430,7 +505,7 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
   // "keep showing what was there before" treatment as foundation/freecell/waste - see
   // useFrozenWhileHidden). The real (hidden) cards still render underneath so the flight has
   // something to measure/land on; this is purely a decorative overlay.
-  const allCardsHidden = cards.every((card, i) => isCardHidden(card, cards.length - 1 - i))
+  const allCardsHidden = cards.length > 0 && cards.every((card, i) => isCardHidden(card, cards.length - 1 - i))
 
   // shakeCardId names the card that was actually tapped, at the TOP of the shaking run (closest
   // to the top of the column) - shakeCount cards from it downward (toward the bottom/exposed end)
@@ -456,7 +531,16 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
 
   return (
     <View style={[styles.container, { width: cardWidth, height: maxHeight ?? totalHeight }, style]}>
-      {cards.map((card, i) => {
+      {/* The column's own empty slot under a card that is still taking off from it (the last one out). */}
+      {cards.length === 0 && <EmptySlot onPress={onPressEmpty} hinted={hintCount > 0} />}
+      {[...cards, ...held.map((d) => d.card)].map((card, i) => {
+        // A card still taking off from this column (see `departing`): the same component and key as when it was in the
+        // column, so React keeps the very instance (and its painted face); inert - no press, no drag, no hint or selection -
+        // until its ghost takes over.
+        if (i >= cards.length) {
+          const d = held[i - cards.length]
+          return <DraggableTableauCard key={d.card.id} card={d.card} selected={false} hinted={false} dimmed={false} top={d.top} zIndex={d.zIndex} runCount={0} indexFromTop={-1} isHidden={false} dimFadeIn={false} held onDragStart={handleDragStart} onDragEnd={handleDragEnd} originX={originX} originY={originY} dx={dx} dy={dy} startAbsX={startAbsX} startAbsY={startAbsY} />
+        }
         const indexFromTop = cards.length - 1 - i
         const isSelected = indexFromTop < selectedCount
         const isHinted = indexFromTop < hintCount
@@ -494,7 +578,7 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
         // A card whose flight has not landed yet is a FlyingCardSlot (see its doc comment): measurable, and nothing more.
         // Never skip it from the tree outright - that once dropped eight games' deal animations and every tableau-bound
         // flight (nothing left to measure, so the card just appeared).
-        if (isFlying(card, indexFromTop)) return <FlyingCardSlot key={card.id} cardId={card.id} top={offsets[i] * scale} width={cardWidth} height={cardHeight} />
+        if (isFlying(card, indexFromTop)) return <FlyingCardSlot key={card.id} cardId={card.id} top={tops[i]} width={cardWidth} height={cardHeight} />
 
         return (
           <DraggableTableauCard
@@ -503,7 +587,7 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
             selected={isSelected}
             hinted={isHinted}
             dimmed={isDimmed}
-            top={offsets[i] * scale}
+            top={tops[i]}
             zIndex={i}
             runCount={runCount}
             indexFromTop={indexFromTop}
@@ -589,5 +673,8 @@ const styles = StyleSheet.create({
   container: { zIndex: 0 },
   hidden: {
     opacity: 0
+  },
+  noTouch: {
+    pointerEvents: 'none'
   }
 })

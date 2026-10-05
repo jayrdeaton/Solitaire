@@ -2,10 +2,11 @@ import { Pressable, useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CARD_ASPECT, CardSizeProvider, faceUpFanOffset, useCardSize } from '@tastic/cards'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
 import Animated, { useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
 
+import { FaceLoadTrackingContext, LANDED_GHOST_MAX_MS, markGhostPending, useGhostPaintGate, whenCardsSettled } from '@/components/cardFacePaint'
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
@@ -23,6 +24,7 @@ import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { useGameSession } from '@/components/useGameSession'
+import { useTakeOffHold } from '@/components/useTakeOffHold'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { CHAIN_ENTRANCE_STAGGER_MS, CHAIN_SEGMENT_DELAY_MS } from '@/components/winning/winCascadeMotion'
 import { SPIDER_RULES } from '@/constants/gameRules'
@@ -122,6 +124,13 @@ interface SequenceFlightInstance {
   id: number
   cardWidth: number
   cards: SequenceFlightCardSpec[]
+  /** Ends the take-off hold on the run's source (cardFacePaint.ts) - its column for a sweep, its completed slot's King for
+   * a restore - see SequenceFlightGroup. */
+  releasePending: () => void
+  /** Every card has landed (handleSequenceFlightLanded): the game has moved on - the cards are revealed, the claim settled -
+   * and the ghosts only stay, still and shadowless, over the faces they landed on until those have painted. See
+   * SequenceFlightGroup. */
+  landed?: boolean
 }
 
 /** One card's independent leg of a sequence flight (see SequenceFlightGhosts) - its own spring
@@ -145,14 +154,16 @@ interface SequenceFlightInstance {
  * so stacking switches to reflect ARRIVAL order instead, letting each card land visibly on top of
  * the ones before it, exactly like a real pile building up, without the two phases (natural fan,
  * then arrival order) ever fighting each other. Otherwise mirrors Pyramid's own FlyingPairCard. */
-function FlyingSequenceCard({ card, from, to, delayMs, frame, cardWidth, onDealt, onLanded }: { card: Card; from: ScreenPoint; to: ScreenPoint; delayMs: number; frame: OverlayFrame; cardWidth: number; onDealt: () => void; onLanded: () => void }) {
+function FlyingSequenceCard({ card, from, to, delayMs, frame, cardWidth, go, landed, onFacePainted, onDealt, onLanded }: { card: Card; from: ScreenPoint; to: ScreenPoint; delayMs: number; frame: OverlayFrame; cardWidth: number; go: boolean; landed: boolean; onFacePainted: () => void; onDealt: () => void; onLanded: () => void }) {
   const cardHeight = cardWidth / CARD_ASPECT
   const tx = useSharedValue(from.x)
   const ty = useSharedValue(from.y)
   const zIndex = useSharedValue(0)
   const notified = useRef(false)
 
+  // Leaves (and its clocks run) only once the whole run is on screen - see SequenceFlightGroup.
   useEffect(() => {
+    if (!go) return
     tx.value = withDelay(delayMs, withSpring(to.x, FLIGHT_SPRING))
     ty.value = withDelay(delayMs, withSpring(to.y, FLIGHT_SPRING))
     zIndex.value = withDelay(delayMs, withTiming(100 + delayMs, { duration: 0 }))
@@ -172,7 +183,7 @@ function FlyingSequenceCard({ card, from, to, delayMs, frame, cardWidth, onDealt
       clearTimeout(timer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [go])
 
   const style = useAnimatedStyle(() => {
     const p = toLocal(tx.value, ty.value, cardWidth, cardHeight, frame)
@@ -180,9 +191,58 @@ function FlyingSequenceCard({ card, from, to, delayMs, frame, cardWidth, onDealt
   })
 
   return (
-    <Animated.View style={[sequenceFlightStyles.ghostCard, style]}>
-      <PlayingCard card={card} />
+    <Animated.View style={[sequenceFlightStyles.ghostCard, !go && sequenceFlightStyles.unpainted, style]}>
+      {/* A ghost: its face is not the board's (see cardFacePaint.ts). */}
+      <FaceLoadTrackingContext.Provider value={false}>
+        <PlayingCard card={card} style={landed ? LANDED_CARD_STYLE : undefined} onFacePainted={onFacePainted} />
+      </FaceLoadTrackingContext.Provider>
     </Animated.View>
+  )
+}
+
+// No shadow on a landed ghost: the real card under it draws its own, and two would darken it for as long as both show
+// (DragGhostLayer's landed ghosts do the same).
+const LANDED_CARD_STYLE = { shadowOpacity: 0, elevation: 0 }
+
+/** One completed run's ghosts. Each is a fresh Image, blank for a frame or two (cardFacePaint.ts), so the run stays
+ * invisible - while its source keeps drawing the cards it can (PileView's take-off hold for a sweep, CompletedSlotCard's for
+ * a restore) - until every face has painted (useGhostPaintGate), then the whole run appears at once and sets off.
+ *
+ * The landing side is the same problem the other way round: the card each ghost lands on was just revealed in the commit
+ * the flight ended in (a FlyingCardSlot swapped for the real card at a restore, the completed slot's King mounted at the
+ * end of a sweep), and that face is a new Image too - blank for a frame or two. So once every card has landed, the group
+ * is only marked `landed` (handleSequenceFlightLanded - the game itself moves on in that same commit) and stays where it
+ * is, shadowless, until none of its cards has a board face still loading and none is taking off again with a ghost not on
+ * screen yet (whenCardsSettled; LANDED_GHOST_MAX_MS at most), then retires (`onRetire`). The second part matters on the undo
+ * of a move that completed a run: the restore's last card (the move's top card) lands and is sent straight back to the
+ * column it came from in the same commit, as a new drag ghost that is invisible until its face paints - with the run's
+ * ghosts gone at once, that card was drawn nowhere for that long. Started from a layout effect of the landing commit, not
+ * the landing callback: by then the board's revealed faces have reported themselves loading and that next take-off has
+ * been marked (finishMoveUndo's ghost.show, from the microtask after its measurement; should that measurement take longer
+ * than the commit, the card is revealed in its column meanwhile, and the column holds it at take-off instead) - waited on
+ * from the callback, it would find nothing to wait for. This overlay renders after the board, so its layout effects run
+ * after the board's. */
+function SequenceFlightGroup({ flight, frame, onCardLanded, onDealt, onRetire }: { flight: SequenceFlightInstance; frame: OverlayFrame; onCardLanded: (id: number, cardId: string) => void; onDealt: () => void; onRetire: (id: number) => void }) {
+  const { id, cards, landed = false, releasePending } = flight
+  const faceIds = useMemo(() => cards.filter((c) => c.card.faceUp).map((c) => c.card.id), [cards])
+  const { shown, markPainted } = useGhostPaintGate(faceIds, releasePending)
+  // Gone before it ever showed (a New Game): its source must not keep holding. Keyed on the release itself, not the
+  // instance (marking it landed replaces the instance).
+  useEffect(() => releasePending, [releasePending])
+  useLayoutEffect(() => {
+    if (!landed) return
+    return whenCardsSettled(
+      cards.map((c) => c.card.id),
+      LANDED_GHOST_MAX_MS,
+      () => onRetire(id)
+    )
+  }, [landed, cards, id, onRetire])
+  return (
+    <CardSizeProvider width={flight.cardWidth}>
+      {cards.map(({ card, from, to, delayMs }) => (
+        <FlyingSequenceCard key={`${id}-${card.id}`} card={card} from={from} to={to} delayMs={delayMs} frame={frame} cardWidth={flight.cardWidth} go={shown} landed={landed} onFacePainted={() => markPainted(card.id)} onDealt={onDealt} onLanded={() => onCardLanded(id, card.id)} />
+      ))}
+    </CardSizeProvider>
   )
 }
 
@@ -191,6 +251,9 @@ const sequenceFlightStyles = StyleSheet.create({
     left: 0,
     position: 'absolute',
     top: 0
+  },
+  unpainted: {
+    opacity: 0
   }
 })
 
@@ -202,7 +265,7 @@ const sequenceFlightStyles = StyleSheet.create({
  * mid-deal). Same "N independent simultaneous ghosts" idiom DealLayer/WinCascadeLayer/Pyramid's
  * PairFlightGhosts already use. Always mounted (only `flights`'s contents are conditional) so its
  * own offset-correction effect can measure a real position at all times. */
-function SequenceFlightGhosts({ flights, onCardLanded }: { flights: SequenceFlightInstance[]; onCardLanded: (id: number, cardId: string) => void }) {
+function SequenceFlightGhosts({ flights, onCardLanded, onRetire }: { flights: SequenceFlightInstance[]; onCardLanded: (id: number, cardId: string) => void; onRetire: (id: number) => void }) {
   // Same overlay-placement pattern as DragGhostLayer/DealLayer - see overlayFrame.ts.
   const { overlayRef, frame } = useOverlayFrame()
   // Own instance, same as StockPacket's own useDragGhost() call above - this is a screen-level
@@ -213,24 +276,17 @@ function SequenceFlightGhosts({ flights, onCardLanded }: { flights: SequenceFlig
   return (
     <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
       {flights.map((flight) => (
-        <CardSizeProvider key={flight.id} width={flight.cardWidth}>
-          {flight.cards.map(({ card, from, to, delayMs }) => (
-            <FlyingSequenceCard
-              key={`${flight.id}-${card.id}`}
-              card={card}
-              from={from}
-              to={to}
-              delayMs={delayMs}
-              frame={frame}
-              cardWidth={flight.cardWidth}
-              onDealt={() => {
-                playCardSound()
-                hapticCard()
-              }}
-              onLanded={() => onCardLanded(flight.id, card.id)}
-            />
-          ))}
-        </CardSizeProvider>
+        <SequenceFlightGroup
+          key={flight.id}
+          flight={flight}
+          frame={frame}
+          onCardLanded={onCardLanded}
+          onRetire={onRetire}
+          onDealt={() => {
+            playCardSound()
+            hapticCard()
+          }}
+        />
       ))}
     </View>
   )
@@ -333,10 +389,18 @@ function SpiderScreenInner() {
    * Same single-slot reasoning as pendingDealRef above - `deal`'s own one-active-batch-at-a-time
    * constraint means at most one stock-deal-undo is ever really in flight regardless. */
   const pendingUndoDealRef = useRef<{
-    entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null }[]
+    entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null; releasePending: () => void }[]
     destinationPacketIndex: number
     token: number
   } | null>(null)
+  /** Every take-off hold (cardFacePaint.ts) the latest stock-deal undo took on the cards it flies back (handleUndo). Each one
+   * also travels with its own card - pendingUndoDealRef, runUndoDeal, then deal.start, which gives it back at that card's
+   * take-off - and is kept here too so New Game/restore can give back, ahead of their own commit, whatever is still out at
+   * whichever of those stages: the deal's own cancel only comes with the fresh game's initial deal, a commit and a measurement
+   * later, and until then each card still held would be drawn by its column over the fresh board. A release is safe to run
+   * twice (markGhostPending), so this is never pruned, only replaced by the next stock-deal undo - which waits for every
+   * flight to settle, so the previous one's holds have all been given back by then. */
+  const undoDealHoldsRef = useRef<(() => void)[]>([])
   /** A tap-to-move or drag-drop's own ghost flight (via `ghost`, DragGhostLayer), awaiting its
    * post-commit measurement + flight.flyTo - a list, not a single slot like pendingDealRef/
    * pendingUndoDealRef above, since these genuinely CAN overlap now (see PATTERN_OVERLAP_GATE):
@@ -351,6 +415,11 @@ function SpiderScreenInner() {
    * never completes a NEW run) - once this entry's own ghost lands, the effect below hands off to
    * sweepRunToFoundation instead of just ending this flying entry, exactly as before. */
   const pendingMoveFlightsRef = useRef<PendingMoveFlight[]>([])
+  /** Every pendingMoveFlightsRef entry the effect that drains it has taken on, from its destination measurement until its
+   * ghost lands (`proceed`) - what a New Game/restore retires (retireMoveFlights). Being in here is also what makes an entry
+   * live: a retired one is not, so the answer to its measurement and its landing - which hide() runs at once (DragGhostLayer's
+   * flushPendingSettle) - both find nothing left to do. */
+  const airborneMoveFlightsRef = useRef<Set<PendingMoveFlight>>(new Set())
   /** How many completed runs are still assembled in the tableau waiting for sweepRunToFoundation (see PendingSweep) - a
    * counter, since one stock deal can complete several columns. A run leaves as a second phase AFTER the move (or the dealt
    * card) that completed it lands, so for that stretch - the move's ghost, then the sweep's measurements - the board still
@@ -367,7 +436,7 @@ function SpiderScreenInner() {
    * fan position can only be measured once it's mounted there. Once every card in that flight has
    * landed, it hands off to finishMoveUndo to run its own second phase: peeling the actively-moved
    * subgroup back to its source column, exactly like a normal move-undo. */
-  const pendingRunRestoreRef = useRef<{ run: Card[]; origin: { x: number; y: number }; move: MoveInfo; prevState: SpiderState; token: number } | null>(null)
+  const pendingRunRestoreRef = useRef<{ run: Card[]; origin: { x: number; y: number }; move: MoveInfo; prevState: SpiderState; token: number; releasePending: () => void } | null>(null)
   // undoBusyRef (guards handleUndo against overlapping invocations) now comes from
   // useFlightConcurrency above. Undoing a stock deal that ALSO completed one or more runs kicks
   // off two independent flight pipelines from one commitState: the dealt cards flying back into
@@ -390,10 +459,15 @@ function SpiderScreenInner() {
   const [completingSlots, setCompletingSlots] = useState<Set<number>>(new Set())
   const [sequenceFlights, setSequenceFlights] = useState<SequenceFlightInstance[]>([])
   const sequenceFlightIdRef = useRef(0)
+  // A landed group has waited out the faces under it (SequenceFlightGroup's landed hold): it goes for good. Stable, so the
+  // group's wait isn't restarted by every render of this screen.
+  const retireSequenceFlight = useCallback((id: number) => setSequenceFlights((flights) => flights.filter((f) => f.id !== id)), [])
   // Nothing animating: every ghost flight (tap/drag, stock deal, run sweep, undo) holds an activeFlightCount claim
   // until it lands (startSequenceFlight claims one per sweep/restore flight), and the initial deal holds dealHiddenIds
-  // until its last card does. sequenceFlights is the ghosts actually still mounted - checked directly as well.
-  const settled = activeFlightCount === 0 && dealHiddenIds.size === 0 && sequenceFlights.length === 0
+  // until its last card does. sequenceFlights is the ghosts actually still in the air - checked directly as well; a
+  // LANDED group still mounted is only waiting for the faces it landed on to paint (SequenceFlightGroup), which nothing
+  // here waits on (the board is already final under it), so it doesn't hold the win reveal back.
+  const settled = activeFlightCount === 0 && dealHiddenIds.size === 0 && sequenceFlights.every((f) => f.landed)
   // `won` is derived from the SWEPT state - it flips when the last run leaves the tableau for its slot, so the
   // celebration (slots blanking for the win cascade, fireworks, banner) waits for that last sweep flight to land and
   // the finished board to hold a beat, instead of cutting it short. See useWinReveal.
@@ -415,7 +489,7 @@ function SpiderScreenInner() {
   /** One or more runs awaiting undo - stashed by undoSequenceCompletions, resolved by the effect
    * below once prevState has actually committed (each card's restored tableau position can only be
    * measured once it's re-mounted there) - mirrors pendingDealRef/pendingRemovalUndoRef's own shape. */
-  const pendingSequenceUndoRef = useRef<{ bySlot: { slotIndex: number; origin: { x: number; y: number } | null; run: Card[] }[]; token: number } | null>(null)
+  const pendingSequenceUndoRef = useRef<{ bySlot: { slotIndex: number; origin: { x: number; y: number } | null; run: Card[]; releasePending: () => void }[]; token: number } | null>(null)
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
   // Which card (if any) should play its "nowhere to go" shake right now - see handlePressCard and
@@ -445,6 +519,43 @@ function SpiderScreenInner() {
     sweepPendingRef.current = 0
   }
 
+  // New Game/restore: every sequence flight - a run sweeping to its slot, a run flying back out of one, a held landed group,
+  // and a restore still waiting on its measurements - belongs to the game being replaced (either lasts about a second:
+  // 12 x CHAIN_SEGMENT_DELAY_MS plus the flight, and New Game is never disabled while one flies). Left alone, an old group
+  // kept flying over the fresh deal, and its landing then ran the old game's callbacks on the new one: settleFlight() took a
+  // claim away from whatever the fresh game had in the air (unlocking undo under its ghost), a restore's onCardLanded deleted
+  // its ids from the fresh deal's dealHiddenIds (card ids repeat from deal to deal, so a new card showed before its deal ghost
+  // arrived), and a restore's onAllLanded ran finishMoveUndo, which committed the OLD game's board over the fresh one.
+  // Emptying the list unmounts every group (releasing its take-off hold, clearing its landing timers, cancelling a landed
+  // hold); emptying the two maps means a landing timer that has already fired in this same tick finds nothing to run. The
+  // ids keep counting up, so no stale id can ever match a new flight. A restore not started yet gives its slot hold back.
+  function retireSequenceFlights() {
+    setSequenceFlights([])
+    sequenceFlightPendingRef.current.clear()
+    sequenceFlightCallbacksRef.current.clear()
+    setCompletingSlots(new Set())
+    pendingRunRestoreRef.current?.releasePending()
+    pendingRunRestoreRef.current = null
+    pendingSequenceUndoRef.current?.bySlot.forEach((slot) => slot.releasePending())
+    pendingSequenceUndoRef.current = null
+  }
+
+  // New Game/restore: the same for every tap, drop and undo ghost of the game being replaced (the drag-ghost layer's, see
+  // pendingMoveFlightsRef) - queued, measuring its destination, or in the air (an undo of a run-completing move sends its top
+  // card home this way as its second phase, right after the ~1s restore flight). Left alone, one in the air kept flying over
+  // the fresh deal and its landing settled a claim the fresh game held by then (a draw's: Undo was taken while that draw's
+  // deal was still in the air), and one still measuring went on to fly to wherever its card id - ids repeat from deal to deal
+  // - sat in the fresh deal. Both lists are emptied BEFORE the ghosts are hidden: hide() runs a pending landing at once, and
+  // an entry no longer in airborneMoveFlightsRef is not live, so its `proceed` returns without touching anything (a sweep's
+  // would bail anyway - its claim is from the old epoch, see claimSweep - but its ghost goes too). A queued entry used to be
+  // dropped with its ghost still shown.
+  function retireMoveFlights() {
+    const retired = [...pendingMoveFlightsRef.current, ...airborneMoveFlightsRef.current]
+    pendingMoveFlightsRef.current = []
+    airborneMoveFlightsRef.current.clear()
+    retired.forEach((p) => p.flight.hide())
+  }
+
   const startNewGame = useCallback(
     (ctrl: ReturnType<typeof createSpiderController>) => {
       const myToken = ++dealTokenRef.current
@@ -454,10 +565,13 @@ function SpiderScreenInner() {
       hintsUsedRef.current = false
       resetFlightConcurrency()
       resetSweepClaims()
+      retireSequenceFlights()
+      retireMoveFlights()
       stockDealTokenRef.current = null
-      pendingMoveFlightsRef.current = []
       pendingDealRef.current = null
       pendingUndoDealRef.current = null
+      // Before the fresh board commits: a card a stock-deal undo still holds would be drawn over it (see undoDealHoldsRef).
+      undoDealHoldsRef.current.forEach((release) => release())
       session.reset()
       setMessage(null)
       recordedRef.current = false
@@ -489,10 +603,12 @@ function SpiderScreenInner() {
     hintsUsedRef.current = false
     resetFlightConcurrency()
     resetSweepClaims()
+    retireSequenceFlights()
+    retireMoveFlights()
     stockDealTokenRef.current = null
-    pendingMoveFlightsRef.current = []
     pendingDealRef.current = null
     pendingUndoDealRef.current = null
+    undoDealHoldsRef.current.forEach((release) => release()) // see startNewGame
     session.restore(saved.moves, saved.elapsedSeconds)
     setMessage(null)
     recordedRef.current = false
@@ -542,10 +658,13 @@ function SpiderScreenInner() {
   // this file, for the same "New Game tapped mid-measurement" reason.
   //
   // The slots keep drawing their Kings while this measures (their containers are card-sized and always mounted, so they
-  // measure the same whether or not a King is drawn) and blank only in the SAME commit that mounts the cascade's ghosts:
-  // startChains and setCascadeHandoff run in one async continuation, which React batches into one render. Blanking at the
-  // reveal instead left every slot empty for the few frames this measurement takes, before any ghost stood there. A slot with
-  // no chain (its container could not be measured) simply keeps its King, and if no chain starts at all every slot stays up.
+  // measure the same whether or not a King is drawn) and blank only once the cascade's ghosts are on screen: setCascadeHandoff
+  // is startChains' onShown, run in the commit the ghosts appear - which waits for their parked faces to paint (see
+  // WinCascadeLayer's CascadeChains). Blanking at the reveal instead left every slot empty for the few frames this measurement
+  // takes, before any ghost stood there, and blanking in the commit that mounted the ghosts showed blank-faced Kings for a
+  // frame or two. An undo or New Game before then clears the cascade, which drops the callback (and the hand-off is keyed to
+  // `s` anyway). A slot with no chain (its container could not be measured) simply keeps its King, and if no chain starts at
+  // all every slot stays up (an empty cascade never calls onShown).
   async function runWinCascade(s: SpiderState, gen: number) {
     const origins = await Promise.all(completedSlotRefs.current.map((view) => measureView(view)))
     if (dealTokenRef.current !== gen) return
@@ -557,8 +676,7 @@ function SpiderScreenInner() {
       chains.push({ cards: run, origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS }) // already King-first, Ace-last
       chained.add(slot)
     })
-    winCascade.startChains(chains, cardWidth)
-    if (chained.size > 0) setCascadeHandoff({ forState: s, slots: chained })
+    winCascade.startChains(chains, cardWidth, () => setCascadeHandoff({ forState: s, slots: chained }))
   }
 
   // Held back until the win is revealed (see winRevealed): the pending token is set as soon as the last run is swept,
@@ -577,11 +695,16 @@ function SpiderScreenInner() {
   // claims exactly one outstanding completion here, matching how Klondike counts its own multi-card
   // deal-style flights as one. Balanced 1:1 by handleSequenceFlightLanded's own settleFlight() call
   // below, once every card belonging to THIS instance has landed.
-  function startSequenceFlight(cards: SequenceFlightCardSpec[], onAllLanded: () => void, onCardLanded?: (cardId: string) => void) {
+  //
+  // `heldSince`: a take-off hold the caller already took (a restore marks its run in the very commit that takes the King
+  // out of its slot - see startUndoRunCompletion), handed to the group so it ends the commit the ghosts show.
+  function startSequenceFlight(cards: SequenceFlightCardSpec[], onAllLanded: () => void, onCardLanded?: (cardId: string) => void, heldSince?: () => void) {
     const id = ++sequenceFlightIdRef.current
     sequenceFlightPendingRef.current.set(id, cards.length)
     sequenceFlightCallbacksRef.current.set(id, { onCardLanded, onAllLanded })
-    setSequenceFlights((flights) => [...flights, { id, cardWidth, cards }])
+    // Taking off: the cards' source keeps drawing them until the run's ghosts show (see SequenceFlightGroup).
+    const releasePending = heldSince ?? markGhostPending(cards.filter((c) => c.card.faceUp).map((c) => c.card.id))
+    setSequenceFlights((flights) => [...flights, { id, cardWidth, cards, releasePending }])
     startFlights(1)
   }
 
@@ -688,10 +811,15 @@ function SpiderScreenInner() {
   // naturally IS the just-restored full run, so slicing off the top `count` cards already finds
   // exactly the actively-moved subgroup with no extra bookkeeping.
   async function finishMoveUndo(move: MoveInfo, prevState: SpiderState) {
+    const token = dealTokenRef.current
     const sourcePile = state!.tableau[move.to.index] ?? null
     const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : []
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
     const origin = movingCards.length > 0 ? await ghost.cardRegistry.measure(move.anchorCardId) : null
+    // New Game/restore replaced the game while the measurement was pending (undo holds every other action off, so nothing
+    // else moves the token meanwhile): `prevState` is the old game's board - committing it would overwrite the fresh deal -
+    // and this undo's claim was reset with everything else, so there is nothing to settle either.
+    if (dealTokenRef.current !== token) return
 
     if (origin) {
       playCardSound()
@@ -716,11 +844,17 @@ function SpiderScreenInner() {
     const pending = pendingMoveFlightsRef.current
     pendingMoveFlightsRef.current = []
     pending.forEach((p) => {
+      airborneMoveFlightsRef.current.add(p)
       ;(async () => {
         const landed = await ghost.cardRegistry.measure(p.cardId)
+        // A New Game/restore retired it while it measured (retireMoveFlights, which already hid its ghost): the answer is
+        // about the fresh deal - card ids repeat from deal to deal - and this flight, its claim and its game are gone.
+        if (!airborneMoveFlightsRef.current.has(p)) return
         // Once this ghost lands, either hand off to phase 2 of a run completion (see
-        // completeMove/sweepRunToFoundation) or finish normally.
+        // completeMove/sweepRunToFoundation) or finish normally. Only while still live, and only once: a retired entry's
+        // landing (run at once by the hide() that retires it) must not settle whatever the fresh game has claimed since.
         const proceed = () => {
+          if (!airborneMoveFlightsRef.current.delete(p)) return
           if (p.sweep) {
             sweepRunToFoundation(p.sweep.colIndex, p.sweep.slotIndex, p.sweep.run, p.sweep.release, p.flyingId)
             return
@@ -754,19 +888,32 @@ function SpiderScreenInner() {
     // handleUndo's stock-deal-undo branch, which holds full exclusivity (undoBusyRef) against a
     // second overlapping handleUndo - so the only way this token goes stale is a DIFFERENT action
     // (New Game/restore) that's already reset activeFlightCountRef via resetFlightConcurrency.
-    if (!pending || pending.token !== dealTokenRef.current || !state) return
+    // (New Game/restore also empties this ref and gives its slots' holds back - see retireSequenceFlights - so a stale entry
+    // here is only ever dropped, holds included.)
+    if (!pending || !state) return
     pendingSequenceUndoRef.current = null
+    // Every slot's take-off hold (undoSequenceCompletions) ends with its own group's ghosts showing, or here on whichever
+    // way out leaves a slot without a flight - never left to its backstop, which would keep a King drawn in a slot it has
+    // already left for up to a second.
+    const releaseAll = () => pending.bySlot.forEach((slot) => slot.releasePending())
+    if (pending.token !== dealTokenRef.current) {
+      releaseAll()
+      return
+    }
     ;(async () => {
       // First pass: resolve every slot's own destinations before starting anything, so the total
       // "how many flights will actually start" count (needed for FINDING 1's shared pipeline
       // counter) is known up front rather than growing mid-loop while earlier flights are already
       // animating.
-      const perSlot: { cards: SequenceFlightCardSpec[]; run: Card[]; failedIds: string[] }[] = []
-      for (const { origin, run } of pending.bySlot) {
+      const perSlot: { cards: SequenceFlightCardSpec[]; run: Card[]; failedIds: string[]; releasePending: () => void }[] = []
+      for (const { origin, run, releasePending } of pending.bySlot) {
         const destinations = origin ? await Promise.all(run.map((c) => ghost.cardRegistry.measure(c.id))) : run.map(() => null)
         // Same stale-token reasoning as this effect's own outer guard above - deliberately no
         // settleFlight() here either.
-        if (dealTokenRef.current !== pending.token) return
+        if (dealTokenRef.current !== pending.token) {
+          releaseAll()
+          return
+        }
         const cards: SequenceFlightCardSpec[] = []
         const failedIds: string[] = []
         if (origin) {
@@ -789,7 +936,7 @@ function SpiderScreenInner() {
             else failedIds.push(card.id)
           }
         }
-        perSlot.push({ cards, run, failedIds })
+        perSlot.push({ cards, run, failedIds, releasePending })
       }
 
       // FINDING 1: track how many of these per-slot flights are actually starting, and only
@@ -805,10 +952,11 @@ function SpiderScreenInner() {
       let remaining = startingFlights.length
       if (remaining === 0) settleFlight()
 
-      perSlot.forEach(({ cards, run, failedIds }) => {
+      perSlot.forEach(({ cards, run, failedIds, releasePending }) => {
         if (cards.length === 0) {
           // Nothing in this run could be measured at all - unhide the whole thing immediately
           // rather than leave it stuck invisible forever.
+          releasePending()
           setDealHiddenIds((ids) => {
             const next = new Set(ids)
             run.forEach((c) => next.delete(c.id))
@@ -828,20 +976,26 @@ function SpiderScreenInner() {
             return next
           })
         }
+        // The landing callbacks are guarded by the token too, though New Game/restore already drops them
+        // (retireSequenceFlights): a stale one would settle a claim of the fresh game's, or reveal one of its cards (ids
+        // repeat from deal to deal) before its own flight lands.
         startSequenceFlight(
           cards,
           () => {
+            if (dealTokenRef.current !== pending.token) return
             remaining -= 1
             if (remaining <= 0) settleFlight()
           },
           (cardId) => {
+            if (dealTokenRef.current !== pending.token) return
             setDealHiddenIds((ids) => {
               if (!ids.has(cardId)) return ids
               const next = new Set(ids)
               next.delete(cardId)
               return next
             })
-          }
+          },
+          releasePending
         )
       })
     })()
@@ -861,13 +1015,22 @@ function SpiderScreenInner() {
   // decides who's visibly on top there, so King needs to be last in the array to keep the slot
   // looking like it normally does for as long as anything is still waiting on it.
   //
+  // `pending.releasePending` is the slot's take-off hold (startUndoRunCompletion): handed to the flight, whose ghosts end it
+  // the commit they show, or given back here on every way out without one.
   useEffect(() => {
     const pending = pendingRunRestoreRef.current
-    if (!pending || pending.token !== dealTokenRef.current || !state) return
+    if (!pending || !state) return
     pendingRunRestoreRef.current = null
+    if (pending.token !== dealTokenRef.current) {
+      pending.releasePending()
+      return
+    }
     ;(async () => {
       const destinations = await Promise.all(pending.run.map((c) => ghost.cardRegistry.measure(c.id)))
-      if (dealTokenRef.current !== pending.token) return
+      if (dealTokenRef.current !== pending.token) {
+        pending.releasePending()
+        return
+      }
       const cards: SequenceFlightCardSpec[] = []
       const failedIds: string[] = []
       for (let i = pending.run.length - 1; i >= 0; i--) {
@@ -877,6 +1040,7 @@ function SpiderScreenInner() {
         else failedIds.push(card.id)
       }
       if (cards.length === 0) {
+        pending.releasePending()
         setDealHiddenIds((ids) => {
           const next = new Set(ids)
           pending.run.forEach((c) => next.delete(c.id))
@@ -895,17 +1059,24 @@ function SpiderScreenInner() {
           return next
         })
       }
+      // Both landing callbacks check the token too, though New Game/restore already drops them (retireSequenceFlights): a
+      // stale onAllLanded would run finishMoveUndo and commit the OLD game's board over the fresh one, a stale onCardLanded
+      // would reveal one of the fresh deal's cards (ids repeat from deal to deal) before its own deal ghost lands.
       startSequenceFlight(
         cards,
-        () => finishMoveUndo(pending.move, pending.prevState),
+        () => {
+          if (dealTokenRef.current === pending.token) finishMoveUndo(pending.move, pending.prevState)
+        },
         (cardId) => {
+          if (dealTokenRef.current !== pending.token) return
           setDealHiddenIds((ids) => {
             if (!ids.has(cardId)) return ids
             const next = new Set(ids)
             next.delete(cardId)
             return next
           })
-        }
+        },
+        pending.releasePending
       )
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1068,7 +1239,12 @@ function SpiderScreenInner() {
   // couldn't measure it - see handleUndo's comment on a swept-run column) or if the destination
   // itself can't be measured just isn't included, the same graceful-skip every other deal flight
   // here already uses for an unmeasurable side.
-  async function runUndoDeal(entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null }[], destinationPacketIndex: number, token: number) {
+  //
+  // Each card's take-off hold (handleUndo marks it, so its column keeps drawing it where it was) goes to deal.start with it,
+  // which gives it back at that card's take-off; every way out of here without a flight for a card gives its hold back at
+  // once, so a column never keeps drawing a card that is not going to leave it (a card with no origin holds nothing).
+  async function runUndoDeal(entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null; releasePending: () => void }[], destinationPacketIndex: number, token: number) {
+    const releaseAll = () => entries.forEach((e) => e.releasePending())
     const destination = await ghost.cardRegistry.measure(stockPacketId(destinationPacketIndex))
     // A stale token means some other action (New Game, another stock draw, another undo) has
     // already superseded this one and reset undoBusyRef/activeFlightCountRef itself (via
@@ -1078,8 +1254,13 @@ function SpiderScreenInner() {
     // against a second overlapping call of itself (undoBusyRef, checked at its own top) - so the
     // only way to reach a stale token here is a DIFFERENT action (New Game/restore) that's already
     // reset the counter on its own, never a second handleUndo silently stacking an unsettled claim.
-    if (dealTokenRef.current !== token) return
+    // (That game change has already given every hold back - see undoDealHoldsRef; doing it again here is a no-op.)
+    if (dealTokenRef.current !== token) {
+      releaseAll()
+      return
+    }
     if (!destination) {
+      releaseAll()
       settleFlight()
       return
     }
@@ -1087,9 +1268,10 @@ function SpiderScreenInner() {
     const dealEntries: DealCardSpec[] = []
     entries.forEach((e) => {
       if (!e.origin) return
-      dealEntries.push({ cardId: e.card.id, card: e.card, from: e.origin, to: destination, delayMs: e.delayMs })
+      dealEntries.push({ cardId: e.card.id, card: e.card, from: e.origin, to: destination, delayMs: e.delayMs, releasePending: e.releasePending })
     })
     if (dealEntries.length === 0) {
+      releaseAll()
       settleFlight()
       return
     }
@@ -1137,8 +1319,10 @@ function SpiderScreenInner() {
   // Each flying card reports here as its own independent flight settles (see
   // SequenceFlightGhosts/FlyingSequenceCard) - runs whatever per-card side effect that flight
   // instance was started with (see sequenceFlightCallbacksRef/startSequenceFlight). Once every
-  // card belonging to THIS instance has landed, it's done: drop the instance and run its
-  // onAllLanded callback.
+  // card belonging to THIS instance has landed, it's done: run its onAllLanded callback and
+  // settle its claim - and mark the instance landed rather than drop it, so its ghosts stay over
+  // the faces they just revealed until those have painted (SequenceFlightGroup's landed hold,
+  // which retires it). Everything the game does at a landing still happens here, at the landing.
   function handleSequenceFlightLanded(id: number, cardId: string) {
     const callbacks = sequenceFlightCallbacksRef.current.get(id)
     callbacks?.onCardLanded?.(cardId)
@@ -1150,7 +1334,7 @@ function SpiderScreenInner() {
     }
     sequenceFlightPendingRef.current.delete(id)
     sequenceFlightCallbacksRef.current.delete(id)
-    setSequenceFlights((flights) => flights.filter((f) => f.id !== id))
+    setSequenceFlights((flights) => flights.map((f) => (f.id === id ? { ...f, landed: true } : f)))
     callbacks?.onAllLanded()
     // Settles the one claim startSequenceFlight made for this instance (see its own doc comment) -
     // every card belonging to this flight id has now landed.
@@ -1167,11 +1351,25 @@ function SpiderScreenInner() {
   // setState called by the caller right after) - setting it after the fact would let them flash
   // fully visible for a frame before their flight starts covering them, same reasoning Pyramid's
   // undoRemoval already relies on.
-  async function undoSequenceCompletions(fromState: SpiderState, slotIndexes: number[], token: number) {
+  //
+  // The same goes for each slot's take-off hold: the revert takes the King out of its slot, and the restore's ghosts only
+  // exist once the pendingSequenceUndoRef effect has measured their destinations (a commit later, then a paint wait) - so
+  // the run is marked as taking off (cardFacePaint.ts) here, ahead of that commit, and the slot keeps drawing its King
+  // (CompletedSlotCard) until the group's ghosts are on screen; the group releases it then (startSequenceFlight's
+  // `heldSince`). Marked the way startSequenceFlight would mark it. A slot that could not be measured gets no flight, so it
+  // holds nothing. False: New Game/restore replaced the game while the slots were measured - nothing here may touch the
+  // fresh one (its dealHiddenIds would hide its own cards with these ids for good), and the caller bails too.
+  async function undoSequenceCompletions(fromState: SpiderState, slotIndexes: number[], token: number): Promise<boolean> {
     const origins = await Promise.all(slotIndexes.map((slotIndex) => measureView(completedSlotRefs.current[slotIndex])))
-    const bySlot = slotIndexes.map((slotIndex, i) => ({ slotIndex, origin: origins[i], run: fromState.completedRuns[slotIndex] }))
+    if (dealTokenRef.current !== token) return false
+    const bySlot = slotIndexes.map((slotIndex, i) => {
+      const run = fromState.completedRuns[slotIndex]
+      const releasePending = origins[i] ? markGhostPending(run.filter((c) => c.faceUp).map((c) => c.id)) : () => {}
+      return { slotIndex, origin: origins[i], run, releasePending }
+    })
     setDealHiddenIds((ids) => new Set([...ids, ...bySlot.flatMap(({ run }) => run.map((c) => c.id))]))
     pendingSequenceUndoRef.current = { bySlot, token }
+    return true
   }
 
   // Tapping any movable card sends it to the tableau pile that buries the fewest cards (see
@@ -1426,6 +1624,9 @@ function SpiderScreenInner() {
       const dealtColumns = state.tableau.map((col, colIndex) => ({ col, colIndex })).filter(({ col, colIndex }) => col.length === prevState.tableau[colIndex].length + 1)
       const dealtCards = dealtColumns.map(({ col }) => col[col.length - 1])
       const origins = await Promise.all(dealtCards.map((c) => ghost.cardRegistry.measure(c.id)))
+      // New Game/restore replaced the game while these were measured: `prevState` is the old game's board, and every claim
+      // (this undo's busy flag included) was reset with it - so this bails without committing or settling anything.
+      if (dealTokenRef.current !== myToken) return
       const destinationPacketIndex = Math.ceil(prevState.stock.length / TABLEAU_COLUMNS) - 1
 
       // FINDING 1: this action always starts the deal-back pipeline (runUndoDeal, wired via
@@ -1438,11 +1639,21 @@ function SpiderScreenInner() {
       // startSequenceFlight/handleSequenceFlightLanded pairing).
       startFlights(undoneSlots.length > 0 ? 2 : 1)
 
-      if (undoneSlots.length > 0) await undoSequenceCompletions(state, undoneSlots, myToken)
+      if (undoneSlots.length > 0 && !(await undoSequenceCompletions(state, undoneSlots, myToken))) return
 
       setHistory((h) => h.slice(0, -1))
+      // Taking off from their columns: the commit below takes these cards out of them, but each card's ghost only shows once
+      // the restored packet has been measured (the commit after this one), the deal pool has mounted and the card's own
+      // stagger has run out (up to 9 x DEAL_STAGGER_MS) - and the columns used to drop them at once, so the dealt cards
+      // vanished from the board and came back as ghosts one by one. Each is marked here, in the same synchronous stretch as
+      // the commit, with a mark of its own (cardFacePaint.ts), so its column keeps drawing the very card it had (PileView's
+      // held cards) until that card's own ghost takes off over it - DealLayer gives each back then (releasePending), and
+      // runUndoDeal/New Game give back any that will never fly. A card that could not be measured gets no ghost, so it holds
+      // nothing. (A completed run this deal swept is a different set of cards, marked by undoSequenceCompletions above.)
+      const entries = dealtCards.map((c, i) => ({ card: c, delayMs: dealtColumns[i].colIndex * DEAL_STAGGER_MS, origin: origins[i], releasePending: origins[i] ? markGhostPending([c.id]) : () => {} }))
+      undoDealHoldsRef.current = entries.map((e) => e.releasePending)
       pendingUndoDealRef.current = {
-        entries: dealtCards.map((c, i) => ({ card: c, delayMs: dealtColumns[i].colIndex * DEAL_STAGGER_MS, origin: origins[i] })),
+        entries,
         destinationPacketIndex,
         token: myToken
       }
@@ -1484,7 +1695,11 @@ function SpiderScreenInner() {
   // visible before each card's own flight arrives to cover it.
   async function startUndoRunCompletion(currentState: SpiderState, prevState: SpiderState, move: MoveInfo, slotIndex: number) {
     const run = currentState.completedRuns[slotIndex]
+    const token = dealTokenRef.current
     const origin = await measureView(completedSlotRefs.current[slotIndex])
+    // New Game/restore replaced the game while the slot was measured (see finishMoveUndo's identical guard): neither board
+    // below may be committed over the fresh one, and this undo's claim was reset with everything else.
+    if (dealTokenRef.current !== token) return
     if (!origin) {
       commitState(prevState)
       // Settles the single startFlights(1) claim handleUndo made for this whole phase1->phase2
@@ -1505,7 +1720,14 @@ function SpiderScreenInner() {
     }
 
     setDealHiddenIds((ids) => new Set([...ids, ...run.map((c) => c.id)]))
-    pendingRunRestoreRef.current = { run, origin, move, prevState, token: dealTokenRef.current }
+    // Taking off from the slot: this commit takes the King out of it, but the restore's ghosts only exist once the effect
+    // above has measured their destinations (the commit after this one), and then stay invisible until their faces have
+    // painted - so the slot went empty that whole time, with the run drawn nowhere. Marked here, in the same synchronous
+    // stretch as the commit, the slot keeps drawing the very King it had (CompletedSlotCard's take-off hold) until the
+    // group's ghosts are on screen, which releases it (startSequenceFlight's `heldSince`); every way out of the effect
+    // without a flight gives it back. Marked the way startSequenceFlight would mark it.
+    const releasePending = markGhostPending(run.filter((c) => c.faceUp).map((c) => c.id))
+    pendingRunRestoreRef.current = { run, origin, move, prevState, token, releasePending }
     commitState(intermediateState)
   }
 
@@ -1534,8 +1756,8 @@ function SpiderScreenInner() {
               // then (see runWinCascade), the same way Pyramid's discard-top goes blank once its own
               // chain takes over. NOT keyed on `won`: that flips as the last run is swept, and blanking
               // its slot then would cut that run's flight short. And not on `winRevealed` alone either:
-              // runWinCascade measures first, so the slots blank in the very commit its ghosts land
-              // (cascadeHandoff), never a moment before. Also hidden while this slot's own sequence
+              // runWinCascade measures first, and the slots blank only once its ghosts are on screen with their
+              // faces painted (cascadeHandoff, set from startChains' onShown), never a moment before. Also hidden while this slot's own sequence
               // flight is still en route (see completingSlots) so the King doesn't pop in before the
               // ghost visually lands on top of it.
               const handedOff = winRevealed && cascadeHandoff?.forState === state && cascadeHandoff.slots.has(i)
@@ -1549,7 +1771,7 @@ function SpiderScreenInner() {
                   collapsable={false}
                   style={{ width: cardWidth }}
                 >
-                  {completedCard ? <PlayingCard card={completedCard} /> : <EmptySlot />}
+                  <CompletedSlotCard card={completedCard} />
                 </View>
               )
             })}
@@ -1607,11 +1829,22 @@ function SpiderScreenInner() {
     dialog comes last of all three so it's the one thing guaranteed to sit on top of the animation,
     not buried under it (also backstopped by WinBanner's own explicit zIndex). */}
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
-      <SequenceFlightGhosts flights={sequenceFlights} onCardLanded={handleSequenceFlightLanded} />
+      <SequenceFlightGhosts flights={sequenceFlights} onCardLanded={handleSequenceFlightLanded} onRetire={retireSequenceFlight} />
       <WinCascadeGhosts />
       {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
     </CardSizeProvider>
   )
+}
+
+/** One completed-run slot's card: its King, or the empty slot. Through the take-off hold (useTakeOffHold), because a run
+ * flies back OUT of its slot on an undo (startUndoRunCompletion, undoSequenceCompletions): the revert takes the King out of
+ * the slot a commit or more before the restore's ghosts exist, and they stay invisible until their faces have painted, so
+ * the slot keeps drawing the very King it had - the same, already painted instance - until the ghosts show. Keyed by the
+ * slot (the caller's), so a King leaving keeps this instance. Only a King marked as taking off is ever held: any other
+ * change - a King arriving at the end of a sweep, the win cascade taking the slot over, a New Game - is followed at once. */
+function CompletedSlotCard({ card }: { card: Card | undefined }) {
+  const { shown } = useTakeOffHold(card)
+  return shown ? <PlayingCard card={shown} /> : <EmptySlot />
 }
 
 /** One fanned packet in the stock (see StockFan) - registered into CardRegistry under its depth

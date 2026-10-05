@@ -10,7 +10,10 @@ import type { Card } from '@/engine/types'
 // The win cascade's ghosts, rendered for real (WinCascadeProvider + WinCascadeGhosts), with Reanimated replaced by a stand-in
 // whose shared values are stable per component, whose animated style reads them LIVE, and whose frame callbacks the test fires
 // itself with a chosen timestamp - so "where is this ghost, and is it drawn, N ms after the cascade started" is answerable
-// exactly. The card art is a bare View; only the ghost's own wrapper (the card's parent) carries the position.
+// exactly. The card art is a bare View; only the ghost's own wrapper (the card's parent) carries the position. Each face reports
+// itself painted from the effect after it mounts (a real face's onLoad comes a frame or two later), so the cascade shows - and
+// its clock starts - in the act() that starts it: these tests are about the motion. winCascadeHandoff.test.tsx holds the faces
+// back to test the wait itself.
 // ---------------------------------------------------------------------------------------------------------------------
 
 const mockFrames = new Set<{ current: (info: { timestamp: number }) => void }>()
@@ -43,7 +46,13 @@ let mockRotation = 0
 jest.mock('@tastic/core', () => ({ useRotation: () => mockRotation, useRotatedWindowDimensions: () => ({ width: 400, height: 800 }), rotateInsets: (insets: unknown) => insets }))
 jest.mock('@/components/PlayingCard', () => {
   const { View } = require('react-native')
-  return { PlayingCard: ({ card }: { card: { id: string } }) => <View testID={`ghost-${card.id}`} /> }
+  const { useEffect: useMockEffect } = require('react')
+  return {
+    PlayingCard: ({ card, onFacePainted }: { card: { id: string }; onFacePainted?: () => void }) => {
+      useMockEffect(() => onFacePainted?.(), [onFacePainted])
+      return <View testID={`ghost-${card.id}`} />
+    }
+  }
 })
 
 const CARD_WIDTH = 64
@@ -59,7 +68,8 @@ function Capture() {
   return null
 }
 
-/** performance.now() at the instant the cascade started - what every ghost measures its own elapsed time against. */
+/** performance.now() at the instant the cascade started (it showed, in the same act() under fake timers - nothing advances
+ * the faked clock in between) - what every ghost measures its own elapsed time against. */
 let startedAt = 0
 
 async function start(chains: ChainSpec[]) {
@@ -84,7 +94,11 @@ async function tick(ms: number) {
 }
 
 const wrapperStyle = (id: string): ViewStyle => StyleSheet.flatten(screen.getByTestId(`ghost-${id}`).parent!.props.style as ViewStyle)
-const isDrawn = (id: string) => wrapperStyle(id).opacity !== 0
+/** Drawn on screen: neither the ghost's own wrapper nor anything above it (the whole cascade, before it shows) is at opacity 0. */
+const isDrawn = (id: string) => {
+  for (let node = screen.getByTestId(`ghost-${id}`).parent; node; node = node.parent) if (StyleSheet.flatten(node.props.style as ViewStyle)?.opacity === 0) return false
+  return true
+}
 const positionOf = (id: string) => {
   const [{ translateX }, { translateY }] = wrapperStyle(id).transform as [{ translateX: number }, { translateY: number }]
   return { x: translateX, y: translateY }
@@ -173,11 +187,29 @@ describe('WinCascadeGhosts - before a ghost enters', () => {
     expect(positionOf('c3')).toEqual(at700[0]) // c3 at 720 is where the head was at 700
   })
 
-  it('paints each chain head above its own tail (tail-to-head render order)', async () => {
-    await start([{ cards: cards(1, 3), origin: { x: 40, y: 300 }, entranceDelayMs: 0 }])
+  it('paints each chain head above its own tail, and a later chain above an earlier one (zIndex)', async () => {
+    await start([
+      { cards: cards(1, 3), origin: { x: 40, y: 300 }, entranceDelayMs: 0 },
+      { cards: cards(4, 2), origin: { x: 100, y: 300 }, entranceDelayMs: 0 }
+    ])
+
+    const z = (id: string) => wrapperStyle(id).zIndex ?? 0
+    expect(z('c1')).toBeGreaterThan(z('c2')) // the head, c1, on top of its own tail
+    expect(z('c2')).toBeGreaterThan(z('c3'))
+    expect(z('c4')).toBeGreaterThan(z('c5'))
+    expect(z('c5')).toBeGreaterThan(z('c1')) // the whole later chain above the earlier one, as the old tree order painted it
+  })
+
+  // Each face is a fresh Image, requested in mount order and loaded a few at a time: the heads the paint gate waits on must
+  // not queue behind every hidden follower (on the Simulator they then arrived one by one and the piles went to blank Kings).
+  it('mounts every chain head first, then every second card, and so on - the order the faces are needed in', async () => {
+    await start([
+      { cards: cards(1, 3), origin: { x: 40, y: 300 }, entranceDelayMs: 0 },
+      { cards: cards(4, 2), origin: { x: 100, y: 300 }, entranceDelayMs: 0 }
+    ])
 
     const order = screen.queryAllByTestId(/^ghost-/).map((node) => node.props.testID)
-    expect(order).toEqual(['ghost-c3', 'ghost-c2', 'ghost-c1']) // later sibling paints on top: the head, c1, last
+    expect(order).toEqual(['ghost-c1', 'ghost-c4', 'ghost-c2', 'ghost-c5', 'ghost-c3'])
   })
 })
 

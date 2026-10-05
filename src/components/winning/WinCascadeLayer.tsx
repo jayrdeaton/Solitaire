@@ -1,12 +1,13 @@
 import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
 import { rotateInsets, useRotatedWindowDimensions, useRotation } from '@tastic/core'
-import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, memo, ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, useWindowDimensions, View } from 'react-native'
 import Animated, { SharedValue, useAnimatedStyle, useFrameCallback, useSharedValue } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { Card } from '@/engine/types'
 
+import { FaceLoadTrackingContext, useGhostPaintGate } from '../cardFacePaint'
 import { ScreenPoint } from '../dealing/measureView'
 import { GAME_CONTENT_TOP_PADDING } from '../gameLayout'
 import { screenToLocalPoint } from '../overlayFrame'
@@ -36,8 +37,17 @@ export interface ChainSpec {
 
 export interface WinCascadeController {
   /** Launches every chain at once, each card racked nose-to-tail behind its own chain's head,
-   * bouncing forever. Calling this again (a fresh win) implicitly clears whatever was running. */
-  startChains(chains: ChainSpec[], cardWidth: number): void
+   * bouncing forever. Calling this again (a fresh win) implicitly clears whatever was running.
+   *
+   * The ghosts are mounted at once but do NOT appear in that commit: every ghost that is drawn while parked (each chain's
+   * head, and every card with a `cardOrigins` spot) is a freshly mounted face Image, blank for a frame or two
+   * (cardFacePaint.ts), standing exactly where the real card is. So the whole cascade stays invisible - and its clock
+   * stopped, nothing moves - until those faces have painted (WIN_CASCADE_PAINT_MAX_MS at most), and `onShown` runs in the commit
+   * it appears (a layout effect): that is where a screen hands its piles over (blanks the real cards the ghosts stand in
+   * for), so the piles are never empty before the ghosts are on screen, and never showing over blank ghosts either.
+   * `onShown` runs at most once, never for an empty `chains`, and never once a clear() or a newer startChains has replaced
+   * this cascade (it is dropped with it). */
+  startChains(chains: ChainSpec[], cardWidth: number, onShown?: () => void): void
   /** Unmounts every ghost, hard-stopping every loop - the only way this ever stops, since every
    * chain loops via withRepeat(-1). Call from "New Game". */
   clear(): void
@@ -46,10 +56,10 @@ export interface WinCascadeController {
 interface WinCascadeContextValue {
   controller: WinCascadeController
   cascade: CascadeState
-  /** Shared with WinCascadeGhosts purely for its ghost keys - see WinCascadeProvider's own comment
-   * on why a fresh generation forces a real unmount+remount instead of reusing stale instances.
-   * State, not a ref: WinCascadeGhosts reads it during render, and reading a ref's `.current`
-   * during render isn't allowed. */
+  /** Shared with WinCascadeGhosts purely as the key of its one CascadeChains: a fresh generation (every startChains and
+   * clear) forces a real unmount+remount instead of reusing stale instances - the ghosts' shared values and frame
+   * callbacks, the paint gate, the clock and the `onShown` that belonged to the cascade before it all go with it. State,
+   * not a ref: WinCascadeGhosts reads it during render, and reading a ref's `.current` during render isn't allowed. */
   generation: number
 }
 
@@ -86,15 +96,38 @@ function buildChainPath(origin: ScreenPoint, bounds: { width: number; height: nu
   const span = Math.max(1, Math.abs(rightX - leftX))
   const initialLegMs = hHalfPeriodMs * (Math.abs(origin.x - firstX) / span)
 
-  return { origin, floorY, apexY, vHalfPeriodMs, firstX, secondX, hHalfPeriodMs, initialLegMs, chainStartMs: performance.now() }
+  return { origin, floorY, apexY, vHalfPeriodMs, firstX, secondX, hHalfPeriodMs, initialLegMs }
 }
 
-function ChainGhostCard({ card, path, delayMs, segmentDelayMs, offsetX, offsetY, alwaysVisible, containerOffsetX, containerOffsetY }: { card: Card; path: ChainPath; delayMs: number; segmentDelayMs: number; offsetX: number; offsetY: number; alwaysVisible: boolean; containerOffsetX: SharedValue<number>; containerOffsetY: SharedValue<number> }) {
+interface ChainGhostCardProps {
+  card: Card
+  path: ChainPath
+  delayMs: number
+  segmentDelayMs: number
+  offsetX: number
+  offsetY: number
+  alwaysVisible: boolean
+  /** Paint order (see CascadeChains: the ghosts are mounted heads-first, so the stacking is explicit). */
+  zIndex: number
+  /** The cascade's t=0 (see CascadeChains): null until the ghosts have shown. */
+  startMs: SharedValue<number | null>
+  /** Set for a card the cascade's paint gate waits on (see CascadeChains), called with its id once its face has painted. */
+  onFacePainted?: (cardId: string) => void
+  containerOffsetX: SharedValue<number>
+  containerOffsetY: SharedValue<number>
+}
+
+// Memoized: CascadeChains re-renders once per face its paint gate hears from (Scorpion's runs stand every card in its own
+// spot, so up to 52), and every prop here is stable for the cascade's whole life (its path, numbers and shared values are
+// built once by startChains; onFacePainted is the gate's own stable markPainted) - without this, each of those renders
+// would re-render every ghost in the cascade.
+const ChainGhostCard = memo(function ChainGhostCard({ card, path, delayMs, segmentDelayMs, offsetX, offsetY, alwaysVisible, zIndex, startMs, onFacePainted, containerOffsetX, containerOffsetY }: ChainGhostCardProps) {
   // Parked where the real card stood until this card's own entrance - VISIBLE, not hidden until then:
   // a screen blanks its real cards as the cascade takes over, so a ghost waiting invisible for its
   // entrance (chain i enters i * CHAIN_ENTRANCE_STAGGER_MS late, a card 42ms after the one ahead of
   // it) left the piles/slots/columns empty for up to ~1.5s with no card standing where one had just
   // been. See isGhostVisible for which cards show while parked, and cardXAtElapsed for offsetX/Y.
+  // (Visible once the whole cascade shows - see CascadeChains' paint gate.)
   const bx = useSharedValue(path.origin.x + offsetX)
   const by = useSharedValue(path.origin.y + offsetY)
   const opacity = useSharedValue(alwaysVisible ? 1 : 0)
@@ -107,8 +140,12 @@ function ChainGhostCard({ card, path, delayMs, segmentDelayMs, offsetX, offsetY,
   // CHAIN_SEGMENT_DELAY_MS apart could get coalesced by the browser's scheduler into firing
   // together, locking pairs of cards to the same position. A pure function has nothing to
   // coalesce - two cards' relative offset is exactly delayMs apart by construction, every frame.
+  // Until the cascade's clock has started (startMs null) every card is held at the cascade's t=0: parked, the heads (and
+  // cards with spots of their own) drawn and the rest hidden under them - exactly the first frame of the cascade, so it
+  // starts from there the moment it shows instead of having moved on while it was invisible.
   useFrameCallback((frameInfo) => {
-    const elapsed = frameInfo.timestamp - path.chainStartMs - delayMs
+    const start = startMs.value
+    const elapsed = (start === null ? 0 : frameInfo.timestamp - start) - delayMs
     opacity.value = isGhostVisible(elapsed, alwaysVisible, segmentDelayMs) ? 1 : 0
     by.value = cardYAtElapsed(path, elapsed, offsetY)
     bx.value = cardXAtElapsed(path, elapsed, offsetX)
@@ -119,12 +156,17 @@ function ChainGhostCard({ card, path, delayMs, segmentDelayMs, offsetX, offsetY,
     transform: [{ translateX: bx.value - containerOffsetX.value }, { translateY: by.value - containerOffsetY.value }]
   }))
 
+  const handleFacePainted = useCallback(() => onFacePainted?.(card.id), [onFacePainted, card.id])
+
   return (
-    <Animated.View style={[styles.ghostCard, style]}>
-      <PlayingCard card={card} />
+    <Animated.View style={[styles.ghostCard, { zIndex }, style]}>
+      {/* A ghost: its face is not the board's (see cardFacePaint.ts). */}
+      <FaceLoadTrackingContext.Provider value={false}>
+        <PlayingCard card={card} onFacePainted={onFacePainted ? handleFacePainted : undefined} />
+      </FaceLoadTrackingContext.Provider>
     </Animated.View>
   )
-}
+})
 
 interface ResolvedChain {
   path: ChainPath
@@ -137,7 +179,7 @@ interface ResolvedChain {
   cards: { card: Card; delayMs: number; offsetX: number; offsetY: number; alwaysVisible: boolean }[]
 }
 
-type CascadeState = { mode: 'idle' } | { mode: 'chains'; chains: ResolvedChain[]; cardWidth: number }
+type CascadeState = { mode: 'idle' } | { mode: 'chains'; chains: ResolvedChain[]; cardWidth: number; onShown?: () => void }
 
 /** Provides the win-cascade controller (see useWinCascade) to a game screen - deliberately does
  * NOT render the bouncing cards itself. Rendering is a separate component, WinCascadeGhosts,
@@ -184,7 +226,7 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
 
   const controller = useMemo<WinCascadeController>(
     () => ({
-      startChains(chains, cardWidth) {
+      startChains(chains, cardWidth, onShown) {
         setGeneration((g) => g + 1)
         if (chains.length === 0) {
           setCascade({ mode: 'idle' })
@@ -220,7 +262,9 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
               .reverse()
           }
         })
-        setCascade({ mode: 'chains', chains: resolved, cardWidth })
+        // onShown lives and dies with this cascade: replaced by the next startChains, dropped by clear() (an empty `chains`
+        // above never gets one - there is nothing to show), and called by CascadeChains, keyed by this generation.
+        setCascade({ mode: 'chains', chains: resolved, cardWidth, onShown })
       },
       clear() {
         setGeneration((g) => g + 1)
@@ -263,7 +307,85 @@ export function WinCascadeGhosts() {
 
   return (
     <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
-      {cascade.mode === 'chains' && <CardSizeProvider width={cascade.cardWidth}>{cascade.chains.flatMap((chain) => chain.cards.map(({ card, delayMs, offsetX, offsetY, alwaysVisible }) => <ChainGhostCard key={`${generation}-${card.id}`} card={card} path={chain.path} delayMs={delayMs} segmentDelayMs={chain.segmentDelayMs} offsetX={offsetX} offsetY={offsetY} alwaysVisible={alwaysVisible} containerOffsetX={containerOffsetX} containerOffsetY={containerOffsetY} />))}</CardSizeProvider>}
+      {cascade.mode === 'chains' && <CascadeChains key={generation} chains={cascade.chains} cardWidth={cascade.cardWidth} onShown={cascade.onShown} containerOffsetX={containerOffsetX} containerOffsetY={containerOffsetY} />}
+    </View>
+  )
+}
+
+/**
+ * How long the cascade may stay invisible waiting for its parked faces (useGhostPaintGate) - far longer than a move's
+ * GHOST_PAINT_MAX_MS, because nothing waits on it: the real cards stand in for the ghosts the whole time and only the bounce
+ * starts later, while a move's cap bounds how long the next card in a stream can be held back. At 80ms the cap ran out on the
+ * Simulator (a Metro-served build re-fetches every new Image's bitmap, on a JS thread busy with the win) and two of four
+ * Kings were handed over as blank faces for ~6 frames. Normally the faces report in a frame or two.
+ */
+export const WIN_CASCADE_PAINT_MAX_MS = 500
+
+/**
+ * One cascade's ghosts - keyed by the provider's generation (see WinCascadeGhosts), so every startChains mounts a fresh one
+ * and clear() unmounts it, along with its gate, its clock and its `onShown`.
+ *
+ * The cascade takes over from real cards still on screen: each chain's head (and every card with a spot of its own) is
+ * parked exactly where a real card stands, and the screen blanks those real cards to hand them over. But a ghost's face is a
+ * freshly mounted Image, blank for a frame or two (cardFacePaint.ts) - parked ghosts that showed from their first commit
+ * were blank cards on every pile as the celebration started, and blanking the piles any earlier left them empty. So the
+ * cascade is invisible (React-owned opacity, so it changes in a known commit) until every face drawn while parked has
+ * painted (useGhostPaintGate, WIN_CASCADE_PAINT_MAX_MS at most), the real cards standing in for them meanwhile. In the commit it
+ * shows (the gate's layout effect) its clock starts and the screen's `onShown` runs: the hand-off then blanks the piles in
+ * the next, synchronous commit - the ghosts are on screen no later than the piles go, same pixels in the one commit both
+ * show. Only the parked faces are waited on: the rest of a chain is hidden under its head and only shows once the card ahead
+ * of it has left (isGhostVisible) - mounted in the same commit as the faces waited on, it loads alongside them, and even a
+ * chain that leaves at once uncovers its second card only gradually (the head's fall starts from rest).
+ */
+function CascadeChains({ chains, cardWidth, onShown, containerOffsetX, containerOffsetY }: { chains: ResolvedChain[]; cardWidth: number; onShown?: () => void; containerOffsetX: SharedValue<number>; containerOffsetY: SharedValue<number> }) {
+  // The cascade's t=0 - what every card measures its own elapsed time against (elapsed = frameInfo.timestamp - startMs
+  // - delayMs, see ChainGhostCard) - null until the ghosts have shown: nothing moves while they are invisible, so a chain
+  // that enters at once leaves from where its head is seen standing instead of from wherever it had got to by then.
+  // performance.now() on the JS thread at the commit they show, compared with frameInfo.timestamp - the SAME
+  // requestAnimationFrame timestamp Reanimated's frame-callback registry passes to every registered callback in a given tick
+  // (see FrameCallbackRegistryUI.ts's single shared rAF loop), in the same clock domain as performance.now() - so every
+  // card's position is a pure, stateless function of real elapsed time, computed fresh every frame. That's what makes two
+  // cards' relative offset exactly delayMs apart forever, with nothing to drift or coalesce - unlike the old design, where
+  // each card ran its own independent setTimeout chain and 20ms-apart chains could get coalesced by the browser's timer
+  // scheduler into firing at the same tick, locking pairs of cards together.
+  const startMs = useSharedValue<number | null>(null)
+  // Every face drawn while the cascade is parked (see isGhostVisible): what the gate waits for. A face-down card is SVG,
+  // drawn in the frame it mounts, and never reports.
+  const faceIds = useMemo(() => chains.flatMap((chain) => chain.cards.filter((c) => c.alwaysVisible && c.card.faceUp).map((c) => c.card.id)), [chains])
+  // Once per cascade: the gate's layout effect re-runs whenever this callback's identity changes while it is shown.
+  const shownRef = useRef(false)
+  const handleShown = useCallback(() => {
+    if (shownRef.current) return
+    shownRef.current = true
+    onShown?.()
+  }, [onShown])
+  const { shown, markPainted } = useGhostPaintGate(faceIds, handleShown, WIN_CASCADE_PAINT_MAX_MS)
+  // The clock starts in that same commit, a layout effect like the gate's own (`shown` only ever turns true once).
+  useLayoutEffect(() => {
+    if (shown) startMs.value = performance.now()
+  }, [shown, startMs])
+  // Full-size, like the overlay it fills: a view whose only children are absolutely positioned must never lay out as a
+  // zero frame (see DealLayer.tsx's slotSize - React Native's iOS view recycling). Never flattened (collapsable): once shown
+  // it carries no visual prop of its own, and Fabric would otherwise drop it from the native tree in that very commit and
+  // re-parent every ghost - churn in the one commit that has to be exactly "the same ghosts, now visible".
+  // Mounted heads first: every chain's head, then every chain's second card, and so on - the order the faces are needed in.
+  // Each face is a fresh Image whose bitmap iOS requests in mount order and loads a few at a time, so mounted tail-to-head
+  // (the paint order) the heads the gate waits on were requested LAST, behind every hidden follower: on the Simulator
+  // (a Metro-served build fetches each bitmap) the heads arrived one by one over ~0.5s+ and the cap handed the piles over
+  // to blank Kings. The paint order is kept with zIndex: the old order, chain by chain, each chain tail to head.
+  const ghosts = useMemo(() => {
+    const entries = chains.flatMap((chain, chainIndex) => chain.cards.map((c, i) => ({ chain, c, depth: chain.cards.length - 1 - i, chainIndex })))
+    const painted = entries.map((e, zIndex) => ({ ...e, zIndex }))
+    return painted.sort((a, b) => a.depth - b.depth || a.chainIndex - b.chainIndex)
+  }, [chains])
+
+  return (
+    <View collapsable={false} style={[StyleSheet.absoluteFill, !shown && styles.unpainted]}>
+      <CardSizeProvider width={cardWidth}>
+        {ghosts.map(({ chain, c: { card, delayMs, offsetX, offsetY, alwaysVisible }, zIndex }) => (
+          <ChainGhostCard key={card.id} card={card} path={chain.path} delayMs={delayMs} segmentDelayMs={chain.segmentDelayMs} offsetX={offsetX} offsetY={offsetY} alwaysVisible={alwaysVisible} zIndex={zIndex} startMs={startMs} onFacePainted={alwaysVisible && card.faceUp ? markPainted : undefined} containerOffsetX={containerOffsetX} containerOffsetY={containerOffsetY} />
+        ))}
+      </CardSizeProvider>
     </View>
   )
 }
@@ -273,5 +395,8 @@ const styles = StyleSheet.create({
     left: 0,
     position: 'absolute',
     top: 0
+  },
+  unpainted: {
+    opacity: 0
   }
 })

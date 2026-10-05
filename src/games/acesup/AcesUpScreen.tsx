@@ -25,6 +25,7 @@ import { CardSizeProvider } from '@tastic/cards'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
+import { markGhostPending } from '@/components/cardFacePaint'
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
@@ -176,7 +177,15 @@ function AcesUpScreenInner() {
    * which holds full mutual exclusion for its whole span (undoBusyRef/activeFlightCountRef - see
    * useFlightConcurrency's own doc comment), so at most one of these can ever be pending at a time.
    * Mirrors Klondike's own pendingCascadeUndoRef for the identical reasoning. */
-  const pendingUndoRoundDealRef = useRef<{ entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null }[]; token: number } | null>(null)
+  const pendingUndoRoundDealRef = useRef<{ entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null; releasePending: () => void }[]; token: number } | null>(null)
+  /** Every take-off hold (cardFacePaint.ts) the latest round-deal undo took on the cards it flies back (handleUndo). Each one
+   * also travels with its own card - pendingUndoRoundDealRef, runUndoRoundDeal, then deal.start, which gives it back at that
+   * card's take-off - and is kept here too so New Game/restore can give back, ahead of their own commit, whatever is still out
+   * at whichever of those stages: the deal's own cancel only comes with the fresh game's initial deal, a commit and a
+   * measurement later, and until then each card still held would be drawn by its pile over the fresh board. A release is
+   * safe to run twice (markGhostPending), so this is never pruned, only replaced by the next round-deal undo - which waits for
+   * every flight to settle, so the previous one's holds have all been given back by then. Same as Spider's undoDealHoldsRef. */
+  const undoRoundDealHoldsRef = useRef<(() => void)[]>([])
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
   const [shake, setShake] = useState<{ cardId: string; token: number } | null>(null)
@@ -192,6 +201,8 @@ function AcesUpScreenInner() {
     pendingFlightRef.current = []
     pendingRoundDealRef.current = []
     pendingUndoRoundDealRef.current = null
+    // Before the fresh board commits: a card a round-deal undo still holds would be drawn over it (see undoRoundDealHoldsRef).
+    undoRoundDealHoldsRef.current.forEach((release) => release())
     session.reset()
     recordedWinRef.current = false
     recordedLossRef.current = false
@@ -212,6 +223,7 @@ function AcesUpScreenInner() {
     pendingFlightRef.current = []
     pendingRoundDealRef.current = []
     pendingUndoRoundDealRef.current = null
+    undoRoundDealHoldsRef.current.forEach((release) => release()) // see startNewGame
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
     recordedLossRef.current = false
@@ -281,10 +293,13 @@ function AcesUpScreenInner() {
     // pile's plain container is NOT usable - with a card in it PileView's container is as tall as the whole
     // column (maxHeight), and a chain origin must be card-sized (the ghost overlay converts it through the card's
     // centre when the board is rotated). The registry only knows cards that are still rendered, so this runs
-    // while the piles are STILL on screen and they blank only afterwards, in the SAME commit that mounts the
-    // ghosts (cascadeHandoff, set right beside startChains - React batches the two into one commit from this
-    // async continuation): blanking first left the four piles empty until the ghosts arrived. A pile whose Ace
-    // cannot be measured starts no chain and simply stays up under the banner instead of vanishing.
+    // while the piles are STILL on screen and they blank only afterwards, once the ghosts are on screen
+    // (cascadeHandoff, set from startChains' onShown - in the commit the ghosts appear, which waits for the
+    // parked Aces' faces to paint; see WinCascadeLayer's CascadeChains): blanking first left the four piles empty
+    // until the ghosts arrived, and blanking in the commit that mounted them showed four blank-faced Aces for a
+    // frame or two. An undo or New Game before then clears the cascade, which drops the callback (and the
+    // hand-off is keyed to this `state` anyway). A pile whose Ace cannot be measured starts no chain and simply
+    // stays up under the banner instead of vanishing (an empty cascade never calls onShown).
     ;(async () => {
       const origins = await Promise.all(state.piles.map((pile) => (pile.length > 0 ? ghost.cardRegistry.measure(pile[0].id) : null)))
       if (dealTokenRef.current !== pending.gen) return
@@ -296,8 +311,7 @@ function AcesUpScreenInner() {
         started.add(i)
         chains.push({ cards: pile, origin: { x: origin.x, y: origin.y }, entranceDelayMs: 0 })
       })
-      winCascade.startChains(chains, cardWidth)
-      if (chains.length > 0) setCascadeHandoff({ state, piles: started })
+      winCascade.startChains(chains, cardWidth, () => setCascadeHandoff({ state, piles: started }))
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, winRevealed])
@@ -383,19 +397,24 @@ function AcesUpScreenInner() {
 
   // Same one-completion accounting as runRoundDeal above - settleFlight() here releases the single
   // startFlights(1) claim handleUndo made for this whole round-deal-undo branch, whichever of the
-  // three exits below is actually taken.
-  async function runUndoRoundDeal(entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null }[], token: number) {
+  // three exits below is actually taken. Likewise each card's take-off hold (handleUndo marks it, so its pile keeps drawing
+  // it where it was): it goes to deal.start with its card, which gives it back at that card's take-off, and every way out of
+  // here without a flight for a card gives its hold back at once, so a pile never keeps drawing a card that is not leaving.
+  async function runUndoRoundDeal(entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null; releasePending: () => void }[], token: number) {
+    const releaseAll = () => entries.forEach((e) => e.releasePending())
     const destination = await measureView(stockViewRef.current)
     if (dealTokenRef.current !== token || !destination) {
+      releaseAll()
       settleFlight()
       return
     }
     const dealEntries: DealCardSpec[] = []
     entries.forEach((e) => {
       if (!e.origin) return
-      dealEntries.push({ cardId: e.card.id, card: e.card, from: e.origin, to: destination, delayMs: e.delayMs })
+      dealEntries.push({ cardId: e.card.id, card: e.card, from: e.origin, to: destination, delayMs: e.delayMs, releasePending: e.releasePending })
     })
     if (dealEntries.length === 0) {
+      releaseAll()
       settleFlight()
       return
     }
@@ -477,10 +496,23 @@ function AcesUpScreenInner() {
       const myToken = ++dealTokenRef.current
       const dealtCards = state.piles.map((pile) => top(pile)!)
       const origins = await Promise.all(dealtCards.map((c) => ghost.cardRegistry.measure(c.id)))
+      // New Game/restore replaced the game while these were measured (Spider's handleUndo has the same guard): `prevState` is
+      // the old game's board, and every claim (this undo's included) was reset with it - so nothing is committed, marked or
+      // settled. (A draw, the only other thing that bumps the token, is refused while undo is busy.)
+      if (dealTokenRef.current !== myToken) return
 
       setUndoStack((stack) => stack.slice(0, -1))
+      // Taking off from their piles: the commit below takes these cards out of them, but each card's ghost only shows once
+      // the stock has been measured (the commit after this one), the deal pool has mounted and the card's own stagger has run
+      // out (up to 3 x DEAL_STAGGER_MS) - and the piles used to drop them at once, so the round vanished from the board and
+      // came back as ghosts one by one. Each is marked here, in the same synchronous stretch as the commit, with a mark of its
+      // own (cardFacePaint.ts), so its pile keeps drawing the very card it had (PileView's held cards) until that card's own
+      // ghost takes off over it - DealLayer gives each back then (releasePending), and runUndoRoundDeal/New Game give back any
+      // that will never fly. A card that could not be measured gets no ghost, so it holds nothing.
+      const entries = dealtCards.map((c, i) => ({ card: c, delayMs: i * DEAL_STAGGER_MS, origin: origins[i], releasePending: origins[i] ? markGhostPending([c.id]) : () => {} }))
+      undoRoundDealHoldsRef.current = entries.map((e) => e.releasePending)
       pendingUndoRoundDealRef.current = {
-        entries: dealtCards.map((c, i) => ({ card: c, delayMs: i * DEAL_STAGGER_MS, origin: origins[i] })),
+        entries,
         token: myToken
       }
       commitState(prevState)
@@ -668,8 +700,9 @@ function AcesUpScreenInner() {
             // pendingWinCascadeRef effect above) - the same way every other game's own final pile display
             // goes blank once its cascade takes over. NOT on `won` itself: that flips with the winning
             // discard, whose card is still flying, and the finished board should read for a beat first. And
-            // not on `winRevealed` alone either: the effect measures the still-rendered Aces first
-            // (cascadeHandoff), so the ghosts land in the very commit the piles blank.
+            // not on `winRevealed` alone either: the effect measures the still-rendered Aces first, and the
+            // piles blank only once the ghosts are on screen with their faces painted (cascadeHandoff, set from
+            // startChains' onShown).
             const cards = winRevealed && cascadeHandoff?.state === state && cascadeHandoff.piles.has(pileIndex) ? [] : pile
             const dragConfig: PileDragConfig = {
               registry: dropZones,

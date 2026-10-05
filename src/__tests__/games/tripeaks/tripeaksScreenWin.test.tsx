@@ -44,9 +44,17 @@ const mockLog = {
   cascades: [] as number[],
   /** What the waste showed (its top card's id, or 'empty') at the instant of each startChains() - the real pile must still be drawn then. */
   wasteAtCascade: [] as string[],
-  /** The waste's successive appearances (consecutive repeats collapsed) with a 'startChains' marker where the cascade started: a pile that is blanked BEFORE the marker sat empty until the ghosts arrived. */
+  /** The same at the instant the cascade's ghosts showed (its onShown) - the real pile must STILL be drawn then. */
+  wasteAtGhostsShown: [] as string[],
+  /** The waste's successive appearances (consecutive repeats collapsed) with a 'startChains' marker where the cascade started and a
+   * 'ghosts-shown' one where its ghosts appeared: a pile that is blanked BEFORE that marker sat empty (or under blank-faced ghosts)
+   * until the ghosts could be seen. */
   timeline: [] as string[]
 }
+/** The real cascade shows - and calls startChains' onShown - only once its parked ghosts' faces have painted, a frame or two after
+ * startChains (WinCascadeLayer's CascadeChains); the mock stands in for that wait with a timer. */
+const MOCK_GHOSTS_SHOW_MS = 16
+let mockGhostsShowTimer: ReturnType<typeof setTimeout> | undefined
 /** Read from inside the mocked cascade / stand-in, hence hoisted-mock naming. */
 const mockWasteNow = () => screen.getByTestId('waste-top').props.children as string
 const mockMark = (entry: string) => {
@@ -91,15 +99,27 @@ const mockDeal = {
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/components/winning/WinCascadeLayer', () => ({
-  WinCascadeProvider: ({ children }: { children: unknown }) => children,
+  // Unmounting drops a cascade that has not shown yet, like the real provider (a test can end mid-wait).
+  WinCascadeProvider: ({ children }: { children: unknown }) => {
+    require('react').useEffect(() => () => clearTimeout(mockGhostsShowTimer), [])
+    return children
+  },
   WinCascadeGhosts: () => null,
   useWinCascade: () => ({
-    startChains: () => {
+    startChains: (chains: unknown[], _cardWidth: number, onShown?: () => void) => {
       mockLog.cascades.push(mockLog.inAir)
       mockLog.wasteAtCascade.push(mockWasteNow())
       mockLog.timeline.push('startChains')
+      // Like the real controller: never for an empty cascade, and dropped by clear() or a newer startChains.
+      clearTimeout(mockGhostsShowTimer)
+      if (chains.length > 0 && onShown)
+        mockGhostsShowTimer = setTimeout(() => {
+          mockLog.wasteAtGhostsShown.push(mockWasteNow())
+          mockLog.timeline.push('ghosts-shown')
+          onShown()
+        }, MOCK_GHOSTS_SHOW_MS)
     },
-    clear: () => {}
+    clear: () => clearTimeout(mockGhostsShowTimer)
   })
 }))
 jest.mock('@/components/dealing/measureView', () => ({ measureView: async () => (mockViewMeasurable ? { x: 5, y: 5 } : null) }))
@@ -259,6 +279,7 @@ beforeEach(() => {
   mockLog.inAir = 0
   mockLog.cascades = []
   mockLog.wasteAtCascade = []
+  mockLog.wasteAtGhostsShown = []
   mockLog.timeline = []
   mockViewMeasurable = true
   mockRecordWon.mockClear()
@@ -306,7 +327,7 @@ describe('TriPeaks screen - the win celebration waits for the winning card to fl
     expect(mockLog.hidden).toBe(0)
   })
 
-  it('hands the pile over to the cascade in ONE commit: the real waste card is still drawn when the cascade starts, and blanks only after it', async () => {
+  it('hands the pile over to the cascade once its ghosts show: the real waste card is still drawn when the cascade starts and when its ghosts appear, and blanks only after that', async () => {
     await mount(ONE_CARD_FROM_WON())
     mockLog.timeline = []
 
@@ -314,12 +335,14 @@ describe('TriPeaks screen - the win celebration waits for the winning card to fl
     await flush(FLIGHT_MS + HOLD_MS + 50)
 
     expect(mockLog.cascades).toEqual([0])
-    // The cascade measured (and mounted its parked ghosts) while the pile still showed its card...
+    // The cascade measured (and mounted its parked ghosts) while the pile still showed its card, and kept it up until the ghosts
+    // were on screen (their faces paint a frame or two after they mount - blanking with startChains showed a blank-faced card)...
     expect(mockLog.wasteAtCascade).toEqual([id('hearts', 6)])
+    expect(mockLog.wasteAtGhostsShown).toEqual([id('hearts', 6)])
     // ...and the pile never sat empty before that: blanking on the reveal alone left the waste slot empty for the few frames
     // runWinCascade takes to measure, then the ghosts appeared (a pile that teleported away).
-    expect(mockLog.timeline.slice(0, mockLog.timeline.indexOf('startChains'))).not.toContain('empty')
-    expect(mockLog.timeline.slice(-2)).toEqual(['startChains', 'empty'])
+    expect(mockLog.timeline.slice(0, mockLog.timeline.indexOf('ghosts-shown'))).not.toContain('empty')
+    expect(mockLog.timeline.slice(-3)).toEqual(['startChains', 'ghosts-shown', 'empty'])
     expect(wasteTop()).toBe('empty')
   })
 

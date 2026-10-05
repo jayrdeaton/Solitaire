@@ -1,6 +1,6 @@
 import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
 import { rotateInsets, useRotation } from '@tastic/core'
-import { createContext, memo, ReactNode, Ref, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { createContext, memo, ReactNode, Ref, useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Pressable, StyleSheet, View } from 'react-native'
 import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue, withDelay, withSpring, WithSpringConfig, withTiming } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Card } from '@/engine/types'
 import { useSettings } from '@/stores/settings'
 
+import { FaceLoadTrackingContext, GHOST_PAINT_MAX_MS, whenCardsSettled } from '../cardFacePaint'
 import { GAME_CONTENT_TOP_PADDING } from '../gameLayout'
 import { OverlayFrame, toLocal, useOverlayFrame } from '../overlayFrame'
 import { PlayingCard } from '../PlayingCard'
@@ -21,6 +22,18 @@ export interface DealCardSpec {
   from: ScreenPoint
   to: ScreenPoint
   delayMs: number
+  /**
+   * A take-off hold the caller took on this card (cardFacePaint.ts's markGhostPending) just before the commit that took it
+   * out of its pile, so the pile keeps drawing it where it was (PileView's held cards) until its ghost is on screen there -
+   * an undo flying dealt cards back to the stock (Spider, Scorpion, Aces Up): from that commit to a card's own take-off there
+   * is the destination's measurement, this pool's mount and the card's whole stagger (plus a face-up ghost's paint wait),
+   * and the card used to be drawn NOWHERE for all of it. DealLayer calls it exactly once per entry: TAKE_OFF_RELEASE_LAG_MS
+   * after the card takes off (its ghost is shown over the spot it leaves - after a face-up ghost's paint wait, the instant
+   * onCardDealt fires - and the lag covers the UI thread showing it a frame or so late), or at once on whatever ends the
+   * card's flight before that - a skip tap, a newer start() (an empty one included), the provider unmounting, Reduce
+   * Motion's instant landing - and never after the card has landed.
+   */
+  releasePending?: () => void
 }
 
 export interface DealAnimator {
@@ -37,7 +50,9 @@ export interface DealAnimator {
    * to empty a source pile only once the last card has actually left it). Omitting it changes nothing.
    * The optional `spring` is every card's flight - the deal's own DEAL_SPRING when omitted. Klondike's and Canfield's
    * draw-3 fans (and their undo) pass dragSpring.ts's FLIGHT_SPRING, so a drawn card flies for the same time as every
-   * other card move; deals keep the deal's pace. */
+   * other card move; deals keep the deal's pace.
+   * Each entry's optional releasePending is called exactly once - TAKE_OFF_RELEASE_LAG_MS after its card's take-off, or
+   * wherever its flight ends before that (see DealCardSpec). */
   start(entries: DealCardSpec[], cardWidth: number, onCardLanded: (cardId: string) => void, onAllLanded: () => void, onCardDealt?: (cardId: string) => void, spring?: WithSpringConfig): void
 }
 
@@ -89,6 +104,18 @@ const SETTLE_MAX_EXTRA_MS = 1000
 // Haptics are capped like the sound pool already is (PLAY_THROTTLE_MS = 40) - at any pace: a card dealt every ~18ms
 // (compressed deals) or ~35ms (the rest) would otherwise be a buzz, not a riffle, and the click and buzz stay paired.
 const HAPTIC_MIN_GAP_MS = 40
+/**
+ * How long after a card takes off its source is told to let go of it (DealCardSpec.releasePending) - not in the take-off
+ * itself. The ghost turns visible on the UI thread (takeOff's `withDelay(wait, ...)` opacity), whose delay only starts
+ * counting once the UI thread has picked the assignment up, a frame or so after the JS write (dragSpring.ts's
+ * SPRING_START_LAG_MS is the same hop for a spring), and then lands on a frame boundary; the release is a JS timer on the
+ * JS clock, and the commit that drops the held card could reach the screen a frame BEFORE the ghost showed - a frame of the
+ * card gone from its pile (the card under it, or an empty slot) at a take-off, the very gap the hold exists to close. Late
+ * costs nothing visible: the ghost is drawn over that spot and has only just started to move. The same lag, for the same
+ * race, as Pyramid's SWEEP_PILE_BLANK_LAG_MS (a win-sweep pile blanking after its last card's onCardDealt). Only a natural
+ * take-off waits it out: a skip, a landing, a cancel or an unmount gives the hold back at once.
+ */
+export const TAKE_OFF_RELEASE_LAG_MS = 20
 
 /** How many ghost slots a deal needs: the most flights that can overlap, counting each ghost as occupied from
  * `lookaheadMs` before its flight starts until the flight ends (`durationMs` after it). Two flights overlap when their
@@ -128,7 +155,9 @@ interface GhostSlotHandle {
   completeNow(): void
   /** Silences the slot for good without notifying anyone: its timers stop and its flight is forgotten. Used when a new deal
    * replaces this one - the old slots stay mounted until the commit that swaps them out, and a timer firing in that gap
-   * must not report a card to the NEW deal. */
+   * must not report a card to the NEW deal. A take-off hold still waiting out TAKE_OFF_RELEASE_LAG_MS is given back now (its
+   * ghost goes with the cancel); its card's hold, if it had not taken off, is the provider's to give back (start()'s
+   * releaseAll), not this slot's. */
   cancel(): void
 }
 
@@ -147,6 +176,10 @@ interface GhostSlotProps {
    * (in the same batch) revealed the real card underneath - never from the landing callback itself: relaunching a slot in
    * the very tick it landed would write its reset to the UI thread ahead of that commit and blink a card-shaped hole. */
   onIdle: (slot: number, deal: number) => void
+  /** A landed card is being held on screen (true) until the real card under it has painted its face, or no longer is
+   * (false) - see GhostSlot's `holding`. Called synchronously in the landing task, so the provider keeps the pool
+   * mounted through the commit that ends the deal. `rect` (screen space) is where it rests; `release` ends the hold. */
+  onHold: (slot: number, deal: number, hold: { rect: HoldRect; release: () => void } | null) => void
   /** The overlay's own placement (see DealProvider's useOverlayFrame) - converts spec.from/to from
    * screen space into the overlay's own space so a card lands exactly where it was measured,
    * regardless of where this screen-level overlay itself happens to sit relative to the true
@@ -162,11 +195,61 @@ interface GhostSlotProps {
   ref?: Ref<GhostSlotHandle>
 }
 
+/** Where a landed card rests, screen space. */
+interface HoldRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * How long a slot may keep a landed card on screen, waiting for the real card under it to paint its face (see
+ * cardFacePaint.ts: a card mounted in the landing commit gets its bitmap a frame or two later, and until then it is a blank
+ * face). Normally a frame or two; this only bounds a load that never reports. Kept short - the slot is already free to be
+ * relaunched (a relaunch ends the hold), and the pool stays mounted past the deal's end until every hold is over.
+ */
+export const DEAL_LANDED_MAX_MS = 150
+
 /** A card waiting in the provider's queue for a free slot. */
 interface QueuedCard {
   spec: DealCardSpec
   /** The card's position in the deal (becomes its paint order). */
   order: number
+}
+
+/** What a face-up card's Image shows: identical cards from two decks share one bitmap. */
+const faceKey = (card: Card) => `${card.suit}-${card.rank}`
+
+/**
+ * Wraps a caller's take-off hold release (DealCardSpec.releasePending) for one deal: kept in `releases` until it runs, so
+ * the paths that end a card's flight before its take-off can give back every hold still outstanding at once (releaseAll),
+ * and safe to run from all of them - the caller still sees exactly one call. A throw is re-thrown from a timer, like
+ * handleDealt's, so it can't abort a skip's or a cancel's loop over the other cards' holds.
+ */
+function trackRelease(releases: Set<() => void>, release: () => void): () => void {
+  let done = false
+  const tracked = () => {
+    releases.delete(tracked)
+    if (done) return
+    done = true
+    try {
+      release()
+    } catch (error) {
+      setTimeout(() => {
+        throw error
+      }, 0)
+    }
+  }
+  releases.add(tracked)
+  return tracked
+}
+
+/** Runs every hold release still in `releases` (see trackRelease). */
+function releaseAll(releases: Set<() => void>) {
+  const outstanding = [...releases]
+  releases.clear()
+  outstanding.forEach((release) => release())
 }
 
 interface Job extends QueuedCard {
@@ -180,7 +263,7 @@ interface Job extends QueuedCard {
 
 // Memoized: props are all stable across the deal (a slot number, stable callbacks, the overlay frame, the card width),
 // so a slot re-renders only through its own state - i.e. when it is launched or lands.
-const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdle, frame, cardWidth, lastTakeOffRef, ref }: GhostSlotProps) {
+const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdle, onHold, frame, cardWidth, lastTakeOffRef, ref }: GhostSlotProps) {
   const cardHeight = cardWidth / CARD_ASPECT
   const tx = useSharedValue(0)
   const ty = useSharedValue(0)
@@ -196,28 +279,79 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
   // slot in the SAME commit that reveals the real destination card (see the caller's onCardLanded), which a UI-thread
   // opacity write made a moment earlier could not - that would blink a card-shaped hole for a frame at every landing.
   const [job, setJob] = useState<Job | null>(null)
+  // The card that has just landed, still drawn (same pixels as the real card the landing reveals under it) until that real
+  // card's face has painted - a face mounted in the landing commit is blank for a frame or two (cardFacePaint.ts). The
+  // slot itself is idle (job null) the whole time, so the pool's bookkeeping is unchanged; a relaunch ends the hold.
+  const [holding, setHolding] = useState<Job | null>(null)
+  // Ending a hold is how a slot goes idle after a flight (cancel() resets itself). An idle slot is hidden by its wrapper
+  // (styles.idle), but its card box keeps the last flight's opacity (1) and position on the UI thread. A relaunch writes
+  // them back to the origin/0 before the React commit that shows the wrapper again, but those are UI-thread writes and
+  // that commit can reach the screen first: the slot was then drawn for one frame at its PREVIOUS landing spot, over the
+  // real card that had landed there (pixel-found on the Simulator: a card back flashing over a just-dealt face-up card,
+  // ~1 in 20 deals, in recordings from before the paint work too). So the opacity goes back to 0 here, as the hold ends -
+  // normally frames before any relaunch, while the wrapper hides the box anyway - and a commit that beats a relaunch's
+  // writes shows an invisible box. Not while a flight is running: a relaunch has taken the slot over (jobRef is set in
+  // launch(), before its commit cancels this hold's wait). Through a ref, as a callback: the compiler freezes a shared
+  // value once it is handed to a hook, and the take-off below still writes it.
+  const opacityRef = useRef(opacity)
   const jobRef = useRef<Job | null>(null)
+  const releaseHold = useCallback(() => {
+    if (!jobRef.current) opacityRef.current.value = 0
+    setHolding(null)
+  }, [])
   const dealt = useRef(false)
   const notified = useRef(false)
   const dealtTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // The face this slot's Image has painted (suit-rank: two decks' identical cards share one bitmap, and an unchanged source
+  // never reloads), and the take-off waiting on the next one (see the [job] effect).
+  const paintedFaceRef = useRef<string | null>(null)
+  const paintWaiterRef = useRef<(() => void) | null>(null)
+  const paintTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clearTimers = useCallback(() => {
     if (dealtTimeoutRef.current) clearTimeout(dealtTimeoutRef.current)
     if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    if (paintTimeoutRef.current) clearTimeout(paintTimeoutRef.current)
     dealtTimeoutRef.current = null
     timeoutRef.current = null
+    paintTimeoutRef.current = null
+    paintWaiterRef.current = null
+  }, [])
+  // A take-off hold release waiting out TAKE_OFF_RELEASE_LAG_MS (see dealtNotify), and its timer. Deliberately not one of
+  // clearTimers' timers: those are dropped when the flight's `job` changes and on a cancel, and a release must never be
+  // dropped - whatever ends the wait early runs it instead (flushRelease).
+  const lateReleaseRef = useRef<(() => void) | null>(null)
+  const lateReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flushRelease = useCallback(() => {
+    if (lateReleaseTimerRef.current) clearTimeout(lateReleaseTimerRef.current)
+    lateReleaseTimerRef.current = null
+    const release = lateReleaseRef.current
+    lateReleaseRef.current = null
+    release?.()
   }, [])
 
   // Fires this card's own sound/haptic the moment it's dealt out (see DealProvider's handleDealt) - guarded the same
   // way notify() below is, so completeNow's forced path doesn't double-fire it for a card whose delay had already
-  // elapsed naturally before the skip.
+  // elapsed naturally before the skip. It is also where the card's source is told to let go of it (spec.releasePending -
+  // see DealCardSpec): TAKE_OFF_RELEASE_LAG_MS after this, its ghost having been set to turn visible over that very spot in
+  // this same instant (takeOff's opacity, on the same `wait`) - the UI thread can show the ghost a frame or so after this JS
+  // timer - and a face-up ghost only gets here once its face has painted (the [job] effect's wait). A skip's completeNow
+  // lands the card right after calling this, and notify() gives the hold back there and then: its ghost has jumped straight
+  // to the landing, so there is no take-off left to cover.
   const dealtNotify = useCallback(
-    (cardId: string) => {
+    (spec: DealCardSpec) => {
       if (dealt.current) return
       dealt.current = true
-      onDealt(cardId, deal)
+      if (spec.releasePending) {
+        // Nothing is waiting here (the slot's last card landed - and so gave its hold back - before it was relaunched), but a
+        // release is never overwritten: one still waiting runs now.
+        flushRelease()
+        lateReleaseRef.current = spec.releasePending
+        lateReleaseTimerRef.current = setTimeout(flushRelease, TAKE_OFF_RELEASE_LAG_MS)
+      }
+      onDealt(spec.cardId, deal)
     },
-    [onDealt, deal]
+    [onDealt, deal, flushRelease]
   )
 
   // Both the natural settle path (the effect below) and completeNow's forced path funnel through this, each guarded so a
@@ -225,15 +359,33 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
   const notify = useCallback(() => {
     if (notified.current) return
     notified.current = true
+    // A card that lands while its take-off hold is still waiting out its lag (a skip right after its take-off, or a flight
+    // shorter than the lag) gives it back first: a source must never still draw a card that has arrived somewhere else.
+    flushRelease()
     const landed = jobRef.current
     jobRef.current = null
     setJob(null)
-    if (landed) onLanded(landed.spec.cardId, deal)
-  }, [onLanded, deal])
+    if (landed) {
+      setHolding(landed)
+      onHold(slot, deal, { rect: { x: landed.spec.to.x, y: landed.spec.to.y, width: cardWidth, height: cardHeight }, release: releaseHold })
+      onLanded(landed.spec.cardId, deal)
+    }
+  }, [flushRelease, onLanded, onHold, releaseHold, slot, deal, cardWidth, cardHeight])
 
-  useEffect(() => {
-    if (!job) return
-    const { spec, departAt, spring } = job
+  // Ends the hold once the real card's face has painted and the card is not taking off again with a ghost not on screen yet
+  // (whenCardsSettled: Spider sweeps a run its dealt card completes in that card's own landing commit) - at once, in this
+  // same commit, if neither: a layout effect, after the board's own layout effects in the landing commit, so a face the
+  // landing mounted has reported - or after DEAL_LANDED_MAX_MS.
+  useLayoutEffect(() => {
+    if (!holding) return
+    const cancel = whenCardsSettled([holding.spec.cardId], DEAL_LANDED_MAX_MS, releaseHold)
+    return () => {
+      cancel()
+      onHold(slot, deal, null)
+    }
+  }, [holding, releaseHold, onHold, slot, deal])
+
+  function takeOff({ spec, departAt, spring }: Job) {
     // What is left of the delay: the commit that got us here has already spent part of it (see Job.departAt). A card whose
     // deadline has already passed leaves now, but no closer than LATE_LAUNCH_MIN_GAP_MS to the card before it (the same
     // spacing launchDue gives late launches); an on-time card keeps its scheduled time exactly.
@@ -247,7 +399,7 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
     opacity.value = withDelay(wait, withTiming(1, { duration: 0 }))
     // Deliberately its own timer rather than piggybacked on the settle one below - this card's sound/haptic should fire
     // the instant it's dealt out (the departure), not once it's finished flying.
-    dealtTimeoutRef.current = setTimeout(() => dealtNotify(spec.cardId), wait)
+    dealtTimeoutRef.current = setTimeout(() => dealtNotify(spec), wait)
     // Settlement used to be driven by withSpring's own completion callback (one per axis, both required before
     // notifying) - that callback was found to never fire at all for these duration-based springs on this app's web
     // target (confirmed live via DragGhostLayer.tsx's identical bug, fixed the same way there). A plain `wait + duration`
@@ -285,6 +437,30 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
       }
     }
     timeoutRef.current = setTimeout(checkSettled, wait + (spring.duration ?? 0))
+  }
+
+  useEffect(() => {
+    if (!job) return
+    const { spec, departAt } = job
+    // A face-up card's face is an Image that paints a frame or two after the commit that set it (cardFacePaint.ts): blank in
+    // a slot's first flight, the previous card's face in a reused one. The usual LOOKAHEAD_MS covers that before the card is
+    // due, but a card with no runway (a deal's first, or one launched late after a stall) would take off showing it - seen on
+    // the Simulator as the first two cards of a Pyramid deal flying blank. So the take-off waits for the face, but never past
+    // the later of the card's own departure and GHOST_PAINT_MAX_MS after now: a card with that much runway is never late.
+    // A back unmounts the face Image: whatever it painted is gone.
+    if (!spec.card.faceUp) paintedFaceRef.current = null
+    if (spec.card.faceUp && paintedFaceRef.current !== faceKey(spec.card)) {
+      const go = () => {
+        if (paintTimeoutRef.current) clearTimeout(paintTimeoutRef.current)
+        paintTimeoutRef.current = null
+        paintWaiterRef.current = null
+        takeOff(job)
+      }
+      paintWaiterRef.current = go
+      paintTimeoutRef.current = setTimeout(go, Math.max(departAt - Date.now(), GHOST_PAINT_MAX_MS))
+    } else {
+      takeOff(job)
+    }
     return clearTimers
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job])
@@ -303,8 +479,17 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
     }
   }, [job, onIdle, slot, deal])
 
-  // Clears any timer still pending if this slot goes away mid-flight (Home, or a new deal replacing this one).
-  useEffect(() => clearTimers, [clearTimers])
+  // Clears any timer still pending if this slot goes away mid-flight (Home, or a new deal replacing this one), and gives back
+  // a take-off hold still waiting out its lag - its ghost goes with the slot. (Every path that unmounts a slot also has the
+  // provider give back all of its deal's outstanding holds - releaseAll in start(), at the deal's end and on its own unmount -
+  // so this only keeps the slot from leaving a timer behind; a release runs once either way, see trackRelease.)
+  useEffect(
+    () => () => {
+      clearTimers()
+      flushRelease()
+    },
+    [clearTimers, flushRelease]
+  )
 
   useImperativeHandle(
     ref,
@@ -321,6 +506,9 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
         const next: Job = { spec, order, departAt: Date.now() + spec.delayMs, spring }
         jobRef.current = next
         setCard((prev) => (prev && !prev.faceUp && !spec.card.faceUp ? prev : spec.card))
+        // A relaunch ends a hold still showing this slot's last card (unregistered at once - see handleHold).
+        setHolding(null)
+        onHold(slot, deal, null)
         setJob(next)
       },
       completeNow() {
@@ -331,12 +519,17 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
         ty.value = current.spec.to.y
         opacity.value = 1
         // A card whose delay hadn't elapsed yet when the skip landed still gets its one sound/haptic (and its take-off
-        // notification) here - a card that had already fired dealtNotify naturally is a no-op via its own guard.
-        dealtNotify(current.spec.cardId)
+        // notification) here - a card that had already fired dealtNotify naturally is a no-op via its own guard. Either way
+        // its hold goes back in notify(), at once and before the card is reported landed: no lag, the ghost is already at the
+        // landing.
+        dealtNotify(current.spec)
         notify()
       },
       cancel() {
         clearTimers()
+        // (start() gives back every outstanding hold right after cancelling its slots anyway - releaseAll - so this only keeps
+        // the lag timer from outliving the deal.)
+        flushRelease()
         // Stop whatever spring is still running - without this, a slot cancelled mid-flight (a new
         // deal replacing this one) kept animating on the UI thread toward ITS OLD deal's destination
         // (nothing had ever told Reanimated to stop), visibly landing there and just sitting, frozen,
@@ -356,9 +549,11 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
         // with a real zIndex (not styles.idle) for however long it took the generation-keyed unmount
         // to actually commit, which is exactly the window the frozen ghost was visible in.
         setJob(null)
+        setHolding(null)
+        onHold(slot, deal, null)
       }
     }),
-    [clearTimers, dealtNotify, notify, tx, ty, opacity]
+    [clearTimers, flushRelease, dealtNotify, notify, tx, ty, opacity, onHold, slot, deal]
   )
 
   // Both the slot wrapper and the animated card box carry an explicit card size. Neither NEEDS one for
@@ -386,11 +581,18 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
   // A stable element for the card: the slot re-renders on every launch and landing (its `job` changes), and PlayingCard
   // isn't memoized, so building the element inline would re-run it each time even when the card is unchanged. With this,
   // React bails out of the whole card subtree unless `card` itself changed - i.e. a face-down relaunch renders nothing.
-  const face = useMemo(() => (card ? <PlayingCard card={card} /> : null), [card])
+  const face = useMemo(() => {
+    if (!card) return null
+    const onFacePainted = () => {
+      paintedFaceRef.current = faceKey(card)
+      paintWaiterRef.current?.()
+    }
+    return <PlayingCard card={card} onFacePainted={card.faceUp ? onFacePainted : undefined} />
+  }, [card])
 
   return (
     // The static wrapper (not the animated opacity) is what hides an idle slot, and it carries the paint order.
-    <View testID={`deal-ghost-${slot}`} pointerEvents='none' style={[styles.slot, slotSize, job ? { zIndex: job.order } : styles.idle]}>
+    <View testID={`deal-ghost-${slot}`} pointerEvents='none' style={[styles.slot, slotSize, job ? { zIndex: job.order } : holding ? { zIndex: holding.order } : styles.idle]}>
       <Animated.View style={[styles.ghostCard, slotSize, style]}>{face}</Animated.View>
     </View>
   )
@@ -404,7 +606,13 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
 export function DealProvider({ children }: { children: ReactNode }) {
   const { playCardSound, hapticCard } = useCardSoundEffects()
   // Same rotated-frame safe-area top GameChrome positions its controls from, plus that band's height.
-  const topChromeBand = rotateInsets(useSafeAreaInsets(), useRotation()).top + GAME_CONTENT_TOP_PADDING
+  const rotation = useRotation()
+  const topChromeBand = rotateInsets(useSafeAreaInsets(), rotation).top + GAME_CONTENT_TOP_PADDING
+  // Read when a card lands (handleHold): a card's screen footprint is its height x width under a quarter turn.
+  const rotationRef = useRef(rotation)
+  useEffect(() => {
+    rotationRef.current = rotation
+  }, [rotation])
   // Read through a ref, not a controller dependency: `controller` below is memoized once (`[]`) so
   // every screen's `deal` reference stays stable for its whole lifetime, and start() itself always
   // wants the CURRENT setting - not whatever it was when the provider first mounted.
@@ -415,6 +623,14 @@ export function DealProvider({ children }: { children: ReactNode }) {
   }, [settings.reduceMotion])
   // How many ghost slots the current deal mounts (see ghostPoolSize) - NOT one per card.
   const [poolSize, setPoolSize] = useState(0)
+  // Slots still holding a landed card on screen (see GhostSlot's `holding`), by slot, with where each rests. The pool stays
+  // mounted while any is (`anyHold` - a boolean, so the provider only re-renders when that flips), past the commit that ends
+  // the deal: unmounting it there would drop the last cards' holds in the very commit their real cards are revealed in.
+  const holdsRef = useRef(new Map<number, { rect: HoldRect; release: () => void }>())
+  const [anyHold, setAnyHold] = useState(false)
+  // `dealing` as of now (not the last render): while the deal runs the pool is mounted anyway, so `anyHold` is only kept
+  // up to date once it has ended - a hold coming and going at every landing must not re-render the provider each time.
+  const dealingRef = useRef(false)
   // Whether a deal is in flight at all (drives the skip-tap layer and mounts the pool).
   const [dealing, setDealing] = useState(false)
   const [cardWidth, setCardWidth] = useState(0)
@@ -433,6 +649,13 @@ export function DealProvider({ children }: { children: ReactNode }) {
   const callbacksRef = useRef<{ onCardLanded: (cardId: string) => void; onAllLanded: () => void; onCardDealt?: (cardId: string) => void } | null>(null)
   // Cards whose take-off has already been reported to onCardDealt this deal (once per card, whatever route it took).
   const dealtIds = useRef(new Set<string>())
+  // The current deal's take-off holds that have not been given back yet (DealCardSpec.releasePending, wrapped by
+  // trackRelease). A card's own take-off gives its hold back (GhostSlot's dealtNotify, TAKE_OFF_RELEASE_LAG_MS later), and so
+  // does a skip; everything that ends the deal without flying a card - a newer start(), an empty one included, the deal
+  // completing with an entry that never flew (a duplicated card id), the provider unmounting - gives back whatever is still
+  // in here, so no pile ever keeps drawing a card that is not going to take off (left alone, a hold only ends at its own 1s
+  // backstop - over a fresh board).
+  const pendingReleasesRef = useRef(new Set<() => void>())
   const totalRef = useRef(0)
   const lastHapticAt = useRef(0)
   // Card ids repeat across every deal (same 52 cards, just reshuffled - see deck.ts), and slot numbers repeat across
@@ -542,18 +765,52 @@ export function DealProvider({ children }: { children: ReactNode }) {
     const done = landedIds.current.size >= totalRef.current
     const callbacks = callbacksRef.current
     try {
-      // The slot hides itself in the same commit the caller's onCardLanded reveals the real destination card underneath
-      // (see GhostSlot's notify) - so a finished card never lingers as a double, and never leaves a hole.
+      // The slot lets go of the card in the same commit the caller's onCardLanded reveals the real destination card
+      // underneath (see GhostSlot's notify) - only holding it, the same pixels, until that real card's face has painted -
+      // so a finished card never lingers as a double, and never leaves a hole or a blank face.
       callbacks?.onCardLanded(cardId)
     } finally {
       // Completion is bookkeeping, not the caller's to break: it runs even if onCardLanded threw, so a deal can never
       // leave the full-screen skip layer up forever.
       if (done) {
+        // The last cards may still be holding (see GhostSlot's `holding` - registered before this, in their notify): the
+        // pool stays mounted for them.
+        dealingRef.current = false
+        setAnyHold(holdsRef.current.size > 0)
         setDealing(false)
         callbacksRef.current = null
+        // Every card has taken off (and so given its hold back) by now - but for an entry repeating a card id that has
+        // already landed: the deal is over for its caller, and its flight goes with the pool (now, or once the last landed
+        // card stops holding - if it takes off before that, trackRelease keeps this the one call).
+        releaseAll(pendingReleasesRef.current)
         callbacks?.onAllLanded()
       }
     }
+  }, [])
+
+  // A card landing where another slot is still holding its landed card ends that hold: the newer card covers that spot now,
+  // and the older one would otherwise be drawn over the newer real card once the newer slot let go (the overlay sits
+  // above the board). Same rule as DragGhostLayer's land().
+  const handleHold = useCallback((slot: number, deal: number, hold: { rect: HoldRect; release: () => void } | null) => {
+    if (deal !== generationRef.current) return
+    const holds = holdsRef.current
+    if (hold) {
+      const quarterTurn = Math.abs(rotationRef.current) === 90
+      const rect = quarterTurn ? { ...hold.rect, width: hold.rect.height, height: hold.rect.width } : hold.rect
+      hold = { ...hold, rect }
+      holds.forEach((other, otherSlot) => {
+        const a = other.rect
+        const b = rect
+        if (otherSlot !== slot && a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height) {
+          other.release()
+          // Unregistered here, not left to that slot's effect cleanup: its hold may end before it ever commits (set and
+          // released in one batch), and then no cleanup runs.
+          holds.delete(otherSlot)
+        }
+      })
+      holds.set(slot, hold)
+    } else holds.delete(slot)
+    if (!dealingRef.current) setAnyHold(holds.size > 0)
   }, [])
 
   const handleSlotIdle = useCallback(
@@ -599,6 +856,11 @@ export function DealProvider({ children }: { children: ReactNode }) {
     },
     []
   )
+  // Leaving mid-deal (Home): the cards still waiting to take off never will, so their sources let go of them now.
+  useEffect(() => {
+    const releases = pendingReleasesRef.current
+    return () => releaseAll(releases)
+  }, [])
 
   // One ref callback per slot, built once per pool size, so GhostSlot's memo (which relies on every prop being stable)
   // actually holds: an inline `ref={(h) => ...}` is a new function every render and would re-render and re-attach
@@ -613,11 +875,18 @@ export function DealProvider({ children }: { children: ReactNode }) {
 
   const controller = useMemo<DealAnimator>(
     () => ({
-      start(entries, width, onCardLanded, onAllLanded, onCardDealt, spring = DEAL_SPRING) {
+      start(incoming, width, onCardLanded, onAllLanded, onCardDealt, spring = DEAL_SPRING) {
         // The previous deal (if any) is finished as of THIS line: its slots stay mounted until the commit after this
-        // call, so silence them now (cancel) and bump the generation their callbacks are checked against.
+        // call, so silence them now (cancel) and bump the generation their callbacks are checked against. None of its
+        // cards that had not taken off yet ever will, so their take-off holds are given back here too (a cancelled slot
+        // reports nothing, and its queue is dropped below).
         generationRef.current += 1
         slotHandles.current.forEach((handle) => handle?.cancel())
+        releaseAll(pendingReleasesRef.current)
+        // This deal's holds, each wrapped so whichever path ends its card's flight calls it exactly once (trackRelease).
+        const entries = incoming.map((entry) => (entry.releasePending ? { ...entry, releasePending: trackRelease(pendingReleasesRef.current, entry.releasePending) } : entry))
+        holdsRef.current.clear()
+        setAnyHold(false)
         setGeneration(generationRef.current)
         landedIds.current = new Set()
         dealtIds.current = new Set()
@@ -632,6 +901,7 @@ export function DealProvider({ children }: { children: ReactNode }) {
         slotHandles.current = []
         lastDepartAt.current = 0
         lastTakeOffAt.current = 0
+        dealingRef.current = false
         if (entries.length === 0) {
           callbacksRef.current = null
           setPoolSize(0)
@@ -648,10 +918,11 @@ export function DealProvider({ children }: { children: ReactNode }) {
           // existing PLAY_THROTTLE_MS/HAPTIC_MIN_GAP_MS to essentially one of each for the whole
           // deal, not 52 - and a caller's own take-off-driven side effects (e.g. FreeCell/Yukon's
           // deck placeholder, keyed on the max-delay card's own id) resolve exactly as they would at
-          // the end of a real flight, just immediately.
+          // the end of a real flight, just immediately. A card's take-off hold goes with its take-off, as in flight.
           setPoolSize(0)
           setDealing(false)
           entries.forEach((entry) => {
+            entry.releasePending?.()
             handleDealtRef.current(entry.cardId, generationRef.current)
             handleLanded(entry.cardId, generationRef.current)
           })
@@ -668,6 +939,7 @@ export function DealProvider({ children }: { children: ReactNode }) {
         // Provisional - the deal's clock is restarted when the slots have actually mounted (the [generation] effect).
         startedAtRef.current = Date.now()
         setPoolSize(size)
+        dealingRef.current = true
         setDealing(true)
       }
     }),
@@ -684,8 +956,11 @@ export function DealProvider({ children }: { children: ReactNode }) {
     launchTimerRef.current = null
     const unlaunched = queueRef.current
     queueRef.current = []
+    // A flying card's completeNow gives its take-off hold back (its dealtNotify, or its notify for one still in its lag); an
+    // unlaunched one has no ghost at all, so its source lets go as it lands.
     slotHandles.current.forEach((handle) => handle?.completeNow())
     unlaunched.forEach(({ spec }) => {
+      spec.releasePending?.()
       handleDealt(spec.cardId, generationRef.current)
       handleLanded(spec.cardId, generationRef.current)
     })
@@ -698,11 +973,14 @@ export function DealProvider({ children }: { children: ReactNode }) {
       position - a card's own screen-space destination is only correct once this measurement
       lands, which needs the view to already exist. */}
       <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
-        {dealing && poolSize > 0 && (
+        {(dealing || anyHold) && poolSize > 0 && (
           <CardSizeProvider width={cardWidth}>
-            {Array.from({ length: poolSize }, (_, slot) => (
-              <GhostSlot key={`${generation}-${slot}`} slot={slot} deal={generation} onDealt={handleDealt} onLanded={handleLanded} onIdle={handleSlotIdle} frame={frame} cardWidth={cardWidth} lastTakeOffRef={lastTakeOffAt} ref={slotRefs[slot]} />
-            ))}
+            {/* Ghosts: their faces are not the board's (see cardFacePaint.ts). */}
+            <FaceLoadTrackingContext.Provider value={false}>
+              {Array.from({ length: poolSize }, (_, slot) => (
+                <GhostSlot key={`${generation}-${slot}`} slot={slot} deal={generation} onDealt={handleDealt} onLanded={handleLanded} onIdle={handleSlotIdle} onHold={handleHold} frame={frame} cardWidth={cardWidth} lastTakeOffRef={lastTakeOffAt} ref={slotRefs[slot]} />
+              ))}
+            </FaceLoadTrackingContext.Provider>
           </CardSizeProvider>
         )}
       </View>

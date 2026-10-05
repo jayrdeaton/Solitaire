@@ -9,9 +9,11 @@ import { DraggableCard } from './dragdrop/DraggableCard'
 import { DragFlightHandle } from './dragdrop/DragGhostLayer'
 import { DropZone } from './dragdrop/DropZone'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
+import { PileOverlay } from './PileOverlay'
 import { EmptySlot, PlayingCard } from './PlayingCard'
 import { useTableColors } from './theme'
 import { useFrozenWhileHidden } from './useFrozenWhileHidden'
+import { useTakeOffHold } from './useTakeOffHold'
 import { wasteFanStepFor } from './wasteFan'
 
 // Stable empty-array default for wasteBehind, so callers that never pass it (Pyramid, draw-1) get
@@ -128,6 +130,19 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
   const frozenBehind2 = useFrozenWhileHidden(behind2, behind2Hidden)
   const frozenStockTopCard = useFrozenWhileHidden(stockTopCard, stockHidden)
   const underTop = settledWasteTop === undefined ? frozenWasteTop : settledWasteTop
+  // What the waste's overlay shows: the card under the incoming ghost(s) while one is landing, else the waste's own top
+  // card (invisibly, so the overlay is already painted when a flight starts - see PileOverlay).
+  const wasteUnderlay = topHidden ? underTop : wasteTop
+  // Take-off hold: keeps drawing a card that has just left while its ghost is not on screen yet (useTakeOffHold).
+  const { shown: wasteShown, holding: wasteHolding, revealing: wasteRevealing } = useTakeOffHold(wasteTop)
+  // The overlay stands in for the real top card while a flight is landing here (not over a held card, which is still the
+  // painted copy of the card that just left - an arriving flight must not hide it before its ghost shows), and while the
+  // card a take-off uncovered is revealed (useTakeOffHold): the real card's Image has just been re-sourced from the
+  // departed card, the overlay's has shown wasteTop all along.
+  const wasteOverlayVisible = (topHidden && !wasteHolding) || wasteRevealing
+  // The stock too: a draw that empties it would otherwise show the empty slot while the drawn card's ghost is not on
+  // screen yet - the card visible nowhere for a frame or two.
+  const { shown: stockShown, holding: stockHolding } = useTakeOffHold(stockTopCard)
   // Starts from faceUpFanOffset's fraction, tuned to clear PileView's VERTICAL corner-row strip, and
   // widens it where a HORIZONTAL fan needs more: a covered card shows only its left `fanOffset`
   // points, and the corner rank's ink (a '10' in particular) can reach past that strip - see
@@ -150,18 +165,22 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
           </View>
         )}
         <DropZone registry={dropZones} pileRef={{ zone: 'waste', index: 0 }} style={[cardWidth ? { width: cardWidth } : undefined, styles.wasteTopZone]}>
-          {wasteTop ? <DraggableCard card={wasteTop} selected={wasteSelected} hinted={wasteHinted} hidden={topHidden} shakeToken={wasteShakeToken} emptyFallback={<EmptySlot />} onPress={onWastePress} onDrop={onWasteDrop} testID='waste-top' /> : <EmptySlot hinted={wasteHinted} />}
-          {topHidden && (
-            <View style={StyleSheet.absoluteFill} pointerEvents='none'>
-              {underTop ? <PlayingCard card={underTop} /> : <EmptySlot />}
-            </View>
-          )}
+          {/* A held card is inert: no drag (it has already left) and no tap either, even with a card under it. Passing the tap
+          on to the real top (every caller's onWastePress acts on its own wasteTop) was tried: the held card still looks like
+          the card that left, sitting where it was, so a second tap there is a repeat tap on THAT card - and in draw-1 the card
+          it would send has never been seen - and the card it sent was drawn nowhere: not here (this slot draws the held
+          card, then the card under both once that one's ghost shows), and not as its own ghost until that ghost painted. The
+          tap is lost instead, for the frame or two until the held card's ghost shows. The stock below does pass a tap on:
+          its cards are backs, all alike. */}
+          {wasteShown ? <DraggableCard card={wasteShown} selected={wasteSelected && !wasteHolding} hinted={wasteHinted && !wasteHolding} hidden={wasteOverlayVisible} disabled={wasteHolding} registryId={wasteHolding ? (wasteTop?.id ?? null) : undefined} shakeToken={wasteHolding ? undefined : wasteShakeToken} emptyFallback={<EmptySlot />} onPress={wasteHolding ? undefined : onWastePress} onDrop={wasteHolding ? undefined : onWasteDrop} testID='waste-top' /> : <EmptySlot hinted={wasteHinted} />}
+          {/* Mounted (invisible) whenever there is a waste card, not just during a flight here - see PileOverlay. */}
+          {(topHidden || wasteTop) && <PileOverlay visible={wasteOverlayVisible}>{wasteUnderlay ? <PlayingCard card={wasteUnderlay} disabled /> : <EmptySlot />}</PileOverlay>}
         </DropZone>
       </View>
       <View ref={stockRef} collapsable={false}>
         <View style={stockHidden ? HIDDEN_STOCK_STYLE : undefined}>
-          {stockTopCard ? (
-            <PlayingCard card={{ ...stockTopCard, faceUp: false }} hinted={stockHinted} onPress={onDrawStock} testID='stock-pile' />
+          {stockShown ? (
+            <PlayingCard card={{ ...stockShown, faceUp: false }} hinted={stockHinted && !stockHolding} onPress={stockHolding && !stockTopCard ? undefined : onDrawStock} testID='stock-pile' />
           ) : (
             <EmptySlot onPress={onDrawStock} hinted={stockHinted} testID='stock-pile'>
               {wasteHasCards ? <Text style={styles.recycleIcon}>↺</Text> : null}

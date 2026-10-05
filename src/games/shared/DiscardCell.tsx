@@ -1,8 +1,10 @@
 import { RefObject } from 'react'
-import { StyleSheet, View } from 'react-native'
+import { View } from 'react-native'
 
+import { PileOverlay } from '@/components/PileOverlay'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
+import { useTakeOffHold } from '@/components/useTakeOffHold'
 import { Card } from '@/engine/types'
 
 import { HIDDEN_CARD_STYLE } from './FoundationCell'
@@ -35,14 +37,17 @@ interface DiscardCellProps {
 export function DiscardCell({ card, isFlyingHere, viewRef, settledCard }: DiscardCellProps) {
   const frozenCopy = useFrozenWhileHidden(card, isFlyingHere)
   const frozen = settledCard === undefined ? frozenCopy : settledCard
+  const underlay = isFlyingHere ? frozen : card
+  // Take-off hold: keeps drawing a card that has just left while its ghost is not on screen yet (useTakeOffHold).
+  const { shown, holding, revealing } = useTakeOffHold(card)
+  // Same as FoundationCell's: the overlay covers a flight landing here (never a held card) and the reveal of the card an
+  // undo uncovered.
+  const overlayVisible = (isFlyingHere && !holding) || revealing
   return (
     <View ref={viewRef} collapsable={false}>
-      {card ? <PlayingCard card={card} disabled style={isFlyingHere && HIDDEN_CARD_STYLE} testID='discard-top' /> : <EmptySlot testID='discard-empty' />}
-      {isFlyingHere && (
-        <View style={StyleSheet.absoluteFill} pointerEvents='none'>
-          {frozen ? <PlayingCard card={frozen} disabled /> : <EmptySlot />}
-        </View>
-      )}
+      {shown ? <PlayingCard card={shown} disabled style={overlayVisible && HIDDEN_CARD_STYLE} testID='discard-top' /> : <EmptySlot testID='discard-empty' />}
+      {/* Mounted (invisible) whenever there is a card - see PileOverlay. */}
+      {(isFlyingHere || card) && <PileOverlay visible={overlayVisible}>{underlay ? <PlayingCard card={underlay} disabled /> : <EmptySlot />}</PileOverlay>}
     </View>
   )
 }

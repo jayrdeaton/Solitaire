@@ -170,9 +170,9 @@ function KlondikeScreenInner() {
   // foundation card un-hides immediately instead of staying hidden forever with no ghost ever
   // covering for it (mirrors Pyramid's own fallback for the same rare failure mode).
   const [winCascadeFallbackSuits, setWinCascadeFallbackSuits] = useState<Set<number>>(new Set())
-  // The board the win cascade has taken over from (set together with startChains, see runWinCascade): once it IS the
-  // current state, and the win is revealed, the real foundation cards blank - not a moment earlier, or the piles would
-  // sit empty for the frames between the reveal commit and the commit that mounts the cascade's ghosts. Compared by
+  // The board the win cascade has taken over from (set once its ghosts are on screen - startChains' onShown, see
+  // runWinCascade): once it IS the current state, and the win is revealed, the real foundation cards blank - not a moment
+  // earlier, or the piles would sit empty (or under blank ghosts) until the cascade's ghosts can be seen. Compared by
   // identity (state is replaced wholesale on every change) so an undo or a New Game un-blanks the piles with nothing
   // to reset, and a re-win after an undo (which never relaunches the cascade) can never blank piles with no ghosts.
   const [cascadeHandoffFor, setCascadeHandoffFor] = useState<KlondikeState | null>(null)
@@ -367,11 +367,14 @@ function KlondikeScreenInner() {
   // built bottom-up, Ace pushed first, so reversing gives the right order).
   //
   // This runs while the real foundation cards are STILL on screen: the piles blank only afterwards,
-  // in the SAME commit that mounts the cascade's ghosts (cascadeHandoffFor, set right beside
-  // startChains - React batches the two, being one async continuation). Blanking on winRevealed
-  // alone left every pile empty for the frames this measurement takes (~140ms in a dev bundle)
-  // before the ghosts appeared. Same dealTokenRef guard as every other async measurement here, for
-  // the same "New Game tapped mid-measurement" reason.
+  // once the cascade's ghosts are on screen (cascadeHandoffFor, set from startChains' onShown - in the
+  // commit the ghosts appear, which waits for their parked faces to paint; see WinCascadeLayer's
+  // CascadeChains). Blanking on winRevealed alone left every pile empty for the frames this
+  // measurement takes (~140ms in a dev bundle) before the ghosts appeared; blanking in the commit
+  // that mounted them showed four blank-faced Kings for a frame or two. An undo or New Game before
+  // then clears the cascade, which drops the callback (and the hand-off is keyed to `s` anyway).
+  // Same dealTokenRef guard as every other async measurement here, for the same "New Game tapped
+  // mid-measurement" reason.
   async function runWinCascade(s: KlondikeState, gen: number) {
     const origins = await Promise.all(foundationSlotRefs.current.map((view) => measureView(view)))
     if (dealTokenRef.current !== gen) return
@@ -392,10 +395,10 @@ function KlondikeScreenInner() {
       chains.push({ cards: pile.slice().reverse(), origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
     })
     if (fallbackSuits.size > 0) setWinCascadeFallbackSuits(fallbackSuits)
-    winCascade.startChains(chains, cardWidth)
     // A pile with no chain to take over from it is in fallbackSuits above and stays up regardless, so this hand-off
-    // never blanks a pile for a chain that did not start (with every suit failed, all four just stay up under the banner).
-    setCascadeHandoffFor(s)
+    // never blanks a pile for a chain that did not start (with every suit failed there is no cascade to show, onShown never
+    // runs, and all four just stay up under the banner).
+    winCascade.startChains(chains, cardWidth, () => setCascadeHandoffFor(s))
   }
 
   // Same race as the deal effect above: measuring CardRegistry synchronously right after the

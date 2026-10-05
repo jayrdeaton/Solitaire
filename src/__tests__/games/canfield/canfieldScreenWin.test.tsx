@@ -61,9 +61,12 @@ interface MockFlightLog {
   pilesShownAtCascade: number
 }
 const mockLog: MockFlightLog = { shown: [], inAir: 0, hidden: 0, flown: 0, dealt: [], airAtWinCascade: -1, cascadeChains: -1, pilesShownAtCascade: -1 }
-/** One entry per React COMMIT that re-rendered the win cascade's ghost layer: whether ghosts were mounted, and how many foundation
- * piles were drawn bare (their real cards blanked) in that same commit. */
-const mockCommits: { ghosts: boolean; bare: number }[] = []
+/** One entry per React COMMIT that re-rendered the win cascade's ghost layer: whether ghosts were mounted, whether they were on
+ * screen (mounted ghosts stay invisible until their faces have painted), and how many foundation piles were drawn bare (their real
+ * cards blanked) in that same commit. */
+const mockCommits: { mounted: boolean; ghosts: boolean; bare: number }[] = []
+/** How long the mocked cascade takes to show after startChains - the real one waits for its parked ghosts' faces to paint. */
+const MOCK_GHOSTS_SHOW_MS = 16
 const mockBarePiles = () => [...mockPilesShown.values()].filter((shown) => !shown).length
 
 function mockMakeFlight() {
@@ -99,37 +102,52 @@ const mockDeal = {
 
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
-// Like the real layer, starting chains is a React STATE update on a provider above the screen (so it batches with whatever
-// state the screen sets in the same tick) and the ghosts are mounted by the same state. A layout effect on the ghost layer
-// records, per commit, whether ghosts are up and how many piles are drawn bare in that very commit.
+// Like the real layer, starting chains is a React STATE update on a provider above the screen and the ghosts are mounted by
+// that state - but they are not on screen yet: the real cascade stays invisible until its parked ghosts' faces have painted (a
+// frame or two; MOCK_GHOSTS_SHOW_MS here), and calls startChains' onShown in the commit it shows (a layout effect), never for an
+// empty cascade, never once a clear() or a newer startChains replaced it. A layout effect on the ghost layer records, per
+// commit, whether ghosts are mounted, whether they are on screen, and how many piles are drawn bare in that very commit.
 jest.mock('@/components/winning/WinCascadeLayer', () => {
-  const { createContext, useContext, useLayoutEffect, useMemo, useState } = require('react')
-  const { View: MockView } = require('react-native')
+  const { createContext, useContext, useEffect, useLayoutEffect, useMemo, useState } = require('react')
+  const { StyleSheet: MockStyleSheet, View: MockView } = require('react-native')
   const CascadeContext = createContext(null)
+  const mockStyles = MockStyleSheet.create({ unpainted: { opacity: 0 } })
+  type MockCascade = { shown: boolean; onShown?: () => void } | null
   return {
     WinCascadeProvider: ({ children }: { children: unknown }) => {
-      const [started, setStarted] = useState(false)
+      const [cascade, setCascade] = useState(null as MockCascade)
       const controller = useMemo(
         () => ({
-          startChains: (chains: unknown[]) => {
+          startChains: (chains: unknown[], _cardWidth: number, onShown?: () => void) => {
             mockLog.airAtWinCascade = mockLog.inAir
             mockLog.cascadeChains = chains.length
             mockLog.pilesShownAtCascade = [...mockPilesShown.values()].filter((shown) => shown).length
-            setStarted(chains.length > 0)
+            setCascade(chains.length > 0 ? { shown: false, onShown } : null)
           },
-          clear: () => setStarted(false)
+          clear: () => setCascade(null)
         }),
         []
       )
-      const value = useMemo(() => ({ controller, started }), [controller, started])
+      // The parked faces paint, and the cascade shows (a replaced or cleared cascade's timer goes with it).
+      useEffect(() => {
+        if (!cascade || cascade.shown) return
+        const timer = setTimeout(() => setCascade({ ...cascade, shown: true }), MOCK_GHOSTS_SHOW_MS)
+        return () => clearTimeout(timer)
+      }, [cascade])
+      const value = useMemo(() => ({ controller, cascade }), [controller, cascade])
       return <CascadeContext.Provider value={value}>{children}</CascadeContext.Provider>
     },
     WinCascadeGhosts: () => {
-      const { started } = useContext(CascadeContext)
+      const { cascade } = useContext(CascadeContext) as { cascade: MockCascade }
+      const shown = !!cascade?.shown
       useLayoutEffect(() => {
-        mockCommits.push({ ghosts: started, bare: mockBarePiles() })
+        mockCommits.push({ mounted: !!cascade, ghosts: shown, bare: mockBarePiles() })
       })
-      return started ? <MockView testID='cascade-ghosts' /> : null
+      // In the commit the ghosts show, like the real layer.
+      useLayoutEffect(() => {
+        if (shown) cascade?.onShown?.()
+      }, [shown, cascade])
+      return cascade ? <MockView testID='cascade-ghosts' style={shown ? undefined : mockStyles.unpainted} /> : null
     },
     useWinCascade: () => useContext(CascadeContext).controller
   }
@@ -444,8 +462,8 @@ describe('Canfield screen - the win celebration waits for the winning card to fl
   })
 })
 
-describe('Canfield screen - the win cascade takes over from the real foundation cards in one commit', () => {
-  it('the piles keep their real cards until the cascade is started, and blank in the very commit that mounts its ghosts', async () => {
+describe('Canfield screen - the win cascade takes over from the real foundation cards once its ghosts show', () => {
+  it('the piles keep their real cards until the cascade is started and its ghosts are on screen, and blank in the commit right after they show', async () => {
     await mount(ONE_CARD_FROM_WON())
 
     await press(`reserve-${id('clubs', 13)}`)
@@ -456,13 +474,18 @@ describe('Canfield screen - the win cascade takes over from the real foundation 
     expect(screen.getByTestId('cascade-ghosts')).toBeTruthy()
     SUITS.forEach((suit) => expect(foundationTop(suit)).toBe('empty')) // and the real cards are gone now that the ghosts stand in for them
 
-    // No commit ever drew a pile bare without the cascade's ghosts mounted to stand in for it (that was ~140ms of empty piles)...
+    // No commit ever drew a pile bare without the cascade's ghosts ON SCREEN to stand in for it (that was ~140ms of empty piles,
+    // then - blanking in the commit that mounted the ghosts - a frame or two of blank-faced ones)...
     expect(mockCommits.filter((commit) => commit.bare > 0 && !commit.ghosts)).toEqual([])
-    // ...because the commit that mounted the ghosts is the same one that blanked the piles, the one before it drawing them all.
+    // ...because the piles stayed up while the mounted ghosts were still invisible, and blanked in the commit right after the one
+    // the ghosts appeared in (onShown), which still drew them all - the same pixels, twice.
+    const firstMounted = mockCommits.findIndex((commit) => commit.mounted)
     const firstGhosts = mockCommits.findIndex((commit) => commit.ghosts)
-    expect(firstGhosts).toBeGreaterThan(0)
-    expect(mockCommits[firstGhosts].bare).toBe(4)
-    expect(mockCommits[firstGhosts - 1].bare).toBe(0)
+    expect(firstMounted).toBeGreaterThan(0)
+    expect(firstGhosts).toBeGreaterThan(firstMounted)
+    expect(mockCommits.slice(firstMounted, firstGhosts).every((commit) => commit.bare === 0)).toBe(true)
+    expect(mockCommits[firstGhosts].bare).toBe(0)
+    expect(mockCommits[firstGhosts + 1].bare).toBe(4)
   })
 
   it('a pile whose slot cannot be measured keeps its real cards instead of blanking without a chain to replace them', async () => {

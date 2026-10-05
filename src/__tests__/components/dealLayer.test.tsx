@@ -3,7 +3,8 @@ import { Profiler, useEffect } from 'react'
 import { StyleSheet, type ViewStyle } from 'react-native'
 import { cancelAnimation, withSpring } from 'react-native-reanimated'
 
-import { type DealAnimator, type DealCardSpec, dealPoolSize, DealProvider, ghostPoolSize, useDealAnimator } from '@/components/dealing/DealLayer'
+import { trackFaceLoad } from '@/components/cardFacePaint'
+import { DEAL_LANDED_MAX_MS, type DealAnimator, type DealCardSpec, dealPoolSize, DealProvider, ghostPoolSize, TAKE_OFF_RELEASE_LAG_MS, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_SPRING, DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { FLIGHT_SPRING } from '@/components/dragdrop/dragSpring'
 import type { Card } from '@/engine/types'
@@ -65,14 +66,22 @@ jest.mock('@/components/overlayFrame', () => {
     toLocal: (tx: number, ty: number) => ({ x: tx, y: ty })
   }
 })
+// A face reports its paint (PlayingCard's onFacePainted) as soon as it has committed, like a cached bitmap - unless `defer`,
+// when the report waits in `pending` for a test to deliver it.
+const mockPaint = { defer: false, pending: new Map<string, () => void>() }
 jest.mock('@/components/PlayingCard', () => {
   const { View } = require('react-native')
   const { useEffect: useMockEffect } = require('react')
   return {
-    PlayingCard: ({ card }: { card: { id: string } }) => {
+    PlayingCard: ({ card, onFacePainted }: { card: { id: string }; onFacePainted?: () => void }) => {
       useMockEffect(() => {
         mockMounts.count++
       }, [])
+      useMockEffect(() => {
+        if (!onFacePainted) return
+        if (mockPaint.defer) mockPaint.pending.set(card.id, onFacePainted)
+        else onFacePainted()
+      }, [card, onFacePainted])
       mockShown.push(card.id)
       if (mockRenderLatency.ids.delete(card.id)) jest.setSystemTime(Date.now() + mockRenderLatency.ms)
       return <View testID={`ghost-${card.id}`} />
@@ -739,6 +748,90 @@ describe('DealProvider ghost pool', () => {
 // shadow tree and measureInWindow all said it was right - see GhostSlot's slotSize comment for the full account.
 // Pinned here because nothing else about the layout ever needed the size, so it is exactly the kind of "harmless
 // cleanup" a later pass would otherwise remove.
+// A landing reveals the real card in the slot's landing commit, and that card's face is an Image React Native delivers a
+// frame or two later (a blank face until then - cardFacePaint.ts). So a slot keeps its landed card drawn until the real
+// card's face has painted. Here "the real card's face is loading" is trackFaceLoad, called from onCardLanded (the commit
+// it mounts in), and "loaded" is calling what it returns.
+describe('DealProvider - a landed card waits for the real card to paint', () => {
+  const loadingFaces: (() => void)[] = []
+  const faceLoading = (id: string) => {
+    const done = trackFaceLoad(id)
+    loadingFaces.push(done)
+    return done
+  }
+  beforeEach(() => jest.useFakeTimers())
+  afterEach(() => {
+    loadingFaces.splice(0).forEach((done) => done())
+    jest.useRealTimers()
+  })
+  const landedTime = (DEAL_SPRING.duration ?? 0) + LOOKAHEAD_MS + 100
+  // Steps the clock only until `done()` - a hold is capped, so overshooting the landing would let the cap end it.
+  async function advanceUntil(done: () => boolean, maxMs = 3000) {
+    for (let t = 0; t < maxMs && !done(); t += 5) {
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(5)
+      })
+    }
+  }
+
+  it("keeps a landed card drawn - and the pool mounted past the deal's end - until the real card's face has loaded", async () => {
+    await renderProvider()
+    const onAllLanded = jest.fn()
+    let loaded!: () => void
+    await act(async () => controller.start(makeEntries(1, 'h', true), CARD_WIDTH, (id) => (loaded = faceLoading(id)), onAllLanded))
+    await advanceUntil(() => onAllLanded.mock.calls.length > 0)
+    expect(onAllLanded).toHaveBeenCalledTimes(1) // the deal is over (and the real card revealed) ...
+    expect(flying()).toHaveLength(1) // ... but its face is not there yet: the landed card still covers it
+    await act(async () => loaded())
+    expect(ghosts()).toHaveLength(0)
+  })
+
+  it('holds a landed card no longer than DEAL_LANDED_MAX_MS for a face that never reports', async () => {
+    await renderProvider()
+    const onAllLanded = jest.fn()
+    await act(async () => controller.start(makeEntries(1, 'h', true), CARD_WIDTH, (id) => faceLoading(id), onAllLanded))
+    await advanceUntil(() => onAllLanded.mock.calls.length > 0)
+    await advance(DEAL_LANDED_MAX_MS - 30)
+    expect(flying()).toHaveLength(1)
+    await advance(30)
+    expect(ghosts()).toHaveLength(0)
+  })
+
+  it("a card landing on a held card's spot ends that hold - the held card would otherwise be drawn over the newer one", async () => {
+    await renderProvider()
+    const entries = makeEntries(2, 'h', true).map((e) => ({ ...e, to: { x: 40, y: 20 } }))
+    // Only the first card's face is slow; the second lands on the same spot 35ms later, its face already there.
+    await act(async () => controller.start(entries, CARD_WIDTH, (id) => (id === 'h0' ? faceLoading(id) : undefined), jest.fn()))
+    await advance(landedTime + DEAL_STAGGER_MS)
+    expect(ghosts()).toHaveLength(0)
+  })
+
+  // A slot that goes idle mid-deal is reused for a later card. Its relaunch resets the card box's position/opacity with
+  // UI-thread writes, and the commit that shows the wrapper again could reach the screen first - the box was then drawn for
+  // a frame where it last landed (still opaque), over the real card there. So ending the hold zeroes the box's opacity.
+  it("an idle slot's card box is invisible before it is reused, not just its wrapper - a relaunch's own writes can come a frame late", async () => {
+    await renderProvider()
+    // Far apart, so a slot lands, ends its hold (nothing loading) and sits idle before a later card reuses it.
+    const entries = makeEntries(6, 'r', true, 700)
+    await act(async () => controller.start(entries, CARD_WIDTH, jest.fn(), jest.fn()))
+    await advance(landedTime + 100) // r0 landed and its hold ended; r1 is still ~250ms from launch
+    const idleBoxes = ghosts().filter((node) => opacityOf(node) === 0)
+    expect(idleBoxes.length).toBeGreaterThan(0)
+    const innerOpacity = (node: { children: readonly (string | { props: { style?: unknown } })[] }) => styleOf(node.children[0] as { props: { style?: unknown } }).opacity
+    // The slot that flew r0 is idle: its wrapper hides it, and its card box is back to 0 as well.
+    expect(idleBoxes.map(innerOpacity)).not.toContain(1)
+  })
+
+  it('lets the pool go as soon as nothing is held, exactly as before, when every face is already there', async () => {
+    await renderProvider()
+    const onAllLanded = jest.fn()
+    await act(async () => controller.start(makeEntries(3, 'h', true), CARD_WIDTH, jest.fn(), onAllLanded))
+    await advance(landedTime + 3 * DEAL_STAGGER_MS)
+    expect(onAllLanded).toHaveBeenCalledTimes(1)
+    expect(ghosts()).toHaveLength(0)
+  })
+})
+
 describe('DealProvider ghost slot frames', () => {
   beforeEach(() => {
     jest.useFakeTimers()
@@ -853,6 +946,69 @@ describe('DealProvider absolute-deadline departures', () => {
       expect(dealtAt[e.cardId]).toBeGreaterThanOrEqual(e.delayMs)
       expect(dealtAt[e.cardId] - e.delayMs).toBeLessThanOrEqual(25)
     })
+  })
+})
+
+// A face-up ghost's face is an Image that paints a frame or two after its commit; a card with no lookahead runway left (a deal's first)
+// used to take off blank. It now waits for the paint, but never past the later of its departure and GHOST_PAINT_MAX_MS.
+describe('DealProvider - a face-up card takes off showing its face', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+    mockShown.length = 0
+    mockPaint.defer = true
+    mockPaint.pending.clear()
+  })
+  afterEach(() => {
+    jest.useRealTimers()
+    mockPaint.defer = false
+    mockPaint.pending.clear()
+  })
+
+  const faceUpCard = (id: string, rank: number, delayMs: number): DealCardSpec => {
+    const card = { id, suit: 'hearts', rank, faceUp: true } as unknown as Card
+    return { cardId: id, card, from: { x: 0, y: 0 }, to: { x: 10, y: 20 }, delayMs }
+  }
+  async function startDeal(entries: DealCardSpec[]) {
+    const t0 = Date.now()
+    const dealtAt: Record<string, number> = {}
+    await act(async () => controller.start(entries, CARD_WIDTH, jest.fn(), jest.fn(), (id) => (dealtAt[id] = Date.now() - t0)))
+    return dealtAt
+  }
+
+  it('a card with no runway waits for its face, then leaves at once', async () => {
+    await renderProvider()
+    const dealtAt = await startDeal([faceUpCard('a', 5, 0)])
+    await advance(50)
+    expect(dealtAt.a).toBeUndefined()
+    await act(async () => mockPaint.pending.get('a')?.())
+    await advance(25)
+    expect(dealtAt.a).toBeGreaterThanOrEqual(50)
+    expect(dealtAt.a).toBeLessThan(80)
+  })
+
+  it('...but no longer than GHOST_PAINT_MAX_MS if the face never reports', async () => {
+    await renderProvider()
+    const dealtAt = await startDeal([faceUpCard('a', 5, 0)])
+    await advance(75)
+    expect(dealtAt.a).toBeUndefined()
+    await advance(25)
+    expect(dealtAt.a).toBeGreaterThanOrEqual(80)
+    expect(dealtAt.a).toBeLessThanOrEqual(100)
+  })
+
+  it('a card with runway is never late for its face: it leaves on time even if the face never reports', async () => {
+    await renderProvider()
+    const dealtAt = await startDeal([faceUpCard('a', 5, 0), faceUpCard('b', 6, 120)])
+    await advance(200)
+    expect(dealtAt.b).toBeGreaterThanOrEqual(120)
+    expect(dealtAt.b - 120).toBeLessThanOrEqual(25)
+  })
+
+  it('face-down cards never wait (a back is drawn at once)', async () => {
+    await renderProvider()
+    const dealtAt = await startDeal(makeEntries(3, 'd', false, 0))
+    await advance(25)
+    expect(Object.keys(dealtAt).sort()).toEqual(['d0', 'd1', 'd2'])
   })
 })
 
@@ -1330,5 +1486,326 @@ describe('DealProvider reduceMotion', () => {
 
     await advance(totalMs(12))
     expect(landed).toHaveLength(12)
+  })
+})
+
+// A caller that flies cards OUT of a pile (an undo flying a stock deal back: Spider, Scorpion, Aces Up) takes a take-off hold on
+// each one (cardFacePaint.ts's markGhostPending) before the commit that removes it, so the pile keeps drawing it where it was until
+// its ghost is on screen there. DealLayer gives each hold back exactly once: TAKE_OFF_RELEASE_LAG_MS after that card's own
+// take-off, or at once on whatever ends its flight first - a skip, its landing, a newer start() (an empty one too), the provider
+// unmounting, Reduce Motion's instant landing.
+describe('DealProvider releasePending (a take-off hold, given back exactly once)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+    mockPlayCardSound.mockClear()
+    mockHapticCard.mockClear()
+    mockPaint.defer = false
+    mockPaint.pending.clear()
+  })
+  afterEach(() => {
+    jest.useRealTimers()
+    mockPaint.defer = false
+    mockPaint.pending.clear()
+    mockReduceMotion.value = false
+  })
+
+  /** `entries`, each with its own jest.fn hold release (by card id), recording when it ran (ms after `t0`). */
+  function withHolds(entries: DealCardSpec[], t0 = Date.now()) {
+    const releases: Record<string, jest.Mock> = {}
+    const releasedAt: Record<string, number> = {}
+    const held = entries.map((entry) => {
+      const release = jest.fn(() => {
+        releasedAt[entry.cardId] = Date.now() - t0
+      })
+      releases[entry.cardId] = release
+      return { ...entry, releasePending: release }
+    })
+    return { held, releases, releasedAt }
+  }
+  const counts = (releases: Record<string, jest.Mock>) => Object.values(releases).map((release) => release.mock.calls.length)
+  const once = (n: number) => Array(n).fill(1)
+
+  // The ghost turns visible on the UI thread (a withDelay on its opacity), which starts counting that delay a frame or so after
+  // the JS write and flips on a frame boundary; the release is a JS timer, and the commit dropping the held card could reach
+  // the screen a frame BEFORE the ghost - a frame of the card gone from its pile. So the release comes TAKE_OFF_RELEASE_LAG_MS
+  // after the take-off, not in it (the same lag Pyramid's win sweep gives its piles after onCardDealt).
+  it("gives each card's hold back TAKE_OFF_RELEASE_LAG_MS after its own take-off - not in it - with its ghost still up over the spot it leaves, and never again", async () => {
+    await renderProvider()
+    const t0 = Date.now()
+    const entries = makeEntries(10, 'c', true)
+    const { held, releases, releasedAt } = withHolds(entries, t0)
+    const dealtAt: Record<string, number> = {}
+    const releasedAtTakeOff: Record<string, boolean> = {}
+    const ghostUpAtRelease: Record<string, boolean> = {}
+    held.forEach((entry) => {
+      const release = releases[entry.cardId]
+      const record = release.getMockImplementation()!
+      release.mockImplementation(() => {
+        record()
+        ghostUpAtRelease[entry.cardId] = flying().some((node) => within(node).queryByTestId(`ghost-${entry.cardId}`) !== null)
+      })
+    })
+    const onCardDealt = (id: string) => {
+      dealtAt[id] = Date.now() - t0
+      releasedAtTakeOff[id] = releases[id].mock.calls.length > 0
+    }
+    await act(async () => controller.start(held, CARD_WIDTH, jest.fn(), jest.fn(), onCardDealt))
+    expect(counts(releases)).toEqual(Array(10).fill(0)) // nothing has taken off: every source still draws its card
+
+    await advance(totalMs(10))
+
+    expect(counts(releases)).toEqual(once(10))
+    // The lag is more than one 60Hz frame (the UI thread can pick the ghost's opacity up that late) and no more than two: the
+    // held card is drawn under a ghost that is already moving off it (DEAL_SPRING covers ~9% of its distance in one frame and
+    // ~26% in two), so a longer lag would leave a visible second copy behind at every take-off.
+    expect(TAKE_OFF_RELEASE_LAG_MS).toBeGreaterThan(1000 / 60)
+    expect(TAKE_OFF_RELEASE_LAG_MS).toBeLessThanOrEqual(2000 / 60)
+    entries.forEach((e) => {
+      expect({ id: e.cardId, releasedAtTakeOff: releasedAtTakeOff[e.cardId] }).toEqual({ id: e.cardId, releasedAtTakeOff: false }) // not in the take-off itself...
+      expect(releasedAt[e.cardId] - dealtAt[e.cardId]).toBe(TAKE_OFF_RELEASE_LAG_MS) // ...but exactly the lag after onCardDealt reports it
+      expect(dealtAt[e.cardId]).toBeGreaterThanOrEqual(e.delayMs) // (never ahead of the card's own departure)
+      expect(ghostUpAtRelease[e.cardId]).toBe(true) // and with a slot still showing that card
+    })
+  })
+
+  it("keeps a face-up card's hold until its ghost face has painted (the slot's paint wait), then gives it back the lag after the take-off that follows", async () => {
+    mockPaint.defer = true
+    await renderProvider()
+    const t0 = Date.now()
+    const { held, releases, releasedAt } = withHolds(makeEntries(1, 'a', true), t0)
+    await act(async () => controller.start(held, CARD_WIDTH, jest.fn(), jest.fn()))
+    await advance(50)
+    expect(releases.a0).not.toHaveBeenCalled() // its ghost is mounted but blank: the source keeps drawing the card
+
+    const paintedAt = Date.now() - t0
+    await act(async () => mockPaint.pending.get('a0')?.())
+    await advance(TAKE_OFF_RELEASE_LAG_MS + 5)
+    expect(releases.a0).toHaveBeenCalledTimes(1)
+    expect(releasedAt.a0).toBeGreaterThanOrEqual(paintedAt + TAKE_OFF_RELEASE_LAG_MS)
+  })
+
+  it('...and no longer than GHOST_PAINT_MAX_MS for a face that never reports', async () => {
+    mockPaint.defer = true
+    await renderProvider()
+    const { held, releases, releasedAt } = withHolds(makeEntries(1, 'a', true))
+    await act(async () => controller.start(held, CARD_WIDTH, jest.fn(), jest.fn()))
+    await advance(75)
+    expect(releases.a0).not.toHaveBeenCalled()
+    await advance(TAKE_OFF_RELEASE_LAG_MS + 25)
+    expect(releases.a0).toHaveBeenCalledTimes(1)
+    expect(releasedAt.a0).toBeGreaterThanOrEqual(80 + TAKE_OFF_RELEASE_LAG_MS)
+  })
+
+  it('a skip gives back every hold still out - flying cards, cards waiting on their face, never-launched ones - each as its card lands, exactly once', async () => {
+    mockPaint.defer = true // a launched face-up card with no runway waits on its face: taken off by the skip, not by its paint
+    await renderProvider()
+    const { held, releases } = withHolds(makeEntries(30, 'c', true))
+    const releasedByLanding: Record<string, boolean> = {}
+    await act(async () => controller.start(held, CARD_WIDTH, (id) => (releasedByLanding[id] = releases[id].mock.calls.length === 1), jest.fn()))
+    await advance(200)
+    expect(counts(releases)).toContain(0)
+    expect(counts(releases)).toContain(1)
+
+    await fireEvent.press(screen.getByTestId('deal-skip-layer'))
+    expect(counts(releases)).toEqual(once(30))
+    expect(Object.values(releasedByLanding)).toEqual(Array(30).fill(true)) // never a card landed while its source still held it
+
+    await advance(5000) // nothing gives one back a second time later
+    expect(counts(releases)).toEqual(once(30))
+  })
+
+  it('a newer deal gives back, in start() itself, every hold of the deal it replaces - even with the old slots firing before the new ones mount', async () => {
+    await renderProvider()
+    const a = withHolds(makeEntries(30, 'a', true))
+    await act(async () => controller.start(a.held, CARD_WIDTH, jest.fn(), jest.fn()))
+    await advance(200)
+    expect(counts(a.releases)).toContain(0)
+
+    const b = withHolds(makeEntries(12, 'b', true))
+    await act(async () => {
+      controller.start(b.held, CARD_WIDTH, jest.fn(), jest.fn())
+      expect(counts(a.releases)).toEqual(once(30))
+      jest.advanceTimersByTime(600) // A's slot timers fire here, before React commits B's slots
+    })
+    await advance(totalMs(12))
+
+    expect(counts(a.releases)).toEqual(once(30))
+    expect(counts(b.releases)).toEqual(once(12))
+  })
+
+  it('an empty start() gives back every hold of the deal it cancels', async () => {
+    await renderProvider()
+    const { held, releases } = withHolds(makeEntries(30, 'a', true))
+    await act(async () => controller.start(held, CARD_WIDTH, jest.fn(), jest.fn()))
+    await advance(200)
+    expect(counts(releases)).toContain(0)
+
+    await act(async () => controller.start([], CARD_WIDTH, jest.fn(), jest.fn()))
+    expect(counts(releases)).toEqual(once(30))
+    await advance(totalMs(30))
+    expect(counts(releases)).toEqual(once(30))
+  })
+
+  it('unmounting mid-deal gives back every hold still out', async () => {
+    const view = await renderProvider()
+    const { held, releases } = withHolds(makeEntries(30, 'a', true))
+    await act(async () => controller.start(held, CARD_WIDTH, jest.fn(), jest.fn()))
+    await advance(200)
+    expect(counts(releases)).toContain(0)
+
+    await view.unmount()
+    expect(counts(releases)).toEqual(once(30))
+    await advance(3000)
+    expect(counts(releases)).toEqual(once(30))
+  })
+
+  it("Reduce Motion gives every hold back as its card lands at once, ahead of that card's landing", async () => {
+    mockReduceMotion.value = true
+    await renderProvider()
+    const { held, releases } = withHolds(makeEntries(8, 'c', true))
+    const releasedBeforeLanding: boolean[] = []
+    await act(async () => controller.start(held, CARD_WIDTH, (id) => releasedBeforeLanding.push(releases[id].mock.calls.length === 1), jest.fn()))
+
+    expect(counts(releases)).toEqual(once(8))
+    expect(releasedBeforeLanding).toEqual(Array(8).fill(true))
+  })
+
+  it('gives back the hold of an entry repeating a card id that has already landed, once the deal is over', async () => {
+    await renderProvider()
+    const entries = makeEntries(6)
+    entries[5] = { ...entries[5], cardId: entries[1].cardId, delayMs: 5000 } // still queued when the five distinct cards have landed
+    const releases = entries.map(() => jest.fn())
+    const held = entries.map((entry, i) => ({ ...entry, releasePending: releases[i] }))
+    const onAllLanded = jest.fn()
+    await act(async () => controller.start(held, CARD_WIDTH, jest.fn(), onAllLanded))
+    await advance(totalMs(5))
+
+    expect(onAllLanded).toHaveBeenCalledTimes(1)
+    expect(releases.map((release) => release.mock.calls.length)).toEqual(once(6))
+    await act(async () => controller.start([], CARD_WIDTH, jest.fn(), jest.fn())) // (stops the dropped entry's launch timer)
+    expect(releases.map((release) => release.mock.calls.length)).toEqual(once(6))
+  })
+
+  // Contrived (a caller repeating a card id), but the one way two paths could both reach a hold: the deal is over - and gives back
+  // every hold still out - while the repeat is launched but not off yet, and a held landing keeps the pool (and so that slot)
+  // mounted until after its take-off.
+  it('gives a hold back once even when the deal ends with its card launched but not off yet, and that card then takes off', async () => {
+    await renderProvider()
+    const faces: (() => void)[] = []
+    const entries = [...makeEntries(2, 'c', true), { ...makeEntries(2, 'c', true)[1], delayMs: 400 }]
+    const releases = entries.map(() => jest.fn())
+    const held = entries.map((entry, i) => ({ ...entry, releasePending: releases[i] }))
+    const onAllLanded = jest.fn()
+    // Every landed card's real face stays loading, so its slot holds it - and the pool stays mounted past the deal's end.
+    await act(async () => controller.start(held, CARD_WIDTH, (id) => faces.push(trackFaceLoad(id)), onAllLanded))
+    await advance(350)
+    expect(onAllLanded).toHaveBeenCalledTimes(1)
+    expect(ghosts().length).toBeGreaterThan(0)
+    expect(releases.map((release) => release.mock.calls.length)).toEqual(once(3)) // the repeat's hold went with the deal's end
+
+    await advance(100) // past the repeat's own departure (400ms), its slot still mounted
+    expect(releases.map((release) => release.mock.calls.length)).toEqual(once(3))
+    await act(async () => faces.forEach((done) => done()))
+  })
+
+  it('a release that throws cannot keep the others from running: a skip still gives every hold back, and the error still surfaces', async () => {
+    await renderProvider()
+    const { held, releases } = withHolds(makeEntries(20))
+    releases.c3.mockImplementation(() => {
+      throw new Error('boom')
+    })
+    await act(async () => controller.start(held, CARD_WIDTH, jest.fn(), jest.fn()))
+    await advance(50)
+
+    await fireEvent.press(screen.getByTestId('deal-skip-layer'))
+    expect(counts(releases)).toEqual(once(20))
+    // The rethrown error surfaces from a timer; caught the way the onCardDealt test above catches its own (an act() left to
+    // reject on its own here broke every test that ran after it in this file).
+    const errors: unknown[] = []
+    try {
+      await advance(25)
+    } catch (error) {
+      errors.push(error)
+    }
+    expect(errors).toEqual([expect.objectContaining({ message: 'boom' })])
+  })
+
+  describe('a hold still waiting out its lag is never dropped, and never outlives its card', () => {
+    /** Steps the clock until some card has taken off (onCardDealt) with its hold not given back yet - i.e. inside its lag - and
+     * returns that card's id. */
+    async function advanceIntoALag(dealt: string[], releases: Record<string, jest.Mock>): Promise<string> {
+      for (let t = 0; t < 2000; t += 5) {
+        const inLag = dealt.find((id) => releases[id].mock.calls.length === 0)
+        if (inLag) return inLag
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(5)
+        })
+      }
+      throw new Error('no card ever took off')
+    }
+
+    it('a skip during the lag gives that hold back before its card is reported landed', async () => {
+      await renderProvider()
+      const { held, releases } = withHolds(makeEntries(12))
+      const dealt: string[] = []
+      const releasedByLanding: Record<string, boolean> = {}
+      await act(async () =>
+        controller.start(
+          held,
+          CARD_WIDTH,
+          (id) => (releasedByLanding[id] = releases[id].mock.calls.length === 1),
+          jest.fn(),
+          (id) => dealt.push(id)
+        )
+      )
+      const inLag = await advanceIntoALag(dealt, releases)
+
+      await fireEvent.press(screen.getByTestId('deal-skip-layer'))
+      expect(releases[inLag]).toHaveBeenCalledTimes(1)
+      expect(releasedByLanding[inLag]).toBe(true) // its ghost jumped to the landing: nothing covers the spot it left any more
+      expect(Object.values(releasedByLanding)).toEqual(Array(12).fill(true))
+      await advance(1000) // and its lag timer does not give it back a second time
+      expect(counts(releases)).toEqual(once(12))
+    })
+
+    it('a flight shorter than the lag gives its hold back as it lands, not after', async () => {
+      await renderProvider()
+      const { held, releases } = withHolds(makeEntries(3))
+      const releasedByLanding: Record<string, boolean> = {}
+      const quick = { duration: 5, dampingRatio: 1, overshootClamping: true }
+      await act(async () => controller.start(held, CARD_WIDTH, (id) => (releasedByLanding[id] = releases[id].mock.calls.length === 1), jest.fn(), undefined, quick))
+      await advance(500)
+
+      expect(Object.values(releasedByLanding)).toEqual(Array(3).fill(true))
+      expect(counts(releases)).toEqual(once(3))
+    })
+
+    it('a newer start() during the lag gives that hold back in start() itself', async () => {
+      await renderProvider()
+      const { held, releases } = withHolds(makeEntries(12))
+      const dealt: string[] = []
+      await act(async () => controller.start(held, CARD_WIDTH, jest.fn(), jest.fn(), (id) => dealt.push(id)))
+      const inLag = await advanceIntoALag(dealt, releases)
+
+      await act(async () => {
+        controller.start([], CARD_WIDTH, jest.fn(), jest.fn())
+        expect(releases[inLag]).toHaveBeenCalledTimes(1)
+      })
+      await advance(1000)
+      expect(counts(releases)).toEqual(once(12))
+    })
+
+    it('unmounting during the lag gives that hold back at once', async () => {
+      const view = await renderProvider()
+      const { held, releases } = withHolds(makeEntries(12))
+      const dealt: string[] = []
+      await act(async () => controller.start(held, CARD_WIDTH, jest.fn(), jest.fn(), (id) => dealt.push(id)))
+      const inLag = await advanceIntoALag(dealt, releases)
+
+      await view.unmount()
+      expect(releases[inLag]).toHaveBeenCalledTimes(1)
+      await advance(1000)
+      expect(counts(releases)).toEqual(once(12))
+    })
   })
 })

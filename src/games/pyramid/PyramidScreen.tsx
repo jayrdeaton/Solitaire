@@ -5,10 +5,11 @@ import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
 
+import { FaceLoadTrackingContext, LANDED_GHOST_MAX_MS, markGhostPending, useGhostPaintGate, whenCardsSettled } from '@/components/cardFacePaint'
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { dealStaggerMs } from '@/components/dealing/dealSpring'
@@ -17,6 +18,7 @@ import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
+import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
@@ -26,6 +28,7 @@ import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
+import { useTakeOffHold } from '@/components/useTakeOffHold'
 import { useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { chainSegmentDelayMs } from '@/components/winning/winCascadeMotion'
 import { PYRAMID_RULES } from '@/constants/gameRules'
@@ -115,14 +118,22 @@ interface PairFlightCardSpec {
   to: ScreenPoint
 }
 
-/** One airborne pair flight. `cards` shrinks as each card lands (a landed card's ghost is removed
- * the moment it lands, not when its partner does) and the flight goes when it is empty. Several of
- * these are in the air at once when the player removes pairs faster than a flight lasts - see
- * PyramidScreenInner's pairFlights. */
+/** One airborne pair flight. A card is marked `landed` the moment it lands (everything the landing owes - the discard
+ * count, the un-hide, the flight's claim - is settled then, see handlePairFlightLanded), and its ghost stays over the spot,
+ * shadowless, only until the card revealed under it has painted (FlyingPairCard's landed hold): then it leaves `cards` -
+ * on its own, not when its partner does - and the flight goes when `cards` is empty. Several of these are in the air at
+ * once when the player removes pairs faster than a flight lasts - see PyramidScreenInner's pairFlights. */
 interface PairFlightState {
   gen: number
   cardWidth: number
   cards: PairFlightCardSpec[]
+  /** Ids of the cards that have landed and only wait to be retired (see FlyingPairCard). */
+  landed: ReadonlySet<string>
+  /** Ends the take-off hold on the cards' sources (cardFacePaint.ts) - see PairFlightGroup. */
+  releasePending: () => void
+  /** Run once the pair's ghosts are on screen (or the flight goes first): a drag-completed pair hides the dragged card's
+   * drag ghost here rather than in the commit the pair starts, so the card is never missing mid-air. */
+  onShown?: () => void
 }
 
 /** What one airborne pair flight still owes: the cards that have not landed yet, the `flying` entry
@@ -209,19 +220,38 @@ export function winHoldView(won: PyramidState, entry: { state: PyramidState; rem
   return { discardCards: won.discard.slice(0, kept), wasteCards: won.discard.slice(kept, kept + wasteSwept), stockCards: won.discard.slice(kept + wasteSwept) }
 }
 
+/** No shadow on a landed ghost: the card revealed under it draws its own, and two would darken it for as long as both
+ * show (the same style DragGhostLayer gives its landed ghosts). */
+const LANDED_CARD_STYLE = { shadowOpacity: 0, elevation: 0 }
+
 /** One card's independent leg of a pair's removal flight (see PairFlightGhosts) - its own spring
  * from its own spot, taking the same time as every other flight in this app (dragSpring.ts's
  * FLIGHT_SPRING), so the two cards of a pair leave together and land together. Settlement is a
  * plain timer matching the spring's own real end (springSettleMs) rather than the spring's
  * completion callback - confirmed elsewhere in this codebase (DragGhostLayer.tsx/DealLayer.tsx)
- * not to reliably fire on this app's web target. */
-function FlyingPairCard({ card, from, to, frame, cardWidth, onLanded }: { card: Card; from: ScreenPoint; to: ScreenPoint; frame: OverlayFrame; cardWidth: number; onLanded: () => void }) {
+ * not to reliably fire on this app's web target.
+ *
+ * Landed (`landed`), the ghost stays where it came to rest until the card revealed under it can really be seen, then
+ * calls `onRetired`: the landing reveals a card whose face is ONE Image - the discard pile's overlay re-sourced to this
+ * card while other cards are still flying to it (a quick next pair, a King, the win sweep's leftovers), the real discard
+ * top, the waste or a pyramid cell an undo restored - and on iOS a re-sourced Image keeps its PREVIOUS bitmap until the
+ * new one arrives, a frame or two later (cardFacePaint.ts). Removing the ghost in the landing commit therefore showed the
+ * card that was there before for a frame or two: the card that had just landed vanished and the old top came back. The
+ * wait is whenCardsSettled - the board face has painted, and no new ghost of this card is still waiting to show (an undo
+ * flying it straight back) - bounded by LANDED_GHOST_MAX_MS, the same hold DragGhostLayer gives a landed King. Started from
+ * a LAYOUT effect of the landing commit: PairFlightGhosts is rendered after GameChrome, so by then the board's own layout
+ * effects in that commit (the re-sourced face reporting itself as loading) have run; checked synchronously in the landing
+ * callback instead, it would find nothing loading yet and retire at once. */
+function FlyingPairCard({ gen, card, from, to, frame, cardWidth, go, landed, onFacePainted, onLanded, onRetired }: { gen: number; card: Card; from: ScreenPoint; to: ScreenPoint; frame: OverlayFrame; cardWidth: number; go: boolean; landed: boolean; onFacePainted: () => void; onLanded: () => void; onRetired: (gen: number, cardId: string) => void }) {
   const cardHeight = cardWidth / CARD_ASPECT
   const tx = useSharedValue(from.x)
   const ty = useSharedValue(from.y)
   const notified = useRef(false)
+  const cardId = card.id
 
+  // Flies (and its landing clock runs) only once the pair is on screen - see PairFlightGroup.
   useEffect(() => {
+    if (!go) return
     tx.value = withSpring(to.x, FLIGHT_SPRING)
     ty.value = withSpring(to.y, FLIGHT_SPRING)
     // The spring's real end, not its bare `duration` (which is only its perceptual length and starts a
@@ -233,7 +263,14 @@ function FlyingPairCard({ card, from, to, frame, cardWidth, onLanded }: { card: 
     }, springSettleMs(FLIGHT_SPRING))
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [go])
+
+  // The landed hold (see above). The cleanup cancels a wait still pending when the ghost goes another way - a New Game
+  // drops every pair flight at once.
+  useLayoutEffect(() => {
+    if (!landed) return
+    return whenCardsSettled([cardId], LANDED_GHOST_MAX_MS, () => onRetired(gen, cardId))
+  }, [landed, gen, cardId, onRetired])
 
   const style = useAnimatedStyle(() => {
     const p = toLocal(tx.value, ty.value, cardWidth, cardHeight, frame)
@@ -241,9 +278,36 @@ function FlyingPairCard({ card, from, to, frame, cardWidth, onLanded }: { card: 
   })
 
   return (
-    <Animated.View style={[pairFlightStyles.ghostCard, style]}>
-      <PlayingCard card={card} />
+    <Animated.View style={[pairFlightStyles.ghostCard, !go && pairFlightStyles.unpainted, style]}>
+      {/* A ghost: its face is not the board's (see cardFacePaint.ts). */}
+      <FaceLoadTrackingContext.Provider value={false}>
+        <PlayingCard card={card} style={landed ? LANDED_CARD_STYLE : undefined} onFacePainted={onFacePainted} />
+      </FaceLoadTrackingContext.Provider>
     </Animated.View>
+  )
+}
+
+/** One pair flight's ghosts. A ghost is a fresh Image, blank for a frame or two (cardFacePaint.ts), so the pair stays
+ * invisible - while its sources keep drawing the cards - until BOTH faces have painted (useGhostPaintGate; together, so
+ * the lower card's ghost can never show over a still-held top card), then both appear and fly. */
+function PairFlightGroup({ flight, frame, onCardLanded, onCardRetired }: { flight: PairFlightState; frame: OverlayFrame; onCardLanded: (gen: number, cardId: string) => void; onCardRetired: (gen: number, cardId: string) => void }) {
+  const faceIds = useMemo(() => flight.cards.map((c) => c.card.id), [flight.cards])
+  const shownOnce = useRef(false)
+  const handleShown = useCallback(() => {
+    if (shownOnce.current) return
+    shownOnce.current = true
+    flight.releasePending()
+    flight.onShown?.()
+  }, [flight])
+  const { shown, markPainted } = useGhostPaintGate(faceIds, handleShown)
+  // Gone before it ever showed (a New Game): its sources must not keep holding, and a dragged card's ghost must still go.
+  useEffect(() => handleShown, [handleShown])
+  return (
+    <CardSizeProvider width={flight.cardWidth}>
+      {flight.cards.map(({ card, from, to }) => (
+        <FlyingPairCard key={`${flight.gen}-${card.id}`} gen={flight.gen} card={card} from={from} to={to} frame={frame} cardWidth={flight.cardWidth} go={shown} landed={flight.landed.has(card.id)} onFacePainted={() => markPainted(card.id)} onLanded={() => onCardLanded(flight.gen, card.id)} onRetired={onCardRetired} />
+      ))}
+    </CardSizeProvider>
   )
 }
 
@@ -255,6 +319,9 @@ const pairFlightStyles = StyleSheet.create({
     left: 0,
     position: 'absolute',
     top: 0
+  },
+  unpainted: {
+    opacity: 0
   }
 })
 
@@ -267,22 +334,95 @@ const pairFlightStyles = StyleSheet.create({
  * pair takes off while the last one is still in the air, and each must keep flying. Always mounted
  * (only the flights' presence is conditional) so its own offset-correction effect can measure a
  * real position at all times, same reasoning as those two. */
-function PairFlightGhosts({ flights, onCardLanded }: { flights: PairFlightState[]; onCardLanded: (gen: number, cardId: string) => void }) {
+function PairFlightGhosts({ flights, onCardLanded, onCardRetired }: { flights: PairFlightState[]; onCardLanded: (gen: number, cardId: string) => void; onCardRetired: (gen: number, cardId: string) => void }) {
   // Same overlay-placement pattern as DragGhostLayer/DealLayer - see overlayFrame.ts.
   const { overlayRef, frame } = useOverlayFrame()
 
   return (
     <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
       {flights.map((flight) => (
-        <CardSizeProvider key={flight.gen} width={flight.cardWidth}>
-          {flight.cards.map(({ card, from, to }) => (
-            <FlyingPairCard key={`${flight.gen}-${card.id}`} card={card} from={from} to={to} frame={frame} cardWidth={flight.cardWidth} onLanded={() => onCardLanded(flight.gen, card.id)} />
-          ))}
-        </CardSizeProvider>
+        <PairFlightGroup key={flight.gen} flight={flight} frame={frame} onCardLanded={onCardLanded} onCardRetired={onCardRetired} />
       ))}
     </View>
   )
 }
+
+interface PyramidCellProps {
+  index: number
+  /** The cell's card on the current board (null once removed). */
+  card: Card | null
+  /** Whether `card` is exposed on the current board (rules.ts's isExposed). */
+  exposed: boolean
+  /** `card` is hidden: its deal or undo ghost has not landed here yet (pyramidHiddenIds). */
+  hidden: boolean
+  /** This cell is the current selection. */
+  selected: boolean
+  hinted: boolean
+  /** The screen's last shake's token when it is `card`'s, WHETHER OR NOT the card is exposed - see the cell's comment. */
+  shakeToken: number | undefined
+  /** useDimAfterDeal's `held`: the deal is still in the air, nothing is dimmed yet. */
+  dimHeld: boolean
+  left: number
+  top: number
+  zIndex: number
+  dropZones: DropZoneRegistry
+  /** Stable for the screen's lifetime (they read the latest handlers through a ref - see PyramidScreenInner's cellHandlersRef). */
+  onSelect: (index: number, measure: () => Promise<ScreenPoint>) => void
+  onDrop: (index: number, cardId: string, absoluteX: number, absoluteY: number, flight: DragFlightHandle) => Promise<boolean>
+}
+
+/**
+ * One triangle cell. Keyed by cell (one card ever occupies a cell), and the same element tree whether its card is covered,
+ * exposed or has just taken off (useTakeOffHold: drawn until its ghost is on screen), so its painted face survives every
+ * change - a covered card used to be a plain PlayingCard that REMOUNTED, blank for a frame or two, the moment a move exposed
+ * it (cardFacePaint.ts). A covered card is just not a drop target, not playable, not registered, and dimmed.
+ *
+ * Memoized, with only primitive props and stable callbacks, so a screen render re-renders just the cells whose own props
+ * changed. Every cell - covered ones too, since the restructure above - is a DraggableCard, and with it a GestureDetector
+ * whose effect re-sends its whole gesture config to the native side (findNodeHandle + updateGestureHandler) on EVERY render;
+ * the screen re-renders several times per move (a selection, each flight claim, landing and hold), and re-rendering all 28
+ * cells for each of those multiplied the native gesture updates the exposed cells alone used to cost (worked out from
+ * RNGH's source, not measured on a device). The same reason PileView's DraggableTableauCard is memoized.
+ *
+ * A held cell (its card has just taken off and its ghost is not on screen yet) is inert AND not a touch target
+ * (pointerEvents none, as PileView's held cards are): it overlaps the lower part of the card(s) its leaving uncovered, which
+ * are exposed and playable in the very commit the move made, and a disabled Pressable still catches the touch - the
+ * responder only bubbles to ancestors, never to the sibling cell underneath - so a quick tap or drag on the card just
+ * uncovered would otherwise do nothing for that frame or two.
+ *
+ * `shakeToken` is passed whether or not the card is exposed: a covered card can never be tapped, so it can never get a NEW
+ * token while covered - the one it carries is a shake that is over (this card's own, played before something covered it
+ * again, or the last shake of the board before a New Game dealt the card here), and useShakeStyle records the token a card
+ * arrives with as played. Masking it while covered made the card record "no token" for itself (on the mount or the re-seed
+ * a New Game gives it) and then play the stale one the moment a move uncovered it. Not while held, though: `shakeToken` is
+ * computed for the cell's CURRENT card, which is then not the one drawn.
+ */
+export const PyramidCell = memo(function PyramidCell({ index, card, exposed: exposedOnBoard, hidden, selected, hinted, shakeToken, dimHeld, left, top, zIndex, dropZones, onSelect, onDrop }: PyramidCellProps) {
+  const { shown, holding } = useTakeOffHold(card)
+  const exposed = !holding && exposedOnBoard
+  const covered = !exposed && !holding
+  const shownId = shown?.id
+  const pileRef = useMemo<PileRef>(() => ({ zone: 'pyramid', index }), [index])
+  const style = useMemo(() => [cellStyles.card, { left, top, zIndex }, holding && cellStyles.noTouch], [left, top, zIndex, holding])
+  const handlePress = useCallback((measure: () => Promise<ScreenPoint>) => onSelect(index, measure), [onSelect, index])
+  const handleDrop = useCallback((absoluteX: number, absoluteY: number, flight: DragFlightHandle) => (shownId ? onDrop(index, shownId, absoluteX, absoluteY, flight) : Promise.resolve(false)), [onDrop, index, shownId])
+  if (!shown) return null
+  return (
+    <DropZone registry={dropZones} pileRef={pileRef} style={style} enabled={exposed}>
+      <DraggableCard card={shown} selected={exposed && selected} hidden={!holding && hidden} disabled={!exposed} dimmed={covered} dimHold={covered ? hidden || dimHeld : undefined} registryId={exposed ? undefined : null} hinted={exposed && hinted} onPress={exposed ? handlePress : undefined} onDrop={exposed ? handleDrop : undefined} shakeToken={holding ? undefined : shakeToken} testID={`pyramid-${index}`} />
+    </DropZone>
+  )
+})
+
+// Module-level and theme-free, so a memoized cell never sees a new style object from a screen render.
+const cellStyles = StyleSheet.create({
+  card: {
+    position: 'absolute'
+  },
+  noTouch: {
+    pointerEvents: 'none'
+  }
+})
 
 // The triangle's widest row is the base: ROWS cards laid out with no overlap, so it reuses
 // cardWidthForRow's clamping/fit math as a plain "row of ROWS columns" with a real gap.
@@ -290,6 +430,8 @@ const TRIANGLE_WIDTH_UNITS = ROWS
 
 // A stable empty pile for the sweep/hand-off display (a fresh literal per render would change identity every time).
 const NO_CARDS: Card[] = []
+// A new pair flight's `landed`: none of its cards has landed yet.
+const NONE_LANDED: ReadonlySet<string> = new Set()
 
 export default withGameProviders(PyramidScreenInner)
 
@@ -389,10 +531,11 @@ function PyramidScreenInner() {
   // sweep, which holds its own claim on the flight count), so the finished pile reads for a beat first and nothing
   // hides while a card is still travelling to it.
   const winRevealed = useWinReveal(won, settled, SWEEP_WIN_REVEAL_MAX_WAIT_MS)
-  // The board the win cascade has taken over from (set together with startChains, see runWinCascade): once state IS the
-  // current state, and the win is revealed, the discard's real top blanks - not a moment earlier. Blanking on winRevealed
-  // alone left the discard EMPTY for the few frames it takes runWinCascade to measure and mount the ghosts (the pile
-  // teleported away, then the ghosts appeared), so the cascade's ghosts mount in the very commit that blanks it. Compared
+  // The board the win cascade has taken over from (set once its ghosts are on screen - startChains' onShown, see
+  // runWinCascade): once state IS the current state, and the win is revealed, the discard's real top blanks - not a moment
+  // earlier. Blanking on winRevealed alone left the discard EMPTY for the few frames it takes runWinCascade to measure and
+  // mount the ghosts (the pile teleported away, then the ghosts appeared), so the cascade's ghosts are on screen by the
+  // commit that blanks it. Compared
   // by identity (state is replaced wholesale on every change) so an undo or a New Game un-blanks the pile with no reset to
   // remember. By then the win sweep has dealt the stock and waste onto the discard, so the discard is the only pile with
   // anything left to hand over - one chain, one hand-off.
@@ -412,6 +555,18 @@ function PyramidScreenInner() {
   const [pairFlights, setPairFlights] = useState<PairFlightState[]>([])
   const pairFlightGenRef = useRef(0)
   const pairFlightLedgerRef = useRef(new Map<number, PairFlightLedger>())
+  // Takes down a landed pair ghost once the card it revealed has painted (FlyingPairCard's landed hold); the flight goes
+  // with its last card. Everything the landing owed was settled AT the landing (handlePairFlightLanded) - this only removes
+  // the ghost. Stable (it only uses the setter), so a screen render never restarts a landed ghost's wait.
+  const retirePairCard = useCallback((gen: number, cardId: string) => {
+    setPairFlights((flights) =>
+      flights.flatMap((f) => {
+        if (f.gen !== gen || !f.cards.some((c) => c.card.id === cardId)) return [f]
+        const cards = f.cards.filter((c) => c.card.id !== cardId)
+        return cards.length === 0 ? [] : [{ ...f, cards }]
+      })
+    )
+  }, [])
   /** Ids of the cards still flying TO the discard pile (a solo King's ghost or either card of a
    * pair) - the real discard top stays hidden while any are (see DiscardCell), and the pile shows
    * the topmost card NOT in this set underneath (topLandedCard) so it is right as each of several
@@ -628,10 +783,14 @@ function PyramidScreenInner() {
   // INDEPENDENT flight with its own ledger entry - it never touches one already in the air - and
   // `settle` (the caller's claim on activeFlightCount) is settled by handlePairFlightLanded when
   // this flight's own last card lands.
-  function startPairFlight(cards: PairFlightCardSpec[], flying: { id: number; cardId: string } | null, settle: () => void) {
+  // `takeOff`: the cards whose sources hold them until the pair's ghosts show (cardFacePaint.ts) - every card, unless the
+  // caller says otherwise (a drag-completed pair: the dragged card is already in the air as its drag ghost, hidden in
+  // `onShown`).
+  function startPairFlight(cards: PairFlightCardSpec[], flying: { id: number; cardId: string } | null, settle: () => void, takeOff?: { cardIds: string[]; onShown: () => void }) {
     const gen = ++pairFlightGenRef.current
     pairFlightLedgerRef.current.set(gen, { pending: new Set(cards.map((c) => c.card.id)), flying, settle })
-    setPairFlights((flights) => [...flights, { gen, cardWidth, cards }])
+    const releasePending = markGhostPending(takeOff ? takeOff.cardIds : cards.map((c) => c.card.id))
+    setPairFlights((flights) => [...flights, { gen, cardWidth, cards, landed: NONE_LANDED, releasePending, onShown: takeOff?.onShown }])
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -779,20 +938,21 @@ function PyramidScreenInner() {
   // By the time isWon() is true state.discard holds all 52 cards (rules.ts's sweepRemainderOnWin), in true removal order -
   // reversed here so the most-recently-arrived (the card on top of the physical pile) leads the chain. The sweep has already
   // dealt every leftover onto the discard, so ONE chain from the discard's own container carries all of them, and the pile blanks
-  // (cascadeHandoff, set right beside startChains) only in the commit that mounts the ghosts - React batches the two from this
-  // async continuation - so it is never empty before the ghosts arrive. A 52-card chain at the usual 42ms per card would trail
-  // its head by ~2.1s, more than two bounce half-periods, and split into a wave: segmentDelayMs caps the whole chain's span (see
-  // chainSegmentDelayMs). If the sweep is somehow still running (the reveal's fallback timer fired first) it is cut short first
-  // and the chain simply carries every card. If no chain can start (an unmeasurable discard), nothing blanks and the finished
-  // board stays up under the banner instead of vanishing. Same dealTokenRef guard as every other async measurement in this file,
-  // for the same "New Game tapped mid-measurement" reason.
+  // (cascadeHandoff, set from startChains' onShown) only once the ghosts are on screen - in the commit they appear, which waits
+  // for the parked head's face to paint (see WinCascadeLayer's CascadeChains) - so it is never empty before the ghosts arrive,
+  // nor covered by a blank-faced head for a frame or two (blanking in the commit that mounted them). An undo or New Game before
+  // then clears the cascade, which drops the callback (and the hand-off is keyed to `s` anyway). A 52-card chain at the usual
+  // 42ms per card would trail its head by ~2.1s, more than two bounce half-periods, and split into a wave: segmentDelayMs caps
+  // the whole chain's span (see chainSegmentDelayMs). If the sweep is somehow still running (the reveal's fallback timer fired
+  // first) it is cut short first and the chain simply carries every card. If no chain can start (an unmeasurable discard),
+  // nothing blanks and the finished board stays up under the banner instead of vanishing. Same dealTokenRef guard as every
+  // other async measurement in this file, for the same "New Game tapped mid-measurement" reason.
   async function runWinCascade(s: PyramidState, gen: number) {
     cancelSweep()
     const discardOrigin = await measureView(discardViewRef.current)
     if (dealTokenRef.current !== gen || !discardOrigin) return
     const cards = s.discard.slice().reverse()
-    winCascade.startChains([{ cards, origin: discardOrigin, entranceDelayMs: 0, segmentDelayMs: chainSegmentDelayMs(cards.length) }], cardWidth)
-    setCascadeHandoff({ state: s })
+    winCascade.startChains([{ cards, origin: discardOrigin, entranceDelayMs: 0, segmentDelayMs: chainSegmentDelayMs(cards.length) }], cardWidth, () => setCascadeHandoff({ state: s }))
   }
 
   // Starts once the win is REVEALED (winRevealed - which waits for the winning removal's flight(s) AND the sweep to land and
@@ -815,6 +975,10 @@ function PyramidScreenInner() {
     const myToken = ++dealTokenRef.current
     const s = PyramidController.newGame(randomSeed())
     setSelected(null)
+    // The last shake belongs to the old board: card ids are reused by the next deal, so a cell dealt the shaken card must
+    // not be handed its token at all (PyramidCell records whatever token its card arrives with as already played, so this
+    // is a second line of defence, not the fix).
+    setShake(null)
     setUndoStack([])
     setHint(null)
     hintsUsedRef.current = false
@@ -843,6 +1007,7 @@ function PyramidScreenInner() {
   function restoreGame(saved: SavedGame<PyramidState, UndoEntry>) {
     ++dealTokenRef.current
     setSelected(null)
+    setShake(null) // see startNewGame
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
     hintsUsedRef.current = false
@@ -1227,18 +1392,20 @@ function PyramidScreenInner() {
   }
 
   // Each flying card reports here as its own independent flight settles (see
-  // PairFlightGhosts/FlyingPairCard). It settles ONLY its own flight: the card's ghost is removed
-  // at once (a landed card must not sit on top of the pile until its partner arrives), it is
-  // counted as landed on the discard (forward flight) or un-hidden on its pyramid cell (undo of a
-  // removal - see undoRemoval; a no-op in the other direction, whose cards were never in
-  // pyramidHiddenIds) or un-hidden on the waste (the `flying` entry of a waste-bound undo ends with
-  // ITS card, not with the pair), and once THIS flight's last card has landed it settles its own
-  // claim - never another flight's. A callback for a flight the ledger no longer knows (a New Game
-  // replaced the board) does nothing.
+  // PairFlightGhosts/FlyingPairCard). It settles ONLY its own flight: the card is counted as
+  // landed on the discard (forward flight) or un-hidden on its pyramid cell (undo of a removal -
+  // see undoRemoval; a no-op in the other direction, whose cards were never in pyramidHiddenIds)
+  // or un-hidden on the waste (the `flying` entry of a waste-bound undo ends with ITS card, not
+  // with the pair), and once THIS flight's last card has landed it settles its own claim - never
+  // another flight's. All of that happens on the landing itself; only the card's GHOST is not
+  // removed here but marked landed, in this same commit, and stays until the card it revealed has
+  // painted (FlyingPairCard's landed hold, which then retires it through retirePairCard) - on its
+  // own, never until its partner arrives. A callback for a flight the ledger no longer knows (a New
+  // Game replaced the board) does nothing.
   function handlePairFlightLanded(gen: number, cardId: string) {
     const entry = pairFlightLedgerRef.current.get(gen)
     if (!entry || !entry.pending.delete(cardId)) return
-    setPairFlights((flights) => flights.flatMap((f) => (f.gen !== gen ? [f] : f.cards.length === 1 ? [] : [{ ...f, cards: f.cards.filter((c) => c.card.id !== cardId) }])))
+    setPairFlights((flights) => flights.map((f) => (f.gen === gen ? { ...f, landed: new Set(f.landed).add(cardId) } : f)))
     setPyramidHiddenIds((ids) => {
       if (!ids.has(cardId)) return ids
       const next = new Set(ids)
@@ -1479,7 +1646,6 @@ function PyramidScreenInner() {
     // "second"'s own position) - read its current screen position straight off its shared values
     // before retiring that flight: from here the pair flies independently instead.
     const fromOrigin = { x: flight.originX.value + flight.dx.value, y: flight.originY.value + flight.dy.value }
-    flight.hide()
     const specs: PairFlightCardSpec[] = []
     if (discardPos) {
       specs.push({ card: { ...fromCard, faceUp: true }, from: fromOrigin, to: discardPos })
@@ -1492,10 +1658,12 @@ function PyramidScreenInner() {
       specs.map((spec) => spec.card.id)
     )
     if (specs.length === 0) {
+      flight.hide()
       settle()
       return true
     }
-    startPairFlight(specs, null, settle)
+    // The drag ghost stays (resting where it was dropped) until the pair's own ghosts show - see PairFlightState.onShown.
+    startPairFlight(specs, null, settle, { cardIds: toOrigin ? [toCard.id] : [], onShown: () => flight.hide() })
     return true
   }
 
@@ -1615,6 +1783,17 @@ function PyramidScreenInner() {
     recordHintUsed('pyramid')
   }
 
+  // The triangle cells' press and drop handlers: STABLE for the screen's lifetime, so the memoized PyramidCell is not
+  // re-rendered by every screen render (see its comment), and reading the latest render's handlers through this ref - the
+  // way PileView's `latest` does. Refreshed in a layout effect, so a tap or drop arriving right after a commit already
+  // runs that commit's handlers, exactly as the inline closures every cell used to be handed did.
+  const cellHandlersRef = useRef({ handleSelectPyramid, attemptDrop })
+  useLayoutEffect(() => {
+    cellHandlersRef.current = { handleSelectPyramid, attemptDrop }
+  })
+  const onSelectCell = useCallback((index: number, measure: () => Promise<ScreenPoint>) => cellHandlersRef.current.handleSelectPyramid(index, measure), [])
+  const onDropCell = useCallback((index: number, cardId: string, absoluteX: number, absoluteY: number, flight: DragFlightHandle) => cellHandlersRef.current.attemptDrop({ zone: 'pyramid', index }, cardId, absoluteX, absoluteY, flight), [])
+
   if (!state) return <GameLoading />
 
   const width = triangleWidth(cardWidth, gap)
@@ -1626,7 +1805,7 @@ function PyramidScreenInner() {
   // (discardInAir marks the winning removal's cards and every leftover from the winning commit, and each lands one by one), so
   // its top is always a card that really arrived. When the discard could not be measured at the winning move nothing flies
   // (`flies` false): the board then simply stays as the finished board showed it - the pre-fold discard and piles - under the
-  // banner. Once the cascade has taken over (cascadeHandoff, in the same commit its ghosts mount) the discard blanks too.
+  // banner. Once the cascade has taken over (cascadeHandoff, once its ghosts are on screen) the discard blanks too.
   const handoff = winRevealed && cascadeHandoff?.state === state ? cascadeHandoff : null
   const sweep = sweepUi && sweepUi.state === state ? sweepUi : null
   const stockCards = handoff ? NO_CARDS : sweep ? (sweep.stockGone ? NO_CARDS : sweep.view.stockCards) : state.stock
@@ -1650,25 +1829,12 @@ function PyramidScreenInner() {
           </View>
 
           <View ref={triangleViewRef} collapsable={false} style={[styles.triangle, { width, height }]}>
+            {/* One memoized cell per index, keyed by the cell - see PyramidCell. Every prop is a primitive (or stable), so
+            only the cells whose own state changed re-render. */}
             {state.pyramid.map((card, index) => {
-              if (!card) return null
               const { row, col } = rowColOf(index)
               const { left, top } = cardPosition(row, col, cardWidth, cardHeight, gap)
-              const exposed = isExposed(state.pyramid, row, col)
-              const isHidden = pyramidHiddenIds.has(card.id)
-              const isSelected = !!selected && selected.zone === 'pyramid' && selected.index === index
-              const pileRef: PileRef = { zone: 'pyramid', index }
-              const cardStyle = [styles.pyramidCard, { left, top, zIndex: row }]
-
-              if (!exposed) {
-                return <PlayingCard key={card.id} card={card} disabled dimmed dimHold={isHidden || dimAfterDeal.held} style={[cardStyle, isHidden && styles.hiddenCard]} testID={`pyramid-${index}`} />
-              }
-
-              return (
-                <DropZone key={card.id} registry={dropZones} pileRef={pileRef} style={cardStyle}>
-                  <DraggableCard card={card} selected={isSelected} hidden={isHidden} hinted={hintCountFor(activeHint, pileRef) > 0} onPress={(measure) => handleSelectPyramid(index, measure)} onDrop={(x, y, flight) => attemptDrop(pileRef, card.id, x, y, flight)} shakeToken={shake?.cardId === card.id ? shake.token : undefined} testID={`pyramid-${index}`} />
-                </DropZone>
-              )
+              return <PyramidCell key={index} index={index} card={card} exposed={isExposed(state.pyramid, row, col)} hidden={!!card && pyramidHiddenIds.has(card.id)} selected={!!selected && selected.zone === 'pyramid' && selected.index === index} hinted={hintCountFor(activeHint, { zone: 'pyramid', index }) > 0} shakeToken={card && shake?.cardId === card.id ? shake.token : undefined} dimHeld={dimAfterDeal.held} left={left} top={top} zIndex={row} dropZones={dropZones} onSelect={onSelectCell} onDrop={onDropCell} />
             })}
           </View>
         </View>
@@ -1678,7 +1844,7 @@ function PyramidScreenInner() {
     dialog comes last of all three so it's the one thing guaranteed to sit on top of the animation,
     not buried under it (also backstopped by WinBanner's own explicit zIndex). */}
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
-      <PairFlightGhosts flights={pairFlights} onCardLanded={handlePairFlightLanded} />
+      <PairFlightGhosts flights={pairFlights} onCardLanded={handlePairFlightLanded} onCardRetired={retirePairCard} />
       <WinCascadeGhosts />
       {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
     </CardSizeProvider>
@@ -1704,12 +1870,6 @@ function makeStyles() {
       flexDirection: 'row',
       justifyContent: 'space-between',
       marginBottom: 20
-    },
-    hiddenCard: {
-      opacity: 0
-    },
-    pyramidCard: {
-      position: 'absolute'
     },
     // zIndex below (`row`) only stays scoped to this container if the container itself
     // establishes a stacking context - position:relative alone doesn't, without its own zIndex

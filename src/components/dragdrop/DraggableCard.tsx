@@ -1,13 +1,14 @@
 import { useCardSize } from '@tastic/cards'
-import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
-import Animated, { measure, runOnJS, useAnimatedRef, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
+import Animated, { measure, runOnJS, useAnimatedRef, useSharedValue } from 'react-native-reanimated'
 
 import { Card } from '@/engine/types'
 
+import { REVEAL_MAX_MS, useGhostPendingAmong, whenFacesPainted } from '../cardFacePaint'
 import { PlayingCard } from '../PlayingCard'
-import { playShake } from '../shakeAnimation'
+import { useShakeStyle } from '../shakeAnimation'
 import { useCardSoundEffects } from '../useCardSounds'
 import { DragFlightHandle, useDragGhost } from './DragGhostLayer'
 
@@ -18,6 +19,10 @@ interface DraggableCardProps {
    * own `hinted` prop. */
   hinted?: boolean
   disabled?: boolean
+  /** Passed straight through to PlayingCard (see its doc comments) - for a cell drawn the same way whether or not it can
+   * be played yet (Pyramid's covered cards). */
+  dimmed?: boolean
+  dimHold?: boolean
   /** Called with a lazy measure function - only call it if a move actually applies, to kick off a
    * tap-to-move fly animation from exactly where the card was. Lazy rather than an already-
    * resolved origin because measuring is a real async cost on web (measureInWindow is implemented
@@ -46,6 +51,10 @@ interface DraggableCardProps {
    * boolean so tapping the same stuck card twice in a row re-triggers the shake both times,
    * instead of the second tap being a no-op state transition. */
   shakeToken?: number
+  /** The card id this view registers in CardRegistry: `card.id` by default. A slot drawing a card that has already left
+   * (useTakeOffHold) registers the card that is really on top there now instead (null: none), so a flight measuring
+   * that card finds it. */
+  registryId?: string | null
   style?: StyleProp<ViewStyle>
   testID?: string
 }
@@ -71,21 +80,17 @@ interface DraggableCardProps {
  * underlying native handler, which can orphan a drag that's still in progress mid-gesture and
  * leave the card frozen wherever it was when that happened, since onEnd would never fire.
  */
-export function DraggableCard({ card, selected, hinted, disabled, onPress, onDrop, hidden, emptyFallback, shakeToken, style, testID }: DraggableCardProps) {
+export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHold, onPress, onDrop, hidden, emptyFallback, shakeToken, registryId, style, testID }: DraggableCardProps) {
   const viewRef = useAnimatedRef<Animated.View>()
   const ghost = useDragGhost()
   const { playCardSound } = useCardSoundEffects()
   const { width: cardWidth } = useCardSize()
   const [dragging, setDragging] = useState(false)
+  // The drag (by its token) whose applied drop is waiting to reveal the slot again - see the effect below.
+  const [revealToken, setRevealToken] = useState<number | null>(null)
   const startAbsX = useSharedValue(0)
   const startAbsY = useSharedValue(0)
-  const shakeX = useSharedValue(0)
-  const shakeStyle = useAnimatedStyle(() => ({ transform: [{ translateX: shakeX.value }] }))
-  useEffect(() => {
-    if (!shakeToken) return
-    playShake(shakeX)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shakeToken])
+  const shakeStyle = useShakeStyle(shakeToken, card.id)
   const cardRegistry = ghost.cardRegistry
   // Owned locally (not sourced from `ghost`) so this card's own gesture worklet always has a
   // stable SharedValue to write to, decided once at mount - see showLive's doc comment in
@@ -121,11 +126,13 @@ export function DraggableCard({ card, selected, hinted, disabled, onPress, onDro
   // back where the drag itself correctly decided nothing applied.
   const wasDraggingRef = useRef(false)
 
+  const registeredId = registryId === undefined ? card.id : registryId
   useEffect(() => {
-    cardRegistry.register(card.id, viewRef)
-    return () => cardRegistry.unregister(card.id, viewRef)
+    if (!registeredId) return
+    cardRegistry.register(registeredId, viewRef)
+    return () => cardRegistry.unregister(registeredId, viewRef)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [card.id, cardRegistry])
+  }, [registeredId, cardRegistry])
 
   const handleStart = useCallback(() => {
     wasDraggingRef.current = true
@@ -150,8 +157,8 @@ export function DraggableCard({ card, selected, hinted, disabled, onPress, onDro
         // Don't hide the ghost here - the caller's onDrop (mirroring handleCardTap) has already
         // marked this card's destination "incoming" and will measure its real landed position
         // and fly this same flight the rest of the way there, instead of it just vanishing
-        // mid-air.
-        if (dragTokenRef.current === token) setDragging(false)
+        // mid-air. The slot shows the next card now, but not until its face has painted (see revealToken).
+        if (dragTokenRef.current === token) setRevealToken(token)
       } else {
         flight?.snapBack(() => {
           if (dragTokenRef.current === token) setDragging(false)
@@ -207,6 +214,32 @@ export function DraggableCard({ card, selected, hinted, disabled, onPress, onDro
 
   pan.enabled(!disabled && !!onDrop)
 
+  // Take-off hold (cardFacePaint.ts): a drag's ghost is invisible until its face has painted, so the card stays drawn
+  // here until then - hidden (with its empty-slot fallback) only once the ghost is on screen.
+  const dragGhostPending = useGhostPendingAmong(dragging ? [card.id] : NO_IDS) !== ''
+  const hiddenForDrag = dragging && !dragGhostPending
+
+  // After an applied drop the slot shows its next card (or unmounts): the same Image re-sourced, which on iOS keeps the
+  // DRAGGED card's bitmap until the next one arrives - the dragged card back at its source for a frame or two while its
+  // ghost flies on. So the slot stays as it looked during the drag (hidden, its empty fallback showing) until the next
+  // card's face has painted. A layout effect: the commit that re-sourced it has reported the load by then.
+  //
+  // Not while this slot is still drawing the dragged card because its ghost has not shown yet (dragGhostPending): a drop
+  // can be applied before the drag ghost has painted (a quick flick, a busy JS thread), and a slot wrapped in
+  // useTakeOffHold then keeps `card` on the dragged (already painted) card until the ghost shows - waiting on that card
+  // resolved at once, revealed the slot, and the hold's end then re-sourced the VISIBLE Image to the next card, still
+  // showing the dragged card's bitmap. Armed once the ghost shows instead: the commit that ends the hold swaps in the next
+  // card (whose face has reported loading by this layout effect), and if the slot is still drawing the dragged card then
+  // (the drop left it in place) that card is painted and the slot is revealed at once - never stuck hidden. The pending
+  // mark itself is bounded (GHOST_PENDING_MAX_MS).
+  useLayoutEffect(() => {
+    if (revealToken === null || dragGhostPending) return
+    return whenFacesPainted([card.id], REVEAL_MAX_MS, () => {
+      if (dragTokenRef.current === revealToken) setDragging(false)
+      setRevealToken(null)
+    })
+  }, [revealToken, card.id, dragGhostPending])
+
   function handlePress() {
     if (wasDraggingRef.current) {
       wasDraggingRef.current = false
@@ -225,15 +258,15 @@ export function DraggableCard({ card, selected, hinted, disabled, onPress, onDro
   return (
     <View style={style}>
       <GestureDetector gesture={pan}>
-        <Animated.View ref={viewRef} style={[(dragging || hidden) && styles.hiddenWhileFlying, shakeStyle]}>
-          <PlayingCard card={card} selected={selected} hinted={hinted} disabled={disabled} onPress={onPress ? handlePress : undefined} testID={testID} />
+        <Animated.View ref={viewRef} style={[(hiddenForDrag || hidden) && styles.hiddenWhileFlying, shakeStyle]}>
+          <PlayingCard card={card} selected={selected} hinted={hinted} disabled={disabled} dimmed={dimmed} dimHold={dimHold} onPress={onPress ? handlePress : undefined} testID={testID} />
         </Animated.View>
       </GestureDetector>
       {/* Only for `dragging` (this card's own gesture), not the caller-supplied `hidden` - a caller
       passing `hidden` (e.g. a tap-to-move flight landing here) already has its own "what was here
       before" overlay for that case (see FreecellCell/StockWaste), so showing this too would double
       up two overlays at once. */}
-      {dragging && emptyFallback && (
+      {hiddenForDrag && emptyFallback && (
         <View style={StyleSheet.absoluteFill} pointerEvents='none'>
           {emptyFallback}
         </View>
@@ -241,6 +274,8 @@ export function DraggableCard({ card, selected, hinted, disabled, onPress, onDro
     </View>
   )
 }
+
+const NO_IDS: readonly string[] = []
 
 const styles = StyleSheet.create({
   hiddenWhileFlying: {

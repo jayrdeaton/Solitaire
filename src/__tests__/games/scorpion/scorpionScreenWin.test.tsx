@@ -63,12 +63,18 @@ interface MockLog {
   chains: MockChain[]
   /** How many real cards were still on the board the moment the win cascade started (-1: it never did). */
   cardsOnBoardAtCascade: number
+  /** The same, the moment the cascade's ghosts showed (its onShown; -1: they never did). */
+  cardsOnBoardAtGhostsShown: number
   /** How many times the win cascade was cleared. */
   cleared: number
 }
 /** How many real card stand-ins the screen renders right now - read from inside the mocked cascade, hence hoisted-mock naming. */
 const mockCardsNow = () => screen.queryAllByTestId(/^card-/).length
-const mockLog: MockLog = { shown: [], inAir: 0, hidden: 0, cascadeChains: -1, deals: [], dealsInAirAtCascade: -1, chains: [], cardsOnBoardAtCascade: -1, cleared: 0 }
+const mockLog: MockLog = { shown: [], inAir: 0, hidden: 0, cascadeChains: -1, deals: [], dealsInAirAtCascade: -1, chains: [], cardsOnBoardAtCascade: -1, cardsOnBoardAtGhostsShown: -1, cleared: 0 }
+/** The real cascade shows - and calls startChains' onShown - only once its parked ghosts' faces have painted, a frame or two after
+ * startChains (WinCascadeLayer's CascadeChains); the mock stands in for that wait with a timer. */
+const MOCK_GHOSTS_SHOW_MS = 16
+let mockGhostsShowTimer: ReturnType<typeof setTimeout> | undefined
 let mockDealsInAir = 0
 
 function mockMakeFlight() {
@@ -117,17 +123,29 @@ const mockDeal = {
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/components/winning/WinCascadeLayer', () => ({
-  WinCascadeProvider: ({ children }: { children: unknown }) => children,
+  // Unmounting drops a cascade that has not shown yet, like the real provider (a test can end mid-wait).
+  WinCascadeProvider: ({ children }: { children: unknown }) => {
+    require('react').useEffect(() => () => clearTimeout(mockGhostsShowTimer), [])
+    return children
+  },
   WinCascadeGhosts: () => null,
   useWinCascade: () => ({
-    startChains: (chains: MockChain[]) => {
+    startChains: (chains: MockChain[], _cardWidth: number, onShown?: () => void) => {
       mockLog.cascadeChains = chains.length
       mockLog.chains = chains
       mockLog.dealsInAirAtCascade = mockDealsInAir
       mockLog.cardsOnBoardAtCascade = mockCardsNow()
+      // Like the real controller: never for an empty cascade, and dropped by clear() or a newer startChains.
+      clearTimeout(mockGhostsShowTimer)
+      if (chains.length > 0 && onShown)
+        mockGhostsShowTimer = setTimeout(() => {
+          mockLog.cardsOnBoardAtGhostsShown = mockCardsNow()
+          onShown()
+        }, MOCK_GHOSTS_SHOW_MS)
     },
     clear: () => {
       mockLog.cleared += 1
+      clearTimeout(mockGhostsShowTimer)
     }
   })
 }))
@@ -280,6 +298,7 @@ beforeEach(() => {
   mockLog.dealsInAirAtCascade = -1
   mockLog.chains = []
   mockLog.cardsOnBoardAtCascade = -1
+  mockLog.cardsOnBoardAtGhostsShown = -1
   mockLog.cleared = 0
   mockColumnOrigin = { x: 5, y: 5 }
   mockRecordWon.mockClear()
@@ -396,9 +415,12 @@ describe('Scorpion screen - the winning move never makes a card teleport', () =>
       expect(new Set(chain.cardOrigins!.map((o) => `${o.x},${o.y}`)).size).toBe(13)
       expect(chain.origin).toEqual({ x: 5, y: 5 }) // the chain's own origin stays the column container's
     })
-    // The cascade started while every real card was still on the board, and the columns are blank now:
-    // measuring after the blanking finds nothing, and blanking first leaves the fan empty until the ghosts arrive.
+    // The cascade started while every real card was still on the board, the board kept them until the ghosts were on screen
+    // (their faces paint a frame or two after they mount: blanking with startChains showed a fan of blank-faced cards), and the
+    // columns are blank now: measuring after the blanking finds nothing, and blanking first leaves the fan empty until the
+    // ghosts arrive.
     expect(mockLog.cardsOnBoardAtCascade).toBe(52)
+    expect(mockLog.cardsOnBoardAtGhostsShown).toBe(52)
     expect(cardsOnBoard()).toBe(0)
     expect(screen.getByTestId('win-banner')).toBeTruthy()
   })

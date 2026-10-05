@@ -171,10 +171,10 @@ function YukonScreenInner() {
   // last card has flown in and landed, so it is never hidden mid-flight (which used to make it
   // simply appear) and the finished board reads for a beat first.
   const winRevealed = useWinReveal(won, settled)
-  // The board the win cascade has taken over from, and which piles it took over (set together with startChains, see
-  // runWinCascade): once it IS the current state, and the win is revealed, exactly those piles blank their real cards -
-  // not a moment earlier. Compared by identity (state is replaced wholesale on every change), so an undo or a New Game
-  // un-blanks the piles with no reset to remember.
+  // The board the win cascade has taken over from, and which piles it took over (set once its ghosts are on screen -
+  // startChains' onShown, see runWinCascade): once it IS the current state, and the win is revealed, exactly those piles
+  // blank their real cards - not a moment earlier. Compared by identity (state is replaced wholesale on every change), so
+  // an undo or a New Game un-blanks the piles with no reset to remember.
   const [cascadeHandoff, setCascadeHandoff] = useState<{ state: YukonState; piles: ReadonlySet<number> } | null>(null)
   /** One ref per foundation slot's own container (see FoundationCell's slotRef) - measured
    * independently of CardRegistry so the win cascade can still find each pile's screen position
@@ -367,11 +367,14 @@ function YukonScreenInner() {
   // so reversing gives the right order). Same dealTokenRef guard as every other async measurement
   // here, for the same "New Game tapped mid-measurement" reason.
   //
-  // The real cards blank only when the ghosts that replace them mount, in the SAME commit (cascadeHandoff, set right
-  // beside startChains - React batches the two): blanking them when the win is revealed instead, and starting the
-  // chains from the async continuation that follows, left every pile empty for the frames in between. A pile whose
-  // chain could not start (no measurable slot) keeps its real cards, and if no chain can start at all the piles simply
-  // stay up under the banner instead of vanishing.
+  // The real cards blank only once the ghosts that replace them are on screen (cascadeHandoff, set from startChains'
+  // onShown - in the commit the ghosts appear, which waits for their parked faces to paint; see WinCascadeLayer's
+  // CascadeChains): blanking them when the win is revealed instead, and starting the chains from the async continuation
+  // that follows, left every pile empty for the frames in between, and blanking them in the commit that mounted the
+  // ghosts showed blank-faced cards for a frame or two. An undo or New Game before then clears the cascade, which drops
+  // the callback (and the hand-off is keyed to `s` anyway). A pile whose chain could not start (no measurable slot) keeps
+  // its real cards, and if no chain can start at all the piles simply stay up under the banner instead of vanishing (an
+  // empty cascade never calls onShown).
   async function runWinCascade(s: YukonState, gen: number) {
     const origins = await Promise.all(foundationSlotRefs.current.map((view) => measureView(view)))
     if (dealTokenRef.current !== gen) return
@@ -383,8 +386,7 @@ function YukonScreenInner() {
       chains.push({ cards: pile.slice().reverse(), origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
       handedOff.add(suit)
     })
-    winCascade.startChains(chains, cardWidth)
-    if (chains.length > 0) setCascadeHandoff({ state: s, piles: handedOff })
+    winCascade.startChains(chains, cardWidth, () => setCascadeHandoff({ state: s, piles: handedOff }))
   }
 
   // Same race as the deal effect above: measuring CardRegistry synchronously right after the

@@ -2,7 +2,7 @@ import { BOUNCE_H_HALF_PERIOD_MAX_MS, BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_MIN_SP
 
 // A fixed chain path: launches at (100, 200), falls to a floor at 700 (first fall 1000ms), then bounces between 700 and an apex
 // at 100 forever; heads for the wall at x=20 over a 1000ms first leg, then swings between it and x=320.
-const PATH: ChainPath = { origin: { x: 100, y: 200 }, floorY: 700, apexY: 100, vHalfPeriodMs: 1000, firstX: 20, secondX: 320, hHalfPeriodMs: 3000, initialLegMs: 800, chainStartMs: 0 }
+const PATH: ChainPath = { origin: { x: 100, y: 200 }, floorY: 700, apexY: 100, vHalfPeriodMs: 1000, firstX: 20, secondX: 320, hHalfPeriodMs: 3000, initialLegMs: 800 }
 
 // Every elapsed time worth sampling: before the launch, through the first fall, and several bounce cycles after it.
 const SAMPLES = Array.from({ length: 400 }, (_, i) => -300 + i * 17)
@@ -128,7 +128,7 @@ describe('chainSegmentDelayMs', () => {
 // samples that path over a window of (cards - 1) * delay ms; each turning point of the path (floor/apex, one bounce half-period apart)
 // inside the window is a bend, and a window longer than a half-period can hold two: the chain is then a wave, not one snake.
 describe('a 52-card chain (the whole Pyramid deck in one pile)', () => {
-  const paths: ChainPath[] = [BOUNCE_V_HALF_PERIOD_MIN_MS, 1100, BOUNCE_V_HALF_PERIOD_MAX_MS].map((vHalfPeriodMs) => ({ origin: { x: 100, y: 200 }, floorY: 700, apexY: 100, vHalfPeriodMs, firstX: 20, secondX: 320, hHalfPeriodMs: 3000, initialLegMs: 800, chainStartMs: 0 }))
+  const paths: ChainPath[] = [BOUNCE_V_HALF_PERIOD_MIN_MS, 1100, BOUNCE_V_HALF_PERIOD_MAX_MS].map((vHalfPeriodMs) => ({ origin: { x: 100, y: 200 }, floorY: 700, apexY: 100, vHalfPeriodMs, firstX: 20, secondX: 320, hHalfPeriodMs: 3000, initialLegMs: 800 }))
 
   /** Along the chain (head first) at `elapsed`, how many times the vertical direction reverses. */
   function bends(path: ChainPath, elapsed: number, count: number, delay: number): number {

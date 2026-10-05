@@ -1,7 +1,7 @@
 import { Pressable } from '@rific/feedback-press'
 import { CardBack, CardFace, DecoratedCardBack, rankLabel, type TableColors, useCardSize } from '@tastic/cards'
 import React from 'react'
-import { Image, StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
+import { Image, ImageSourcePropType, ImageStyle, StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import { useTheme } from 'react-native-paper'
 import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
 
@@ -10,11 +10,15 @@ import { useProfiles } from '@/stores/profiles'
 import { useSettings } from '@/stores/settings'
 
 import { CARD_FACE_BITMAPS } from './cardFaceBitmaps'
+import { FaceLoadTrackingContext, trackFaceLoad } from './cardFacePaint'
 import { DIM_FADE_BACKSTOP_MS, fadeInDimScrim } from './dimScrimAnimation'
 import { startHintPulse } from './hintAnimation'
 import { CARD_RADIUS, cardRadiusForWidth, useTableColors } from './theme'
 
 const SHEEN_SOURCE = require('../../assets/card-sheen.png')
+/** How long a card turned face-up in place may keep showing its back while its new face loads (see `backUntilPainted`) -
+ * normally a frame or two; this only bounds a load that never reports. */
+const FLIP_BACK_MAX_MS = 250
 const sheenStyles = StyleSheet.create({ sheen: { bottom: 0, left: 0, pointerEvents: 'none', position: 'absolute', right: 0, top: 0 } })
 
 interface PlayingCardProps {
@@ -44,11 +48,15 @@ interface PlayingCardProps {
    * meaningful alongside `dimHold`. */
   dimFadeIn?: boolean
   /** This card is fully invisible (opacity 0) at its OWN call site - a tableau card being dragged, whose floating copy is
-   * the drag ghost (see PileView's DraggableTableauCard). Skips CardFace/CardBack/CardSheen entirely (an empty box stands
+   * the drag ghost (see PileView's DraggableTableauCard). Skips a face-down card's CardBack/CardSheen (an empty box stands
    * in for them) since nothing painted here is visible anyway, while the card itself stays mounted - its gesture is still
-   * tracking the player's touch; `dimOverlay`/`borderOverlay` still render normally. Only the expensive part is skipped
-   * (a court figure's ~90-150 SVG elements, a numeral's pips and corner glyphs, a back's pattern). */
+   * tracking the player's touch; `dimOverlay`/`borderOverlay` still render normally. Only the expensive part is skipped (a
+   * back's SVG pattern); a face-up card keeps its one face Image, so it is already loaded when the card is shown again. */
   hidden?: boolean
+  /** Called when this card's face bitmap has loaded (its Image's onLoad) - React Native delivers a new Image's bitmap a
+   * frame or two after the view appears (cardFacePaint.ts). A ghost waits for it before it shows. Never called for a
+   * face-down card. */
+  onFacePainted?: () => void
   onPress?: () => void
   style?: StyleProp<ViewStyle>
   testID?: string
@@ -58,7 +66,7 @@ interface PlayingCardProps {
 // that toggling `selected`/`hinted` (a thicker, different-colored border) never changes the box's
 // content area - RN sizes borders inward from a fixed width/height, so swapping 1px for 3px would
 // nudge the card's own SVG content by a couple pixels every time it's (de)selected/(un)hinted.
-export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold, dimFadeIn, hidden, onPress, style, testID }: PlayingCardProps) {
+export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold, dimFadeIn, hidden, onFacePainted, onPress, style, testID }: PlayingCardProps) {
   const colors = useTableColors()
   const { dark } = useTheme()
   const { activeProfile } = useProfiles()
@@ -72,6 +80,28 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold,
   // hinted) should pay for at mount.
   const borderOverlay = selected ? <View pointerEvents='none' style={styles.selectedRing} /> : hinted ? <HintRing style={styles.hintRing} /> : <View pointerEvents='none' style={styles.border} />
   const dimOverlay = dimmed ? dimHold === undefined ? <View pointerEvents='none' style={styles.dim} /> : <HeldDimScrim hold={dimHold} initialWasHeld={dimFadeIn} style={styles.dim} /> : null
+  // A card turned face-up in place (the card a move exposes in its column) mounts a brand-new face Image, which React
+  // Native fills in a frame or two later (cardFacePaint.ts) - a blank face in the meantime, with no ghost over it. So the
+  // back stays drawn over the new face until that face has painted (its onLoad), then the card turns.
+  // Board cards only: a ghost (a reused deal slot showing a face-up card after a face-down one) is not turning over.
+  const onBoard = React.useContext(FaceLoadTrackingContext)
+  const [prevFaceUp, setPrevFaceUp] = React.useState(card.faceUp)
+  const [backUntilPainted, setBackUntilPainted] = React.useState(false)
+  if (card.faceUp !== prevFaceUp) {
+    setPrevFaceUp(card.faceUp)
+    setBackUntilPainted(card.faceUp && onBoard)
+  }
+  const handleFacePainted = React.useCallback(() => setBackUntilPainted(false), [])
+  const handleFaceLoaded = React.useCallback(() => {
+    setBackUntilPainted(false)
+    onFacePainted?.()
+  }, [onFacePainted])
+  React.useEffect(() => {
+    if (!backUntilPainted) return
+    const backstop = setTimeout(handleFacePainted, FLIP_BACK_MAX_MS)
+    return () => clearTimeout(backstop)
+  }, [backUntilPainted, handleFacePainted])
+  const backArt = () => (settings.cardBackStyle === 'geometric' ? <CardBack colors={colors} width={width} height={height} tag={activeProfile?.tag} invertDarkModeColors={settings.invertDarkModeColors} /> : <DecoratedCardBack style={settings.cardBackStyle} colors={colors} width={width} height={height} invertDarkModeColors={settings.invertDarkModeColors} />)
 
   if (!card.faceUp) {
     return (
@@ -89,7 +119,7 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold,
         style={[styles.card, styles.shadow, cardSize, style]}
       >
         <View style={[styles.clip, styles.back]}>
-          {hidden ? null : settings.cardBackStyle === 'geometric' ? <CardBack colors={colors} width={width} height={height} tag={activeProfile?.tag} invertDarkModeColors={settings.invertDarkModeColors} /> : <DecoratedCardBack style={settings.cardBackStyle} colors={colors} width={width} height={height} invertDarkModeColors={settings.invertDarkModeColors} />}
+          {hidden ? null : backArt()}
           {hidden ? null : <CardSheen />}
         </View>
         {dimOverlay}
@@ -106,8 +136,16 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold,
   return (
     <Pressable testID={testID} onPress={onPress} disabled={disabled} soundDisabled style={[styles.card, styles.shadow, cardSize, style]}>
       <View style={[styles.clip, styles.face]}>
-        {hidden ? null : <Image source={faceSource} style={cardSize} resizeMode='stretch' accessibilityLabel={`${rankLabel(card.rank)} of ${card.suit}`} />}
-        {hidden ? null : <CardSheen />}
+        {/* Kept mounted while `hidden` (one Image, unlike the back's SVG): a dragged card that is revealed again then
+        already has its bitmap, instead of loading it in the frame it reappears (see cardFacePaint.ts). */}
+        <CardFaceImage cardId={card.id} source={faceSource} style={cardSize} label={`${rankLabel(card.rank)} of ${card.suit}`} onPainted={backUntilPainted || onFacePainted ? handleFaceLoaded : undefined} />
+        <CardSheen />
+        {backUntilPainted && !hidden ? (
+          <View style={[StyleSheet.absoluteFill, styles.back]}>
+            {backArt()}
+            <CardSheen />
+          </View>
+        ) : null}
       </View>
       {dimOverlay}
       {borderOverlay}
@@ -168,6 +206,33 @@ function FadingDimScrim({ style, onDone }: { style: StyleProp<ViewStyle>; onDone
     return () => clearTimeout(backstop)
   }, [opacity, onDone])
   return <Animated.View pointerEvents='none' style={[style, animatedStyle]} />
+}
+
+/** The face bitmap. Reports itself as loading (cardFacePaint.ts) from the commit its bitmap starts loading until its own
+ * onLoad, so a ghost that has just landed on this card stays over it until the face can really be seen - React Native
+ * delivers a new Image's bitmap asynchronously, often a frame or two after the view appears (see cardFacePaint.ts).
+ * Only a real reload counts: a source it has already painted (the same bitmap shown for a different card - twin cards
+ * in a two-deck game - or an effect re-run by Fast Refresh) gets no new native request and so no onLoad, and must not
+ * open a tracker nothing would close. Ghosts don't report (FaceLoadTrackingContext). `onPainted` fires on every load. */
+function CardFaceImage({ cardId, source, style, label, onPainted }: { cardId: string; source: ImageSourcePropType; style: StyleProp<ImageStyle>; label: string; onPainted?: () => void }) {
+  const tracking = React.useContext(FaceLoadTrackingContext)
+  const doneRef = React.useRef<(() => void) | null>(null)
+  const paintedSourceRef = React.useRef<ImageSourcePropType | null>(null)
+  React.useLayoutEffect(() => {
+    if (!tracking || source === paintedSourceRef.current) return
+    const done = trackFaceLoad(cardId)
+    doneRef.current = done
+    return () => {
+      if (doneRef.current === done) doneRef.current = null
+      done()
+    }
+  }, [tracking, cardId, source])
+  const handleLoad = React.useCallback(() => {
+    paintedSourceRef.current = source
+    doneRef.current?.()
+    onPainted?.()
+  }, [source, onPainted])
+  return <Image source={source} style={style} resizeMode='stretch' accessibilityLabel={label} onLoad={handleLoad} />
 }
 
 /** A faint diagonal gloss over the card's own flat face/back fill, like light catching glossy

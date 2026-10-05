@@ -45,13 +45,20 @@ interface MockFlightLog {
   chainsAtWinCascade: number
   /** What each foundation pile was showing (a card id, or 'empty') the moment the win cascade started - null if it never did. */
   foundationsAtWinCascade: string[] | null
-  /** Commit-time order of the hand-off: 'cascade' when startChains is called, 'blank-<suit>' when a foundation cell commits with no
-   * real card (an empty pile mid-game shows up here too, so only tests that start from full piles read it). */
+  /** The same, the moment the cascade's ghosts showed (its onShown) - null if they never did. */
+  foundationsAtGhostsShown: string[] | null
+  /** Commit-time order of the hand-off: 'cascade' when startChains is called, 'ghosts-shown' when the cascade shows and calls the
+   * screen's onShown, 'blank-<suit>' when a foundation cell commits with no real card (an empty pile mid-game shows up here too, so
+   * only tests that start from full piles read it). */
   events: string[]
   /** Every flyTo(): the card(s) it flew and when (fake time) it left and landed (-1 while still in the air). */
   flights: { cards: string; start: number; end: number }[]
 }
-const mockLog: MockFlightLog = { shown: [], inAir: 0, maxInAir: 0, airAtWinCascade: -1, chainsAtWinCascade: -1, foundationsAtWinCascade: null, events: [], flights: [] }
+const mockLog: MockFlightLog = { shown: [], inAir: 0, maxInAir: 0, airAtWinCascade: -1, chainsAtWinCascade: -1, foundationsAtWinCascade: null, foundationsAtGhostsShown: null, events: [], flights: [] }
+/** The real cascade shows - and calls startChains' onShown - only once its parked ghosts' faces have painted, a frame or two after
+ * startChains (WinCascadeLayer's CascadeChains); the mock stands in for that wait with a timer. */
+const MOCK_GHOSTS_SHOW_MS = 16
+let mockGhostsShowTimer: ReturnType<typeof setTimeout> | undefined
 /** Suits whose foundation slot container fails to measure (the rare origin-measurement failure). */
 const mockUnmeasurableSlots = new Set<string>()
 /** What every foundation cell shows right now - read from inside the mocked cascade, hence hoisted-mock naming. */
@@ -107,16 +114,28 @@ const mockDeal = {
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/components/winning/WinCascadeLayer', () => ({
-  WinCascadeProvider: ({ children }: { children: unknown }) => children,
+  // Unmounting drops a cascade that has not shown yet, like the real provider (a test can end mid-wait).
+  WinCascadeProvider: ({ children }: { children: unknown }) => {
+    require('react').useEffect(() => () => clearTimeout(mockGhostsShowTimer), [])
+    return children
+  },
   WinCascadeGhosts: () => null,
   useWinCascade: () => ({
-    startChains: (chains: unknown[]) => {
+    startChains: (chains: unknown[], _cardWidth: number, onShown?: () => void) => {
       mockLog.airAtWinCascade = mockLog.inAir
       mockLog.chainsAtWinCascade = chains.length
       mockLog.foundationsAtWinCascade = mockFoundationsNow()
       mockLog.events.push('cascade')
+      // Like the real controller: never for an empty cascade, and dropped by clear() or a newer startChains.
+      clearTimeout(mockGhostsShowTimer)
+      if (chains.length > 0 && onShown)
+        mockGhostsShowTimer = setTimeout(() => {
+          mockLog.foundationsAtGhostsShown = mockFoundationsNow()
+          mockLog.events.push('ghosts-shown')
+          onShown()
+        }, MOCK_GHOSTS_SHOW_MS)
     },
-    clear: () => {}
+    clear: () => clearTimeout(mockGhostsShowTimer)
   })
 }))
 // A foundation slot container measures like any view unless its suit is in mockUnmeasurableSlots; every other view (the deal origin the
@@ -330,6 +349,7 @@ beforeEach(() => {
   mockLog.airAtWinCascade = -1
   mockLog.chainsAtWinCascade = -1
   mockLog.foundationsAtWinCascade = null
+  mockLog.foundationsAtGhostsShown = null
   mockLog.events = []
   mockLog.flights = []
   mockUnmeasurableSlots.clear()
@@ -636,11 +656,11 @@ describe('FreeCell screen - the win celebration waits for the winning card to fl
   })
 })
 
-describe('FreeCell screen - the foundation piles hand over to the win cascade in one commit', () => {
-  const settleAndHold = 10 + FLIGHT_MS + HOLD_MS + 100
+describe('FreeCell screen - the foundation piles hand over to the win cascade once its ghosts show', () => {
+  const settleAndHold = 10 + FLIGHT_MS + HOLD_MS + MOCK_GHOSTS_SHOW_MS + 100
   const kings = () => SUITS.map((suit) => id(suit, 13))
 
-  it('every pile is still fully drawn when the cascade starts, and they blank in that same step - never a frame of empty piles before the ghosts', async () => {
+  it('every pile is still fully drawn when the cascade starts and until its ghosts show, and they blank in the commit that follows - never a frame of empty piles before the ghosts', async () => {
     await mount(ONE_CARD_FROM_WON(), 1)
 
     await tap(id('clubs', 13))
@@ -650,8 +670,15 @@ describe('FreeCell screen - the foundation piles hand over to the win cascade in
     // cascade whose ghosts stand in for them - a few empty frames in between.
     expect(mockLog.chainsAtWinCascade).toBe(4)
     expect(mockLog.foundationsAtWinCascade).toEqual(kings())
-    // The piles blanked in the commit that follows startChains: already, within the very step it was called in (not on a later timer).
-    expect(mockLog.events).toEqual(['cascade', ...SUITS.map((suit) => `blank-${suit}`)])
+    // The ghosts are mounted but not on screen yet (their faces are still painting), so the real piles stay up meanwhile:
+    // blanking them with startChains showed blank-faced Kings for a frame or two.
+    expect(mockLog.events).toEqual(['cascade'])
+    expect(Object.values(foundationTops())).toEqual(kings())
+
+    await flushUntil(() => mockLog.events.includes('ghosts-shown'))
+    expect(mockLog.foundationsAtGhostsShown).toEqual(kings())
+    // The piles blanked in the commit that follows the ghosts showing: already, within the very step it happened in (not on a later timer).
+    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...SUITS.map((suit) => `blank-${suit}`)])
     expect(Object.values(foundationTops())).toEqual(SUITS.map(() => 'empty'))
     expect(screen.getByTestId('win-banner')).toBeTruthy()
   })
@@ -660,11 +687,12 @@ describe('FreeCell screen - the foundation piles hand over to the win cascade in
     await mount(ONE_MOVE_FROM_FINISHABLE())
 
     await tap(id('clubs', 2))
-    await flushUntil(() => mockLog.events.includes('cascade'), 10000)
+    await flushUntil(() => mockLog.events.includes('ghosts-shown'), 10000)
 
     expect(mockLog.chainsAtWinCascade).toBe(4)
     expect(mockLog.foundationsAtWinCascade).toEqual(kings())
-    expect(mockLog.events.slice(mockLog.events.indexOf('cascade'))).toEqual(['cascade', ...SUITS.map((suit) => `blank-${suit}`)])
+    expect(mockLog.foundationsAtGhostsShown).toEqual(kings())
+    expect(mockLog.events.slice(mockLog.events.indexOf('cascade'))).toEqual(['cascade', 'ghosts-shown', ...SUITS.map((suit) => `blank-${suit}`)])
     expect(Object.values(foundationTops())).toEqual(SUITS.map(() => 'empty'))
   })
 
@@ -677,7 +705,7 @@ describe('FreeCell screen - the foundation piles hand over to the win cascade in
 
     expect(mockLog.chainsAtWinCascade).toBe(3)
     expect(mockLog.foundationsAtWinCascade).toEqual(kings())
-    expect(mockLog.events).toEqual(['cascade', ...SUITS.filter((suit) => suit !== 'hearts').map((suit) => `blank-${suit}`)])
+    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...SUITS.filter((suit) => suit !== 'hearts').map((suit) => `blank-${suit}`)])
     expect(foundationTops()).toEqual({ clubs: 'empty', diamonds: 'empty', hearts: id('hearts', 13), spades: 'empty' })
     expect(screen.getByTestId('win-banner')).toBeTruthy()
   })
@@ -690,7 +718,7 @@ describe('FreeCell screen - the foundation piles hand over to the win cascade in
     await flush(settleAndHold)
 
     expect(mockLog.chainsAtWinCascade).toBe(0)
-    expect(mockLog.events).toEqual(['cascade'])
+    expect(mockLog.events).toEqual(['cascade']) // an empty cascade has nothing to show: no onShown, so nothing hands over
     expect(Object.values(foundationTops())).toEqual(kings())
     expect(screen.getByTestId('win-banner')).toBeTruthy()
   })
@@ -714,7 +742,7 @@ describe('FreeCell screen - the foundation piles hand over to the win cascade in
     await mount(ONE_CARD_FROM_WON(), 1)
     await tap(id('clubs', 13))
     await flush(settleAndHold)
-    expect(mockLog.events).toEqual(['cascade', ...SUITS.map((suit) => `blank-${suit}`)]) // the first win handed over
+    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...SUITS.map((suit) => `blank-${suit}`)]) // the first win handed over
 
     // The next deal is one move from won again.
     jest.spyOn(FreeCellController, 'newGame').mockReturnValue(ONE_CARD_FROM_WON())
@@ -731,7 +759,9 @@ describe('FreeCell screen - the foundation piles hand over to the win cascade in
     await flushUntil(() => mockLog.events.includes('cascade'))
 
     expect(mockLog.foundationsAtWinCascade).toEqual(kings()) // still every real card when the second cascade starts
-    expect(mockLog.events).toEqual(['cascade', ...SUITS.map((suit) => `blank-${suit}`)])
+    expect(mockLog.events).toEqual(['cascade'])
+    await flushUntil(() => mockLog.events.includes('ghosts-shown'))
+    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...SUITS.map((suit) => `blank-${suit}`)])
   })
 })
 

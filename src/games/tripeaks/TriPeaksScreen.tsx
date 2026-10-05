@@ -11,7 +11,7 @@ import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
@@ -21,14 +21,15 @@ import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
+import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
-import { PlayingCard } from '@/components/PlayingCard'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
+import { useTakeOffHold } from '@/components/useTakeOffHold'
 import { useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { TRIPEAKS_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
@@ -56,6 +57,83 @@ import { cardAt, createTriPeaksController, isExposed, rowColOf, TriPeaksState } 
 import { TriPeaksSettingsSection } from './TriPeaksSettingsSection'
 
 export default withGameProviders(TriPeaksScreenInner)
+
+type MeasureOrigin = () => Promise<{ x: number; y: number }>
+
+interface TriPeaksCellProps {
+  index: number
+  /** The cell's card on the current board (null once removed). */
+  card: Card | null
+  /** Whether `card` is exposed on the current board (rules.ts's isExposed). */
+  exposed: boolean
+  /** `card` is hidden: its deal ghost, or an undo's ghost restoring it here, has not landed yet. */
+  hidden: boolean
+  hinted: boolean
+  /** The screen's last shake's token when it is `card`'s, WHETHER OR NOT the card is exposed - see the cell's comment. */
+  shakeToken: number | undefined
+  left: number
+  top: number
+  zIndex: number
+  dropZones: DropZoneRegistry
+  /** Stable for the screen's lifetime (they read the latest handlers through a ref - see TriPeaksScreenInner's cellHandlersRef). */
+  onTap: (index: number, cardId: string, measure: MeasureOrigin) => void
+  onDrop: (index: number, absoluteX: number, absoluteY: number, flight: DragFlightHandle) => Promise<boolean>
+}
+
+/**
+ * One peaks cell. Keyed by cell (one card ever occupies a cell), and the same element tree whether its card is covered,
+ * exposed or has just taken off (useTakeOffHold: drawn until its ghost is on screen), so a card that is uncovered is the
+ * same PlayingCard turning face-up (which keeps its back up until the new face has painted) - it used to be a separate
+ * face-down PlayingCard that REMOUNTED as the face, blank for a frame or two (cardFacePaint.ts). Genuinely covered, not
+ * just "not yet playable": drawn face-down (rules.ts keeps `faceUp: true` on the stored card for game logic, so the
+ * override is purely visual), not a drop target, not playable, never registered.
+ *
+ * Memoized, with only primitive props and stable callbacks, so a screen render re-renders just the cells whose own props
+ * changed: every cell - covered ones too - is a DraggableCard with a GestureDetector, whose effect re-sends its gesture
+ * config to the native side (findNodeHandle + updateGestureHandler) on EVERY render, and the screen re-renders several
+ * times per move (see PyramidScreen's PyramidCell, and PileView's DraggableTableauCard, for the same reasoning).
+ *
+ * A held cell (its card has just taken off and its ghost is not on screen yet) is inert AND not a touch target
+ * (pointerEvents none, as PileView's held cards are): it overlaps the cards its leaving uncovered, which are playable in
+ * the very commit the move made, and a disabled Pressable still catches the touch (the responder only bubbles to
+ * ancestors, never to the sibling cell underneath).
+ *
+ * `shakeToken` is passed whether or not the card is exposed: a covered card can never be tapped, so it can never get a NEW
+ * token while covered - the one it carries is a shake that is over (the last shake of the board before a New Game dealt
+ * the card here), and useShakeStyle records the token a card arrives with as played. Masking it while covered made the
+ * card record "no token" for itself (on the mount or the re-seed a New Game gives it) and then play the stale one the
+ * moment a move uncovered it, as it turned face-up. Not while held, though: `shakeToken` is computed for the cell's
+ * CURRENT card, which is then not the one drawn.
+ */
+export const TriPeaksCell = memo(function TriPeaksCell({ index, card, exposed: exposedOnBoard, hidden, hinted, shakeToken, left, top, zIndex, dropZones, onTap, onDrop }: TriPeaksCellProps) {
+  const { shown, holding } = useTakeOffHold(card)
+  const exposed = !holding && exposedOnBoard
+  const shownId = shown?.id
+  // The covered look, built once per card rather than on every render of the cell - a stable value like every other prop
+  // the card is handed here.
+  const faceDown = useMemo(() => (shown ? { ...shown, faceUp: false } : null), [shown])
+  const pileRef = useMemo<PileRef>(() => ({ zone: 'tableau', index }), [index])
+  const style = useMemo(() => [cellStyles.card, { left, top, zIndex }, holding && cellStyles.noTouch], [left, top, zIndex, holding])
+  const handlePress = useCallback((measure: MeasureOrigin) => (shownId ? onTap(index, shownId, measure) : undefined), [onTap, index, shownId])
+  const handleDrop = useCallback((absoluteX: number, absoluteY: number, flight: DragFlightHandle) => onDrop(index, absoluteX, absoluteY, flight), [onDrop, index])
+  if (!shown || !faceDown) return null
+  return (
+    <DropZone registry={dropZones} pileRef={pileRef} style={style} enabled={exposed}>
+      <DraggableCard card={exposed || holding ? shown : faceDown} hidden={!holding && hidden} disabled={!exposed} registryId={exposed ? undefined : null} hinted={exposed && hinted} onPress={exposed ? handlePress : undefined} onDrop={exposed ? handleDrop : undefined} shakeToken={holding ? undefined : shakeToken} testID={`tripeaks-${index}`} />
+    </DropZone>
+  )
+})
+
+// Module-level and theme-free, so a memoized cell never sees a new style object from a screen render. The zIndex each cell
+// adds (its row) stays scoped to the peaks container - see makeStyles' `peaks`.
+const cellStyles = StyleSheet.create({
+  card: {
+    position: 'absolute'
+  },
+  noTouch: {
+    pointerEvents: 'none'
+  }
+})
 
 function TriPeaksScreenInner() {
   const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
@@ -118,8 +196,8 @@ function TriPeaksScreenInner() {
   const wasteViewRef = useRef<View>(null)
   // The 28-cell board container - tableau destinations resolve as pure math against this origin
   // (see buildCardPositions), not per-card CardRegistry measurement, since most of the 28 slots
-  // start covered and therefore never register into CardRegistry at all (only exposed cards render
-  // as DraggableCard - see the JSX below). Same reasoning Pyramid's own triangleViewRef/cardPosition
+  // start covered and therefore never register into CardRegistry at all (a covered cell registers
+  // nothing - see TriPeaksCell). Same reasoning Pyramid's own triangleViewRef/cardPosition
   // combination uses for its own deal, generalized here to 3 peaks instead of 1 uniform triangle.
   const peaksViewRef = useRef<View>(null)
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
@@ -137,11 +215,11 @@ function TriPeaksScreenInner() {
   // the very card the winning flight was measuring to land on, so that flight could not fly at all
   // and the card simply appeared (see the [state] flight effect below).
   const winRevealed = useWinReveal(won, settled)
-  // The board the win cascade has taken over from (set together with startChains, see runWinCascade): once it IS the
-  // current state, and the win is revealed, the real waste top blanks - not a moment earlier. Blanking on winRevealed
-  // alone left the waste slot EMPTY for the few frames it takes runWinCascade to measure and mount the ghosts (the
-  // pile teleported away, then the ghosts appeared). Compared by identity (state is replaced wholesale on every
-  // change) so an undo or a New Game un-blanks the pile with no reset to remember.
+  // The board the win cascade has taken over from (set once its ghosts are on screen - startChains' onShown, see
+  // runWinCascade): once it IS the current state, and the win is revealed, the real waste top blanks - not a moment
+  // earlier. Blanking on winRevealed alone left the waste slot EMPTY for the few frames it takes runWinCascade to measure
+  // and mount the ghosts (the pile teleported away, then the ghosts appeared). Compared by identity (state is replaced
+  // wholesale on every change) so an undo or a New Game un-blanks the pile with no reset to remember.
   const [cascadeHandoffFor, setCascadeHandoffFor] = useState<TriPeaksState | null>(null)
   /** Flights awaiting their post-commit measurement + ghost.flyTo, queued by tap-to-move
    * (handleCardTap), a drag drop (handleDrop), drawing from the stock (handleDrawStock), and undo -
@@ -182,6 +260,10 @@ function TriPeaksScreenInner() {
     recordedWinRef.current = false
     winCascade.clear()
     pendingWinCascadeRef.current = null
+    // The last shake belongs to the old board: card ids are reused by the next deal, so a cell dealt the shaken card must
+    // not be handed its token at all (TriPeaksCell records whatever token its card arrives with as already played, so
+    // this is a second line of defence, not the fix).
+    setShake(null)
 
     const dealtIds = new Set([...s.tableau.filter((c): c is Card => !!c).map((c) => c.id), ...s.waste.map((c) => c.id)])
     setDealHiddenIds(dealtIds)
@@ -204,6 +286,7 @@ function TriPeaksScreenInner() {
     setTripeaksRankWrap(wrap)
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
+    setShake(null) // see startNewGame
     hintsUsedRef.current = false
     resetFlightConcurrency()
     pendingFlightRef.current = []
@@ -296,15 +379,17 @@ function TriPeaksScreenInner() {
   // waste cascade (TriPeaks has no suit-based foundation either). Origin is wasteViewRef rather than
   // a per-card CardRegistry lookup - the slot is always mounted and card-sized whether or not the real
   // top card is drawn. The measurement runs while the real waste top is STILL on screen and the pile
-  // blanks only afterwards, in the SAME commit that mounts the ghosts (cascadeHandoffFor, set right
-  // beside startChains - React batches the two into one commit from this async continuation): blanking
-  // first left the waste empty until the ghosts arrived. If no chain can start (an unmeasurable slot),
-  // the pile simply stays up under the banner instead of vanishing.
+  // blanks only afterwards, once the ghosts are on screen (cascadeHandoffFor, set from startChains'
+  // onShown - in the commit the ghosts appear, which waits for the parked head's face to paint; see
+  // WinCascadeLayer's CascadeChains): blanking first left the waste empty until the ghosts arrived,
+  // and blanking in the commit that mounted them showed a blank-faced card there for a frame or two.
+  // An undo or New Game before then clears the cascade, which drops the callback (and the hand-off is
+  // keyed to `s` anyway). If no chain can start (an unmeasurable slot), the pile simply stays up under
+  // the banner instead of vanishing.
   async function runWinCascade(s: TriPeaksState, gen: number) {
     const origin = await measureView(wasteViewRef.current)
     if (dealTokenRef.current !== gen || !origin || s.waste.length === 0) return
-    winCascade.startChains([{ cards: s.waste.slice().reverse(), origin, entranceDelayMs: 0 }], cardWidth)
-    setCascadeHandoffFor(s)
+    winCascade.startChains([{ cards: s.waste.slice().reverse(), origin, entranceDelayMs: 0 }], cardWidth, () => setCascadeHandoffFor(s))
   }
 
   // Also waits for winRevealed (the last card has landed and the finished board has held a beat) - the
@@ -560,6 +645,19 @@ function TriPeaksScreenInner() {
     return true
   }
 
+  // The peaks cells' tap and drop handlers: STABLE for the screen's lifetime, so the memoized TriPeaksCell is not
+  // re-rendered by every screen render (see its comment), and reading the latest render's handlers through this ref - the
+  // way PileView's `latest` does. Refreshed in a layout effect, so a tap or drop arriving right after a commit already runs
+  // that commit's handlers, exactly as the inline closures every cell used to be handed did.
+  const cellHandlersRef = useRef({ handleCardTap, handleDrop })
+  useLayoutEffect(() => {
+    cellHandlersRef.current = { handleCardTap, handleDrop }
+  })
+  const onTapCell = useCallback((index: number, cardId: string, measure: MeasureOrigin) => {
+    cellHandlersRef.current.handleCardTap({ zone: 'tableau', index }, cardId, measure)
+  }, [])
+  const onDropCell = useCallback((index: number, absoluteX: number, absoluteY: number, flight: DragFlightHandle) => cellHandlersRef.current.handleDrop({ zone: 'tableau', index }, absoluteX, absoluteY, flight), [])
+
   if (!state) return <GameLoading />
 
   const width = boardWidth(cardWidth, gap)
@@ -567,7 +665,7 @@ function TriPeaksScreenInner() {
   const positions = buildCardPositions(cardWidth, cardHeight, gap)
   // Hidden only once the win is REVEALED, not the moment it is won - the winning card is still flying
   // onto this pile until then, and its flight measures the registered waste top to land on - AND the
-  // cascade has taken over (cascadeHandoffFor === state): its ghosts mount in the very commit this
+  // cascade has taken over (cascadeHandoffFor === state): its ghosts are on screen by the commit this
   // blanks, so the pile is never seen empty. Not on winRevealed alone: runWinCascade measures first.
   const wasteTopCard = winRevealed && cascadeHandoffFor === state ? undefined : top(state.waste)
   const wasteHiddenByDeal = wasteTopCard && dealHiddenIds.has(wasteTopCard.id) ? 1 : 0
@@ -616,31 +714,12 @@ function TriPeaksScreenInner() {
           </View>
 
           <View ref={peaksViewRef} collapsable={false} style={[styles.peaks, { width, height }]}>
+            {/* One memoized cell per index, keyed by the cell - see TriPeaksCell. Every prop is a primitive (or stable),
+            so only the cells whose own state changed re-render. */}
             {state.tableau.map((card, index) => {
-              if (!card) return null
               const { row, col } = rowColOf(index)
               const { left, top: cardTop } = positions[index]
-              const exposed = isExposed(state.tableau, row, col)
-              const hidden = isTableauHidden(card.id, index)
-              const pileRef: PileRef = { zone: 'tableau', index }
-              const cardStyle = [styles.tableauCard, { left, top: cardTop, zIndex: row }]
-
-              if (!exposed) {
-                // Genuinely covered, not just "not yet playable" - rendered face-down and
-                // non-interactive, never CardRegistry-registered, same as Pyramid's own DiscardCell
-                // template for a plain non-draggable pile display (see this file's own header
-                // comment). Unlike Pyramid's covered pyramid cells (already face-up in real life,
-                // just dimmed), TriPeaks' covered cards are literal face-down cards nobody has
-                // uncovered yet - rules.ts keeps `faceUp: true` on the stored card for game-logic
-                // purposes only, so the override here is purely visual.
-                return <PlayingCard key={card.id} card={{ ...card, faceUp: false }} disabled style={[cardStyle, hidden && styles.hiddenCard]} testID={`tripeaks-${index}`} />
-              }
-
-              return (
-                <DropZone key={card.id} registry={dropZones} pileRef={pileRef} style={cardStyle}>
-                  <DraggableCard card={card} hidden={hidden} hinted={hintCountFor(activeHint, pileRef) > 0} onPress={(measure) => handleCardTap(pileRef, card.id, measure)} onDrop={(x, y, flight) => handleDrop(pileRef, x, y, flight)} shakeToken={shake?.cardId === card.id ? shake.token : undefined} testID={`tripeaks-${index}`} />
-                </DropZone>
-              )
+              return <TriPeaksCell key={index} index={index} card={card} exposed={isExposed(state.tableau, row, col)} hidden={!!card && isTableauHidden(card.id, index)} hinted={hintCountFor(activeHint, { zone: 'tableau', index }) > 0} shakeToken={card && shake?.cardId === card.id ? shake.token : undefined} left={left} top={cardTop} zIndex={row} dropZones={dropZones} onTap={onTapCell} onDrop={onDropCell} />
             })}
           </View>
         </View>
@@ -665,9 +744,6 @@ function makeStyles() {
       alignSelf: 'flex-end',
       marginBottom: CONTROL_ROW_MARGIN_BOTTOM
     },
-    hiddenCard: {
-      opacity: 0
-    },
     // zIndex below only stays scoped to this container if the container itself establishes a
     // stacking context - position:relative alone doesn't, without its own zIndex (see PileView's/
     // Pyramid's identical fix). Without this, a card's per-row zIndex leaks out to compete with the
@@ -675,9 +751,6 @@ function makeStyles() {
     peaks: {
       position: 'relative',
       zIndex: 0
-    },
-    tableauCard: {
-      position: 'absolute'
     }
   })
 }
