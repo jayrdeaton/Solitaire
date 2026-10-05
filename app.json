@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Solitaire Suite",
-    "slug": "solitaire-app",
+    "slug": "Solitaire",
     "scheme": "solitairesuite",
     "version": "1.0.0",
     "runtimeVersion": {
@@ -76,11 +76,12 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "bf3c8382-b491-493d-a6d3-8e1db47a9bc1"
+        "projectId": "59f46134-8691-4d34-bfd7-8f565f824b00"
       }
     },
     "updates": {
-      "url": "https://u.expo.dev/bf3c8382-b491-493d-a6d3-8e1db47a9bc1"
-    }
+      "url": "https://u.expo.dev/59f46134-8691-4d34-bfd7-8f565f824b00"
+    },
+    "owner": "jayrdeaton"
   }
 }

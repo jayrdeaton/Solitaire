@@ -1,4 +1,4 @@
-import { localOffsetToScreenPoint, screenToLocalPoint, wasteFanScreenShift } from '@/components/overlayFrameMath'
+import { localOffsetToScreenPoint, rectOffsetToScreenPoint, screenToLocalPoint, wasteFanScreenShift } from '@/components/overlayFrameMath'
 
 // A 402x874 portrait window, and a 96x140 card (the size the FreeCell simulator run measured).
 const WIN_W = 402
@@ -116,5 +116,44 @@ describe('wasteFanScreenShift', () => {
   })
   it('is zero for a zero distance', () => {
     expect(wasteFanScreenShift(0, 90)).toEqual({ x: 0, y: 0 })
+  })
+})
+
+describe('rectOffsetToScreenPoint', () => {
+  // A card-wide tableau column, 400 tall in its own (local) axes, centred at screen (200, 437).
+  const COL_W = CARD_W
+  const COL_H = 400
+  const centre = { x: 200, y: 437 }
+  const footprint = (rotation: number) => {
+    const swapped = rotation === 90 || rotation === -90
+    const w = swapped ? COL_H : COL_W
+    const h = swapped ? COL_W : COL_H
+    return { x: centre.x - w / 2, y: centre.y - h / 2, width: w, height: h }
+  }
+
+  it('is the rect origin plus the offset at 0deg', () => {
+    expect(rectOffsetToScreenPoint(footprint(0), 0, 120, CARD_W, CARD_H, 0)).toEqual({ x: centre.x - COL_W / 2, y: centre.y - COL_H / 2 + 120 })
+  })
+
+  it('runs the fan along the rotated axis under a quarter turn', () => {
+    // +90 (clockwise): the column's local top is the screen's right edge, and its fan runs leftward.
+    const r = footprint(90)
+    const first = rectOffsetToScreenPoint(r, 0, 0, CARD_W, CARD_H, 90)
+    const third = rectOffsetToScreenPoint(r, 0, 120, CARD_W, CARD_H, 90)
+    expect(first.x).toBeCloseTo(r.x + r.width - CARD_H, 6)
+    expect(first.y).toBeCloseTo(r.y, 6)
+    expect(third.x).toBeCloseTo(first.x - 120, 6)
+    expect(third.y).toBeCloseTo(first.y, 6)
+    // -90: the local top is the screen's left edge, and the fan runs rightward.
+    const l = footprint(-90)
+    const firstL = rectOffsetToScreenPoint(l, 0, 0, CARD_W, CARD_H, -90)
+    expect(firstL.x).toBeCloseTo(l.x, 6)
+    expect(rectOffsetToScreenPoint(l, 0, 120, CARD_W, CARD_H, -90).x).toBeCloseTo(firstL.x + 120, 6)
+  })
+
+  it('matches localOffsetToScreenPoint given the local size', () => {
+    for (const rotation of [0, 90, -90, 180]) {
+      expect(rectOffsetToScreenPoint(footprint(rotation), 0, 77, CARD_W, CARD_H, rotation)).toEqual(localOffsetToScreenPoint(footprint(rotation), COL_W, COL_H, 0, 77, CARD_W, CARD_H, rotation))
+    }
   })
 })

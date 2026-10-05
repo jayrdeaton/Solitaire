@@ -2,6 +2,7 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
+import { useRotation } from '@tastic/core'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
@@ -16,6 +17,7 @@ import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { CARD_HEIGHT_RATIO, useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
+import { rectOffsetToScreenPoint } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
 import { fireworksColors } from '@/components/theme'
@@ -160,6 +162,7 @@ function FreeCellScreenInner() {
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
   const { contentWidth } = useGameLayout()
+  const rotation = useRotation()
   const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   // The width-derived size in portrait (unchanged); in the wide layout also shrunk until the whole board
   // (top row + the tallest starting column) fits the window's short axis - see boardModel.ts.
@@ -313,11 +316,13 @@ function FreeCellScreenInner() {
         return
       }
       const top = step.rowIndex * faceUpOffset * columnScale[step.colIndex]
+      // The column rect is a screen-space bounding box: under a fake landscape rotation the fan runs along another screen
+      // axis, so the offset is composed through the column's centre (see rectOffsetToScreenPoint) - not `rect.y + top`.
       built.push({
         cardId: step.cardId,
         card: step.card,
         from: origin,
-        to: { x: rect.x, y: rect.y + top },
+        to: rectOffsetToScreenPoint(rect, 0, top, cardWidth, cardHeight, rotation),
         delayMs: step.visitOrder * dealStaggerMs(sequence.length)
       })
     })

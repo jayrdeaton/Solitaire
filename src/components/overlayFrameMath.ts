@@ -84,6 +84,15 @@ export function localOffsetToScreenPoint(containerTopLeft: { x: number; y: numbe
   return { x: cardCx - bboxW / 2, y: cardCy - bboxH / 2 }
 }
 
+/** localOffsetToScreenPoint for a container known only by its MEASURED screen rect (DropZoneRegistry.measure, measureView
+ * with a size): under a quarter turn that rect is the rotated footprint, so its width and height are the container's own
+ * height and width. FreeCell's deal places each card `offsetTop` down its column this way - `rect.y + offsetTop` was only
+ * right at 0deg, so in landscape every dealt card flew to the wrong spot and snapped into place when it landed. */
+export function rectOffsetToScreenPoint(rect: { x: number; y: number; width: number; height: number }, offsetLeft: number, offsetTop: number, cardWidth: number, cardHeight: number, rotation: number): { x: number; y: number } {
+  const swapped = rotation === 90 || rotation === -90
+  return localOffsetToScreenPoint(rect, swapped ? rect.height : rect.width, swapped ? rect.width : rect.height, offsetLeft, offsetTop, cardWidth, cardHeight, rotation)
+}
+
 /** Screen-space vector for a draw-3 waste fan card sitting `distance` points to the LEFT (local axes)
  * of the waste top card, under a fake landscape rotation of `rotation` degrees (0, 90, -90 or 180,
  * clockwise-positive, y down).

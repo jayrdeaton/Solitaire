@@ -5,7 +5,7 @@ import { useSharedValue } from 'react-native-reanimated'
 
 import type { OverlayFrame } from './overlayFrameMath'
 
-export { localOffsetToScreenPoint, type OverlayFrame, screenToLocalPoint, toLocal, wasteFanScreenShift } from './overlayFrameMath'
+export { localOffsetToScreenPoint, type OverlayFrame, rectOffsetToScreenPoint, screenToLocalPoint, toLocal, wasteFanScreenShift } from './overlayFrameMath'
 
 /** Attach `overlayRef` to the overlay's own absolutely-filled View; it measures itself whenever the
  * rotation or window size changes (and once on mount), keeping `frame` current for toLocal. The
