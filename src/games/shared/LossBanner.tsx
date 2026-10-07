@@ -9,13 +9,16 @@ import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 export interface LossBannerProps {
   colors: TableColors
   onNewGame: () => void
+  /** Takes back the last move - the loss is often one bad draw or play away from a live board. Undo stays in the footer too,
+   * but the scrim dims it. */
+  onUndo?: () => void
 }
 
-/** The post-loss overlay for a game with a genuine, non-abandonment loss condition (currently only
- * Aces Up - see games/shared/useStuckLossCheck.ts). Visual sibling of WinBanner.tsx, same overlay
+/** The post-loss overlay for a game with a genuine, non-abandonment loss condition (see
+ * games/shared/useStuckLossCheck.ts). Visual sibling of WinBanner.tsx, same overlay
  * shape and dimmed-scrim treatment, but no score/time/moves summary - a loss has none worth
  * showing. */
-export function LossBanner({ colors, onNewGame }: LossBannerProps) {
+export function LossBanner({ colors, onNewGame, onUndo }: LossBannerProps) {
   const styles = useMemo(() => makeStyles(colors), [colors])
   return (
     // box-none: see WinBanner's identical doc comment - only the centered card should ever catch
@@ -24,9 +27,16 @@ export function LossBanner({ colors, onNewGame }: LossBannerProps) {
       <View style={styles.card}>
         <Text style={styles.title}>No Moves Left</Text>
         <Text style={styles.subtitle}>This deal can&rsquo;t be won from here.</Text>
-        <Pressable style={styles.button} onPress={onNewGame}>
-          <Text style={styles.buttonText}>New Game</Text>
-        </Pressable>
+        <View style={styles.buttons}>
+          {onUndo ? (
+            <Pressable style={styles.button} onPress={onUndo} testID='loss-undo'>
+              <Text style={styles.buttonText}>Undo</Text>
+            </Pressable>
+          ) : null}
+          <Pressable style={styles.button} onPress={onNewGame} testID='loss-new-game'>
+            <Text style={styles.buttonText}>New Game</Text>
+          </Pressable>
+        </View>
       </View>
     </View>
   )
@@ -44,6 +54,10 @@ function makeStyles(colors: TableColors) {
       color: colors.tableFeltDark,
       fontFamily: CARD_FONT_FAMILY,
       fontWeight: '700'
+    },
+    buttons: {
+      flexDirection: 'row',
+      gap: 12
     },
     card: {
       alignItems: 'center',

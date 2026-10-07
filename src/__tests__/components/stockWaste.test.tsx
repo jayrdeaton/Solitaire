@@ -27,7 +27,11 @@ jest.mock('@/components/PlayingCard', () => {
   // A pile's own cards carry a testID of their own (stock-pile); anything else - the card painted under a flying ghost - is `card-<id>`.
   return {
     PlayingCard: ({ card, testID }: { card: { id: string }; testID?: string }) => <View testID={testID ?? `card-${card.id}`} />,
-    EmptySlot: ({ testID }: { testID?: string }) => <View testID={testID ?? 'slot'} />
+    EmptySlot: ({ testID, onPress, children }: { testID?: string; onPress?: () => void; children?: unknown }) => (
+      <View testID={testID ?? 'slot'} accessibilityHint={onPress ? 'tappable' : 'inert'}>
+        {children as never}
+      </View>
+    )
   }
 })
 
@@ -169,5 +173,43 @@ describe('StockWaste - the draw-3 fan', () => {
     await render(<CardSizeProvider width={80}>{waste({ wasteTop: heart(4), wasteBehind: [heart(3)] })}</CardSizeProvider>)
 
     expect(leftOf('hearts-3-0')).toBe(-wasteFanStepFor(80))
+  })
+})
+
+describe('StockWaste - an exhausted stock', () => {
+  it('offers the recycle arrow, and the tap, when the game recycles', async () => {
+    await render(waste({ stockTopCard: undefined, wasteTop: heart(4) }))
+    expect(screen.queryByText('↺')).not.toBeNull()
+    expect(screen.getByTestId('stock-pile').props.accessibilityHint).toBe('tappable')
+  })
+
+  it('is a plain, inert slot when the game never recycles (Golf, TriPeaks, Forty Thieves)', async () => {
+    await render(waste({ stockTopCard: undefined, wasteTop: heart(4), canRecycle: false }))
+    expect(screen.queryByText('↺')).toBeNull()
+    expect(screen.getByTestId('stock-pile').props.accessibilityHint).toBe('inert')
+  })
+})
+
+describe('StockWaste - one card landing on a fanned waste', () => {
+  it('keeps the whole pre-flight fan until it lands, so the old top is never shown twice', async () => {
+    // Before: 1, 2 behind the 3. One card (the 4) is drawn: the real fan is now 2, 3 behind the 4, but the 4 is still flying.
+    const { rerender } = await render(waste({ wasteTop: heart(3), wasteBehind: [heart(2), heart(1)] }))
+    await rerender(waste({ wasteTop: heart(4), wasteBehind: [heart(3), heart(2)], wasteHiddenCount: 1 }))
+    expect(screen.queryAllByTestId('card-hearts-3-0')).toHaveLength(1) // under the ghost, at the top - not in the fan too
+    expect(screen.queryByTestId('card-hearts-1-0')).not.toBeNull() // the fan has not moved yet
+
+    await rerender(waste({ wasteTop: heart(4), wasteBehind: [heart(3), heart(2)], wasteHiddenCount: 0 }))
+    expect(screen.queryByTestId('card-hearts-1-0')).toBeNull()
+    expect(screen.queryAllByTestId('card-hearts-3-0')).toHaveLength(1)
+  })
+
+  it('still reveals a draw-3 fan slot by slot as its three ghosts land', async () => {
+    const { rerender } = await render(waste({ wasteTop: heart(3), wasteBehind: [heart(2), heart(1)] }))
+    const next = { wasteTop: heart(6), wasteBehind: [heart(5), heart(4)] }
+    await rerender(waste({ ...next, wasteHiddenCount: 3 }))
+    await rerender(waste({ ...next, wasteHiddenCount: 2 })) // the far card (4) has landed
+    expect(screen.queryByTestId('card-hearts-4-0')).not.toBeNull()
+    await rerender(waste({ ...next, wasteHiddenCount: 1 })) // the 5 has landed, the 6 is still in the air
+    expect(screen.queryByTestId('card-hearts-5-0')).not.toBeNull()
   })
 })

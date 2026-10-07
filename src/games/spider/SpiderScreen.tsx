@@ -3,7 +3,7 @@ import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CARD_ASPECT, CardSizeProvider, faceUpFanOffset, useCardSize } from '@tastic/cards'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
+import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import Animated, { useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
 
 import { FaceLoadTrackingContext, LANDED_GHOST_MAX_MS, markGhostPending, useGhostPaintGate, whenCardsSettled } from '@/components/cardFacePaint'
@@ -21,8 +21,8 @@ import { OverlayFrame, toLocal, useOverlayFrame } from '@/components/overlayFram
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
 import { fireworksColors } from '@/components/theme'
+import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
-import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 import { useGameSession } from '@/components/useGameSession'
 import { useTakeOffHold } from '@/components/useTakeOffHold'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
@@ -37,10 +37,11 @@ import { Card } from '@/engine/types'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
-import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
+import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -76,11 +77,10 @@ function stockPacketId(index: number): string {
 type HistoryEntry = UndoEntry<SpiderState>
 
 /** A completed King->Ace run that has not left the tableau yet: it sits fully assembled in its column (completeMove/
- * handleDrawStock's displayState) until sweepRunToFoundation flies it to `slotIndex`. `release` is that run's claim on
- * sweepPendingRef - the board is held still until the sweep gives it back, see claimSweep. */
+ * handleDrawStock's displayState) until sweepRunToFoundation flies it to the next free slot. `release` is that run's claim on
+ * sweepPendingRef - its column (and the stock and undo) is held still until the sweep gives it back, see claimSweep. */
 interface PendingSweep {
   colIndex: number
-  slotIndex: number
   run: Card[]
   release: () => boolean
 }
@@ -314,8 +314,8 @@ function SpiderScreenInner() {
   // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
   // unchanged. Spider has no foundation piles/useAutoFoundationCascade, so activeFlightCount (the state
   // mirror of the ref, which handleUndo's own guard reads) only feeds the win celebration's `settled` flag.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<SpiderState>()
-  const [history, setHistory] = useState<HistoryEntry[]>([])
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<SpiderState>()
+  const [history, setHistory, historyRef] = useUndoStack<HistoryEntry>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
   // tryMove), so comparing references during render is enough to auto-dismiss a stale hint the
@@ -328,7 +328,6 @@ function SpiderScreenInner() {
   // alongside `history` in startNewGame/restoreGame below.
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
-  const [message, setMessage] = useState<string | null>(null)
 
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
@@ -425,9 +424,14 @@ function SpiderScreenInner() {
    * card) that completed it lands, so for that stretch - the move's ghost, then the sweep's measurements - the board still
    * shows the run in its column, and a tap, drag, stock deal or undo in that window would act on cards the sweep is about to
    * remove: removeRun slices the run off the END of its column by length, so it would cut whichever cards are on top by
-   * then. Every entry point that moves, deals or undoes therefore bows out while this is above zero (a second run completing
-   * concurrently would also be handed the same foundation slot). A ref, not state: only those guards read it, synchronously. */
+   * then. A stock deal and an undo therefore bow out while this is above zero; a tap or drag only when it touches a column a
+   * run is waiting in (sweepingColumnsRef) - the other columns stay in play (nothing can land on a run's Ace, so a move
+   * elsewhere never changes what is on top of it). A ref, not state: only those guards read it, synchronously. */
   const sweepPendingRef = useRef(0)
+  /** The runs behind sweepPendingRef's count, one entry per live claim - which columns are held, and what each sweep will
+   * take off them (see sweptView). */
+  const sweepingRunsRef = useRef<Map<number, { colIndex: number; run: Card[] }>>(new Map())
+  const sweepClaimIdRef = useRef(0)
   /** Bumped by every New Game/restore. A claim made under an older epoch belongs to a game that no longer exists - see claimSweep. */
   const sweepEpochRef = useRef(0)
   /** Set by startUndoRunCompletion once the run's cards' shared origin (the foundation slot) has
@@ -502,13 +506,18 @@ function SpiderScreenInner() {
   // it is called, and reports whether the claim was still live: false once a New Game/restore has replaced the board since,
   // which already zeroed the counter (so it is not decremented a second time) and means the sweep the claim belonged to must
   // not touch the fresh game - its removeRun would cut a run's worth of cards out of a board that never completed one.
-  function claimSweep(): () => boolean {
+  function claimSweep(colIndex: number, run: Card[]): () => boolean {
     const epoch = sweepEpochRef.current
+    const id = ++sweepClaimIdRef.current
     sweepPendingRef.current += 1
+    sweepingRunsRef.current.set(id, { colIndex, run })
     let released = false
     return () => {
       const live = sweepEpochRef.current === epoch
-      if (live && !released) sweepPendingRef.current -= 1
+      if (live && !released) {
+        sweepPendingRef.current -= 1
+        sweepingRunsRef.current.delete(id)
+      }
       released = true
       return live
     }
@@ -517,6 +526,27 @@ function SpiderScreenInner() {
   function resetSweepClaims() {
     sweepEpochRef.current += 1
     sweepPendingRef.current = 0
+    sweepingRunsRef.current.clear()
+  }
+
+  /** Whether a completed run is waiting in this column to be swept off - a move from it would pick up the run's own cards. */
+  function isColumnSweeping(colIndex: number): boolean {
+    for (const r of sweepingRunsRef.current.values()) if (r.colIndex === colIndex) return true
+    return false
+  }
+
+  /** The board as it will be once every run still waiting in the tableau has been swept: what the history records for a
+   * move made in the meantime, so undoing that move later never brings back a run that has since left (nothing would ever
+   * sweep it again), and what decides whether the move won. */
+  function sweptView(s: SpiderState): SpiderState {
+    const runs = [...sweepingRunsRef.current.values()]
+    if (runs.length === 0) return s
+    return {
+      ...s,
+      tableau: s.tableau.map((col, i) => runs.filter((r) => r.colIndex === i).reduce((c, r) => c.slice(0, c.length - r.run.length), col)),
+      completed: [...s.completed, ...runs.map((r) => r.run[0])],
+      completedRuns: [...s.completedRuns, ...runs.map((r) => r.run)]
+    }
   }
 
   // New Game/restore: every sequence flight - a run sweeping to its slot, a run flying back out of one, a held landed group,
@@ -573,7 +603,6 @@ function SpiderScreenInner() {
       // Before the fresh board commits: a card a stock-deal undo still holds would be drawn over it (see undoDealHoldsRef).
       undoDealHoldsRef.current.forEach((release) => release())
       session.reset()
-      setMessage(null)
       recordedRef.current = false
       winCascade.clear()
       pendingWinCascadeRef.current = null
@@ -610,7 +639,6 @@ function SpiderScreenInner() {
     pendingUndoDealRef.current = null
     undoDealHoldsRef.current.forEach((release) => release()) // see startNewGame
     session.restore(saved.moves, saved.elapsedSeconds)
-    setMessage(null)
     recordedRef.current = false
     setDealHiddenIds(new Set())
     commitState(saved.state)
@@ -742,12 +770,16 @@ function SpiderScreenInner() {
   // the same synchronous stretch as removeRun's commit below - so the board is held still exactly until the run has left it,
   // whichever of the exits below (unmeasurable slot, no measurable card, a normal flight) is taken. Neither measurement can
   // hang or throw: the registry answers null for an unregistered card and measureView for a missing view.
-  async function sweepRunToFoundation(colIndex: number, slotIndex: number, run: Card[], release: () => boolean, flyingId?: number) {
-    const [origins, destination] = await Promise.all([Promise.all(run.map((c) => ghost.cardRegistry.measure(c.id))), measureView(completedSlotRefs.current[slotIndex])])
+  async function sweepRunToFoundation(colIndex: number, run: Card[], release: () => boolean, flyingId?: number) {
+    // Every slot is measured, since which one this run takes is only known when it leaves: the next free one at that moment.
+    // Runs completed close together in different columns can sweep in either order, and each must take a slot of its own.
+    const [origins, slotRects] = await Promise.all([Promise.all(run.map((c) => ghost.cardRegistry.measure(c.id))), Promise.all(completedSlotRefs.current.map((view) => measureView(view)))])
     // A false answer: a New Game/restore replaced the board while those measurements were pending (a ghost of the old game
     // can still land, and card ids repeat from deal to deal, so they even measure). The flying claim below, the removal and
     // the flight all belong to the game that is gone - removeRun on the fresh board would cut cards out of it.
     if (!release()) return
+    const slotIndex = stateRef.current?.completed.length ?? 0
+    const destination = slotRects[slotIndex] ?? null
     // Always runs regardless of whether `destination` resolves: `state` already shows this run
     // fully assembled in the tableau (see completeMove/handleDrawStock's own displayState), so
     // leaving this flying entry set would keep PileView hiding those already-landed real cards
@@ -810,9 +842,10 @@ function SpiderScreenInner() {
   // consolidated-landing intermediate state by the time this runs, and `move.to`'s pile there
   // naturally IS the just-restored full run, so slicing off the top `count` cards already finds
   // exactly the actively-moved subgroup with no extra bookkeeping.
-  async function finishMoveUndo(move: MoveInfo, prevState: SpiderState) {
+  // `current` is the board as of right now (stateRef.current) - not the render closure's, which can be behind it.
+  async function finishMoveUndo(current: SpiderState | null, move: MoveInfo, prevState: SpiderState) {
     const token = dealTokenRef.current
-    const sourcePile = state!.tableau[move.to.index] ?? null
+    const sourcePile = current?.tableau[move.to.index] ?? null
     const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : []
     const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
     const origin = movingCards.length > 0 ? await ghost.cardRegistry.measure(move.anchorCardId) : null
@@ -856,7 +889,7 @@ function SpiderScreenInner() {
         const proceed = () => {
           if (!airborneMoveFlightsRef.current.delete(p)) return
           if (p.sweep) {
-            sweepRunToFoundation(p.sweep.colIndex, p.sweep.slotIndex, p.sweep.run, p.sweep.release, p.flyingId)
+            sweepRunToFoundation(p.sweep.colIndex, p.sweep.run, p.sweep.release, p.flyingId)
             return
           }
           endFlying(p.flyingId)
@@ -1046,7 +1079,7 @@ function SpiderScreenInner() {
           pending.run.forEach((c) => next.delete(c.id))
           return next
         })
-        await finishMoveUndo(pending.move, pending.prevState)
+        await finishMoveUndo(stateRef.current, pending.move, pending.prevState)
         return
       }
       if (failedIds.length > 0) {
@@ -1065,7 +1098,7 @@ function SpiderScreenInner() {
       startSequenceFlight(
         cards,
         () => {
-          if (dealTokenRef.current === pending.token) finishMoveUndo(pending.move, pending.prevState)
+          if (dealTokenRef.current === pending.token) finishMoveUndo(stateRef.current, pending.move, pending.prevState)
         },
         (cardId) => {
           if (dealTokenRef.current !== pending.token) return
@@ -1186,7 +1219,7 @@ function SpiderScreenInner() {
             if (!sweep) return
             // Taken out of the map as it starts, so the settle callback below only sees sweeps that never did.
             pending.sweeps!.delete(cardId)
-            sweepRunToFoundation(sweep.colIndex, sweep.slotIndex, sweep.run, sweep.release)
+            sweepRunToFoundation(sweep.colIndex, sweep.run, sweep.release)
           }
         : undefined,
       // Settles the startFlights(1) claim handleDrawStock made before stashing pendingDealRef -
@@ -1199,7 +1232,7 @@ function SpiderScreenInner() {
         // A run whose completing card never got a flight (runDeal found no origin, or that card's own destination could not
         // be measured) is still assembled in its column and holds a claim on sweepPendingRef - which would block every move
         // and undo for good. Sweep it now: the run leaves like any other, just without a dealt card arriving first.
-        pending.sweeps?.forEach((sweep) => sweepRunToFoundation(sweep.colIndex, sweep.slotIndex, sweep.run, sweep.release))
+        pending.sweeps?.forEach((sweep) => sweepRunToFoundation(sweep.colIndex, sweep.run, sweep.release))
       }
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1385,9 +1418,10 @@ function SpiderScreenInner() {
   async function handlePressCard(colIndex: number, card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) {
     if (won || !state || !controller.autoMoveHint) return
     if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
-    // A completed run is still assembled in its column, about to be swept off (see sweepPendingRef) - a tap on it would move
+    // A completed run is still assembled in this column, about to be swept off (see sweepPendingRef) - a tap on it would move
     // cards the sweep is about to remove. Ignored up front, so it doesn't even flash a ghost/sound; completeMove re-checks.
-    if (sweepPendingRef.current > 0) return
+    // Every other column plays on.
+    if (isColumnSweeping(colIndex)) return
     const move = controller.autoMoveHint(state, { zone: 'tableau', index: colIndex }, card.id)
     if (!move) {
       // Nowhere legal to go - shake the card so the tap reads as "received, just stuck" rather
@@ -1453,24 +1487,25 @@ function SpiderScreenInner() {
     const current = stateRef.current
     if (!current) return false
     // The authoritative check for a tap and a drag alike (a drop reaches here with no guard of its own; a tap may have passed
-    // handlePressCard's while awaiting its measurement, just before another move completed a run) - see sweepPendingRef.
-    if (sweepPendingRef.current > 0) return false
+    // handlePressCard's while awaiting its measurement, just before another move completed a run) - see sweepPendingRef. Only
+    // the columns a run is waiting in are held (nothing can be put on a run's Ace, so `to` is checked for completeness).
+    if (isColumnSweeping(from.index) || isColumnSweeping(to.index)) return false
     const next = controller.tryMove(current, { from, to, count })
     if (!next) return false
 
     const justCompleted = next.completedRuns.length > current.completedRuns.length ? next.completedRuns[next.completedRuns.length - 1] : null
-    const slotIndex = justCompleted ? next.completed.length - 1 : null
-    const displayState = slotIndex !== null ? withRunsRestored(next, [{ colIndex: to.index, run: justCompleted! }]) : next
+    const displayState = justCompleted ? withRunsRestored(next, [{ colIndex: to.index, run: justCompleted }]) : next
 
-    pushHistory(current, { from, to, count, anchorCardId })
+    // Recorded as the board will be once any run still waiting elsewhere has left (see sweptView), not as it shows now.
+    pushHistory(sweptView(current), { from, to, count, anchorCardId })
     commitState(displayState)
     session.registerMove()
     // The displayState above holds the last run back in the tableau, so `won` (derived from the swept state) only
     // flips a phase later, once that run leaves - the clock still stops with the winning move itself.
-    if (controller.isWon(next)) session.stopClock()
+    if (controller.isWon(sweptView(next))) session.stopClock()
     const flyingId = beginFlying(to, count)
     // The claim is made here, in the same tick as the commit that shows the assembled run, so there is no gap before it holds.
-    pendingMoveFlightsRef.current.push({ cardId: anchorCardId, flight, flyingId, sweep: slotIndex !== null ? { colIndex: to.index, slotIndex, run: justCompleted!, release: claimSweep() } : null })
+    pendingMoveFlightsRef.current.push({ cardId: anchorCardId, flight, flyingId, sweep: justCompleted ? { colIndex: to.index, run: justCompleted, release: claimSweep(to.index, justCompleted) } : null })
     return true
   }
 
@@ -1516,10 +1551,12 @@ function SpiderScreenInner() {
     const dealt = current.stock.slice(0, TABLEAU_COLUMNS).map((card, colIndex) => ({ card, colIndex }))
     const next = controller.drawStock(current)
     if (!next) {
-      setMessage("Can't deal - clear a column first")
+      // With a row's worth still in the stock, a deal is refused only while a column is empty (and the tableau holds enough
+      // cards to fill them all - see rules.ts's canDealStock). An exhausted stock's slot does nothing. A toast, never text on
+      // the felt.
+      if (current.stock.length >= TABLEAU_COLUMNS) infoToast('Fill every empty column before dealing.')
       return
     }
-    setMessage(null)
     startFlights(1)
     // A deal has no single MoveInfo shape to record (10 cards land across every column at once,
     // not one card landing somewhere new) - handleUndo detects the null move itself and reverses
@@ -1573,7 +1610,12 @@ function SpiderScreenInner() {
     )
     // One claim per completing column (see sweepPendingRef), released by that column's own sweep - or by the settle callback in
     // the pendingDealRef effect if its completing card never gets a flight to trigger it. Made in the same tick as the commit below.
-    const sweeps = new Map<string, PendingSweep>(completingColumns.map((colIndex, i) => [dealt.find((d) => d.colIndex === colIndex)!.card.id, { colIndex, slotIndex: completingSlotIndexes[i], run: next.completedRuns[completingSlotIndexes[i]], release: claimSweep() }]))
+    const sweeps = new Map<string, PendingSweep>(
+      completingColumns.map((colIndex, i) => {
+        const run = next.completedRuns[completingSlotIndexes[i]]
+        return [dealt.find((d) => d.colIndex === colIndex)!.card.id, { colIndex, run, release: claimSweep(colIndex, run) }]
+      })
+    )
 
     setDealHiddenIds(new Set(dealt.map((d) => d.card.id)))
     pendingDealRef.current = { dealt, origin, token: myToken, sweeps }
@@ -1586,11 +1628,31 @@ function SpiderScreenInner() {
   // and re-rendered, so the ORIGIN has to be captured here, synchronously against the still-current
   // state), then revert and mark `move.from` as incoming so it flies the rest of the way there
   // exactly like a fresh move would.
-  async function handleUndo() {
-    // sweepPendingRef: a stock deal's last card can land (settling its flight claim) a few milliseconds before the sweep it
-    // triggered has measured and removed its run - undoing in that gap would revert the board the sweep is about to edit.
-    if (undoBusyRef.current || activeFlightCountRef.current > 0 || sweepPendingRef.current > 0 || history.length === 0 || !state) return
-    undoBusyRef.current = true
+  // One undo per call - see useFlightConcurrency's runUndo.
+  function handleUndo(opts?: UndoRequestOptions) {
+    return runUndo(undoGate, revertTopUndo, opts)
+  }
+
+  // A plain move's undo takes its run back off the column it went to, so it overlaps the undos before it once nothing is still
+  // landing there. A stock deal's flies ten cards back through the deal layer, and a move that completed a run restores the run
+  // from its slot first (two phases, a single-slot effect) - each of those one at a time.
+  function undoGate(): UndoGate {
+    const entry = historyRef.current[historyRef.current.length - 1]
+    const current = stateRef.current
+    if (!entry || !current) return null
+    // A stock deal's last card can land (settling its flight claim) a few milliseconds before the sweep it triggered has measured
+    // and removed its run - undoing in that gap would revert the board the sweep is about to edit.
+    if (sweepPendingRef.current > 0) return 'blocked'
+    if (!entry.move || current.completedRuns.length > entry.state.completedRuns.length) return 'exclusive'
+    return { takesFrom: [entry.move.to] }
+  }
+
+  async function revertTopUndo() {
+    // The history and the board are read via their refs, not the closure: undos can run back-to-back before React re-renders
+    // (see runUndo).
+    const current = stateRef.current
+    const entry = historyRef.current[historyRef.current.length - 1]
+    if (!current || !entry) return
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition - the only move available once it's true is New Game), so any undo reachable while
     // won must be undoing the winning move itself. `won` (derived from state above) clears itself
@@ -1598,7 +1660,6 @@ function SpiderScreenInner() {
     // stop on its own - it only ever stops via winCascade.clear() (see startNewGame), so without
     // this it would keep animating over a board that's already reverted underneath it.
     if (won) winCascade.clear()
-    const entry = history[history.length - 1]
     const { move, state: prevState } = entry
 
     // A move or stock deal that completed one or more King->Ace runs (see completeMove/
@@ -1607,21 +1668,21 @@ function SpiderScreenInner() {
     // `completedRuns` only ever grows, so its length exactly tracks how many runs are currently
     // completed - a move can complete at most one (tryMove only ever resolves one column), a
     // stock deal can complete more than one.
-    const undoneSlots = state.completedRuns.length > prevState.completedRuns.length ? Array.from({ length: state.completedRuns.length - prevState.completedRuns.length }, (_, i) => prevState.completedRuns.length + i) : []
+    const undoneSlots = current.completedRuns.length > prevState.completedRuns.length ? Array.from({ length: current.completedRuns.length - prevState.completedRuns.length }, (_, i) => prevState.completedRuns.length + i) : []
 
     if (!move) {
       // Undoing a stock deal (see runUndoDeal above): the 10 cards it dealt fly from their
       // current tableau spots back to the stock fan, converging on the packet this revert is
       // about to restore. Every history entry is undone in strict most-recent-first order, so at
       // the moment THIS entry is undone, nothing later has touched these columns since the deal
-      // itself - state.tableau[col]'s current top card is reliably the one that deal placed
+      // itself - the board's tableau[col] top card is reliably the one that deal placed
       // there, UNLESS that same deal immediately completed (and swept away) a 13-card run in that
       // column (see resolveCompletedSequence) - column lengths grow by exactly 1 per dealt card,
       // so a column that doesn't fit that shape had its card swept, and is left out entirely:
       // there's nothing left in the tableau to measure or fly back for it (its own run instead
       // flies back independently below, via undoSequenceCompletions).
       const myToken = ++dealTokenRef.current
-      const dealtColumns = state.tableau.map((col, colIndex) => ({ col, colIndex })).filter(({ col, colIndex }) => col.length === prevState.tableau[colIndex].length + 1)
+      const dealtColumns = current.tableau.map((col, colIndex) => ({ col, colIndex })).filter(({ col, colIndex }) => col.length === prevState.tableau[colIndex].length + 1)
       const dealtCards = dealtColumns.map(({ col }) => col[col.length - 1])
       const origins = await Promise.all(dealtCards.map((c) => ghost.cardRegistry.measure(c.id)))
       // New Game/restore replaced the game while these were measured: `prevState` is the old game's board, and every claim
@@ -1639,7 +1700,7 @@ function SpiderScreenInner() {
       // startSequenceFlight/handleSequenceFlightLanded pairing).
       startFlights(undoneSlots.length > 0 ? 2 : 1)
 
-      if (undoneSlots.length > 0 && !(await undoSequenceCompletions(state, undoneSlots, myToken))) return
+      if (undoneSlots.length > 0 && !(await undoSequenceCompletions(current, undoneSlots, myToken))) return
 
       setHistory((h) => h.slice(0, -1))
       // Taking off from their columns: the commit below takes these cards out of them, but each card's ghost only shows once
@@ -1674,12 +1735,12 @@ function SpiderScreenInner() {
       // comment), so this claim is settled once phase 2 (finishMoveUndo) actually concludes, not
       // any sooner.
       startFlights(1)
-      await startUndoRunCompletion(state, prevState, move, undoneSlots[0])
+      await startUndoRunCompletion(current, prevState, move, undoneSlots[0])
       return
     }
 
     startFlights(1)
-    await finishMoveUndo(move, prevState)
+    await finishMoveUndo(current, move, prevState)
   }
 
   // Phase 1 of undoing a tableau move that completed a run: the whole run currently exists only as
@@ -1777,14 +1838,7 @@ function SpiderScreenInner() {
             })}
           </View>
           <StockFan count={state.stock.length} onPress={handleDrawStock} hinted={activeHint?.kind === 'drawStock'} />
-          {/* Wide layout: the same message, but laid over the topRow's own marginBottom band instead of
-          in the flow. The board has no vertical slack to spare there - useTableauMaxHeight hands the
-          columns every last point of the window - so a message in the flow (line height + 4) would push
-          the tableau's bottom edge off the screen for as long as it's showing. */}
-          {message && isWide ? <Text style={[styles.message, styles.messageWide]}>{message}</Text> : null}
         </View>
-
-        {message && !isWide ? <Text style={styles.message}>{message}</Text> : null}
 
         <View style={[styles.tableauRow, isWide && styles.tableauRowWide, { gap }]}>
           {state.tableau.map((col, colIndex) => {
@@ -1871,6 +1925,8 @@ function StockPacket({ index, hinted, style }: { index: number; hinted?: boolean
   )
 }
 
+const stockFanStyles = StyleSheet.create({ fan: { alignItems: 'flex-end' } })
+
 /** The stock, shown as up to 5 fanned face-down packets - one per remaining round of
  * TABLEAU_COLUMNS cards (see rules.ts's drawStock) - instead of a single pile with a card count on
  * it, so depleting the stock reads as packets disappearing one at a time rather than a number
@@ -1886,9 +1942,11 @@ function StockFan({ count, onPress, hinted }: { count: number; onPress: () => vo
   const totalWidth = width + fanOffset * (STOCK_MAX_PACKETS - 1)
 
   return (
-    <View style={{ width: totalWidth, height }}>
+    // alignItems flex-end: the empty slot sits where the last packet was (anchored right), not at the fan's left edge. It takes
+    // no taps - nothing is left to deal.
+    <View style={[stockFanStyles.fan, { width: totalWidth, height }]}>
       {packets === 0 ? (
-        <EmptySlot onPress={onPress} hinted={hinted} />
+        <EmptySlot />
       ) : (
         <Pressable onPress={onPress} style={{ width: totalWidth, height }}>
           {Array.from({ length: packets }).map((_, i) => {
@@ -1908,21 +1966,6 @@ function makeStyles() {
     column: {},
     completedGroup: {
       flexDirection: 'row'
-    },
-    message: {
-      color: '#FFE082',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 12,
-      marginBottom: 4,
-      textAlign: 'center'
-    },
-    // See the wide-layout message in the JSX: pinned just below the topRow (whose own height is one
-    // card), inside the 16pt marginBottom gap it leaves above the tableau.
-    messageWide: {
-      left: 0,
-      position: 'absolute',
-      right: 0,
-      top: '100%'
     },
     tableauRow: {
       flexDirection: 'row',

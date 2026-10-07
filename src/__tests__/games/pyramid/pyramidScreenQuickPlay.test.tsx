@@ -721,16 +721,20 @@ describe('Pyramid screen quick play - a move is re-validated against the board a
     {
       name: 'a pair',
       start: () => pair(Q, ACE),
-      // the earlier draw stays (the 9 on the waste, the 8 still in the stock) and the pair went through
-      finished: () => wasteShows() === id('diamonds', 9) && text('stock-top') === id('diamonds', 8) && !inPyramid(Q) && !inPyramid(ACE)
+      // the pair went through and landed (the earlier draw under it untouched: the 9 on the waste, the 8 still in the stock)...
+      landed: () => wasteShows() === id('diamonds', 9) && text('stock-top') === id('diamonds', 8) && !inPyramid(Q) && !inPyramid(ACE),
+      // ...and the undo then took back the pair, not the draw
+      undone: () => wasteShows() === id('diamonds', 9) && text('stock-top') === id('diamonds', 8) && inPyramid(Q) && inPyramid(ACE)
     },
     {
       name: 'a stock draw',
       start: () => press('stock-top'),
-      // the earlier draw stays underneath, and the new draw put the 8 on top of it
-      finished: () => wasteShows() === id('diamonds', 8) && text('stock-top') === 'empty'
+      // the new draw put the 8 on top of the earlier one...
+      landed: () => wasteShows() === id('diamonds', 8) && text('stock-top') === 'empty',
+      // ...and the undo then took back the 8, leaving the earlier draw
+      undone: () => wasteShows() === id('diamonds', 9) && text('stock-top') === id('diamonds', 8)
     }
-  ])('an undo tapped while $name is still measuring is refused: the earlier move stays, and the new one lands on top of it', async ({ start, finished }) => {
+  ])('an undo tapped while $name is still measuring waits for it: the move commits and lands untouched, then the undo takes back that newest move', async ({ start, landed, undone }) => {
     await mount(TWO_PAIRS({ stock: [card('diamonds', 8, false), card('diamonds', 9, false)] }))
     await press('stock-top')
     await landEverything()
@@ -738,12 +742,16 @@ describe('Pyramid screen quick play - a move is re-validated against the board a
 
     mockMeasureMs = MEAS
     await start() // measuring...
-    await press('undo') // ...its claim already holds undo off
+    await press('undo') // ...its claim holds the undo back until it has landed
     await flush(MEAS)
+    expect(landed()).toBe(true)
+    await landEverything()
+    await flush(2 * MEAS + PAIR_FLIGHT_MS) // the undo's turn, and its flight
     await landEverything()
 
-    expect(finished()).toBe(true)
+    expect(undone()).toBe(true)
     expect(moves()).toBe('2')
+    expect(text('undo-disabled')).toBe('false') // one undo, not two: the earlier draw is still there to take back
   })
 
   it('a drop that loses a race to a tap on the same King aborts (the card snaps back) instead of removing it twice', async () => {
@@ -813,12 +821,12 @@ describe('Pyramid screen quick play - New Game while flights are in the air', ()
 
     await flush(250) // the draw is still in the air (this is where the old King's landing used to fire)
     expect(mockLog.inAir).toBe(1)
-    await press('undo') // must still be refused: the draw's own claim was not eaten by the old game's completion
-    await flush(2 * MEAS + 50)
+    await press('undo') // must wait: the draw's own claim was not eaten by the old game's completion
     expect(wasteShows()).toBe(nextDraw.id)
+    expect(mockLog.inAir).toBe(1)
 
-    await landEverything()
-    await undo() // and once it has landed, undo works
+    await landEverything() // and once it has landed, the waiting undo goes through on its own
+    await flush(2 * MEAS + PAIR_FLIGHT_MS)
     expect(wasteShows()).toBe('empty')
   })
 })
@@ -879,7 +887,7 @@ describe('Pyramid screen quick play - New Game tapped in the middle of an undo',
 
 describe('Pyramid screen quick play - every path settles its claim, even when nothing can fly', () => {
   // Each case commits its move with nothing to animate (the pile it would fly to/from cannot be measured), then taps undo: it is
-  // refused for as long as a claim is left outstanding, so undo working proves the bail-out settled.
+  // held back for as long as a claim is left outstanding, so undo working proves the bail-out settled.
   const cases: { name: string; state: () => PyramidState; unmeasurable: string; move: () => Promise<void>; committed: () => boolean; restored: () => boolean }[] = [
     {
       name: 'a pair with an unmeasurable discard pile',

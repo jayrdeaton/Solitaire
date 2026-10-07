@@ -235,7 +235,7 @@ export function createTriPeaksController(wrapAceKing: boolean): GameController<T
 
   /** True once no tableau move is available AND the stock is exhausted - same shape as Golf's. */
   function isStuck(state: TriPeaksState): boolean {
-    return state.stock.length === 0 && legalMoves(state).length === 0
+    return !isWon(state) && state.stock.length === 0 && legalMoves(state).length === 0
   }
 
   /** TriPeaks has exactly one possible destination (the build pile), same as Golf - no ranking

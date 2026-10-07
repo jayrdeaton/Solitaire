@@ -26,8 +26,9 @@ import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
-import { PlayingCard } from '@/components/PlayingCard'
+import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
 import { fireworksColors } from '@/components/theme'
+import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
@@ -39,13 +40,16 @@ import { alwaysValidRun, runCountFrom } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
+import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
-import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
+import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -130,12 +134,12 @@ function ScorpionScreenInner() {
   // (the assisted stock's multi-card burst uses `dealHiddenIds`, not `flying`, same as the initial
   // deal - see runStockDeal below), so it would have no read site. `activeFlightCount` (the hook's
   // state mirror of the ref) is, though: it is what the win celebration waits on (see `settled`).
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<ScorpionState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<ScorpionState>()
   // Nullable move (Spider's default): an ordinary tableau move always has one, but the assisted
   // stock's one-shot deal lands 3 cards across 3 different columns at once - no single MoveInfo
   // shape for that, so it's recorded as `move: null` and handleUndo detects that case itself (see
   // runUndoStockDeal), same convention as Spider's own stock deal.
-  const [undoStack, setUndoStack] = useState<UndoEntry<ScorpionState>[]>([])
+  const [undoStack, setUndoStack, undoStackRef] = useUndoStack<UndoEntry<ScorpionState>>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
   // tryMove), so comparing references during render is enough to auto-dismiss a stale hint the
@@ -154,6 +158,9 @@ function ScorpionScreenInner() {
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
+  // Before the win check (see useStuckLossCheck). A dead board - no move left and no stock to deal - is a loss here, as in Aces Up:
+  // it used to just sit there with the clock running.
+  const { stuck, recordedRef: recordedLossRef } = useStuckLossCheck(controller, state, 'scorpion', recordDealAbandoned)
   // Derived from `state` every render (see useDerivedWinCheck), same as Spider/Golf - Scorpion has
   // no suit-based foundation for a "won" flag to hang off; isWon (rules.ts) checks each column's
   // own shape directly instead.
@@ -166,6 +173,8 @@ function ScorpionScreenInner() {
   // which unregistered the very card the winning move's ghost was measuring to land on - it could not fly, and
   // simply vanished, along with every completed run on the board - so those visuals use winRevealed instead.
   const winRevealed = useWinReveal(won, settled)
+  // The loss banner waits for the last card to land too.
+  const lossRevealed = useWinReveal(stuck, settled)
   // The board the win cascade has taken over from (set together with startChains, see runWinCascade): once it IS the
   // current state, and the win is revealed, the real columns blank - not a moment earlier. Compared by identity (state is
   // replaced wholesale on every change) so an undo or a New Game un-blanks the columns with no reset to remember.
@@ -208,9 +217,9 @@ function ScorpionScreenInner() {
    * the 3 dealt cards currently sit) are measured up front, before the revert removes them, while
    * the shared destination (the restored stock packet) can only be measured after, once it exists
    * to register itself. Stays a single slot (not a list), unlike pendingFlightRef/pendingStockDealRef
-   * above - undo itself is still fully serialized (guarded by undoBusyRef AND
-   * activeFlightCountRef === 0, see handleUndo's own guard), so at most one of these is ever pending
-   * at a time, mirroring Klondike's own pendingCascadeUndoRef for the identical reason. */
+   * above - a stock-deal undo is 'exclusive' (see undoGate: it starts only once nothing is in the
+   * air, and no other undo starts until it has landed), so at most one of these is ever pending at a
+   * time, mirroring Klondike's own pendingCascadeUndoRef for the identical reason. */
   const pendingUndoStockDealRef = useRef<{ entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null; releasePending: () => void }[]; token: number } | null>(null)
   /** Every take-off hold (cardFacePaint.ts) the latest stock-deal undo took on the cards it flies back (handleUndo). Each one
    * also travels with its own card - pendingUndoStockDealRef, runUndoStockDeal, then deal.start, which gives it back at that
@@ -246,6 +255,7 @@ function ScorpionScreenInner() {
     undoStockDealHoldsRef.current.forEach((release) => release())
     session.reset()
     recordedWinRef.current = false
+    recordedLossRef.current = false
     winCascade.clear()
     pendingWinCascadeRef.current = null
 
@@ -277,6 +287,7 @@ function ScorpionScreenInner() {
     undoStockDealHoldsRef.current.forEach((release) => release()) // see startNewGame
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
+    recordedLossRef.current = false
     setDealHiddenIds(new Set())
     commitState(saved.state)
   }
@@ -285,7 +296,7 @@ function ScorpionScreenInner() {
   // only ever calls this after the player has confirmed that, or immediately when there's nothing
   // to lose (see components/GameChrome.tsx's warning dialog).
   function handleNewGame() {
-    if (session.moves > 0 && !won) recordDealAbandoned('scorpion')
+    if (session.moves > 0 && !won && !stuck) recordDealAbandoned('scorpion')
     setAssistedStock(settings.scorpionAssistedStock)
     startNewGame(createScorpionController(settings.scorpionAssistedStock))
   }
@@ -545,11 +556,11 @@ function ScorpionScreenInner() {
   // just sits looking at the board afterward - resuming always recomputes the exact right value
   // instead of depending on whenever this effect last happened to run.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('scorpion', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: assistedStock ? 1 : 0 })
+    if (state && !won && !stuck) saveGameInProgress('scorpion', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: assistedStock ? 1 : 0 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, assistedStock, undoStack])
-  useSaveInProgressBackstop(!!state && !won, () => {
-    if (state && !won) saveGameInProgress('scorpion', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: assistedStock ? 1 : 0 })
+  }, [state, won, stuck, assistedStock, undoStack])
+  useSaveInProgressBackstop(!!state && !won && !stuck, () => {
+    if (state && !won && !stuck) saveGameInProgress('scorpion', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: assistedStock ? 1 : 0 })
   })
 
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
@@ -638,18 +649,29 @@ function ScorpionScreenInner() {
   // measure that real position before reverting, then revert and mark `move.from` as incoming so
   // it flies the rest of the way there. A null move (the assisted stock's one-shot deal) instead
   // reverses via runUndoStockDeal above, mirroring Spider's own null-move undo branch.
-  async function handleUndo() {
-    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
-    undoBusyRef.current = true
-    if (won) winCascade.clear()
-    const entry = undoStack[undoStack.length - 1]
-    const { move, state: prevState } = entry
-    // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
+  // One undo per call - see useFlightConcurrency's runUndo.
+  function handleUndo(opts?: UndoRequestOptions) {
+    return runUndo(undoGate, revertTopUndo, opts)
+  }
+
+  // A move's undo takes its run back off the column it went to, so it overlaps the undos before it
+  // once nothing is still landing there. A stock deal's flies back through the deal layer, three
+  // columns at once - one at a time.
+  function undoGate(): UndoGate {
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!entry || !stateRef.current) return null
+    if (!entry.move) return 'exclusive'
+    return { takesFrom: [entry.move.to] }
+  }
+
+  async function revertTopUndo() {
+    // Reads the stack and the board via their refs, not the closure - see applyMove's identical
+    // comment (undos, too, can run back-to-back before React re-renders).
     const current = stateRef.current
-    if (!current) {
-      undoBusyRef.current = false
-      return
-    }
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!current || !entry) return
+    if (won) winCascade.clear()
+    const { move, state: prevState } = entry
     // Claimed synchronously here (see activeFlightCountRef's doc comment) - one call always
     // resolves to exactly one completion below (a landed flight, a landed deal, or an immediate
     // "nothing to fly" settle), whichever branch handles it.
@@ -744,22 +766,23 @@ function ScorpionScreenInner() {
 
   if (!state) return <GameLoading />
 
+  // The classic deal has no stock at all, so nothing to show; the assisted one keeps its slot after the deal.
+  const stockSlot = state.stock.length > 0 ? <StockPacket onPress={handleDrawStock} highlighted={activeHint?.kind === 'drawStock'} /> : assistedStock ? <EmptySlot /> : null
+
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
+      <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
         {/* Portrait: the stock packet lives in a card-tall top row at the right, as always. Wide layout: no
-        top row (zero height, no margin) - the packet is absolutely positioned beside the tableau below. */}
-        <View style={[styles.topRow, isWide && styles.topRowWide]}>{!isWide && state.stock.length > 0 && <StockPacket onPress={handleDrawStock} highlighted={activeHint?.kind === 'drawStock'} />}</View>
+        top row (zero height, no margin) - the packet is absolutely positioned beside the tableau below.
+        Once the assisted stock has been dealt, an empty slot stays in its place: the packet was the top row's
+        only content, so the row (and the whole tableau with it) used to collapse upward the moment it went. */}
+        <View style={[styles.topRow, isWide && styles.topRowWide]}>{!isWide && stockSlot}</View>
 
         {/* Full-width wrapper (a tap outside a parent's bounds never reaches an absolutely positioned child
         on iOS, so the packet must stay inside it): the tableau centres itself, the packet hangs one gap
         past its last column (left 50% + half the tableau + gap) and is top-aligned with it. */}
         <View style={isWide ? styles.wideBoard : undefined}>
-          {isWide && state.stock.length > 0 && (
-            <View style={[styles.widePacket, { marginLeft: (cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1)) / 2 + gap }]}>
-              <StockPacket onPress={handleDrawStock} highlighted={activeHint?.kind === 'drawStock'} />
-            </View>
-          )}
+          {isWide && stockSlot && <View style={[styles.widePacket, { marginLeft: (cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1)) / 2 + gap }]}>{stockSlot}</View>}
           <View style={[styles.tableauRow, { gap }, isWide && styles.tableauRowWide]}>
             {state.tableau.map((col, colIndex) => {
               const dragConfig: PileDragConfig = {
@@ -813,6 +836,7 @@ function ScorpionScreenInner() {
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
+      {lossRevealed && !won && <LossBanner colors={colors} onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

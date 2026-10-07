@@ -100,24 +100,36 @@ interface StockWasteProps {
    * whose fan has none: Canfield's runs over its reserve slot, so widening it would only bury the reserve card further. A caller
    * passing false must offset its own draw/undo flight ghosts by wasteFanStepFor(cardWidth, false), or they land off the fan. */
   widenFan?: boolean
+  /** Whether an exhausted stock can be turned over again. False (Golf, TriPeaks, Forty Thieves: the stock runs out for good)
+   * shows the empty stock as a plain slot, with no recycle arrow inviting a tap that can never do anything. */
+  canRecycle?: boolean
 }
 
 /** Stock (face-down, draw) + waste (face-up, top card) pair, shared by every game that deals from
  * a stock pile. Waste sits first so the card players are about to act on lands next to the tableau,
  * with the draw pile as the secondary action beside it. When the stock runs out but the waste still
- * has cards, an empty stock slot shows a recycle hint - every game here allows unlimited recycling. */
-export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EMPTY_WASTE_BEHIND, onDrawStock, onWastePress, onWasteDrop, wasteSelected, wasteHinted, stockHinted, wasteHiddenCount = 0, settledWasteTop, wasteShakeToken, cardWidth, gap, style, stockRef, wasteRef, stockHidden = false, widenFan = true }: StockWasteProps) {
+ * has cards, an empty stock slot shows a recycle hint - unless the game never recycles (`canRecycle`). */
+export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EMPTY_WASTE_BEHIND, onDrawStock, onWastePress, onWasteDrop, wasteSelected, wasteHinted, stockHinted, wasteHiddenCount = 0, settledWasteTop, wasteShakeToken, cardWidth, gap, style, stockRef, wasteRef, stockHidden = false, widenFan = true, canRecycle = true }: StockWasteProps) {
   const colors = useTableColors()
   const styles = React.useMemo(() => makeStyles(colors), [colors])
   const wasteHasCards = !!wasteTop
+  const showRecycle = canRecycle && wasteHasCards
   // Only 2 behind slots are ever supported (draw-3's max) - fixed, unconditional hook calls per
   // slot rather than a `.map()` over wasteBehind, since each slot needs its own independent
   // freeze (see below) and the rules of hooks forbid calling a variable number of hooks.
   const behind1 = wasteBehind[0]
   const behind2 = wasteBehind[1]
   const topHidden = wasteHiddenCount > 0
-  const behind1Hidden = wasteHiddenCount > 1
-  const behind2Hidden = wasteHiddenCount > 2
+  // The most cards hidden at once since the waste was last fully shown. A landing that has only ever hidden ONE card (a
+  // draw-1 card onto a draw-3 fan - Klondike's last stock card, any Canfield draw that finds one card - or an undo sending a
+  // card back to the waste) shifts the whole fan left by one under the incoming ghost: frozen top alone, the near slot would
+  // already show that same outgoing top card - the card twice, for the whole flight. So such a landing freezes the whole fan,
+  // which moves over when the card lands. A staggered draw-3 reveal (3 -> 2 -> 1) keeps its per-slot freezes below.
+  const [hiddenPeak, setHiddenPeak] = React.useState(wasteHiddenCount)
+  if (wasteHiddenCount === 0 ? hiddenPeak !== 0 : wasteHiddenCount > hiddenPeak) setHiddenPeak(wasteHiddenCount)
+  const singleArrival = topHidden && Math.max(hiddenPeak, wasteHiddenCount) === 1
+  const behind1Hidden = wasteHiddenCount > 1 || singleArrival
+  const behind2Hidden = wasteHiddenCount > 2 || singleArrival
   // Each slot freezes independently, to whatever card last occupied THAT slot - a draw-3 deal-style
   // flight reveals its 3 ghosts one at a time, farthest-from-top first (see KlondikeScreen's
   // handleDrawStock), so by the time e.g. wasteTop itself finally reveals, the two behind slots may
@@ -182,14 +194,14 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
           {stockShown ? (
             <PlayingCard card={{ ...stockShown, faceUp: false }} hinted={stockHinted && !stockHolding} onPress={stockHolding && !stockTopCard ? undefined : onDrawStock} testID='stock-pile' />
           ) : (
-            <EmptySlot onPress={onDrawStock} hinted={stockHinted} testID='stock-pile'>
-              {wasteHasCards ? <Text style={styles.recycleIcon}>↺</Text> : null}
+            <EmptySlot onPress={canRecycle ? onDrawStock : undefined} hinted={stockHinted} testID='stock-pile'>
+              {showRecycle ? <Text style={styles.recycleIcon}>↺</Text> : null}
             </EmptySlot>
           )}
         </View>
         {stockHidden && (
           <View style={StyleSheet.absoluteFill} pointerEvents='none'>
-            {frozenStockTopCard ? <PlayingCard card={{ ...frozenStockTopCard, faceUp: false }} /> : <EmptySlot>{wasteHasCards ? <Text style={styles.recycleIcon}>↺</Text> : null}</EmptySlot>}
+            {frozenStockTopCard ? <PlayingCard card={{ ...frozenStockTopCard, faceUp: false }} /> : <EmptySlot>{showRecycle ? <Text style={styles.recycleIcon}>↺</Text> : null}</EmptySlot>}
           </View>
         )}
       </View>

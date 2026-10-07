@@ -26,6 +26,7 @@ import { OverlayFrame, toLocal, useOverlayFrame } from '@/components/overlayFram
 import { PlayingCard } from '@/components/PlayingCard'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
+import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
 import { useTakeOffHold } from '@/components/useTakeOffHold'
@@ -42,10 +43,11 @@ import { MoveInfo } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useDimAfterDeal } from '@/games/shared/useDimAfterDeal'
-import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
+import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal, WIN_REVEAL_HOLD_MS } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -430,6 +432,7 @@ const TRIANGLE_WIDTH_UNITS = ROWS
 
 // A stable empty pile for the sweep/hand-off display (a fresh literal per render would change identity every time).
 const NO_CARDS: Card[] = []
+const WASTE: PileRef = { zone: 'waste', index: 0 }
 // A new pair flight's `landed`: none of its cards has landed yet.
 const NONE_LANDED: ReadonlySet<string> = new Set()
 
@@ -460,9 +463,9 @@ function PyramidScreenInner() {
   // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
   // unchanged. `shrinkFlying` is unused here - Pyramid never lands a multi-card flight one card at a
   // time (no draw-3-style fan; a recycle/pair flight always lands as one group completion).
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<PyramidState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<PyramidState>()
   const [selected, setSelected] = useState<PileRef | null>(null)
-  const [undoStack, setUndoStack] = useState<UndoEntry[]>([])
+  const [undoStack, setUndoStack, undoStackRef] = useUndoStack<UndoEntry>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
   // tryMove), so comparing references during render is enough to auto-dismiss a stale hint the
@@ -1132,9 +1135,31 @@ function PyramidScreenInner() {
   // destination is a plain always-mounted container), then revert, mount the ghost, hide the stock
   // slot and start the flight in ONE synchronous stretch: the returning card is never nowhere, and
   // the stock pile does not show it as landed before the ghost gets there.
-  async function handleUndo() {
-    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
-    undoBusyRef.current = true
+  function handleUndo(opts?: UndoRequestOptions) {
+    return runUndo(undoGate, revertTopUndo, opts)
+  }
+
+  // A removal's undo flies its card(s) off the discard, where nothing lands during an undo, and a
+  // draw's takes the waste's top card back to the stock - so both overlap the undos before them. One
+  // that lands on the waste, or leaves it, waits for the waste to be quiet: its frozen top expects one
+  // arrival at a time. (Overlapping draws share the stock's one stockHidden flag: the first landing
+  // unfreezes it while a later card is still flying in, which shows a card back that is already
+  // there - every back looks the same.) A recycle moves the whole waste - one at a time.
+  function undoGate(): UndoGate {
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!entry || !stateRef.current) return null
+    const { move, removedCards } = entry
+    if (removedCards) return { takesFrom: removedCards.some((r) => r.ref.zone === 'waste') ? [WASTE] : [] }
+    if (move && move.from.zone === 'stock' && move.to.zone === 'waste') return { takesFrom: [WASTE] }
+    return 'exclusive'
+  }
+
+  async function revertTopUndo() {
+    // The stack and the board are read via their refs, not the closure: undos can run back-to-back
+    // before React re-renders (see runUndo).
+    const current = stateRef.current
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!current || !entry) return
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition - the only move available once it's true is New Game), so any undo reachable while
     // won must be undoing the winning move itself. `won` (derived from state above) clears itself
@@ -1143,7 +1168,6 @@ function PyramidScreenInner() {
     // this it would keep animating over a board that's already reverted underneath it.
     if (won) winCascade.clear()
     const myGen = dealTokenRef.current
-    const entry = undoStack[undoStack.length - 1]
     const { move, removedCards, state: prevState } = entry
 
     if (removedCards) {
@@ -1170,10 +1194,7 @@ function PyramidScreenInner() {
       return
     }
 
-    // Reads via stateRef.current, not the closure `state` - mirrors Klondike's identical
-    // stateRef.current idiom (see useFlightConcurrency's own doc comment on why).
-    const current = stateRef.current
-    const movingCard = current?.waste[current.waste.length - 1]
+    const movingCard = current.waste[current.waste.length - 1]
     // Claimed up front, before this function's own awaits, like undoRecycle's: the count stays accurate for as long as this undo
     // is genuinely outstanding.
     const settle = claimFlight()

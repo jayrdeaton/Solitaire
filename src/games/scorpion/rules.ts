@@ -273,6 +273,7 @@ export function createScorpionController(assistedStock: boolean): GameController
   }
 
   function isStuck(state: ScorpionState): boolean {
+    if (isWon(state)) return false
     if (state.stock.length > 0) return false // the assisted stock is always a way out while it remains
     return computeLegalMoves(state).length === 0
   }

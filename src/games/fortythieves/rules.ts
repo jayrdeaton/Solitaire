@@ -278,7 +278,7 @@ export function createFortyThievesController(runMoves: boolean): GameController<
   /** No recycling once the stock is empty (see drawStock), so unlike Canfield/Klondike this never
    * needs to also check the waste - same shape Golf/TriPeaks use for their own no-recycle stock. */
   function isStuck(state: FortyThievesState): boolean {
-    return state.stock.length === 0 && legalMoves(state).length === 0
+    return !isWon(state) && state.stock.length === 0 && legalMoves(state).length === 0
   }
 
   function autoMoveHint(state: FortyThievesState, from: PileRef, cardId: string): Move | null {

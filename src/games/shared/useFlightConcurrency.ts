@@ -1,6 +1,37 @@
 import { MutableRefObject, useEffect, useRef, useState } from 'react'
 
+import type { UndoRequestOptions } from '@/components/undoHold'
 import { PileRef } from '@/engine/gameTypes'
+
+/** What the top undo entry needs before its revert may start - see runUndo. */
+export type UndoGate =
+  /** Nothing to undo: this request, and every one queued behind it, is refused. */
+  | null
+  /** Not yet, for a reason of the screen's own (Spider's run waiting for its sweep) - asked again shortly. */
+  | 'blocked'
+  /** Starts only once nothing at all is in the air, and no other undo starts until its flights have all landed: a revert that flies
+   * through the deal layer (one batch at a time - a second start cancels the first), moves a whole pile at once (a recycle), touches
+   * several piles (a stock deal, a legacy entry's cascaded auto-plays, Spider's completed run) or leans on a single-slot ref (Pyramid's
+   * frozen stock). Undo used to work this way for every entry. */
+  | 'exclusive'
+  /** An ordinary one-move revert through the ghost layer: overlaps the flights of the undos before it, once nothing is still landing
+   * on any of these piles. Always the pile it takes its cards from (picking up a card whose own ghost is still airborne shows it
+   * twice - the auto-play cascade waits for the same thing); a screen adds whatever else it cannot share mid-flight (the waste, whose
+   * frozen-top bookkeeping assumes one arrival at a time). */
+  | { takesFrom: readonly PileRef[] }
+
+// How often a waiting undo asks its gate again, and how long the request at the head of the queue waits before it is refused - the
+// same numbers the auto-play cascade waits for a landing with (useAutoFoundationCascade).
+const UNDO_POLL_MS = 16
+const UNDO_MAX_WAIT_MS = 3000
+
+interface UndoRequest {
+  resolve(started: boolean): void
+  reject(error: unknown): void
+  cancelled?: () => boolean
+  /** Set when the request first reaches the head of the queue and has to wait - a tap queued behind others isn't timed out by their waits. */
+  deadline: number | null
+}
 
 /** One currently-in-flight move's own "what's still hidden at the destination" descriptor - see
  * `flying` below. `id` is this entry's own beginFlying-issued id, used to remove (endFlying) or
@@ -52,8 +83,8 @@ export interface FlightConcurrency<TState> {
   isLanding(pile: PileRef): boolean
   /** How many independent flight-completions are outstanding right now, summed across every
    * concurrently-active action (tap-to-move, drag, auto-play, stock-draw all run concurrently with
-   * each other - see PATTERN_OVERLAP_GATE; undo alone still waits for this to hit 0 before it can
-   * start, and blocks everything else while it runs, to protect the undo stack). The ref is
+   * each other - see PATTERN_OVERLAP_GATE; the first undo of a run waits for this to hit 0, and
+   * undo blocks everything that is not an undo while it runs - see runUndo). The ref is
    * authoritative and updated synchronously (closing the gap where a rapid second action could
    * start during an async measurement window before a commit has even happened); the state mirror
    * exists only so a watcher effect (e.g. the auto-play cascade's `settled` flag) can re-run once
@@ -68,20 +99,33 @@ export interface FlightConcurrency<TState> {
   /** Shared completion tail for every flight-starting action (see activeFlightCountRef above) -
    * call once per independent completion (a landed ghost flight, a landed deal, or a "nothing to
    * animate" bail); only actually clears undoBusyRef once every completion every currently-active
-   * action claimed up front has reported in. */
+   * action claimed up front has reported in and no undo is waiting or running. */
   settleFlight(): void
-  /** True for the whole span of one undo call, from its own guard through every flight it kicked
-   * off fully settling (visually, not just in state) - cleared by settleFlight once
-   * activeFlightCountRef returns to 0. Undo alone holds FULL mutual exclusion (see
-   * PATTERN_OVERLAP_GATE): it should refuse to start while anything else is active
-   * (activeFlightCountRef.current > 0), AND every other flight-starting entry point should refuse
-   * to start while this is true - reverting to an earlier board and applying a fresh move on top
-   * of it are not safe to interleave (undo's own commitState would silently clobber whatever a
-   * concurrent action just committed, or vice versa), unlike two ordinary moves, which are. This
-   * hook only allocates the ref; setting/clearing it around the undo handler's own body, and
-   * checking it in every other action, is each screen's own job (undo's exact shape - cascades,
-   * multi-branch reverse flights - varies too much per game to generalize here). */
+  /** True from the moment an undo is requested (runUndo) until every undo is done and every flight
+   * the undos kicked off has settled (visually, not just in state) - cleared by settleFlight once
+   * activeFlightCountRef returns to 0 with no undo waiting or running. Undo holds mutual exclusion
+   * with everything that is not an undo (see PATTERN_OVERLAP_GATE): every other flight-starting
+   * entry point should refuse to start while this is true, and bail if it turned true across its
+   * own awaits - reverting to an earlier board and applying a fresh move on top of it are not safe
+   * to interleave (undo's own commitState would silently clobber whatever a concurrent action just
+   * committed, or vice versa), unlike two ordinary moves, which are. Undos may overlap EACH OTHER's
+   * flights (see runUndo). Checking it in every other action is each screen's own job. */
   undoBusyRef: MutableRefObject<boolean>
+  /** Requests one undo and resolves once it has run (true: reverted and committed - its flights may
+   * still be in the air) or been refused (false: nothing to undo, `cancelled`, or its gate did not
+   * open within UNDO_MAX_WAIT_MS). Never drops a request because something is still flying: it
+   * waits for the entry's own `gate` instead, so each tap of Undo is one undo, however fast.
+   * Requests run one at a time, in order, and `run` is only ever called once the previous undo has
+   * committed - so `run` (the screen's own revert of the TOP entry, read live - the undo stack and
+   * board through refs, never the render closure, since several undos can run between two renders)
+   * never races another revert's measurement.
+   *
+   * The first undo waits for every flight in the air to land, as undo always has. From then on
+   * nothing but an undo can start a flight (undoBusyRef), so an undo whose gate is
+   * `{ takesFrom }` starts while the undos before it are still flying, once nothing is landing on
+   * any of its piles - a hold on Undo streams the cards back like the auto-play streams them up.
+   * `gate`/`run` are the latest ones passed (each call replaces them). */
+  runUndo(gate: () => UndoGate, run: () => unknown, opts?: UndoRequestOptions): Promise<boolean>
   /** Resets every piece of concurrency bookkeeping this hook owns (but NOT `state` itself - call
    * commitState/set state separately) - call from a fresh deal/restore, alongside resetting
    * whatever other per-game refs (pendingFlightRef, dealTokenRef, ...) that screen owns on its own. */
@@ -92,9 +136,10 @@ export interface FlightConcurrency<TState> {
  * Owns the concurrency bookkeeping every game screen needs once its card flights can run
  * independently instead of being serialized behind a single busy-gate - see Klondike's own history
  * for the shape this was extracted from (git log), and PATTERN_OVERLAP_GATE for the invariant this
- * exists to protect: undo needs full mutual exclusion with everything else, but everything else
- * (tap, drag, auto-play, stock-draw) can safely run concurrently with each other, since each one's
- * flight is purely a cosmetic overlay on top of a board that already updated synchronously.
+ * exists to protect: undo needs mutual exclusion with everything that is not an undo (see runUndo:
+ * undos overlap each other's flights, never a forward move's), but everything else (tap, drag,
+ * auto-play, stock-draw) can safely run concurrently with each other, since each one's flight is
+ * purely a cosmetic overlay on top of a board that already updated synchronously.
  *
  * Deliberately does NOT own `pendingFlightRef`/`dealTokenRef`/`ghost`-style per-game plumbing - the
  * exact shape of "what to measure and fly once a move commits" (does it need a stock-pile
@@ -148,6 +193,18 @@ export function useFlightConcurrency<TState>(): FlightConcurrency<TState> {
   const [activeFlightCount, setActiveFlightCount] = useState(0)
   const undoBusyRef = useRef(false)
 
+  // runUndo's bookkeeping. `undoStreakRef`: every flight in the air is an undo's - true once the count has been seen at 0 while an undo
+  // held undoBusyRef (nothing else can start a flight from then on). `exclusiveUndoRef`: an 'exclusive' undo has started and its flights
+  // have not all landed. `undoEpochRef` is bumped by reset() and on unmount, so a revert still awaiting its measurements when the game
+  // was replaced can't touch the new game's queue.
+  const undoQueueRef = useRef<UndoRequest[]>([])
+  const undoRunningRef = useRef(false)
+  const undoStreakRef = useRef(false)
+  const exclusiveUndoRef = useRef(false)
+  const latestUndoRef = useRef<{ gate: () => UndoGate; run: () => unknown } | null>(null)
+  const undoPollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const undoEpochRef = useRef(0)
+
   function startFlights(n = 1) {
     activeFlightCountRef.current += n
     setActiveFlightCount(activeFlightCountRef.current)
@@ -157,11 +214,127 @@ export function useFlightConcurrency<TState>(): FlightConcurrency<TState> {
     activeFlightCountRef.current = Math.max(0, activeFlightCountRef.current - 1)
     setActiveFlightCount(activeFlightCountRef.current)
     if (activeFlightCountRef.current === 0) {
-      undoBusyRef.current = false
+      if (!undoRunningRef.current) exclusiveUndoRef.current = false
+      releaseUndoIfIdle()
     }
   }
 
+  // Lets go of undoBusyRef once no undo is waiting or running and none of the undos' flights is still in the air. A request that gave up
+  // while other flights were landing (no undo ever ran: not a streak) lets go at once - those flights were never the undo's.
+  function releaseUndoIfIdle() {
+    if (undoQueueRef.current.length > 0 || undoRunningRef.current) return
+    if (activeFlightCountRef.current > 0 && undoStreakRef.current) return
+    undoBusyRef.current = false
+    undoStreakRef.current = false
+    exclusiveUndoRef.current = false
+  }
+
+  function undoGateOpen(gate: Exclude<UndoGate, null>): boolean {
+    if (gate === 'blocked') return false
+    const settled = activeFlightCountRef.current === 0
+    if (settled) undoStreakRef.current = true
+    // The first undo waits for every other flight to land, as undo always has.
+    if (!undoStreakRef.current) return false
+    if (gate === 'exclusive' || exclusiveUndoRef.current) return settled
+    return gate.takesFrom.every((pile) => !isLanding(pile))
+  }
+
+  function clearUndoPoll() {
+    if (undoPollRef.current === null) return
+    clearTimeout(undoPollRef.current)
+    undoPollRef.current = null
+  }
+
+  function pumpUndo() {
+    clearUndoPoll()
+    const queue = undoQueueRef.current
+    while (!undoRunningRef.current && queue.length > 0) {
+      const request = queue[0]
+      const latest = latestUndoRef.current
+      const gate = latest ? latest.gate() : null
+      if (!latest || gate === null) {
+        queue.splice(0).forEach((r) => r.resolve(false))
+        break
+      }
+      if (request.cancelled?.()) {
+        queue.shift()
+        request.resolve(false)
+        continue
+      }
+      if (!undoGateOpen(gate)) {
+        request.deadline ??= Date.now() + UNDO_MAX_WAIT_MS
+        if (Date.now() < request.deadline) {
+          undoPollRef.current = setTimeout(pumpUndo, UNDO_POLL_MS)
+          return
+        }
+        queue.shift()
+        request.resolve(false)
+        continue
+      }
+      queue.shift()
+      if (gate === 'exclusive') exclusiveUndoRef.current = true
+      undoRunningRef.current = true
+      const epoch = undoEpochRef.current
+      // Called synchronously, as the undo handler always was - a revert that needs no measurement commits inside this very call.
+      let done: Promise<unknown>
+      try {
+        done = Promise.resolve(latest.run())
+      } catch (error) {
+        done = Promise.reject(error)
+      }
+      done.then(
+        () => finishUndo(epoch, () => request.resolve(true)),
+        (error) => finishUndo(epoch, () => request.reject(error))
+      )
+    }
+    releaseUndoIfIdle()
+  }
+
+  function finishUndo(epoch: number, report: () => void) {
+    if (undoEpochRef.current === epoch) {
+      undoRunningRef.current = false
+      if (activeFlightCountRef.current === 0) exclusiveUndoRef.current = false
+    }
+    report()
+    if (undoEpochRef.current === epoch) pumpUndo()
+  }
+
+  function runUndo(gate: () => UndoGate, run: () => unknown, opts?: UndoRequestOptions): Promise<boolean> {
+    latestUndoRef.current = { gate, run }
+    if (!undoRunningRef.current && undoQueueRef.current.length === 0 && gate() === null) return Promise.resolve(false)
+    // A press handler may hand its event in as `opts` - only a real `cancelled` function counts.
+    const cancelled = typeof opts?.cancelled === 'function' ? opts.cancelled : undefined
+    return new Promise<boolean>((resolve, reject) => {
+      undoQueueRef.current.push({ resolve, reject, cancelled, deadline: null })
+      // Held from the request on, not just once the revert starts: nothing new may start flying while the undo waits for the board to
+      // settle, or a steady stream (an auto-play running) could keep it waiting until it gives up.
+      undoBusyRef.current = true
+      pumpUndo()
+    })
+  }
+
+  // Drops every waiting request (refused) and forgets a running one, without touching undoBusyRef - reset() and unmount do the rest.
+  function abandonUndos() {
+    undoEpochRef.current += 1
+    clearUndoPoll()
+    undoQueueRef.current.splice(0).forEach((r) => r.resolve(false))
+    undoRunningRef.current = false
+    undoStreakRef.current = false
+    exclusiveUndoRef.current = false
+  }
+
+  // Unmount: a request still waiting must not poll a screen that is gone.
+  useEffect(
+    () => () => {
+      undoEpochRef.current += 1
+      if (undoPollRef.current !== null) clearTimeout(undoPollRef.current)
+      undoQueueRef.current.splice(0).forEach((r) => r.resolve(false))
+    },
+    []
+  )
+
   function reset() {
+    abandonUndos()
     undoBusyRef.current = false
     activeFlightCountRef.current = 0
     setActiveFlightCount(0)
@@ -182,6 +355,7 @@ export function useFlightConcurrency<TState>(): FlightConcurrency<TState> {
     startFlights,
     settleFlight,
     undoBusyRef,
+    runUndo,
     reset
   }
 }

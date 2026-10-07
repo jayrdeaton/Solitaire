@@ -30,6 +30,7 @@ import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
+import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
 import { useGameSession } from '@/components/useGameSession'
@@ -50,11 +51,12 @@ import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
-import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
+import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -99,6 +101,7 @@ const TOP_ROW_UNITS = 7
 // wide; the reserve stays tappable, the fan cards ignore touches, but only its left ~11pt shows), and widening the step from 0.45W to
 // ~0.53W would leave ~3pt of it. Flip to true once the top row reserves real room for the fan.
 const WASTE_FAN_WIDENS = false
+const WASTE: PileRef = { zone: 'waste', index: 0 }
 
 /** The one card that seeds every foundation's starting rank - rules.ts's newGame cuts it from the
  * very top of the deck and pushes it onto its own suit's foundation pile before anything else, so
@@ -169,8 +172,8 @@ function CanfieldScreenInner() {
   // each other - PATTERN_OVERLAP_GATE, mirrors KlondikeScreen's identical adoption of this hook).
   // Destructured below so every existing reference to `state`, `commitState`, `flying`,
   // `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<CanfieldState>()
-  const [undoStack, setUndoStack] = useState<UndoEntry<CanfieldState>[]>([])
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkFlying, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<CanfieldState>()
+  const [undoStack, setUndoStack, undoStackRef] = useUndoStack<UndoEntry<CanfieldState>>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
   // tryMove), so comparing references during render is enough to auto-dismiss a stale hint the
@@ -577,9 +580,31 @@ function CanfieldScreenInner() {
   // function for the full reasoning. Canfield's stock draw behaves exactly like Klondike's draw-3
   // (fixed at 3, unlimited recycling - rules.ts's DRAW_COUNT), so the multi-card-draw-undo branch
   // below applies here the same way it does there.
-  async function handleUndo() {
-    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
-    undoBusyRef.current = true
+  // One undo per call - see useFlightConcurrency's runUndo.
+  function handleUndo(opts?: UndoRequestOptions) {
+    return runUndo(undoGate, revertTopUndo, opts)
+  }
+
+  // A plain move's undo - a draw-1 included - takes its cards back off the pile it went to, so it
+  // overlaps the undos before it once nothing is still landing there. One that lands on or leaves
+  // the waste also waits for the waste to be quiet: its frozen top expects one arrival at a time. A
+  // draw-3 fan flies back through the deal layer (one batch at a time) and a recycle (no move: it
+  // just reverts) moves the whole waste - each of those one at a time.
+  function undoGate(): UndoGate {
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!entry || !stateRef.current) return null
+    const { move } = entry
+    if (!move) return 'exclusive'
+    if (move.from.zone === 'stock' && move.to.zone === 'waste' && move.count > 1) return 'exclusive'
+    return { takesFrom: move.from.zone === 'waste' ? [move.to, WASTE] : [move.to] }
+  }
+
+  async function revertTopUndo() {
+    // The stack and the board are read via their refs, not the closure: undos can run back-to-back
+    // before React re-renders (see runUndo).
+    const current = stateRef.current
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!current || !entry) return
     // Every auto-played step is its own undo entry, so an undo can land on a board with a safe card
     // (or a whole sweep) waiting - a still-armed cascade must not play straight back what the player
     // just took back. Nothing re-arms it until the player's next foundation move or starter reveal.
@@ -588,7 +613,6 @@ function CanfieldScreenInner() {
       setWon(false)
       winCascade.clear()
     }
-    const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
     // Captured once, up front - every stash this call makes uses this same token, so a "New Game"
     // that fires mid-await consistently invalidates every one of this undo's pending flights rather
@@ -607,7 +631,7 @@ function CanfieldScreenInner() {
     // Reverse of the deal-style draw-3 flight above: fly each drawn card back toward the stock
     // independently, staggered newest-first.
     if (move.from.zone === 'stock' && move.to.zone === 'waste' && move.count > 1) {
-      const sourcePile = resolvePile(move.to)
+      const sourcePile = resolvePile(move.to, current)
       const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : [] // oldest -> newest/top
       const topPos = movingCards.length > 0 ? ((await ghost.cardRegistry.measure(move.anchorCardId)) ?? (await measureView(wasteViewRef.current))) : null
       const stockDest = topPos ? await measureView(stockViewRef.current) : null
@@ -647,7 +671,7 @@ function CanfieldScreenInner() {
       return
     }
 
-    const sourcePile = resolvePile(move.to)
+    const sourcePile = resolvePile(move.to, current)
     // A foundation move's own card can sit BURIED under silent auto-plays that landed on the same
     // pile after it, in an entry from a save written before auto-plays became their own undo steps
     // (see applyMove) - so it is found by id, not assumed to be on top, or the ghost would carry the
@@ -896,17 +920,19 @@ function CanfieldScreenInner() {
     pendingFlightRef.current.push({ cardId: drawnCard.id, to: { zone: 'waste', index: 0 }, gen: dealTokenRef.current, flyingId, flight })
   }
 
-  function resolvePile(ref: PileRef): Card[] | null {
-    if (!state) return null
+  // `s` defaults to the render closure's `state`; handleUndo passes stateRef.current (the board as of
+  // right now - another undo may have committed since this render).
+  function resolvePile(ref: PileRef, s: CanfieldState | null = state): Card[] | null {
+    if (!s) return null
     switch (ref.zone) {
       case 'tableau':
-        return state.tableau[ref.index] ?? null
+        return s.tableau[ref.index] ?? null
       case 'foundation':
-        return state.foundation[ref.index] ?? null
+        return s.foundation[ref.index] ?? null
       case 'reserve':
-        return state.reserve
+        return s.reserve
       case 'waste':
-        return state.waste
+        return s.waste
       default:
         return null
     }
@@ -956,10 +982,11 @@ function CanfieldScreenInner() {
   if (!state) return <GameLoading />
 
   const wasteTop = top(state.waste)
-  // Fixed draw-3, so the waste always fans up to the last 3 drawn cards, same as Klondike's own
-  // draw-3 mode. wasteBehind excludes wasteTop itself and is ordered nearest-to-top first (see
-  // StockWaste), so the slice below (oldest-visible -> wasteTop) is reversed.
-  const visibleWasteCount = Math.min(3, state.waste.length)
+  // Draw-3 keeps the last 3 drawn cards visible, fanned - draw-1 never shows more than the one real top card (as Klondike):
+  // a draw-1 fan buried the reserve card beside it for nothing, and showed the old top twice during every draw's flight.
+  // wasteBehind excludes wasteTop itself and is ordered nearest-to-top first (see StockWaste), so the slice below
+  // (oldest-visible -> wasteTop) is reversed.
+  const visibleWasteCount = canfieldDraw === 3 ? Math.min(3, state.waste.length) : Math.min(1, state.waste.length)
   const wasteBehind = state.waste.slice(Math.max(0, state.waste.length - visibleWasteCount), state.waste.length - 1).reverse()
   const reserveTop = top(state.reserve)
   // The reserve can only ever be a flight DESTINATION on an undo (tryMove itself never sends a
@@ -973,7 +1000,7 @@ function CanfieldScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Canfield' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<CanfieldSettingsSection />} rules={CANFIELD_RULES}>
+      <GameChrome title='Canfield' subtitle={`Draw ${canfieldDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<CanfieldSettingsSection />} rules={CANFIELD_RULES}>
         <View style={styles.board}>
           <View style={[styles.topRow, { gap }]}>
             <View style={[styles.foundationsGroup, { gap }]}>

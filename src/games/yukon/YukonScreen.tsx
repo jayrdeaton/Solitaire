@@ -17,6 +17,7 @@ import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { PlayingCard } from '@/components/PlayingCard'
 import { fireworksColors } from '@/components/theme'
+import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
@@ -34,11 +35,12 @@ import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
-import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
+import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -125,11 +127,11 @@ function YukonScreenInner() {
   // PATTERN_OVERLAP_GATE, same as Klondike's own extraction of this bookkeeping). Destructured
   // below so every existing reference to `state`, `commitState`, `flying`, `startFlights`,
   // `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<YukonState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<YukonState>()
   // Every Yukon move (tableau->tableau, tableau->foundation) has a real origin/destination to fly -
   // no stock-draw-shaped move that would need a null MoveInfo, unlike Klondike's undo stack. Mirrors
   // FreeCell's own non-nullable UndoEntry<FreeCellState, MoveInfo>.
-  const [undoStack, setUndoStack] = useState<UndoEntry<YukonState, YukonUndoMove>[]>([])
+  const [undoStack, setUndoStack, undoStackRef] = useUndoStack<UndoEntry<YukonState, YukonUndoMove>>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
   // tryMove), so comparing references during render is enough to auto-dismiss a stale hint the
@@ -202,8 +204,9 @@ function YukonScreenInner() {
    * DragGhostLayer for the primary, DealLayer's N-independent ghosts for the cascade), not
    * sequentially - each counts as its own completion against activeFlightCountRef (see handleUndo's
    * `startFlights(cascadeGroups.length > 0 ? 2 : 1)`). Stays a single slot (not a list, unlike
-   * pendingFlightRef) - undo itself is still fully serialized (undoBusyRef + activeFlightCountRef,
-   * see useFlightConcurrency), so at most one cascade-undo op is ever pending at a time; it already
+   * pendingFlightRef) - an entry with a cascade is an 'exclusive' undo (see undoGate: it starts only
+   * once nothing is in the air, and no other undo starts until it has landed), so at most one
+   * cascade-undo op is ever pending at a time; it already
    * carries multiple cards per op via `groups`, which is a different axis (several cards within ONE
    * pending op) from several concurrent ops, so there's nothing here for a list to buy. Mirrors
    * Klondike's own pendingCascadeUndoRef, which stays single-slot for the identical reason. */
@@ -663,18 +666,34 @@ function YukonScreenInner() {
   // (the pendingFlightRef effect above can only measure a DESTINATION once it's committed and
   // re-rendered, so the ORIGIN has to be captured here, synchronously against the still-current
   // state), then revert and mark `move.from` as incoming so it flies the rest of the way there
-  // exactly like a fresh move would. `activeFlightCountRef.current > 0` subsumes both the old
-  // `flying !== null` and `cascadeUndoBusyRef.current` checks this guard used to also carry - undo
-  // still holds full mutual exclusion (see useFlightConcurrency's own undoBusyRef doc comment), it
-  // just now waits on one counter instead of three separate flags.
+  // exactly like a fresh move would. Undo holds mutual exclusion with every non-undo action (see
+  // useFlightConcurrency's own undoBusyRef doc comment); undos overlap each other's flights (see
+  // undoGate).
   //
   // Each auto-played card is its own entry, so one press takes back one card. An entry from a save
   // written before that can still carry a `cascaded` list: undoing its `primary` move also
   // reverse-animates every card the auto-play cascade played on top of it, in one press (see
   // YukonUndoMove above and the pendingCascadeUndoRef effect above).
-  async function handleUndo() {
-    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
-    undoBusyRef.current = true
+  function handleUndo(opts?: UndoRequestOptions) {
+    return runUndo(undoGate, revertTopUndo, opts)
+  }
+
+  // A plain move's undo takes its cards back off the pile it went to, so it overlaps the undos
+  // before it once nothing is still landing there. A legacy entry's cascade flies back through the
+  // deal layer from several foundations at once - one at a time.
+  function undoGate(): UndoGate {
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!entry || !stateRef.current) return null
+    if (entry.move.cascaded.length > 0) return 'exclusive'
+    return { takesFrom: [entry.move.primary.to] }
+  }
+
+  async function revertTopUndo() {
+    // The stack and the board are read via their refs, not the closure: undos can run back-to-back
+    // before React re-renders (see runUndo).
+    const current = stateRef.current
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!current || !entry) return
     // A still-armed auto-play cascade must not fire again on the board this undo reverts to - the
     // player is taking cards back, one at a time, and would otherwise watch them go straight back up.
     cascade.disarm()
@@ -691,7 +710,6 @@ function YukonScreenInner() {
       setWon(false)
       winCascade.clear()
     }
-    const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
     const { primary, cascaded } = move
     // Captured once, up front - every stash this call makes uses this same token, so a "New Game"
@@ -704,10 +722,10 @@ function YukonScreenInner() {
     // await, so it's available up front for startFlights' own count below, and each cascaded card is
     // still findable on its real foundation pile right now, whereas after the revert later in this
     // function it (may) no longer be there at all.
-    const cascadeGroups = groupCascadedByFoundation(stateRef.current ?? state, cascaded)
+    const cascadeGroups = groupCascadedByFoundation(current, cascaded)
     startFlights(cascadeGroups.length > 0 ? 2 : 1)
 
-    const sourcePile = resolvePile(primary.to)
+    const sourcePile = resolvePile(primary.to, current)
     // A foundation move's own card can sit BURIED under a legacy entry's cascaded auto-plays that
     // landed on the same pile after it (they come back via their own flights below) - so it is found by id, not
     // assumed to be on top.
@@ -812,13 +830,15 @@ function YukonScreenInner() {
     return runCountFrom(state.tableau[colIndex], indexFromTop, alwaysValidRun)
   }
 
-  function resolvePile(ref: PileRef): Card[] | null {
-    if (!state) return null
+  // `s` defaults to the render closure's `state`; handleUndo passes stateRef.current (the board as of
+  // right now - another undo may have committed since this render).
+  function resolvePile(ref: PileRef, s: YukonState | null = state): Card[] | null {
+    if (!s) return null
     switch (ref.zone) {
       case 'tableau':
-        return state.tableau[ref.index] ?? null
+        return s.tableau[ref.index] ?? null
       case 'foundation':
-        return state.foundation[ref.index] ?? null
+        return s.foundation[ref.index] ?? null
       default:
         return null
     }

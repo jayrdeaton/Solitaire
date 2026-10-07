@@ -21,6 +21,7 @@ import { rectOffsetToScreenPoint } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
 import { fireworksColors } from '@/components/theme'
+import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
 import { useGameSession } from '@/components/useGameSession'
@@ -41,11 +42,12 @@ import { useAutoFinish } from '@/games/shared/useAutoFinish'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDimAfterDeal } from '@/games/shared/useDimAfterDeal'
-import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
+import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -145,8 +147,8 @@ function FreeCellScreenInner() {
   // exclusion with everything else; tap/drag/auto-play can all run concurrently with each other -
   // PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`, `commitState`,
   // `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<FreeCellState>()
-  const [undoStack, setUndoStack] = useState<UndoEntry<FreeCellState, FreeCellUndoMove>[]>([])
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<FreeCellState>()
+  const [undoStack, setUndoStack, undoStackRef] = useUndoStack<UndoEntry<FreeCellState, FreeCellUndoMove>>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
   // tryMove), so comparing references during render is enough to auto-dismiss a stale hint the
@@ -185,11 +187,10 @@ function FreeCellScreenInner() {
   // A silently auto-played cascade being reversed by handleUndo (see FreeCellUndoMove above) -
   // measured/flown by its own [state]-effect below, independently of and concurrently with the
   // primary move's own flight(s) (pendingAutoMoveCardIdRef's effect). Stays a single nullable slot
-  // (not a list, unlike pendingAutoMoveCardIdRef above) - undo itself is still fully serialized (see
-  // useFlightConcurrency's undoBusyRef/activeFlightCountRef: handleUndo refuses to start while
-  // either is nonzero, and every other flight-starting entry point refuses to start while
-  // undoBusyRef is true), so at most one cascade-undo is ever pending at a time, same reasoning
-  // Klondike's own pendingCascadeUndoRef documents.
+  // (not a list, unlike pendingAutoMoveCardIdRef above) - an entry with a cascade is an 'exclusive'
+  // undo (see undoGate: it starts only once nothing is in the air, and no other undo starts until it
+  // has landed), so at most one cascade-undo is ever pending at a time, same reasoning Klondike's own
+  // pendingCascadeUndoRef documents.
   const pendingCascadeUndoRef = useRef<{ moves: MoveInfo[]; gen: number } | null>(null)
   const deal = useDealAnimator()
   const dealOriginRef = useRef<View>(null)
@@ -643,9 +644,28 @@ function FreeCellScreenInner() {
   // `cascaded` list: undoing its `primary` move also reverse-animates every card the auto-play
   // cascade played on top of it, in one Undo press (see FreeCellUndoMove above and the
   // pendingCascadeUndoRef effect above).
-  async function handleUndo() {
-    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
-    undoBusyRef.current = true
+  function handleUndo(opts?: UndoRequestOptions) {
+    return runUndo(undoGate, revertTopUndo, opts)
+  }
+
+  // A plain move's undo takes its cards back off the pile it went to, so it overlaps the undos
+  // before it once nothing is still landing there - holding Undo after a finish brings the cards
+  // down in a stream. A legacy entry's cascade flies back through its own single-slot effect, from
+  // several foundations at once - one at a time.
+  function undoGate(): UndoGate {
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!entry || !stateRef.current) return null
+    const { primary, cascaded } = entry.move
+    if (!primary || cascaded.length > 0) return 'exclusive'
+    return { takesFrom: [primary.to] }
+  }
+
+  async function revertTopUndo() {
+    // The stack and the board are read via their refs, not the closure: undos can run back-to-back
+    // before React re-renders (see runUndo).
+    const current = stateRef.current
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!current || !entry) return
     // Undoing lands on an earlier board that may itself be finishable - it must not immediately
     // re-fire the cards the player just took back (see useAutoFinish's suppress), and likewise a
     // still-armed safe-card cascade must not replay the tap this undo is reverting.
@@ -664,7 +684,6 @@ function FreeCellScreenInner() {
       setWon(false)
       winCascade.clear()
     }
-    const entry = undoStack[undoStack.length - 1]
     const { move: undoMove, state: prevState } = entry
     const { primary, cascaded } = undoMove
     // Captured once, up front - every stash this call makes uses this same token, so a "New Game"
@@ -680,7 +699,7 @@ function FreeCellScreenInner() {
       return
     }
 
-    const sourcePile = resolvePile(primary.to)
+    const sourcePile = resolvePile(primary.to, current)
     const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - primary.count) : []
     const offsetStep = primary.count > 1 ? faceUpFanOffset(cardWidth) : 0
     const origin = movingCards.length > 0 ? await ghost.cardRegistry.measure(primary.anchorCardId) : null
@@ -849,7 +868,7 @@ function FreeCellScreenInner() {
           // double as its own intermediate storage, so this is the count of OTHER empty columns
           // that could help, not the board's total (which would be one higher here).
           const otherEmptyCols = countEmptyTableauColumns(current, to.index)
-          infoToast(`Only ${cap} card${cap === 1 ? '' : 's'} can move to an empty column with ${freecells} free cell${freecells === 1 ? '' : 's'} and ${otherEmptyCols} other empty column${otherEmptyCols === 1 ? '' : 's'}.`)
+          infoToast(`Only ${cap} card${cap === 1 ? '' : 's'} can move to an empty column with ${freecells} empty freecell${freecells === 1 ? '' : 's'} and ${otherEmptyCols} other empty column${otherEmptyCols === 1 ? '' : 's'}.`)
         }
       }
       return false

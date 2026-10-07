@@ -207,6 +207,8 @@ describe('TriPeaks isWon / isStuck', () => {
   it('is won once the whole tableau is cleared', () => {
     const state: TriPeaksState = { tableau: emptyTableau(), waste: [makeCard('w', 8)], stock: [] }
     expect(TriPeaksController.isWon(state)).toBe(true)
+    // No move and no stock either - it must read as a win, never a loss.
+    expect(TriPeaksController.isStuck!(state)).toBe(false)
   })
 
   it('is stuck when the stock is empty and no exposed card is adjacent to the build pile', () => {

@@ -9,7 +9,7 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { Fireworks } from '@tastic/animations/fireworks'
 import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow } from '@/components/cardLayout'
@@ -24,6 +24,7 @@ import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
+import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
@@ -38,15 +39,18 @@ import { computeScore } from '@/engine/score'
 import { Card, SUITS } from '@/engine/types'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
+import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDimAfterDeal } from '@/games/shared/useDimAfterDeal'
-import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
+import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -61,6 +65,7 @@ import { createFortyThievesController, findFoundationSlot, FortyThievesState, is
 const TABLEAU_COLUMNS = 10
 const TABLEAU_MIN_HEIGHT = 360
 const NUM_FOUNDATIONS = 8
+const WASTE: PileRef = { zone: 'waste', index: 0 }
 
 function makeStyles() {
   return StyleSheet.create({
@@ -99,8 +104,8 @@ function FortyThievesScreenInner() {
   // each other - PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`,
   // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
   // unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<FortyThievesState>()
-  const [undoStack, setUndoStack] = useState<UndoEntry<FortyThievesState>[]>([])
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<FortyThievesState>()
+  const [undoStack, setUndoStack, undoStackRef] = useUndoStack<UndoEntry<FortyThievesState>>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
   // tryMove), so comparing references during render is enough to auto-dismiss a stale hint the
@@ -133,6 +138,11 @@ function FortyThievesScreenInner() {
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
+  // Same rules as controllerRef.current (runMoves is set beside it everywhere), memoized so isStuck can run during render.
+  const stuckController = useMemo(() => createFortyThievesController(runMoves), [runMoves])
+  // Before the win check (see useStuckLossCheck). A dead board - no move left and no stock to deal - is a loss here, as in Aces Up:
+  // it used to just sit there with the clock running.
+  const { stuck, recordedRef: recordedLossRef } = useStuckLossCheck(stuckController, state, 'fortythieves', recordDealAbandoned)
   // Reads controllerRef.current live inside isWon (rather than passing controllerRef.current
   // directly, which would freeze this render's controller into checkWin's closure) - matches
   // KlondikeScreen's identical fix, so a straggling call from a stale render's closure chain still
@@ -147,6 +157,8 @@ function FortyThievesScreenInner() {
   // last card has flown in and landed, so it is never hidden mid-flight (which used to make it
   // simply appear) and the finished board reads for a beat first.
   const winRevealed = useWinReveal(won, settled)
+  // The loss banner waits for the last card to land too.
+  const lossRevealed = useWinReveal(stuck, settled)
   // The board the win cascade has taken over from, and which piles it took over (set once its ghosts are on screen -
   // startChains' onShown, see runWinCascade): once it IS the current state, and the win is revealed, exactly those piles
   // blank their real cards - not a moment earlier. Compared by identity (state is replaced wholesale on every change), so
@@ -193,6 +205,7 @@ function FortyThievesScreenInner() {
     session.reset()
     setWon(false)
     recordedWinRef.current = false
+    recordedLossRef.current = false
     winCascade.clear()
     pendingWinCascadeRef.current = null
 
@@ -220,13 +233,14 @@ function FortyThievesScreenInner() {
     session.restore(saved.moves, saved.elapsedSeconds)
     setWon(false)
     recordedWinRef.current = false
+    recordedLossRef.current = false
     setDealHiddenIds(new Set())
     dimAfterDeal.releaseNow()
     commitState(saved.state)
   }
 
   function handleNewGame() {
-    if (session.moves > 0 && !won) recordDealAbandoned('fortythieves')
+    if (session.moves > 0 && !won && !stuck) recordDealAbandoned('fortythieves')
     startNewGame()
   }
 
@@ -375,11 +389,11 @@ function FortyThievesScreenInner() {
   // afterward - resuming always recomputes the exact right value instead of depending on whenever
   // this effect last happened to run.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('fortythieves', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: runMoves ? 1 : 0 })
+    if (state && !won && !stuck) saveGameInProgress('fortythieves', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: runMoves ? 1 : 0 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, runMoves, undoStack])
-  useSaveInProgressBackstop(!!state && !won, () => {
-    if (state && !won) saveGameInProgress('fortythieves', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: runMoves ? 1 : 0 })
+  }, [state, won, stuck, runMoves, undoStack])
+  useSaveInProgressBackstop(!!state && !won && !stuck, () => {
+    if (state && !won && !stuck) saveGameInProgress('fortythieves', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: runMoves ? 1 : 0 })
   })
 
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
@@ -402,9 +416,28 @@ function FortyThievesScreenInner() {
     setUndoStack((stack) => [...stack, { state: prev, move }])
   }
 
-  async function handleUndo() {
-    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
-    undoBusyRef.current = true
+  // One undo per call - see useFlightConcurrency's runUndo.
+  function handleUndo(opts?: UndoRequestOptions) {
+    return runUndo(undoGate, revertTopUndo, opts)
+  }
+
+  // Every undo - a draw included - takes its cards back off the pile they went to, so it overlaps the
+  // undos before it once nothing is still landing there. One that lands on the waste also waits for
+  // the waste to be quiet: its frozen top expects one arrival at a time.
+  function undoGate(): UndoGate {
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!entry || !stateRef.current) return null
+    const { move } = entry
+    if (!move) return 'exclusive'
+    return { takesFrom: move.from.zone === 'waste' ? [move.to, WASTE] : [move.to] }
+  }
+
+  async function revertTopUndo() {
+    // The stack and the board are read via their refs, not the closure: undos can run back-to-back
+    // before React re-renders (see runUndo).
+    const current = stateRef.current
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!current || !entry) return
     if (won) {
       setWon(false)
       winCascade.clear()
@@ -413,7 +446,6 @@ function FortyThievesScreenInner() {
     // steps of a cascade that is still armed: dropped here, or the reverted board - provably
     // finishable again - would set the cascade straight back off with no player move behind it.
     cascade.disarm()
-    const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
     startFlights(1)
 
@@ -424,7 +456,7 @@ function FortyThievesScreenInner() {
       return
     }
 
-    const sourcePile = resolvePile(move.to, stateRef.current)
+    const sourcePile = resolvePile(move.to, current)
     // A foundation move's own card can sit BURIED under silent auto-plays that landed on the same
     // pile after it in a save written before every auto-play got its own undo entry (see applyMove)
     // - so it is found by id, not assumed to be on top, or the ghost would carry the wrong card.
@@ -676,7 +708,7 @@ function FortyThievesScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
+      <GameChrome title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
         {/* Portrait keeps topRow's own fixed 18pt gap between the foundations and the stock/waste pair (as it
         always had); only the wide layout swaps in the card gap, so the row lines up with the fitted (and
         gap-spread) tableau grid below it. */}
@@ -707,7 +739,7 @@ function FortyThievesScreenInner() {
             })}
           </View>
 
-          <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} />
+          <StockWaste canRecycle={false} dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} />
         </View>
 
         <View style={[styles.tableauRow, { gap }]}>
@@ -747,6 +779,7 @@ function FortyThievesScreenInner() {
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {lossRevealed && !won && <LossBanner colors={colors} onNewGame={startNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

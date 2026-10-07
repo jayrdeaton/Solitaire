@@ -22,6 +22,7 @@ import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
+import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
 import { useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
@@ -31,14 +32,17 @@ import { findHint, hintCountFor, HintResult } from '@/engine/hint'
 import { top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
+import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useDimAfterDeal } from '@/games/shared/useDimAfterDeal'
-import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
+import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -61,6 +65,7 @@ const TABLEAU_COLUMNS = 7
 // card size. Now a floor for useTableauMaxHeight below rather than a fixed height -
 // compression already never fired at this size, so this floor is mostly moot in practice.
 const TABLEAU_MIN_HEIGHT = 300
+const WASTE: PileRef = { zone: 'waste', index: 0 }
 
 export default withGameProviders(GolfScreenInner)
 
@@ -93,7 +98,7 @@ function GolfScreenInner() {
   // PATTERN_OVERLAP_GATE, same as Klondike's own KlondikeScreen.tsx). Destructured below so every
   // existing reference to `state`, `commitState`, `flying`, `startFlights`, `settleFlight`,
   // `undoBusyRef`, etc. keeps working unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<GolfState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<GolfState>()
   // Unlike Klondike (whose stock-draw undo entries carry move: null for a recycle - "nothing card-
   // shaped to fly") and Pyramid (same null convention for its pairing moves, which use a totally
   // different removedCards field instead of MoveInfo), every Golf move - a tableau card onto the
@@ -102,7 +107,7 @@ function GolfScreenInner() {
   // undo entry pushed at all) rather than a "successful but nothing moved" recycle result, so no
   // move shape here ever needs move: null. Mirrors FreeCell's/Yukon's own non-nullable
   // UndoEntry<TState, MoveInfo> instantiation instead of Klondike's/Pyramid's nullable default.
-  const [undoStack, setUndoStack] = useState<UndoEntry<GolfState, MoveInfo>[]>([])
+  const [undoStack, setUndoStack, undoStackRef] = useUndoStack<UndoEntry<GolfState, MoveInfo>>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
   // tryMove), so comparing references during render is enough to auto-dismiss a stale hint the
@@ -131,6 +136,9 @@ function GolfScreenInner() {
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
+  // Before the win check (see useStuckLossCheck). A dead board - no move left and no stock to deal - is a loss here, as in Aces Up:
+  // it used to just sit there with the clock running.
+  const { stuck, recordedRef: recordedLossRef } = useStuckLossCheck(controller, state, 'golf', recordDealAbandoned)
   // Derived from `state` every render (see useDerivedWinCheck) rather than mirrored into its own
   // useState, same as Pyramid/Spider (not Klondike/FreeCell's useFoundationWinCheck) - Golf has no
   // suit-based foundation for a "won" flag to hang off, just "every tableau column is empty".
@@ -145,6 +153,8 @@ function GolfScreenInner() {
   // the very card the winning flight was measuring to land on, so that flight could not fly at all
   // and the card simply appeared (see the [state] flight effect below).
   const winRevealed = useWinReveal(won, settled)
+  // The loss banner waits for the last card to land too.
+  const lossRevealed = useWinReveal(stuck, settled)
   // The board the win cascade has taken over from (set once its ghosts are on screen - startChains' onShown, see
   // runWinCascade): once it IS the current state, and the win is revealed, the real waste top blanks - not a moment
   // earlier. Blanking on winRevealed alone left the waste slot EMPTY for the few frames it takes runWinCascade to measure
@@ -189,6 +199,7 @@ function GolfScreenInner() {
     pendingFlightRef.current = []
     session.reset()
     recordedWinRef.current = false
+    recordedLossRef.current = false
     winCascade.clear()
     pendingWinCascadeRef.current = null
 
@@ -221,6 +232,7 @@ function GolfScreenInner() {
     pendingFlightRef.current = []
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
+    recordedLossRef.current = false
     setDealHiddenIds(new Set())
     dimAfterDeal.releaseNow()
     commitState(saved.state)
@@ -230,7 +242,7 @@ function GolfScreenInner() {
   // ever calls this after the player has confirmed that, or immediately when there's nothing to lose
   // (see components/GameChrome.tsx's warning dialog).
   function handleNewGame() {
-    if (session.moves > 0 && !won) recordDealAbandoned('golf')
+    if (session.moves > 0 && !won && !stuck) recordDealAbandoned('golf')
     setGolfRankWrap(settings.golfRankWrap)
     startNewGame(createGolfController(settings.golfRankWrap))
   }
@@ -400,11 +412,11 @@ function GolfScreenInner() {
   // once the player just sits looking at the board afterward - resuming always recomputes the
   // exact right value instead of depending on whenever this effect last happened to run.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('golf', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: golfRankWrap ? 1 : 0 })
+    if (state && !won && !stuck) saveGameInProgress('golf', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: golfRankWrap ? 1 : 0 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, golfRankWrap, undoStack])
-  useSaveInProgressBackstop(!!state && !won, () => {
-    if (state && !won) saveGameInProgress('golf', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: golfRankWrap ? 1 : 0 })
+  }, [state, won, stuck, golfRankWrap, undoStack])
+  useSaveInProgressBackstop(!!state && !won && !stuck, () => {
+    if (state && !won && !stuck) saveGameInProgress('golf', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: golfRankWrap ? 1 : 0 })
   })
 
   function pushUndo(prev: GolfState, move: MoveInfo) {
@@ -434,9 +446,25 @@ function GolfScreenInner() {
   // be captured here, synchronously against the still-current state), then revert and fly the ghost
   // back to `move.from` - a tableau column, or the stock pile for an undone draw (see
   // pendingFlightRef's `viaStock`).
-  async function handleUndo() {
-    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
-    undoBusyRef.current = true
+  // One undo per call - see useFlightConcurrency's runUndo.
+  function handleUndo(opts?: UndoRequestOptions) {
+    return runUndo(undoGate, revertTopUndo, opts)
+  }
+
+  // Every Golf undo takes the waste's top card back where it came from, and nothing an undo does
+  // lands on the waste - so undos never wait for each other here.
+  function undoGate(): UndoGate {
+    if (undoStackRef.current.length === 0 || !stateRef.current) return null
+    return { takesFrom: [WASTE] }
+  }
+
+  async function revertTopUndo() {
+    // Reads the stack and the board via their refs, not the closure - see applyMove's identical
+    // comment: undos (like any two actions) can run back-to-back before React re-renders
+    // (PATTERN_OVERLAP_GATE), so this needs whatever they actually are right now.
+    const current = stateRef.current
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!current || !entry) return
     startFlights(1)
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition), so any undo reachable while won must be undoing the winning move itself - stop the
@@ -444,14 +472,8 @@ function GolfScreenInner() {
     // reverted underneath it. `won` (derived from state above) clears itself on the very next render
     // once prevState commits below.
     if (won) winCascade.clear()
-    const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
-
-    // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment: two
-    // actions can now be triggered back-to-back before React re-renders (PATTERN_OVERLAP_GATE), so
-    // this needs whatever the board actually is right now, not whatever it was at this render.
-    const current = stateRef.current
-    const movingCard = current ? top(current.waste) : undefined
+    const movingCard = top(current.waste)
     // Once the win is revealed, the winning card's DraggableCard is deliberately unmounted (see
     // wasteTopCard below), so it has no CardRegistry entry - fall back to the waste slot's plain view
     // ref (the same technique runWinCascade above already uses for this exact reason), rather than a
@@ -593,7 +615,7 @@ function GolfScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Golf' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<GolfSettingsSection />} rules={GOLF_RULES}>
+      <GameChrome title='Golf' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<GolfSettingsSection />} rules={GOLF_RULES}>
         {/* No foundation row at all (unlike Klondike/FreeCell/Yukon) - Golf has no suit-based
         foundation, just the stock/waste pair. Narrower than the tableau below, so it's centered
         above it by GameChrome's own content styling rather than stretched/pinned to an edge. */}
@@ -603,10 +625,15 @@ function GolfScreenInner() {
         (centered like it) with the pair right-aligned inside it - portrait keeps the plain flex-end row. */}
         <View style={[styles.topRow, isWide && styles.topRowWide, isWide && { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <StockWaste
+            canRecycle={false}
             dropZones={dropZones}
             stockTopCard={top(state.stock)}
             wasteTop={wasteTopCard}
             wasteHiddenCount={wasteHiddenCount}
+            // While the starter card is still being dealt, the waste is really empty: without this the slot painted its frozen
+            // 'card from before the flight' under the ghost - the starter itself on a first deal, the last game's top card on New
+            // Game - face up beside the stock for the whole deal.
+            settledWasteTop={wasteHiddenByDeal ? null : undefined}
             wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0}
             stockHinted={activeHint?.kind === 'drawStock'}
             cardWidth={cardWidth}
@@ -671,6 +698,7 @@ function GolfScreenInner() {
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
+      {lossRevealed && !won && <LossBanner colors={colors} onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

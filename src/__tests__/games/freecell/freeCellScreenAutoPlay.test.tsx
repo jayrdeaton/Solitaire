@@ -437,6 +437,47 @@ describe('FreeCell screen - the safe-card cascade needs a TAP that went to a fou
     expect(cardsOnBoard()).toBe(52)
   })
 
+  it('undos pressed back to back (a held Undo) bring the cards down together: each leaves while the ones before it are still in the air', async () => {
+    await mount(SAFE_CARDS_BOARD())
+    await tap(id('clubs', 1))
+    await flush(3000)
+    mockLog.flights = []
+    mockLog.maxInAir = 0
+
+    for (let i = 0; i < 4; i++) {
+      await act(async () => {
+        fireEvent.press(screen.getByTestId('undo'))
+      })
+      await flush(AUTO_PLAY_STAGGER_MS)
+    }
+    expect(mockLog.flights).toHaveLength(4) // all four started before the first one landed...
+    expect(mockLog.maxInAir).toBe(4)
+    expect(mockLog.flights.every((f) => f.end === -1)).toBe(true)
+
+    await flush(3000)
+    expect(mockLog.flights[3].cards).toBe(id('clubs', 1)) // ...newest first, ending with the tap itself
+    expect(foundationTops()).toEqual({ clubs: 'empty', diamonds: 'empty', hearts: 'empty', spades: 'empty' })
+    expect(cardsOnBoard()).toBe(52)
+    expect(mockLog.shown.length).toBe(8) // the tap, its three auto-plays, and four undos - nothing went up again
+  })
+
+  it('an undo pressed while the tapped card is still flying waits for it to land instead of being dropped, and holds the auto-play back meanwhile', async () => {
+    await mount(SAFE_CARDS_BOARD())
+    await tap(id('clubs', 1))
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo')) // the tap's card is in the air, its auto-play one stagger away
+    })
+    await flush(3000)
+
+    const [tapFlight, undoFlight, ...rest] = mockLog.flights
+    expect(rest).toEqual([]) // no auto-play went up: the undo held it off from the press on, and disarmed it
+    expect(tapFlight.cards).toBe(id('clubs', 1))
+    expect(undoFlight.cards).toBe(id('clubs', 1))
+    expect(undoFlight.start).toBeGreaterThanOrEqual(tapFlight.end) // picked up only once it had landed
+    expect(foundationTops()).toEqual({ clubs: 'empty', diamonds: 'empty', hearts: 'empty', spades: 'empty' })
+    expect(cardsOnBoard()).toBe(52)
+  })
+
   it('dragging that same card onto the foundation does NOT start it', async () => {
     await mount(SAFE_CARDS_BOARD())
 

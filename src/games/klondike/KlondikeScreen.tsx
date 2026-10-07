@@ -20,6 +20,7 @@ import { wasteFanScreenShift } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { StockWaste } from '@/components/StockWaste'
 import { fireworksColors } from '@/components/theme'
+import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
 import { wasteFanStepFor } from '@/components/wasteFan'
@@ -38,11 +39,12 @@ import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
-import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
+import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -58,6 +60,7 @@ import { createKlondikeController, KlondikeState } from './rules'
 // less generously than this, but a screen with real headroom to spare now gets more of it.
 const TABLEAU_MIN_HEIGHT = 420
 const TABLEAU_COLUMNS = 7
+const WASTE: PileRef = { zone: 'waste', index: 0 }
 
 /** This game's own undo-move shape (see undoTypes.ts's TMove generic): `primary` is the move that
  * produced the very next state (same as every other game's plain MoveInfo|null). Every step, an
@@ -123,8 +126,8 @@ function KlondikeScreenInner() {
   // each other - PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`,
   // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
   // unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<KlondikeState>()
-  const [undoStack, setUndoStack] = useState<KlondikeUndoEntry[]>([])
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkFlying, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<KlondikeState>()
+  const [undoStack, setUndoStack, undoStackRef] = useUndoStack<KlondikeUndoEntry>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
   // tryMove), so comparing references during render is enough to auto-dismiss a stale hint the
@@ -229,8 +232,9 @@ function KlondikeScreenInner() {
    * foundationSlotRefs/SUITS), captured synchronously in handleUndo (a container ref,
    * content-independent, safe to measure before the state revert commits) since the cascaded cards
    * themselves have no CardRegistry entry once buried under a later foundation arrival. Stays a
-   * single slot (not a list) - undo itself is still fully serialized (see useFlightConcurrency's
-   * undoBusyRef/activeFlightCountRef), so at most one of these is ever pending at a time. */
+   * single slot (not a list) - an entry with a cascade is an 'exclusive' undo (see undoGate: it
+   * starts only once nothing is in the air, and no other undo starts until it has landed), so at most
+   * one of these is ever pending at a time. */
   const pendingCascadeUndoRef = useRef<{ moves: MoveInfo[]; origins: CascadeOrigins; gen: number } | null>(null)
   const vibration = useVibration()
   const { playCardSound, playInvalidSound, hapticCard } = useCardSoundEffects()
@@ -726,9 +730,32 @@ function KlondikeScreenInner() {
   // save written before that can still carry a `cascaded` list (see PATTERN_CASCADE_UNDO): it rides
   // along, animating back to its own origins concurrently with whichever branch below handles the
   // primary move.
-  async function handleUndo() {
-    if (undoBusyRef.current || activeFlightCountRef.current > 0 || flying.length > 0 || undoStack.length === 0 || !state) return
-    undoBusyRef.current = true
+  function handleUndo(opts?: UndoRequestOptions) {
+    return runUndo(undoGate, revertTopUndo, opts)
+  }
+
+  // A plain move's undo - a draw-1 included - takes its cards back off the pile it went to, so it
+  // overlaps the undos before it once nothing is still landing there. One that lands on or leaves
+  // the waste also waits for the waste to be quiet: its frozen top and fan expect one arrival at a
+  // time. A draw-3 fan flies back through the deal layer (one batch at a time), a recycle moves the
+  // whole waste, and a legacy entry's cascade flies from several foundations through a single slot -
+  // each of those one at a time.
+  function undoGate(): UndoGate {
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!entry || !stateRef.current) return null
+    const { primary: move, cascaded } = entry.move
+    if (!move || cascaded.length > 0) return 'exclusive'
+    if (move.from.zone === 'waste' && move.to.zone === 'stock') return 'exclusive'
+    if (move.from.zone === 'stock' && move.to.zone === 'waste' && move.count > 1) return 'exclusive'
+    return { takesFrom: move.from.zone === 'waste' ? [move.to, WASTE] : [move.to] }
+  }
+
+  async function revertTopUndo() {
+    // The stack and the board are read via their refs, not the closure: undos can run back-to-back
+    // before React re-renders (see runUndo).
+    const current = stateRef.current
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!current || !entry) return
     // An undo is not the player's own foundation move, so it must never set auto-play off again: an
     // undone auto-play would otherwise fly straight back up the moment the reverted board settles.
     cascade.disarm()
@@ -746,7 +773,6 @@ function KlondikeScreenInner() {
       winCascade.clear()
       setWinCascadeFallbackSuits(new Set())
     }
-    const entry = undoStack[undoStack.length - 1]
     const { move: moveWrap, state: prevState } = entry
     const move = moveWrap.primary
     const cascaded = moveWrap.cascaded
@@ -816,7 +842,7 @@ function KlondikeScreenInner() {
     // this one fully lands rather than run concurrently with it - the cascaded cards are hidden
     // immediately either way (hideCascadeCards, below), so there's no visible gap.
     if (move.from.zone === 'stock' && move.to.zone === 'waste' && move.count > 1) {
-      const sourcePile = resolvePile(move.to)
+      const sourcePile = resolvePile(move.to, current)
       const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : [] // oldest -> newest/top
       const topPos = movingCards.length > 0 ? await ghost.cardRegistry.measure(move.anchorCardId) : null
       const stockDest = topPos ? await measureView(stockViewRef.current) : null
@@ -867,7 +893,7 @@ function KlondikeScreenInner() {
       return
     }
 
-    const sourcePile = resolvePile(move.to)
+    const sourcePile = resolvePile(move.to, current)
     // A foundation pile stacks in place, so an undone foundation move's card is not necessarily its
     // top in a legacy entry: auto-play cascaded more cards on top of it (they ride along in
     // `cascaded`, flying back on their own). Look the card up by id then, instead of ghosting

@@ -161,6 +161,8 @@ describe('Golf isWon / isStuck', () => {
       stock: []
     }
     expect(GolfController.isWon(state)).toBe(true)
+    // A cleared board has no move and (here) no stock either - it must read as a win, never a loss.
+    expect(GolfController.isStuck!(state)).toBe(false)
   })
 
   it('is not won while any tableau card remains', () => {

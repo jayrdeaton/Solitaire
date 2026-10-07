@@ -38,6 +38,7 @@ import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { PlayingCard } from '@/components/PlayingCard'
 import { fireworksColors } from '@/components/theme'
+import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
@@ -53,11 +54,12 @@ import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
-import { useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
+import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
+import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
@@ -99,10 +101,10 @@ function AcesUpScreenInner() {
   // PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`, `commitState`,
   // `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working unchanged. Aces Up
   // has no foundation-by-suit auto-play, so (unlike Klondike) nothing here ever needs
-  // shrinkFlying - only activeFlightCountRef for handleUndo's guard, and activeFlightCount (the
-  // state mirror) for the win reveal's `settled` below.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, activeFlightCountRef, startFlights, settleFlight, undoBusyRef, reset: resetFlightConcurrency } = useFlightConcurrency<AcesUpState>()
-  const [undoStack, setUndoStack] = useState<UndoEntry<AcesUpState>[]>([])
+  // shrinkFlying - only runUndo for handleUndo, and activeFlightCount (the state mirror) for the win
+  // reveal's `settled` below.
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<AcesUpState>()
+  const [undoStack, setUndoStack, undoStackRef] = useUndoStack<UndoEntry<AcesUpState>>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
   // tryMove), so comparing references during render is enough to auto-dismiss a stale hint the
@@ -173,10 +175,10 @@ function AcesUpScreenInner() {
   const pendingRoundDealRef = useRef<{ dealt: { card: Card; pileIndex: number }[]; origin: { x: number; y: number } | null; token: number }[]>([])
   /** An undone round deal awaiting its post-commit measurement + deal.start() - the mirror image
    * of pendingRoundDealRef, same idea as Scorpion's own runUndoStockDeal. Stays a single slot (not a
-   * list), unlike pendingRoundDealRef above - this is only ever populated from within handleUndo,
-   * which holds full mutual exclusion for its whole span (undoBusyRef/activeFlightCountRef - see
-   * useFlightConcurrency's own doc comment), so at most one of these can ever be pending at a time.
-   * Mirrors Klondike's own pendingCascadeUndoRef for the identical reasoning. */
+   * list), unlike pendingRoundDealRef above - a round-deal undo is 'exclusive' (see undoGate: it
+   * starts only once nothing is in the air, and no other undo starts until it has landed), so at most
+   * one of these can ever be pending at a time. Mirrors Klondike's own pendingCascadeUndoRef for the
+   * identical reasoning. */
   const pendingUndoRoundDealRef = useRef<{ entries: { card: Card; delayMs: number; origin: { x: number; y: number } | null; releasePending: () => void }[]; token: number } | null>(null)
   /** Every take-off hold (cardFacePaint.ts) the latest round-deal undo took on the cards it flies back (handleUndo). Each one
    * also travels with its own card - pendingUndoRoundDealRef, runUndoRoundDeal, then deal.start, which gives it back at that
@@ -477,24 +479,38 @@ function AcesUpScreenInner() {
     setUndoStack((stack) => [...stack, { state: prev, move }])
   }
 
-  // Guarded on activeFlightCountRef, not `flying.length` (unlike a check on `flying` alone) - a
-  // round-deal-undo (see the `!move` branch below) never touches the `flying` array at all (see
-  // runRoundDeal's own doc comment), so activeFlightCountRef is the only thing that actually reports
-  // it as in-flight; checking `flying` here would let undo start on top of a round deal still
-  // mid-air. Every branch below claims exactly one flight (startFlights(1)) and settles it exactly
-  // once - Aces Up has no cascaded/auto-played moves riding along (unlike Klondike's undo, which can
-  // claim 2), so a single claim always covers the whole call.
-  async function handleUndo() {
-    if (undoBusyRef.current || activeFlightCountRef.current > 0 || undoStack.length === 0 || !state) return
-    undoBusyRef.current = true
+  // One undo per call - see useFlightConcurrency's runUndo.
+  function handleUndo(opts?: UndoRequestOptions) {
+    return runUndo(undoGate, revertTopUndo, opts)
+  }
+
+  // A discard's or a move's undo takes its card back off the pile it went to (the discard, or the
+  // empty pile it was moved into), so it overlaps the undos before it once nothing is still landing
+  // there. A round deal's flies four cards back through the deal layer - one at a time, and only
+  // once nothing else is in the air: the deal layer never touches the `flying` array (see
+  // runRoundDeal's own doc comment), so only the flight count reports it as in-flight.
+  function undoGate(): UndoGate {
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!entry || !stateRef.current) return null
+    return entry.move ? { takesFrom: [entry.move.to] } : 'exclusive'
+  }
+
+  // Every branch below claims exactly one flight (startFlights(1)) and settles it exactly once -
+  // Aces Up has no cascaded/auto-played moves riding along (unlike Klondike's undo, which can claim
+  // 2), so a single claim always covers the whole call.
+  async function revertTopUndo() {
+    // The stack and the board are read via their refs, not the closure: undos can run back-to-back
+    // before React re-renders (see runUndo).
+    const current = stateRef.current
+    const entry = undoStackRef.current[undoStackRef.current.length - 1]
+    if (!current || !entry) return
     startFlights(1)
     if (won) winCascade.clear()
-    const entry = undoStack[undoStack.length - 1]
     const { move, state: prevState } = entry
 
     if (!move) {
       const myToken = ++dealTokenRef.current
-      const dealtCards = state.piles.map((pile) => top(pile)!)
+      const dealtCards = current.piles.map((pile) => top(pile)!)
       const origins = await Promise.all(dealtCards.map((c) => ghost.cardRegistry.measure(c.id)))
       // New Game/restore replaced the game while these were measured (Spider's handleUndo has the same guard): `prevState` is
       // the old game's board, and every claim (this undo's included) was reset with it - so nothing is committed, marked or
@@ -524,7 +540,7 @@ function AcesUpScreenInner() {
     // pendingFlightRef effect every other "fly to a tableau destination" flight already uses
     // (CardRegistry, keyed on the card's id, since prevState's own re-render re-registers it there).
     if (move.to.zone === 'discard') {
-      const discardCard = state.discard[state.discard.length - 1]
+      const discardCard = current.discard[current.discard.length - 1]
       const origin = discardCard && discardCard.id === move.anchorCardId ? await measureView(discardViewRef.current) : null
 
       setUndoStack((stack) => stack.slice(0, -1))
@@ -543,7 +559,7 @@ function AcesUpScreenInner() {
       return
     }
 
-    const movingCard = top(state.piles[move.to.index])
+    const movingCard = top(current.piles[move.to.index])
     const origin = movingCard && movingCard.id === move.anchorCardId ? await ghost.cardRegistry.measure(move.anchorCardId) : null
 
     setUndoStack((stack) => stack.slice(0, -1))
@@ -685,7 +701,7 @@ function AcesUpScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={ACESUP_RULES}>
+      <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} rules={ACESUP_RULES}>
         <View style={[styles.topRow, { width: pilesWidth }]}>
           <DiscardCell card={state.discard[state.discard.length - 1]} isFlyingHere={flying.some((f) => f.to.zone === 'discard')} viewRef={discardViewRef} />
           <View ref={stockViewRef} collapsable={false}>
@@ -724,7 +740,7 @@ function AcesUpScreenInner() {
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
-      {stuck && !won && <LossBanner colors={colors} onNewGame={startNewGame} />}
+      {stuck && !won && <LossBanner colors={colors} onNewGame={startNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

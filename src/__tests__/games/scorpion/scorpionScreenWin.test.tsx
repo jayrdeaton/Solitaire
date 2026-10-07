@@ -172,8 +172,8 @@ jest.mock('@/components/theme', () => {
 })
 // Scorpion draws exactly one non-pile card - the assisted stock's packet, whose tap deals it out.
 jest.mock('@/components/PlayingCard', () => {
-  const { Pressable: MockPressable } = require('react-native')
-  return { PlayingCard: ({ card, onPress }: { card: { id: string }; onPress?: () => void }) => <MockPressable testID={`pc-${card.id}`} onPress={onPress} /> }
+  const { Pressable: MockPressable, View: MockView } = require('react-native')
+  return { PlayingCard: ({ card, onPress }: { card: { id: string }; onPress?: () => void }) => <MockPressable testID={`pc-${card.id}`} onPress={onPress} />, EmptySlot: () => <MockView testID='empty-slot' /> }
 })
 jest.mock('@/components/PileView', () => {
   const { Pressable: MockPressable, View: MockView } = require('react-native')

@@ -143,7 +143,7 @@ export function createGolfController(wrapAceKing: boolean): GameController<GolfS
   /** True once no tableau move is available AND the stock is exhausted - unlike every other game
    * here, Golf has no recycling to fall back on, so this is a real, common way to lose. */
   function isStuck(state: GolfState): boolean {
-    return state.stock.length === 0 && legalMoves(state).length === 0
+    return !isWon(state) && state.stock.length === 0 && legalMoves(state).length === 0
   }
 
   /** Golf has exactly one possible destination (the build pile), so this either finds that it's

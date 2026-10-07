@@ -1,4 +1,4 @@
-import { IconButton, Pressable, useHoldToRepeat } from '@rific/feedback-press'
+import { IconButton, Pressable } from '@rific/feedback-press'
 import { rotateInsets, useRotation } from '@tastic/core'
 import { ConfirmDialog, CornerActionButtons } from '@tastic/hud'
 import { useRouter } from 'expo-router'
@@ -10,12 +10,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { computeScore } from '@/engine/score'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
 
-import { scaledMs } from './dragdrop/dragSpring'
+import { AUTO_PLAY_STAGGER_MS } from './dragdrop/dragSpring'
 import { GAME_CONTENT_BOTTOM_PADDING, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GAME_CONTENT_TOP_PADDING, useGameLayout } from './gameLayout'
 import { RotatedContentGutter } from './RotatedContentGutter'
 import { RulesDialog } from './RulesDialog'
 import { SettingsDialog } from './SettingsDialog'
 import { CHROME_FG } from './theme'
+import { UndoHandler, useUndoHold } from './undoHold'
 import { CARD_FONT_FAMILY } from './useFontsPreload'
 
 export function formatTime(totalSeconds: number): string {
@@ -84,15 +85,13 @@ export { GAME_CONTENT_BOTTOM_PADDING }
  * set this explicitly instead. */
 export const GAME_DIALOG_Z_INDEX = 9999
 
-// Press-and-hold-to-repeat undo (see the IconButton below) - matches the delayLongPress/repeat-tick
-// convention @rific/feedback-press's own useHoldToRepeat is already used with elsewhere (Swirlio's
-// hold-to-repeat FABs). UNDO_HOLD_REPEAT_MS is tuned to this app's own undo-flight settle time
-// (~150-300ms at scale 1 - see dragSpring.ts/dealSpring.ts) and re-paced with it by FLIGHT_TIME_SCALE
-// (scaledMs): 400ms at the default. Each game's own handleUndo guards itself against being
-// re-entered before that settle completes, so a tick that lands mid-animation is simply dropped
-// rather than desyncing anything.
+// Press-and-hold-to-repeat undo (see the IconButton below and useUndoHold). The cards stream back at
+// the auto-play's own pace, AUTO_PLAY_STAGGER_MS apart (96ms at the default), each leaving while the
+// ones before it are still flying - the hold is the auto-play run backwards. A screen whose next undo
+// can't share the air yet (the same card still landing, a deal-layer revert) makes it wait rather than
+// dropping it, so every repeat is one undo.
 const UNDO_LONG_PRESS_MS = 400
-const UNDO_HOLD_REPEAT_MS = scaledMs(250)
+const UNDO_HOLD_REPEAT_MS = AUTO_PLAY_STAGGER_MS
 
 // Vertical rhythm shared by the footer and the moves/timer row that sits just above it - single
 // source for both their JSX bottom offsets and how far the moves/timer row slides down to fill the
@@ -122,7 +121,8 @@ interface GameChromeProps {
    * below), so callers can unconditionally treat any call to this as "the player committed to a
    * new deal" (e.g. for recording an abandoned-deal loss). */
   onNewGame: () => void
-  onUndo: () => void
+  /** One undo per call - see UndoHandler. */
+  onUndo: UndoHandler
   undoDisabled: boolean
   /** Highlights a legal move (or suggests a stock draw) somewhere on the board - see
    * engine/hint.ts's findHint, which every screen calls this from. */
@@ -220,7 +220,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   const [confirmNewGameVisible, setConfirmNewGameVisible] = useState(false)
   const [footerVisible, setFooterVisible] = useState(true)
   const { clearLastActiveGame } = useLastActiveGame()
-  const undoHold = useHoldToRepeat(onUndo, UNDO_HOLD_REPEAT_MS)
+  const undoHold = useUndoHold(onUndo, UNDO_HOLD_REPEAT_MS)
 
   const footerOpacity = useSharedValue(1)
   const footerTranslateY = useSharedValue(0)
@@ -258,7 +258,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
 
   const footerButtons = (
     <>
-      <IconButton icon='undo' iconColor={CHROME_FG} size={24} disabled={undoDisabled} onPress={onUndo} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={UNDO_LONG_PRESS_MS} accessibilityLabel='Undo' />
+      <IconButton icon='undo' iconColor={CHROME_FG} size={24} disabled={undoDisabled} onPress={() => void onUndo()} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={UNDO_LONG_PRESS_MS} accessibilityLabel='Undo' />
 
       <IconButton
         icon='cards-playing-outline'

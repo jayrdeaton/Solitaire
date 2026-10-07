@@ -139,6 +139,16 @@ jest.mock('@/games/shared/WinBanner', () => {
   const { Text: MockText } = require('react-native')
   return { WinBanner: () => <MockText testID='win-banner'>won</MockText> }
 })
+jest.mock('@/games/shared/LossBanner', () => {
+  const { Pressable: MockPressable, View: MockView } = require('react-native')
+  return {
+    LossBanner: ({ onUndo }: { onUndo?: () => void }) => (
+      <MockView testID='loss-banner'>
+        <MockPressable testID='loss-undo' onPress={onUndo} />
+      </MockView>
+    )
+  }
+})
 jest.mock('@/stores/gameStats', () => ({ useGameStats: () => ({ recordDealWon: mockRecordWon, recordDealAbandoned: () => {}, recordHintUsed: () => {} }) }))
 jest.mock('@/stores/lastActiveGame', () => ({ useLastActiveGame: () => ({ setLastActiveGame: () => {}, clearLastActiveGame: () => {} }) }))
 jest.mock('@/stores/settings', () => {
@@ -180,7 +190,7 @@ jest.mock('@/components/StockWaste', () => {
   const { Pressable: MockPressable, Text: MockText, View: MockView } = require('react-native')
   const { useEffect } = require('react')
   return {
-    StockWaste: ({ wasteTop, wasteHiddenCount, onDrawStock }: { wasteTop?: { id: string }; wasteHiddenCount?: number; onDrawStock: () => void }) => {
+    StockWaste: ({ wasteTop, wasteHiddenCount, settledWasteTop, onDrawStock }: { wasteTop?: { id: string }; wasteHiddenCount?: number; settledWasteTop?: { id: string } | null; onDrawStock: () => void }) => {
       const wasteId = wasteTop?.id
       mockMark(wasteId ?? 'empty')
       // Like the real one: the waste top stays registered (measurable) even while it is hidden mid-flight.
@@ -193,6 +203,7 @@ jest.mock('@/components/StockWaste', () => {
         <MockView>
           <MockText testID='waste-top'>{wasteId ?? 'empty'}</MockText>
           <MockText testID='waste-hidden-count'>{String(wasteHiddenCount ?? 0)}</MockText>
+          <MockText testID='waste-settled'>{settledWasteTop === undefined ? 'default' : (settledWasteTop?.id ?? 'empty')}</MockText>
           <MockPressable testID='stock' onPress={onDrawStock} />
         </MockView>
       )
@@ -552,6 +563,19 @@ describe('Golf screen - a card never lands without its own flight', () => {
     expect(mockLog.hidden).toBe(0)
   })
 
+  it("paints an empty waste under the starter card while it is dealt, not the starter itself (or the last game's top card)", async () => {
+    jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async () => null) // nothing saved: a fresh deal
+    await render(<GolfScreen />)
+    await flush(FLIGHT_MS / 2) // dealt, nothing landed yet
+
+    expect(screen.getByTestId('waste-hidden-count').props.children).toBe('1')
+    expect(screen.getByTestId('waste-settled').props.children).toBe('empty')
+
+    await flush(FLIGHT_MS * 4)
+    expect(screen.getByTestId('waste-hidden-count').props.children).toBe('0')
+    expect(screen.getByTestId('waste-settled').props.children).toBe('default')
+  })
+
   it('a card of the initial deal whose destination cannot be measured is not left invisible for the rest of the hand', async () => {
     jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async () => null) // nothing saved: a fresh deal
     // The deal measures every dealt card's destination the moment it commits - miss the first one asked about.
@@ -568,5 +592,26 @@ describe('Golf screen - a card never lands without its own flight', () => {
     expect(all.length).toBeGreaterThan(0)
     // Every dealt card is shown once the deal has landed - including the one that never got a flight.
     expect(all.filter((node) => node.props.children === 'hidden')).toEqual([])
+  })
+})
+
+describe('Golf screen - a dead board', () => {
+  it('ends with the loss banner once the stock is spent and nothing plays, after the last card lands - and its Undo takes the draw back', async () => {
+    await mount(ONE_IN_STOCK())
+    expect(screen.queryByTestId('loss-banner')).toBeNull()
+
+    await drawStock() // the 9 of clubs: the 6 of hearts can't go on it, and the stock is now empty
+    await flush(10)
+    expect(screen.queryByTestId('loss-banner')).toBeNull() // not while the drawn card is still in the air
+
+    await flush(FLIGHT_MS + HOLD_MS + 50)
+    expect(screen.queryByTestId('loss-banner')).toBeTruthy()
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('loss-undo'))
+    })
+    await flush(FLIGHT_MS * 2)
+    expect(screen.queryByTestId('loss-banner')).toBeNull()
+    expect(wasteTop()).toBe(id('spades', 5))
   })
 })

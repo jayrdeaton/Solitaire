@@ -541,6 +541,47 @@ describe('Spider screen - the winning move never makes a card teleport', () => {
 
 // A completed run first sits assembled in its column while the move (or dealt card) that completed it lands, and only then
 // flies to its slot - so for that stretch the board still shows cards the sweep is about to remove.
+describe('Spider screen - the other columns play on while a run waits to be swept', () => {
+  /** Six runs in their slots; the seventh one move from done (King..2 in column 0, its Ace in column 1), and an unrelated 5
+   * in column 3 that goes on the 6 in column 2. */
+  function seventhRunAndASpareMove(): SpiderState {
+    const completedRuns = Array.from({ length: 6 }, (_, deck) => run(13, 1, deck))
+    const tableau: Card[][] = Array.from({ length: 10 }, () => [])
+    tableau[0] = run(13, 2, 6)
+    tableau[1] = [card(1, 6)]
+    tableau[2] = [card(6, 7)]
+    tableau[3] = [card(5, 7)]
+    return { tableau, stock: [], completed: completedRuns.map((r) => r[0]), completedRuns }
+  }
+
+  it('a move in another column goes through while the run is still assembled, and undoing it later leaves the run in its slot', async () => {
+    await mount(seventhRunAndASpareMove())
+    const held = holdNextSlotMeasurement()
+
+    await tap(id(1, 6)) // completes the seventh run in column 0
+    await flush(FLIGHT_MS) // landed; the sweep is measuring (held open), the run still assembled
+    expect(cardsOnBoard()).toBe(15)
+
+    await tap(id(5, 7)) // a different column: not held
+    expect(mockLog.shown).toEqual([id(1, 6), id(5, 7)])
+
+    held.resolve()
+    await flush(2500) // the sweep flight lands (undo waits for every flight)
+    expect(cardsOnBoard()).toBe(2) // the run has left; the 5 sits on the 6
+    expect(kingShownInSlot(6)).toBe(true)
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+    await flush(FLIGHT_MS * 4)
+    // Only the 5 goes back: the board the undo restores is the one with the run already swept, not the moment it was taken
+    // (when the run still stood in column 0 - nothing would ever sweep it again).
+    expect(mockLog.shown).toEqual([id(1, 6), id(5, 7), id(5, 7)]) // the undo really ran: the 5 flew back
+    expect(cardsOnBoard()).toBe(2)
+    expect(kingShownInSlot(6)).toBe(true)
+  })
+})
+
 describe('Spider screen - nothing can move a run that is waiting to be swept', () => {
   it('a tap on the assembled winning run is ignored, before the winning card lands and while its sweep is measuring - the deal still ends won with all 104 cards', async () => {
     await mount(oneMoveFromWon())
@@ -633,9 +674,11 @@ describe('Spider screen - nothing can move a run that is waiting to be swept', (
     expect(stockPackets()).toBe(0)
   })
 
-  it('undo is ignored in the gap between a completing stock deal landing and its sweep removing the run', async () => {
+  it('undo waits out the gap between a completing stock deal landing and its sweep removing the run, then takes the deal back', async () => {
     await mount(dealCompletesFirstRun())
     const held = holdNextSlotMeasurement()
+    expect(cardsOnBoard()).toBe(22)
+    expect(stockPackets()).toBe(1)
 
     await tapStock()
     await flush(FLIGHT_MS + 10) // every dealt card has landed and settled its flight; the run's sweep is still measuring
@@ -649,9 +692,16 @@ describe('Spider screen - nothing can move a run that is waiting to be swept', (
     expect(cardsOnBoard()).toBe(32) // the deal was not undone under the sweep
 
     held.resolve()
-    await flush(2500)
-    expect(cardsOnBoard()).toBe(19) // the six in column 0 and the nine dealt pairs: the run went, exactly once
-    expect(kingShownInSlot(0)).toBe(true)
+    const counts = new Set<number>()
+    for (let t = 0; t < 2500; t += STEP_MS) {
+      await flush(STEP_MS)
+      counts.add(cardsOnBoard())
+    }
+    expect(counts.has(19)).toBe(true) // the six in column 0 and the nine dealt pairs: the run went, exactly once...
+    // ...and only then did the waiting undo go through: the run is back in column 0 and the ten dealt cards back in the stock
+    expect(cardsOnBoard()).toBe(22)
+    expect(kingShownInSlot(0)).toBe(false)
+    expect(stockPackets()).toBe(1)
   })
 
   it('a completing stock deal whose cards never got a flight still sweeps the run, and does not leave the board locked', async () => {

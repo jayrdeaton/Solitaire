@@ -1,5 +1,5 @@
 import { Card } from '@/engine/types'
-import { createSpiderController, SpiderState } from '@/games/spider/rules'
+import { canDealStock, createSpiderController, SpiderState } from '@/games/spider/rules'
 
 function card(suit: Card['suit'], rank: Card['rank'], faceUp = true, deckIndex = 0): Card {
   return { id: `${suit}-${rank}-${deckIndex}`, suit, rank, faceUp }
@@ -263,8 +263,32 @@ describe('spider drawStock', () => {
 
   it('refuses to deal when any tableau column is empty', () => {
     const state: SpiderState = {
-      tableau: Array.from({ length: 10 }, (_, i) => (i === 3 ? [] : [card('spades', 5, true)])),
+      tableau: Array.from({ length: 10 }, (_, i) => (i === 3 ? [] : i === 0 ? [card('spades', 6, true), card('spades', 5, true)] : [card('spades', 5, true)])),
       stock: Array.from({ length: 20 }, (_, i) => card('spades', 2, false, i)),
+      completed: [],
+      completedRuns: []
+    }
+    expect(controller.drawStock!(state)).toBeNull()
+  })
+
+  it('deals onto empty columns when the tableau holds fewer cards than there are columns', () => {
+    const state: SpiderState = {
+      tableau: Array.from({ length: 10 }, (_, i) => (i < 9 ? [card('spades', 5, true, i)] : [])),
+      stock: Array.from({ length: 10 }, (_, i) => card('spades', 2, false, 100 + i)),
+      completed: [],
+      completedRuns: []
+    }
+    const next = controller.drawStock!(state)
+    expect(next).not.toBeNull()
+    expect(next!.tableau[9]).toHaveLength(1)
+    expect(canDealStock(state)).toBe(true)
+    expect(controller.isStuck!(state)).toBe(false)
+  })
+
+  it('still refuses with an empty column once ten or more cards are on the tableau', () => {
+    const state: SpiderState = {
+      tableau: Array.from({ length: 10 }, (_, i) => (i === 0 ? [card('spades', 5, true, 0), card('spades', 4, true, 1)] : i < 9 ? [card('spades', 5, true, 10 + i)] : [])),
+      stock: Array.from({ length: 10 }, (_, i) => card('spades', 2, false, 100 + i)),
       completed: [],
       completedRuns: []
     }

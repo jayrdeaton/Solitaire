@@ -184,6 +184,16 @@ function scoreHintMove(state: SpiderState, move: Move): number {
   return score
 }
 
+/** A deal needs a card under every column - unless the tableau holds fewer cards than there are columns, when that can never
+ * happen (e.g. 7 runs cleared with the last packet still in the stock): the stock would then be locked for good, and the game
+ * unwinnable with no way to know it. The usual relaxation (Microsoft's Spider among others) deals anyway. */
+export function canDealStock(state: SpiderState): boolean {
+  if (state.stock.length < NUM_COLUMNS) return false
+  const emptyColumn = state.tableau.some((col) => col.length === 0)
+  if (!emptyColumn) return true
+  return state.tableau.reduce((sum, col) => sum + col.length, 0) < NUM_COLUMNS
+}
+
 export function createSpiderController(numSuits: 1 | 2 | 4): GameController<SpiderState> {
   return {
     id: 'spider',
@@ -256,8 +266,7 @@ export function createSpiderController(numSuits: 1 | 2 | 4): GameController<Spid
     },
 
     drawStock(state: SpiderState): SpiderState | null {
-      if (state.stock.length < NUM_COLUMNS) return null
-      if (state.tableau.some((col) => col.length === 0)) return null
+      if (!canDealStock(state)) return null
 
       const next = cloneState(state)
       const nextStock = next.stock.slice()
@@ -286,8 +295,7 @@ export function createSpiderController(numSuits: 1 | 2 | 4): GameController<Spid
     },
 
     isStuck(state: SpiderState): boolean {
-      const canDraw = state.stock.length >= NUM_COLUMNS && !state.tableau.some((col) => col.length === 0)
-      if (canDraw) return false
+      if (canDealStock(state)) return false
       return computeLegalMoves(state).length === 0
     },
 
