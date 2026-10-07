@@ -6,8 +6,8 @@ import { useTheme } from 'react-native-paper'
 import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
 
 import { Card, Rank, Suit } from '@/engine/types'
+import { useSettings } from '@/hooks/useSettings'
 import { useProfiles } from '@/stores/profiles'
-import { useSettings } from '@/stores/settings'
 
 import { CARD_FACE_BITMAPS } from './cardFaceBitmaps'
 import { FaceLoadTrackingContext, trackFaceLoad } from './cardFacePaint'

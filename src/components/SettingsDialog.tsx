@@ -12,7 +12,8 @@ import { Icon, Text } from 'react-native-paper'
 import { SettingsSection } from '@/components/SettingsSection'
 import { useTableColors } from '@/components/theme'
 import { release } from '@/constants/release'
-import { Settings, useSettings } from '@/stores/settings'
+import { useSettings } from '@/hooks/useSettings'
+import type { Settings } from '@/types'
 
 const PREVIEW_WIDTH = 44
 const PREVIEW_HEIGHT = 64
@@ -89,13 +90,13 @@ interface SettingsDialogProps {
 // this just adds the manual "Check for Updates" button/version row.
 export function SettingsDialog({ visible, onDismiss, children, rotation, showHowToPlay = false }: SettingsDialogProps) {
   const { open: openGuide } = useGuide()
-  const { settings, updateSettings } = useSettings()
+  const { settings, setSettings } = useSettings()
   const colors = useTableColors()
   const { colors: paperColors } = useAutoPaperTheme()
   const { error } = useToast()
 
   return (
-    <BaseSettingsDialog visible={visible} onDismiss={onDismiss} rotation={rotation} version={release.otaVersion} onUpdateError={(message) => error('Update check failed', message)} lockOrientation={settings.lockOrientation} onLockOrientationChange={(value) => updateSettings({ lockOrientation: value })} onShowHowToPlay={showHowToPlay ? openGuide : undefined}>
+    <BaseSettingsDialog visible={visible} onDismiss={onDismiss} rotation={rotation} version={release.otaVersion} onUpdateError={(message) => error('Update check failed', message)} lockOrientation={settings.lockOrientation} onLockOrientationChange={(value) => setSettings({ lockOrientation: value })} onShowHowToPlay={showHowToPlay ? openGuide : undefined}>
       {children}
       <SettingsSection>
         {/* Same bare-row shape as BaseSettingsDialog's own Sound/Haptics rows (an icon badge whose
@@ -103,8 +104,8 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
         component doesn't export its SettingIcon helper, so the small badge is replicated here
         rather than imported. Global (not per-game), since it's one play-style preference that
         applies identically to every foundation-building game rather than a rule variant any single
-        game owns - see stores/settings.tsx's own doc comment on autoMoveToFoundation. */}
-        <TouchableRipple onPress={() => updateSettings({ autoMoveToFoundation: !settings.autoMoveToFoundation })} style={styles.toggleButton} accessibilityLabel={`Auto-move to foundation ${settings.autoMoveToFoundation ? 'on' : 'off'}`}>
+        game owns - see types/index.ts's own doc comment on autoMoveToFoundation. */}
+        <TouchableRipple onPress={() => setSettings({ autoMoveToFoundation: !settings.autoMoveToFoundation })} style={styles.toggleButton} accessibilityLabel={`Auto-move to foundation ${settings.autoMoveToFoundation ? 'on' : 'off'}`}>
           <View style={styles.toggleContent}>
             <View style={[styles.iconBadge, { backgroundColor: settings.autoMoveToFoundation ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
               <Icon source={settings.autoMoveToFoundation ? 'arrow-up-bold-circle' : 'arrow-up-bold-circle-outline'} size={18} color={settings.autoMoveToFoundation ? paperColors.tertiary : paperColors.onSurfaceVariant} />
@@ -115,10 +116,10 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
           </View>
         </TouchableRipple>
         {/* Same bare-row shape as the toggle above - a second gameplay-assist preference, not a
-        rule variant (see stores/settings.tsx's own doc comment on dimUnplayable). Only
+        rule variant (see types/index.ts's own doc comment on dimUnplayable). Only
         FreeCell/Canfield/Golf/Spider ever have a face-up-but-unplayable card to dim in the first
         place; a no-op everywhere else. */}
-        <TouchableRipple onPress={() => updateSettings({ dimUnplayable: !settings.dimUnplayable })} style={styles.toggleButton} accessibilityLabel={`Dim unplayable cards ${settings.dimUnplayable ? 'on' : 'off'}`}>
+        <TouchableRipple onPress={() => setSettings({ dimUnplayable: !settings.dimUnplayable })} style={styles.toggleButton} accessibilityLabel={`Dim unplayable cards ${settings.dimUnplayable ? 'on' : 'off'}`}>
           <View style={styles.toggleContent}>
             <View style={[styles.iconBadge, { backgroundColor: settings.dimUnplayable ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
               <Icon source={settings.dimUnplayable ? 'card-off-outline' : 'card-outline'} size={18} color={settings.dimUnplayable ? paperColors.tertiary : paperColors.onSurfaceVariant} />
@@ -132,7 +133,7 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
         color/glyph flips with state, plus a single-line label, no separate Switch) - that
         component doesn't export its SettingIcon helper, so the small badge is replicated here
         rather than imported. */}
-        <TouchableRipple onPress={() => updateSettings({ invertDarkModeColors: !settings.invertDarkModeColors })} style={styles.toggleButton} accessibilityLabel={`Invert dark mode colors ${settings.invertDarkModeColors ? 'on' : 'off'}`}>
+        <TouchableRipple onPress={() => setSettings({ invertDarkModeColors: !settings.invertDarkModeColors })} style={styles.toggleButton} accessibilityLabel={`Invert dark mode colors ${settings.invertDarkModeColors ? 'on' : 'off'}`}>
           <View style={styles.toggleContent}>
             <View style={[styles.iconBadge, { backgroundColor: settings.invertDarkModeColors ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
               <Icon source={settings.invertDarkModeColors ? 'invert-colors' : 'invert-colors-off'} size={18} color={settings.invertDarkModeColors ? paperColors.tertiary : paperColors.onSurfaceVariant} />
@@ -143,10 +144,10 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
           </View>
         </TouchableRipple>
         {/* Same bare-row shape as the toggles above - a standard "Reduce Motion" accessibility
-        preference (see stores/settings.tsx's own doc comment on reduceMotion): skips every deal/
+        preference (see types/index.ts's own doc comment on reduceMotion): skips every deal/
         draw/undo/sweep flight straight to landed, the same instant-land outcome a mid-deal skip tap
         already produces, just automatic rather than requiring one. */}
-        <TouchableRipple onPress={() => updateSettings({ reduceMotion: !settings.reduceMotion })} style={styles.toggleButton} accessibilityLabel={`Reduce motion ${settings.reduceMotion ? 'on' : 'off'}`}>
+        <TouchableRipple onPress={() => setSettings({ reduceMotion: !settings.reduceMotion })} style={styles.toggleButton} accessibilityLabel={`Reduce motion ${settings.reduceMotion ? 'on' : 'off'}`}>
           <View style={styles.toggleContent}>
             <View style={[styles.iconBadge, { backgroundColor: settings.reduceMotion ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
               <Icon source={settings.reduceMotion ? 'motion-pause-outline' : 'motion-play-outline'} size={18} color={settings.reduceMotion ? paperColors.tertiary : paperColors.onSurfaceVariant} />
@@ -158,14 +159,14 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
         </TouchableRipple>
         <View style={styles.row}>
           {FACE_STYLE_OPTIONS.map(({ value, label }) => (
-            <PreviewOption key={value} active={settings.cardStyle === value} onPress={() => updateSettings({ cardStyle: value })} accessibilityLabel={label}>
+            <PreviewOption key={value} active={settings.cardStyle === value} onPress={() => setSettings({ cardStyle: value })} accessibilityLabel={label}>
               <CardFace card={PREVIEW_CARD} colors={colors} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT} cardStyle={value} invertDarkModeColors={settings.invertDarkModeColors} />
             </PreviewOption>
           ))}
         </View>
         <View style={styles.row}>
           {BACK_STYLE_OPTIONS.map(({ value, label }) => (
-            <PreviewOption key={value} active={settings.cardBackStyle === value} onPress={() => updateSettings({ cardBackStyle: value })} accessibilityLabel={label}>
+            <PreviewOption key={value} active={settings.cardBackStyle === value} onPress={() => setSettings({ cardBackStyle: value })} accessibilityLabel={label}>
               {value === 'geometric' ? <CardBack colors={colors} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT} invertDarkModeColors={settings.invertDarkModeColors} /> : <DecoratedCardBack style={value} colors={colors} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT} invertDarkModeColors={settings.invertDarkModeColors} />}
             </PreviewOption>
           ))}

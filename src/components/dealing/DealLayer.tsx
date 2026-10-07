@@ -6,7 +6,7 @@ import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue, withDelay,
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { Card } from '@/engine/types'
-import { useSettings } from '@/stores/settings'
+import { useSettings } from '@/hooks/useSettings'
 
 import { FaceLoadTrackingContext, GHOST_PAINT_MAX_MS, whenCardsSettled } from '../cardFacePaint'
 import { GAME_CONTENT_TOP_PADDING } from '../gameLayout'

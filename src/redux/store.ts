@@ -7,6 +7,7 @@ import { FLUSH, PAUSE, PERSIST, persistReducer, persistStore, PURGE, REGISTER, R
 
 import activeProfile from './activeProfileSlice'
 import guide, { LEGACY_STORAGE_KEYS } from './guideSlice'
+import settings from './settingsSlice'
 import tableColor from './tableColorSlice'
 
 const hasError = (action: unknown): action is { error?: unknown } => typeof action === 'object' && action !== null && 'error' in action && Boolean(action.error)
@@ -40,9 +41,11 @@ const rootReducer = combineReducers({
   // meaningfully "remembered."
   tableColor,
   // Which version of the how-to-play flow this player has finished or skipped. Its own key rather than
-  // a Settings field, so it survives Reset Stats and never touches the hand-rolled settings store.
+  // a Settings field, so it survives Reset Stats.
   // See guideSlice.ts's own doc.
-  guide
+  guide,
+  // The persisted settings (see settingsSlice.ts).
+  settings
 })
 
 export const persistConfig = {

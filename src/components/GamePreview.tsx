@@ -4,7 +4,7 @@ import { Image, StyleSheet, View, ViewStyle } from 'react-native'
 import { useTheme } from 'react-native-paper'
 import Svg, { Path, Rect } from 'react-native-svg'
 
-import { useSettings } from '@/stores/settings'
+import { useSettings } from '@/hooks/useSettings'
 
 import { PREVIEW_CANVAS_HEIGHT, PREVIEW_CANVAS_WIDTH, PREVIEW_CARD_HEIGHT, PREVIEW_CARD_WIDTH, type PreviewCardPlacement } from './previewCanvas'
 import { PREVIEW_FACE_BITMAPS, type PreviewGame } from './previewFaceBitmaps'

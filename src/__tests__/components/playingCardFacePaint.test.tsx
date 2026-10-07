@@ -10,10 +10,10 @@ import type { Card } from '@/engine/types'
 // new face until then. "Loaded" here is firing the face Image's load event.
 
 jest.mock('@/stores/profiles', () => ({ useProfiles: () => ({ activeProfile: null, tableColorOverride: undefined }) }))
-jest.mock('@/stores/settings', () => {
-  const actual = jest.requireActual('@/stores/settings')
+jest.mock('@/hooks/useSettings', () => {
+  const actual = jest.requireActual('@/redux/settingsSlice')
   const value = { settings: { ...actual.DEFAULT_SETTINGS } }
-  return { ...actual, useSettings: () => value }
+  return { useSettings: () => value }
 })
 jest.mock('@tastic/cards', () => {
   const { View } = require('react-native')

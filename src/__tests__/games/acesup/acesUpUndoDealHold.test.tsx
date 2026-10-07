@@ -133,9 +133,9 @@ jest.mock('@/stores/gameStats', () => ({ useGameStats: () => ({ recordDealWon: (
 jest.mock('@/stores/lastActiveGame', () => ({ useLastActiveGame: () => ({ setLastActiveGame: () => {}, clearLastActiveGame: () => {} }) }))
 jest.mock('@/games/shared/LossBanner', () => ({ LossBanner: () => null }))
 // DealLayer reads Reduce Motion from here: the defaults (off).
-jest.mock('@/stores/settings', () => {
-  const actual = jest.requireActual('@/stores/settings')
-  return { ...actual, useSettings: () => ({ settings: actual.DEFAULT_SETTINGS }) }
+jest.mock('@/hooks/useSettings', () => {
+  const actual = jest.requireActual('@/redux/settingsSlice')
+  return { useSettings: () => ({ settings: actual.DEFAULT_SETTINGS }) }
 })
 jest.mock('@/components/theme', () => {
   const actual = jest.requireActual('@/components/theme')

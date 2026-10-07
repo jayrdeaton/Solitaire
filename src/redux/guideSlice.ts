@@ -36,11 +36,12 @@ const slice = createGuideSlice({ currentVersion: GUIDE_VERSION })
 // keys (to migrate much older stats), and no commit in this repo ever wrote them.
 //
 // None of them may be written by today's build before PersistGate opens (the migrate would then take a
-// fresh install for a returning player). Today, solitaire.settings.v1, solitaire.theme-settings.v1 and
+// fresh install for a returning player). Today, solitaire.theme-settings.v1 and
 // solitaire.last-active-game.v1 still belong to providers mounted OUTSIDE PersistGate (see
-// _layout.tsx), but none of them writes on mount: each writes only when something calls its setter,
-// and every setter call at boot (ProfileThemeSync, OrientationBridge, the game screens) comes from
-// inside PersistGate, i.e. after the migrate has already run.
+// _layout.tsx), but neither writes on mount: each writes only when something calls its setter, and
+// every setter call at boot (ProfileThemeSync, the game screens) comes from inside PersistGate, i.e.
+// after the migrate has already run. solitaire.settings.v1 is no longer written at all: settings live
+// in the Redux store since 2026-10-07.
 export const LEGACY_STORAGE_KEYS: readonly string[] = ['solitaire.achievements', 'solitaire.game-in-progress.v1.acesup', 'solitaire.game-in-progress.v1.canfield', 'solitaire.game-in-progress.v1.fortythieves', 'solitaire.game-in-progress.v1.freecell', 'solitaire.game-in-progress.v1.golf', 'solitaire.game-in-progress.v1.klondike', 'solitaire.game-in-progress.v1.pyramid', 'solitaire.game-in-progress.v1.scorpion', 'solitaire.game-in-progress.v1.spider', 'solitaire.game-in-progress.v1.tripeaks', 'solitaire.game-in-progress.v1.yukon', 'solitaire.guest-color.v1', 'solitaire.last-active-game.v1', 'solitaire.profiles.v1', 'solitaire.settings.v1', 'solitaire.sound.v1', 'solitaire.stats', 'solitaire.theme-settings.v1', 'solitaire.vibrate.v1']
 
 export const guideActions = slice.actions

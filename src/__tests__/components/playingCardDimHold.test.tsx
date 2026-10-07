@@ -61,10 +61,10 @@ jest.mock('react-native-gesture-handler', () => {
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ useDragGhost: () => mockGhost }))
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: jest.fn() }) }))
 jest.mock('@/stores/profiles', () => ({ useProfiles: () => ({ activeProfile: null, tableColorOverride: undefined }) }))
-jest.mock('@/stores/settings', () => {
-  const actual = jest.requireActual('@/stores/settings')
+jest.mock('@/hooks/useSettings', () => {
+  const actual = jest.requireActual('@/redux/settingsSlice')
   const value = { settings: { ...actual.DEFAULT_SETTINGS } }
-  return { ...actual, useSettings: () => value }
+  return { useSettings: () => value }
 })
 jest.mock('@/components/theme', () => {
   const actual = jest.requireActual('@/components/theme')

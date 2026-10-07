@@ -93,7 +93,7 @@ jest.mock('@tastic/core', () => ({ useRotation: () => 0, rotateInsets: (insets: 
 // playingCardDimHold.test.tsx) - these tests set it once, before the provider mounts, never mid-render,
 // so there's no reactivity to prove here, only what start() does with whatever it read at that point.
 const mockReduceMotion = { value: false }
-jest.mock('@/stores/settings', () => ({ useSettings: () => ({ settings: { reduceMotion: mockReduceMotion.value } }) }))
+jest.mock('@/hooks/useSettings', () => ({ useSettings: () => ({ settings: { reduceMotion: mockReduceMotion.value } }) }))
 
 const CARD_WIDTH = 64
 const LOOKAHEAD_MS = 150
@@ -1383,7 +1383,7 @@ describe('DealProvider onCardDealt (take-off)', () => {
   })
 })
 
-// Settings.reduceMotion (a standard "Reduce Motion" accessibility preference - see stores/settings.tsx):
+// Settings.reduceMotion (a standard "Reduce Motion" accessibility preference - see types/index.ts):
 // start() lands every card in the same tick it's called, with no ghost ever mounted - the same instant-land
 // outcome a mid-deal skip tap already produces for an unlaunched card, just reached without a tap.
 describe('DealProvider reduceMotion', () => {

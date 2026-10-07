@@ -41,7 +41,7 @@ export const FACE_UP_STAGGER_MS = 44
  * longer. The actual stutter comes from GhostSlot's per-launch face mount/commit cost (a court card is ~100-150 SVG
  * nodes), which no amount of rescheduling fixes - see the "Face-up deals are slower on purpose" and "Known remaining
  * costs" sections of .claude/CLAUDE.md, and the pre-launch face-seeding fix landing alongside this revert. Settings' own
- * Reduce Motion toggle (stores/settings.tsx) remains the real escape hatch for anyone who'd rather skip the wait
+ * Reduce Motion toggle (types/index.ts) remains the real escape hatch for anyone who'd rather skip the wait
  * entirely - it does NOT license creeping the default total back up; do that only with real on-device evidence it helps. */
 export const FACE_UP_TARGET_TOTAL_MS = 2000
 

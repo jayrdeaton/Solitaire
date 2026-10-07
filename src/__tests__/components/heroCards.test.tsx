@@ -15,10 +15,10 @@ jest.mock('react-native-reanimated', () => {
 const mockFocus = { value: true }
 jest.mock('expo-router', () => ({ useIsFocused: () => mockFocus.value }))
 jest.mock('@/stores/profiles', () => ({ useProfiles: () => ({ activeProfile: null }) }))
-jest.mock('@/stores/settings', () => {
-  const actual = jest.requireActual('@/stores/settings')
+jest.mock('@/hooks/useSettings', () => {
+  const actual = jest.requireActual('@/redux/settingsSlice')
   const value = { settings: { ...actual.DEFAULT_SETTINGS } }
-  return { ...actual, useSettings: () => value }
+  return { useSettings: () => value }
 })
 jest.mock('@/components/theme', () => {
   const actual = jest.requireActual('@/components/theme')

@@ -20,11 +20,17 @@
       "@/games/*": [
         "./src/games/*"
       ],
+      "@/hooks/*": [
+        "./src/hooks/*"
+      ],
       "@/redux/*": [
         "./src/redux/*"
       ],
       "@/stores/*": [
         "./src/stores/*"
+      ],
+      "@/types": [
+        "./src/types"
       ],
       "@/utils/*": [
         "./src/utils/*"

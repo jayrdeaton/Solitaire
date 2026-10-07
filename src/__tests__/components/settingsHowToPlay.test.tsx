@@ -5,7 +5,6 @@ import '@tastic/profile'
 import { render } from '@testing-library/react-native'
 
 import { SettingsDialog } from '@/components/SettingsDialog'
-import { DEFAULT_SETTINGS, SettingsProvider } from '@/stores/settings'
 
 // The Settings "How to Play" row (BaseSettingsDialog's onShowHowToPlay) replays the guide. It is
 // wired through SettingsDialog's showHowToPlay prop, which only Home turns on (GameChrome never does:
@@ -14,6 +13,10 @@ import { DEFAULT_SETTINGS, SettingsProvider } from '@/stores/settings'
 const mockOpenGuide = jest.fn()
 const mockBaseSettingsDialog = jest.fn((_props: { onShowHowToPlay?: () => void }) => null)
 
+jest.mock('@/hooks/useSettings', () => {
+  const { DEFAULT_SETTINGS } = jest.requireActual('@/redux/settingsSlice')
+  return { useSettings: () => ({ settings: { ...DEFAULT_SETTINGS }, setSettings: jest.fn() }) }
+})
 jest.mock('@tastic/hud', () => ({
   ...jest.requireActual('@tastic/hud'),
   BaseSettingsDialog: (props: { onShowHowToPlay?: () => void }) => mockBaseSettingsDialog(props)
@@ -34,11 +37,7 @@ beforeEach(() => {
 
 describe('SettingsDialog: the How to Play row', () => {
   async function renderDialog(showHowToPlay?: boolean) {
-    await render(
-      <SettingsProvider initialValue={DEFAULT_SETTINGS}>
-        <SettingsDialog visible onDismiss={jest.fn()} rotation={0} showHowToPlay={showHowToPlay} />
-      </SettingsProvider>
-    )
+    await render(<SettingsDialog visible onDismiss={jest.fn()} rotation={0} showHowToPlay={showHowToPlay} />)
   }
 
   it("hands the guide's open() to the row when showHowToPlay is on", async () => {

@@ -22,11 +22,11 @@ import { DEFAULT_SEED_COLOR, previewCardBack, useTableColors } from '@/component
 import { UpdateDialog } from '@/components/UpdateDialog'
 import { useCardSoundPlayers } from '@/components/useCardSounds'
 import { CARD_FONT_FAMILY, useFontsPreload } from '@/components/useFontsPreload'
+import { useSettings } from '@/hooks/useSettings'
 import { persistor, type RootState, store } from '@/redux/store'
 import { GameStatsProvider } from '@/stores/gameStats'
 import { LastActiveGameProvider, loadLastActiveGame } from '@/stores/lastActiveGame'
 import { ProfilesProvider, useProfiles } from '@/stores/profiles'
-import { DEFAULT_SETTINGS, loadSettings, Settings, SettingsProvider, useSettings } from '@/stores/settings'
 import { SolitaireGameId } from '@/stores/statsTypes'
 import { loadThemeSettings, saveThemeSettings } from '@/stores/themeSettings'
 import { useSplashReady } from '@/utils/splashGate'
@@ -170,12 +170,11 @@ function MutedProfileColors({ children }: { children: ReactNode }) {
 
 /** Mounted once, wrapping every route via ThemedStack below AND the root overlays (toaster, update dialog) -
  * every screen's rotated frame (see RotatedScreen, and withGameProviders for the games) reads the live rotation
- * this provides via @tastic/core's useRotation()/RotatedGameView. Only needs useSettings() (the plain
- * Context store, not Redux) for the persisted Lock Orientation setting, so - unlike FeedbackBridge -
- * it has no dependency on ReduxProvider/PersistGate/ProfilesProvider and doesn't need to nest inside
- * any of them. */
+ * this provides via @tastic/core's useRotation()/RotatedGameView. Reads the persisted Lock Orientation setting
+ * through useSettings() (the Redux `settings` slice), so it sits inside PersistGate: the saved lock is already
+ * rehydrated when this first renders. */
 function OrientationBridge({ children }: { children: ReactNode }) {
-  const { settings, updateSettings } = useSettings()
+  const { settings, setSettings } = useSettings()
   // `freezeWhileLocked`: Lock Orientation freezes the provider's ONE shared reading, so every consumer
   // (rotated frames, status bar, overlays, hud dialogs) holds together, including a screen that mounts
   // after the lock. The lock's angle round-trips through `lockedRotation`, so a relaunch reopens in
@@ -184,7 +183,7 @@ function OrientationBridge({ children }: { children: ReactNode }) {
   // device's real, portrait interface orientation), so every rotated screen reads portrait for as long as it's
   // showing, and the real rotation again once it hides - see @tastic/core's own doc for the full reasoning.
   return (
-    <OrientationProvider deviceMotion={DeviceMotion} freezeWhileLocked lockInitialValue={{ locked: settings.lockOrientation, rotation: settings.lockedRotation }} onLockChange={(next) => updateSettings({ lockOrientation: next.locked, lockedRotation: next.rotation })} portraitWhileKeyboard>
+    <OrientationProvider deviceMotion={DeviceMotion} freezeWhileLocked lockInitialValue={{ locked: settings.lockOrientation, rotation: settings.lockedRotation }} onLockChange={(next) => setSettings({ lockOrientation: next.locked, lockedRotation: next.rotation })} portraitWhileKeyboard>
       {children}
     </OrientationProvider>
   )
@@ -224,12 +223,10 @@ function FeedbackBridge({ children, playCardSound, playInvalidSound }: FeedbackB
 export default function RootLayout() {
   const [themeInitialValue, setThemeInitialValue] = useState<Partial<ThemeSettings> | undefined>(undefined)
   const [themeLoaded, setThemeLoaded] = useState(false)
-  const [appSettings, setAppSettings] = useState<Settings>(DEFAULT_SETTINGS)
-  const [appSettingsLoaded, setAppSettingsLoaded] = useState(false)
   const [lastActiveGame, setLastActiveGame] = useState<SolitaireGameId | null>(null)
   const [lastActiveGameLoaded, setLastActiveGameLoaded] = useState(false)
-  // Registers the 'fonts' gate itself (see useFontsPreload's own doc) - unlike the other four gates
-  // above, font loading is driven by expo-font's own useFonts hook rather than an AsyncStorage read,
+  // Registers the 'fonts' gate itself (see useFontsPreload's own doc) - unlike the theme and
+  // lastActiveGame gates above, font loading is driven by expo-font's own useFonts hook rather than an AsyncStorage read,
   // so there's no separate useEffect/setState pair for it here.
   const fontsLoaded = useFontsPreload()
   const { playCardSound, playInvalidSound } = useCardSoundPlayers()
@@ -244,10 +241,6 @@ export default function RootLayout() {
       setThemeInitialValue(stored ?? { color: DEFAULT_SEED_COLOR })
       setThemeLoaded(true)
     })
-    loadSettings().then((s) => {
-      setAppSettings(s)
-      setAppSettingsLoaded(true)
-    })
     loadLastActiveGame().then((g) => {
       setLastActiveGame(g)
       setLastActiveGameLoaded(true)
@@ -255,7 +248,6 @@ export default function RootLayout() {
   }, [])
 
   useSplashReady('theme', themeLoaded)
-  useSplashReady('appSettings', appSettingsLoaded)
   useSplashReady('lastActiveGame', lastActiveGameLoaded)
   // 'fonts' is registered inside useFontsPreload itself, not here - see its own doc comment.
   // 'haptics'/'sound'/'profiles' are registered further down the tree instead (FeedbackBridge,
@@ -266,56 +258,54 @@ export default function RootLayout() {
   // ReduxProvider, so it moved to the same "owns its own gate, registered deep in the tree" shape
   // 'haptics'/'sound' already had.
 
-  if (!themeLoaded || !appSettingsLoaded || !lastActiveGameLoaded || !fontsLoaded) return null
+  if (!themeLoaded || !lastActiveGameLoaded || !fontsLoaded) return null
 
   return (
     <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider>
         <LastActiveGameProvider initialValue={lastActiveGame}>
-          <SettingsProvider initialValue={appSettings}>
-            <ThemeProvider initialValue={themeInitialValue} onChange={saveThemeSettings} fontFamily={CARD_FONT_FAMILY}>
-              <ReduxProvider store={store}>
-                <PersistGate persistor={persistor}>
-                  {/* ProfilesProvider/GameStatsProvider now live here, inside PersistGate, instead
+          <ThemeProvider initialValue={themeInitialValue} onChange={saveThemeSettings} fontFamily={CARD_FONT_FAMILY}>
+            <ReduxProvider store={store}>
+              <PersistGate persistor={persistor}>
+                {/* ProfilesProvider/GameStatsProvider now live here, inside PersistGate, instead
                   of wrapping the whole app the way they did before this migration. `profiles` is
                   Redux-backed now (see stores/profiles.tsx), so it needs useSelector/useDispatch,
                   which only work below ReduxProvider; GameStatsProvider calls useProfiles() itself
                   (for activeProfileId), so it has to stay nested inside ProfilesProvider wherever
                   that ends up - the exact pre-existing parent/child relationship between the two,
                   unchanged, just both shifted down together as a unit. Nothing else here moved -
-                  LastActiveGameProvider/SettingsProvider/ThemeProvider/ReduxProvider keep the exact
+                  LastActiveGameProvider/ThemeProvider/ReduxProvider keep the exact
                   same relative order and position they had before this migration (confirmed by grep
                   that nothing in their own subtrees needs useProfiles()/useGameStats() besides
                   what's already inside this new nesting) - so ReduxProvider itself did NOT need to
                   move to wrap the whole app; only the two providers with a real dependency on it
                   did. See this app's CLAUDE.md for the fuller version of this reasoning. */}
-                  <ProfilesProvider>
-                    <MutedProfileColors>
-                      <GameStatsProvider>
-                        <FeedbackBridge playCardSound={playCardSound} playInvalidSound={playInvalidSound}>
-                          <ToastProvider>
-                            <ProfileThemeSync />
-                            <OrientationBridge>
-                              {/* Wraps the stack (rather than sitting beside it like RootOverlays) because
+                <ProfilesProvider>
+                  <MutedProfileColors>
+                    <GameStatsProvider>
+                      <FeedbackBridge playCardSound={playCardSound} playInvalidSound={playInvalidSound}>
+                        <ToastProvider>
+                          <ProfileThemeSync />
+                          <OrientationBridge>
+                            {/* Wraps the stack (rather than sitting beside it like RootOverlays) because
                             Home's useAutoShowGuide() and its Settings "How to Play" row reach it through
                             context (see GuideHost's own doc). Must stay inside PersistGate (the seen
                             version is read already rehydrated), FeedbackBridge (the card portals into
                             FeedbackPressProvider's Portal.Host) and OrientationBridge (it reads the
                             live tilt). */}
-                              <GuideHost>
-                                <ThemedStack />
-                              </GuideHost>
-                              <RootOverlays />
-                            </OrientationBridge>
-                          </ToastProvider>
-                        </FeedbackBridge>
-                      </GameStatsProvider>
-                    </MutedProfileColors>
-                  </ProfilesProvider>
-                </PersistGate>
-              </ReduxProvider>
-            </ThemeProvider>
-          </SettingsProvider>
+                            <GuideHost>
+                              <ThemedStack />
+                            </GuideHost>
+                            <RootOverlays />
+                          </OrientationBridge>
+                        </ToastProvider>
+                      </FeedbackBridge>
+                    </GameStatsProvider>
+                  </MutedProfileColors>
+                </ProfilesProvider>
+              </PersistGate>
+            </ReduxProvider>
+          </ThemeProvider>
         </LastActiveGameProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

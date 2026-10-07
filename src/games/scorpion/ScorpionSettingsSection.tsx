@@ -1,15 +1,15 @@
 import { SegmentedButtons } from '@rific/feedback-press'
 
 import { SettingsSection } from '@/components/SettingsSection'
-import { useSettings } from '@/stores/settings'
+import { useSettings } from '@/hooks/useSettings'
 
 export function ScorpionSettingsSection() {
-  const { settings, updateSettings } = useSettings()
+  const { settings, setSettings } = useSettings()
   return (
     <SettingsSection label='SCORPION'>
       <SegmentedButtons
         value={settings.scorpionAssistedStock ? 'assisted' : 'classic'}
-        onValueChange={(v) => updateSettings({ scorpionAssistedStock: v === 'assisted' })}
+        onValueChange={(v) => setSettings({ scorpionAssistedStock: v === 'assisted' })}
         buttons={[
           { value: 'assisted', label: 'Assisted' },
           { value: 'classic', label: 'Classic' }

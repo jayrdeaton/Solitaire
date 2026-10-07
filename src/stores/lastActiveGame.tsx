@@ -37,7 +37,7 @@ const LastActiveGameContext = createContext<LastActiveGameContextValue | null>(n
 /** Which game screen the player is currently on, persisted so a cold launch/relaunch can drop them
  * straight back onto it (see app/index.tsx) instead of the main menu - independent of whether that
  * game still has a resumable board (see stores/gameInProgress.ts). Seeded from a pre-loaded
- * `initialValue` (see _layout.tsx's splash-gate loader), same convention as SettingsProvider.
+ * `initialValue` (see _layout.tsx's splash-gate loader).
  *
  * Deliberately NOT React state. The only thing that ever needed the live value was Home's resume
  * Redirect, and that is a one-shot cold-launch decision - so exposing it as state made every set/clear

@@ -14,7 +14,11 @@ import { buildScorpionPreview } from '@/games/scorpion/previewLayout'
 import { buildSpiderPreview } from '@/games/spider/previewLayout'
 import { buildTriPeaksPreview } from '@/games/tripeaks/previewLayout'
 import { buildYukonPreview } from '@/games/yukon/previewLayout'
-import { DEFAULT_SETTINGS, SettingsProvider } from '@/stores/settings'
+
+jest.mock('@/hooks/useSettings', () => {
+  const { DEFAULT_SETTINGS } = jest.requireActual('@/redux/settingsSlice')
+  return { useSettings: () => ({ settings: { ...DEFAULT_SETTINGS }, setSettings: jest.fn() }) }
+})
 
 const ALL_PREVIEWS: Record<PreviewGame, PreviewCardPlacement[]> = {
   acesup: buildAcesUpPreview(),
@@ -39,11 +43,7 @@ function countNodes(node: unknown): number {
 }
 
 async function renderPreview(game: PreviewGame, placements: PreviewCardPlacement[]) {
-  const screen = await render(
-    <SettingsProvider initialValue={DEFAULT_SETTINGS}>
-      <GamePreview game={game} placements={placements} colors={lightColors} />
-    </SettingsProvider>
-  )
+  const screen = await render(<GamePreview game={game} placements={placements} colors={lightColors} />)
   return countNodes(screen.toJSON())
 }
 

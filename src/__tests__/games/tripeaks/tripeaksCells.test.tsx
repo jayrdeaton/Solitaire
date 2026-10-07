@@ -92,9 +92,9 @@ jest.mock('@tastic/animations/fireworks', () => ({ Fireworks: () => null }))
 jest.mock('@/games/shared/WinBanner', () => ({ WinBanner: () => null }))
 jest.mock('@/stores/gameStats', () => ({ useGameStats: () => ({ recordDealWon: () => {}, recordDealAbandoned: () => {}, recordHintUsed: () => {} }) }))
 jest.mock('@/stores/lastActiveGame', () => ({ useLastActiveGame: () => ({ setLastActiveGame: () => {}, clearLastActiveGame: () => {} }) }))
-jest.mock('@/stores/settings', () => {
-  const actual = jest.requireActual('@/stores/settings')
-  return { ...actual, useSettings: () => ({ settings: { ...actual.DEFAULT_SETTINGS } }) }
+jest.mock('@/hooks/useSettings', () => {
+  const actual = jest.requireActual('@/redux/settingsSlice')
+  return { useSettings: () => ({ settings: { ...actual.DEFAULT_SETTINGS } }) }
 })
 jest.mock('@/components/theme', () => {
   const actual = jest.requireActual('@/components/theme')

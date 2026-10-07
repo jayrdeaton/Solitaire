@@ -4,8 +4,8 @@ import { useEffect, useRef } from 'react'
 import { AppState, StyleSheet, View } from 'react-native'
 import Animated, { cancelAnimation, Easing, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withRepeat, withSpring, WithSpringConfig, withTiming } from 'react-native-reanimated'
 
+import { useSettings } from '@/hooks/useSettings'
 import { useProfiles } from '@/stores/profiles'
-import { useSettings } from '@/stores/settings'
 
 import { HERO_CARD_COUNT, HERO_FAN_CARDS, HERO_FAN_CENTER_Y, HERO_FAN_HEIGHT, HERO_FAN_SPAN, HERO_WAVE_CYCLE_MS, heroBumpAt, type HeroFanCard } from './heroFan'
 import { CARD_HEIGHT, CARD_RADIUS, CARD_WIDTH, cardRadiusForWidth, useTableColors } from './theme'
