@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import type { ViewRotation } from '@tastic/core'
 import { createContext, ReactNode, useContext, useState } from 'react'
 
 export interface Settings {
@@ -62,6 +63,10 @@ export interface Settings {
   // rest of the fleet's own games expose. Defaults false, matching every existing app's own default
   // for this setting (nothing pins the layout until the player deliberately opts in).
   lockOrientation: boolean
+  // The angle the lock is holding, written by OrientationProvider's onLockChange (recorded on lock,
+  // cleared on unlock) and handed back as lockInitialValue, so a relaunch reopens in the orientation
+  // the player locked to instead of portrait. Never set by the UI directly; absent while unlocked.
+  lockedRotation?: ViewRotation
   // Global, not per-game: skips every DealAnimator-driven flight (the initial deal, stock draws,
   // undo/recycle returns, Pyramid's win sweep - see components/dealing/DealLayer.tsx) straight to
   // its landed state, with no ghost ever mounted or flown - the same instant-land outcome a mid-deal

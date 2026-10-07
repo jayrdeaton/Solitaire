@@ -16,7 +16,6 @@ import { Provider as ReduxProvider, useDispatch, useSelector } from 'react-redux
 import { PersistGate } from 'redux-persist/integration/react'
 
 import { GuideHost } from '@/components/GuideHost'
-import { createLockableDeviceMotion } from '@/components/lockableDeviceMotion'
 import { RotatedFrame } from '@/components/RotatedScreen'
 import { TableBackground } from '@/components/TableBackground'
 import { DEFAULT_SEED_COLOR, previewCardBack, useTableColors } from '@/components/theme'
@@ -177,18 +176,15 @@ function MutedProfileColors({ children }: { children: ReactNode }) {
  * any of them. */
 function OrientationBridge({ children }: { children: ReactNode }) {
   const { settings, updateSettings } = useSettings()
-  // Lock Orientation works by withholding sensor samples from the provider while locked - see
-  // createLockableDeviceMotion for why that (rather than passing `locked` to each useRotation()/
-  // useOrientationState() call site) is what freezes every consumer consistently.
+  // `freezeWhileLocked`: Lock Orientation freezes the provider's ONE shared reading, so every consumer
+  // (rotated frames, status bar, overlays, hud dialogs) holds together, including a screen that mounts
+  // after the lock. The lock's angle round-trips through `lockedRotation`, so a relaunch reopens in
+  // the orientation the player locked to instead of portrait.
   // `portraitWhileKeyboard`: the software keyboard can't turn with a faked rotation (it's always drawn in the
   // device's real, portrait interface orientation), so every rotated screen reads portrait for as long as it's
   // showing, and the real rotation again once it hides - see @tastic/core's own doc for the full reasoning.
-  const [{ deviceMotion, setLocked }] = useState(() => createLockableDeviceMotion(DeviceMotion, settings.lockOrientation))
-  useEffect(() => {
-    setLocked(settings.lockOrientation)
-  }, [settings.lockOrientation, setLocked])
   return (
-    <OrientationProvider deviceMotion={deviceMotion} lockInitialValue={{ locked: settings.lockOrientation }} onLockChange={(next) => updateSettings({ lockOrientation: next.locked })} portraitWhileKeyboard>
+    <OrientationProvider deviceMotion={DeviceMotion} freezeWhileLocked lockInitialValue={{ locked: settings.lockOrientation, rotation: settings.lockedRotation }} onLockChange={(next) => updateSettings({ lockOrientation: next.locked, lockedRotation: next.rotation })} portraitWhileKeyboard>
       {children}
     </OrientationProvider>
   )
