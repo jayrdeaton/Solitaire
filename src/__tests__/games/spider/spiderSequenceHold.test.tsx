@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { Profiler } from 'react'
 import { StyleSheet } from 'react-native'
@@ -11,6 +10,8 @@ import { Card } from '@/engine/types'
 import { MoveInfo } from '@/games/shared/undoTypes'
 import { createSpiderController, SpiderState } from '@/games/spider/rules'
 import SpiderScreen from '@/games/spider/SpiderScreen'
+
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Spider's completed-run flights (SequenceFlightGhosts) against the paint machinery in cardFacePaint.ts: a card face is ONE
@@ -30,7 +31,6 @@ import SpiderScreen from '@/games/spider/SpiderScreen'
 // ---------------------------------------------------------------------------------------------------------------------
 
 const FLIGHT_MS = 80
-const SAVE_KEY = 'solitaire.game-in-progress.v1.spider'
 
 const mockMeasureView = jest.fn(async (): Promise<{ x: number; y: number } | null> => ({ x: 5, y: 5 }))
 const mockRegistered = new Map<string, unknown>()
@@ -95,6 +95,7 @@ const mockDeal = {
   cancel: () => {}
 }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('@/components/dragdrop/DragGhostLayer', () => {
   const { useMemo, useSyncExternalStore } = require('react')
   const { View: MockView } = require('react-native')
@@ -322,7 +323,7 @@ function watch(ids: string[], { seenOnly = false } = {}) {
 }
 
 async function mount(state: SpiderState, undoStack: unknown[] = []) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack, moves: 5, elapsedSeconds: 30, config: 1 }) : null))
+  seedGameInProgress('spider', { state, undoStack, moves: 5, elapsedSeconds: 30, config: 1 })
   await render(
     <Profiler id='spider' onRender={recordCommit}>
       <SpiderScreen />
@@ -392,6 +393,10 @@ afterEach(async () => {
 
 // The forward sweep: the run's ghosts land on its slot in the commit that mounts the slot's King - a new face Image, blank
 // for a frame or two. The ghosts used to go in that same commit, so the King showed blank.
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
+
 describe('Spider - a sweep keeps its ghosts over the slot until the King there has painted', () => {
   async function sweepToSlot() {
     await mount(dealCompletesFirstRun())

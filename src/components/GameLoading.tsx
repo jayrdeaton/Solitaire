@@ -12,9 +12,9 @@ const SUIT_REST_OPACITY = 0.25
 const SUIT_PULSE_MS = 420
 const SUIT_STAGGER_MS = 140
 // Nothing is shown for this long, then the row fades in over REVEAL_FADE_MS. The read this stands in for
-// is one AsyncStorage round trip (a game's saved-board read, which `preloadGameInProgress` already starts
-// on finger-down; the stats read) - a few dozen ms - but a game's loading screen stays up until the board
-// that replaces it has been BUILT too, and that commit is ~400-500ms of JS (the indicator keeps animating
+// (a game's saved board) comes straight from the already-rehydrated Redux store, so it is near-instant,
+// but a game's loading screen stays up until the board that replaces it has been BUILT too, and that
+// commit is ~400-500ms of JS (the indicator keeps animating
 // through it, on the UI thread). At 250ms an ordinary game entry landed just past the threshold: a few
 // half-faded suits flashed and were gone before a single pulse (840ms) could play. Held back past a normal
 // entry, the common case is simply the felt (which the board also paints), and the indicator only appears

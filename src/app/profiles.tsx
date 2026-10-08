@@ -2,8 +2,9 @@ import { ProfilesScreen } from '@tastic/profile'
 import { StyleSheet, View } from 'react-native'
 
 import { RotatedScreen } from '@/components/RotatedScreen'
-import { CHROME_FG, DEFAULT_SEED_COLOR, useTableColors } from '@/components/theme'
+import { CHROME_FG, useTableColors } from '@/components/theme'
 import { useFrameAutoAlign } from '@/components/useFrameAutoAlign'
+import { DEFAULT_SEED_COLOR } from '@/constants/theme'
 import { useProfiles } from '@/stores/profiles'
 import { safeBack } from '@/utils/navigation'
 

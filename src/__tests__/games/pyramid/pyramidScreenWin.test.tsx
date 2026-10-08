@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
 import { FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
@@ -8,10 +7,12 @@ import PyramidScreen, { SWEEP_WIN_REVEAL_MAX_WAIT_MS, winHoldView } from '@/game
 import { PyramidController, PyramidState } from '@/games/pyramid/rules'
 import { WIN_REVEAL_MAX_WAIT_MS } from '@/games/shared/useWinReveal'
 
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
+
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for what Pyramid's WINNING removal does: the REAL PyramidScreen (real rules, real useFlightConcurrency /
 // useDerivedWinCheck / useWinReveal / useGameSession / gameInProgress store, and the real pair-flight overlay), seeded with a
-// saved game through the AsyncStorage mock. Only the parts that need native views, gestures or animation are replaced, each by
+// saved game through the test store (src/testUtils/gameInProgressStore.ts). Only the parts that need native views, gestures or animation are replaced, each by
 // a stand-in that honors the same contract the screen relies on (same approach as freeCellScreenAutoPlay.test.tsx):
 //   - DraggableCard / StockWaste / DiscardCell: render the card ids they were handed, so the test can see exactly what each pile
 //     is showing at every moment, and a tap calls onPress(measure) like the real ones.
@@ -38,7 +39,6 @@ const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
 const SLOWEST_FLIGHT_MS = springSettleMs(FLIGHT_SPRING)
 const DEAL_SPRING_MS = 280 // dealSpring.ts's DEAL_SPRING.duration - a dealt card lands this long after its own take-off
 const STAGGER_MS = 35 // dealStaggerMs() for any sweep of up to 28 cards
-const SAVE_KEY = 'solitaire.game-in-progress.v1.pyramid'
 /** The pile-blank lag PyramidScreen adds to a pile's last take-off (SWEEP_PILE_BLANK_LAG_MS). */
 const BLANK_LAG_MS = 20
 /** How long the fake deal's ghost pool takes to mount before its clock starts: every card's take-off (and landing) is this much later than
@@ -213,6 +213,7 @@ const mockDeal = {
   }
 }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/engine/rng', () => ({ ...jest.requireActual('@/engine/rng'), randomSeed: () => mockSeed }))
@@ -402,7 +403,7 @@ async function flush(ms = 0) {
 }
 
 async function mount(state: PyramidState) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack: [], moves: 0, elapsedSeconds: 0 }) : null))
+  seedGameInProgress('pyramid', { state, undoStack: [], moves: 0, elapsedSeconds: 0 })
   await render(<PyramidScreen />)
   await flush() // loadGameInProgress -> restoreGame
   expect(screen.queryByTestId('stock-top')).not.toBeNull()
@@ -469,6 +470,9 @@ afterEach(async () => {
   jest.useRealTimers()
   jest.restoreAllMocks()
 })
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('Pyramid screen - a winning King', () => {
   it('flies to the discard first, the stock/waste stay where they are until the leftovers are dealt, and the celebration starts only after the last has landed and a beat has passed', async () => {

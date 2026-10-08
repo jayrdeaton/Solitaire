@@ -3,6 +3,7 @@ import type { TableColors } from '@tastic/cards'
 import { useMemo } from 'react'
 import { useTheme } from 'react-native-paper'
 
+import { DEFAULT_SEED_COLOR } from '@/constants/theme'
 import { useProfiles } from '@/stores/profiles'
 
 import { darkColors, lightColors } from './palettes'
@@ -40,14 +41,6 @@ export function cardRadiusForWidth(width: number): number {
 export const CARD_RADIUS = cardRadiusForWidth(CARD_WIDTH)
 
 export { darkColors, lightColors }
-
-// The seed every fresh install/guest effectively starts on - Material Pink 500 - rather than leaving
-// cardBack on the flatter blue blend anchor above; it is what gives the default card back its
-// magenta. (It was originally picked for the felt it used to derive too; the felt is now the fixed
-// splash-matching green regardless of seed, so today it only sets the card back.) Also what a
-// brand-new profile's own color starts as (see app/profiles.tsx's defaultColor) - a real seed a
-// picker can match against, not a pre-blended value nothing in the swatch grid equals.
-export const DEFAULT_SEED_COLOR = '#e91e63'
 
 // How strongly a profile's own bright/saturated color tints the base cardBack/cardBackPattern -
 // low enough to read as "muted," not as the profile's own vivid swatch, but high enough that 20

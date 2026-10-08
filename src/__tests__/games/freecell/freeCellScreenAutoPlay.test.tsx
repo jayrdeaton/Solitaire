@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
 import { AUTO_PLAY_STAGGER_MS, dropSpringFor, FLIGHT_SPRING, scaledMs, springSettleMs } from '@/components/dragdrop/dragSpring'
@@ -7,10 +6,12 @@ import { Card, Suit, SUITS } from '@/engine/types'
 import FreeCellScreen, { FINISH_LANDING_WAIT_MS, FINISH_STAGGER_MS } from '@/games/freecell/FreeCellScreen'
 import { FreeCellController, FreeCellState } from '@/games/freecell/rules'
 
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
+
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for FreeCell's auto-play policy (see src/games/freecell/autoPlay.ts): the REAL FreeCellScreen, real
 // game rules, real useFlightConcurrency / useAutoFoundationCascade / useAutoFinish / useGameSession / useFoundationWinCheck /
-// gameInProgress store, seeded with a saved game through the AsyncStorage mock. Only the parts that need native views,
+// gameInProgress store, seeded with a saved game through the test store (src/testUtils/gameInProgressStore.ts). Only the parts that need native views,
 // gestures or animation are replaced, each by a stand-in that honors the same contract the screen relies on:
 //   - PileView / DraggableCard: a tap calls onPressCard(card, indexFromTop, measure) / onPress(measure); a drop calls
 //     drag.onDrop(target, count, anchorCardId, flight) - exactly how the real ones drive the screen.
@@ -26,7 +27,6 @@ import { FreeCellController, FreeCellState } from '@/games/freecell/rules'
 const FLIGHT_MS = springSettleMs(FLIGHT_SPRING)
 /** How long the stand-in deal layer takes to land a batch. */
 const DEAL_MS = 80
-const SAVE_KEY = 'solitaire.game-in-progress.v1.freecell'
 
 const mockSettings = { autoMove: true }
 const mockRecordWon = jest.fn()
@@ -111,6 +111,7 @@ const mockDeal = {
   cancel: () => {}
 }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/components/winning/WinCascadeLayer', () => ({
@@ -306,7 +307,7 @@ async function flushUntil(done: () => boolean, maxMs = 2000) {
 }
 
 async function mount(state: FreeCellState, expectedCards = 52) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack: [], moves: 0, elapsedSeconds: 0 }) : null))
+  seedGameInProgress('freecell', { state, undoStack: [], moves: 0, elapsedSeconds: 0 })
   await render(<FreeCellScreen />)
   await flush() // loadGameInProgress -> restoreGame
   expect(screen.queryAllByTestId(/^card-|^freecell-/).length).toBe(expectedCards)
@@ -364,6 +365,9 @@ afterEach(async () => {
   jest.useRealTimers()
   jest.restoreAllMocks()
 })
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('FreeCell screen - the safe-card cascade needs a TAP that went to a foundation', () => {
   it('a resumed board never plays anything by itself, even one full of safe cards', async () => {
@@ -854,7 +858,7 @@ describe("FreeCell screen - the deck placeholder leaves with the last card, on t
   /** A brand-new game (nothing saved), its initial deal held at the start: returns that deal's start() call. */
   async function mountFreshDeal() {
     mockHoldDeal = true
-    jest.spyOn(AsyncStorage, 'getItem').mockResolvedValue(null)
+    resetGameInProgress()
     await render(<FreeCellScreen />)
     await flush() // loadGameInProgress -> startNewGame
     await flush() // the deferred [state] effect -> runDeal (measures, then deal.start)

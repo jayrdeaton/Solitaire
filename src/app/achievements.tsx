@@ -6,7 +6,6 @@ import { StyleSheet, View } from 'react-native'
 import { Text, useTheme } from 'react-native-paper'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
-import { LoadingIndicator } from '@/components/GameLoading'
 import { RotatedScreen } from '@/components/RotatedScreen'
 import { CHROME_FG, CHROME_FG_MUTED, CHROME_SECTION_BG } from '@/components/theme'
 import { useProfilePickerAlign } from '@/components/useProfilePickerAlign'
@@ -57,7 +56,7 @@ function AchievementsContent() {
   // Already remapped onto the rotated frame's edges by RotatedScreen's SafeAreaInsetsContext.
   const insets = useSafeAreaInsets()
   const { dark } = useTheme()
-  const { stats, unlockedAchievements, loaded, resetAll } = useGameStats()
+  const { stats, unlockedAchievements, resetAll } = useGameStats()
   const { profiles } = useProfiles()
   // Own popover host, independent of whichever profile is active for gameplay elsewhere (see
   // stores/profiles.tsx's activeProfileId, which only drives the cosmetic card-back/felt color) —
@@ -97,60 +96,49 @@ function AchievementsContent() {
       {/* rotation={0}: its reset-confirm portals into the Portal.Host RotatedScreen mounts INSIDE the frame, so it is
       already turned with it - the ambient rotation on top would turn it twice. */}
       <BaseStatsScreen onBack={safeBack} insets={insets} onReset={resetAll} fg={CHROME_FG} bg='transparent' rotation={0}>
-        {!loaded ? (
-          // Stats load asynchronously from AsyncStorage (see useGameStats' own `loaded` doc comment) -
-          // without this guard, this screen would render a full flash of zeroed-out "0 games played"
-          // content for a beat before the real numbers pop in once the read resolves.
-          <View style={styles.loading}>
-            <LoadingIndicator />
-          </View>
-        ) : (
-          <>
-            {profiles.length > 0 && <ProfilePicker idPrefix='achievements' host={profilePickerHost} profiles={profiles} selectedId={effectiveProfileId} color={CHROME_FG} dark={dark} guestLabel='All Profiles' nullLabel='All Profiles' nullIcon='account-group' onSelect={(profile) => setSelectedProfileId(profile?.id ?? null)} alignOverride={profilePickerAlign} />}
+        {profiles.length > 0 && <ProfilePicker idPrefix='achievements' host={profilePickerHost} profiles={profiles} selectedId={effectiveProfileId} color={CHROME_FG} dark={dark} guestLabel='All Profiles' nullLabel='All Profiles' nullIcon='account-group' onSelect={(profile) => setSelectedProfileId(profile?.id ?? null)} alignOverride={profilePickerAlign} />}
 
-            <StatSection label='OVERALL' fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
-              <StatRow label='Games Played' value={String(played)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Wins' value={String(wins)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Win Rate' value={played > 0 ? `${Math.round((wins / played) * 100)}%` : '—'} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Best Streak' value={String(getBestStreak(statsView))} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Games Solved' value={`${getVariantsWon(statsView)} / ${SOLITAIRE_GAME_IDS.length}`} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Fastest Win' value={bestTime === null ? '—' : formatTime(bestTime)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Fewest Moves' value={bestMoves === null ? '—' : String(bestMoves)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Lowest Score' value={bestScore === null ? '—' : String(bestScore)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Hints Used' value={String(getTotalHintsUsed(statsView))} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+        <StatSection label='OVERALL' fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
+          <StatRow label='Games Played' value={String(played)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Wins' value={String(wins)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Win Rate' value={played > 0 ? `${Math.round((wins / played) * 100)}%` : '—'} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Best Streak' value={String(getBestStreak(statsView))} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Games Solved' value={`${getVariantsWon(statsView)} / ${SOLITAIRE_GAME_IDS.length}`} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Fastest Win' value={bestTime === null ? '—' : formatTime(bestTime)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Fewest Moves' value={bestMoves === null ? '—' : String(bestMoves)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Lowest Score' value={bestScore === null ? '—' : String(bestScore)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Hints Used' value={String(getTotalHintsUsed(statsView))} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+        </StatSection>
+
+        {/* Per game. "Abandoned" rather than "lost": a solitaire deal is won or walked away from,
+        never lost outright — see stores/statsTypes.ts. */}
+        {SOLITAIRE_GAME_IDS.map((id) => {
+          const v = statsView.variants[id]
+          return (
+            <StatSection key={id} label={GAME_TITLES[id].toUpperCase()} fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
+              <StatRow label='Played' value={String(v.record.played)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+              <StatRow label='Won' value={String(v.record.wins)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+              <StatRow label='Abandoned' value={String(v.record.losses)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+              <StatRow label='Streak' value={`${v.streak.currentWinStreak} (best ${v.streak.bestWinStreak})`} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+              <StatRow label='Fastest' value={v.bestTimeSeconds === null ? '—' : formatTime(v.bestTimeSeconds)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+              <StatRow label='Fewest Moves' value={v.bestMoves === null ? '—' : String(v.bestMoves)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+              <StatRow label='Lowest Score' value={v.bestScore === null ? '—' : String(v.bestScore)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
             </StatSection>
+          )
+        })}
 
-            {/* Per game. "Abandoned" rather than "lost": a solitaire deal is won or walked away from,
-          never lost outright — see stores/statsTypes.ts. */}
-            {SOLITAIRE_GAME_IDS.map((id) => {
-              const v = statsView.variants[id]
-              return (
-                <StatSection key={id} label={GAME_TITLES[id].toUpperCase()} fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
-                  <StatRow label='Played' value={String(v.record.played)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-                  <StatRow label='Won' value={String(v.record.wins)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-                  <StatRow label='Abandoned' value={String(v.record.losses)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-                  <StatRow label='Streak' value={`${v.streak.currentWinStreak} (best ${v.streak.bestWinStreak})`} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-                  <StatRow label='Fastest' value={v.bestTimeSeconds === null ? '—' : formatTime(v.bestTimeSeconds)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-                  <StatRow label='Fewest Moves' value={v.bestMoves === null ? '—' : String(v.bestMoves)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-                  <StatRow label='Lowest Score' value={v.bestScore === null ? '—' : String(v.bestScore)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-                </StatSection>
-              )
-            })}
+        <StatSection label='ACTIVITY' fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
+          <StatRow label='Days Played' value={String(statsView.distinctDaysPlayed)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Day Streak' value={String(statsView.currentDayStreak)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Best Day Streak' value={String(statsView.bestDayStreak)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+        </StatSection>
 
-            <StatSection label='ACTIVITY' fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
-              <StatRow label='Days Played' value={String(statsView.distinctDaysPlayed)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Day Streak' value={String(statsView.currentDayStreak)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Best Day Streak' value={String(statsView.bestDayStreak)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-            </StatSection>
-
-            <Text variant='labelMedium' style={[styles.listLabel, { color: CHROME_FG_MUTED }]}>
-              ALL ACHIEVEMENTS
-            </Text>
-            {getAchievementCatalogRows(ACHIEVEMENT_CATALOG, stats, statsView, unlockedAchievements, effectiveProfileId).map((row) => (
-              <AchievementRow key={row.id} icon={row.icon} title={row.title} description={row.description} badgeColor={row.unlockedAt !== undefined ? row.tierColor : LOCKED_BADGE_COLOR} checkColor={row.tierColor} unlockedLabel={row.unlockedLabel} progress={row.progress} deviceMarker={row.deviceMarker} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} sectionBg={CHROME_SECTION_BG} />
-            ))}
-          </>
-        )}
+        <Text variant='labelMedium' style={[styles.listLabel, { color: CHROME_FG_MUTED }]}>
+          ALL ACHIEVEMENTS
+        </Text>
+        {getAchievementCatalogRows(ACHIEVEMENT_CATALOG, stats, statsView, unlockedAchievements, effectiveProfileId).map((row) => (
+          <AchievementRow key={row.id} icon={row.icon} title={row.title} description={row.description} badgeColor={row.unlockedAt !== undefined ? row.tierColor : LOCKED_BADGE_COLOR} checkColor={row.tierColor} unlockedLabel={row.unlockedLabel} progress={row.progress} deviceMarker={row.deviceMarker} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} sectionBg={CHROME_SECTION_BG} />
+        ))}
       </BaseStatsScreen>
     </View>
   )
@@ -160,10 +148,6 @@ const styles = StyleSheet.create({
   listLabel: {
     letterSpacing: 2,
     marginTop: 8
-  },
-  loading: {
-    alignItems: 'center',
-    marginTop: 24
   },
   screen: {
     flex: 1

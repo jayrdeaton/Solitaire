@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
 import { PileRef } from '@/engine/gameTypes'
@@ -6,10 +5,12 @@ import { Card, Suit } from '@/engine/types'
 import FortyThievesScreen from '@/games/fortythieves/FortyThievesScreen'
 import { FortyThievesState } from '@/games/fortythieves/rules'
 
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
+
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for Forty Thieves' win and its no-teleport flights: the REAL FortyThievesScreen, real rules, real
 // useFlightConcurrency / useWinReveal / useFoundationWinCheck / useGameSession / gameInProgress store, seeded with a saved
-// game through the AsyncStorage mock. Only what needs native views, gestures or animation is replaced (same approach as
+// game through the test store (src/testUtils/gameInProgressStore.ts). Only what needs native views, gestures or animation is replaced (same approach as
 // freeCellScreenAutoPlay.test.tsx):
 //   - PileView / StockWaste / FoundationCell: stand-ins that REGISTER what they render in a
 //     fake CardRegistry - a tableau/waste card while it is shown, a foundation's TOP card only while the cell is
@@ -23,7 +24,6 @@ import { FortyThievesState } from '@/games/fortythieves/rules'
 
 const FLIGHT_MS = 80
 const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
-const SAVE_KEY = 'solitaire.game-in-progress.v1.fortythieves'
 
 const mockRecordWon = jest.fn()
 /** Settings' Auto-Move to Foundation - off unless a test is about the auto-play. */
@@ -98,6 +98,7 @@ const mockDeal = {
   cancel: () => {}
 }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 // Like the real layer, starting chains is a React STATE update on a provider above the screen and the ghosts are mounted by
@@ -318,7 +319,7 @@ async function flushUntil(done: () => boolean, maxMs = 2000) {
 }
 
 async function mount(state: FortyThievesState, undoStack: unknown[] = [], expectedCards = 1) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack, moves: 0, elapsedSeconds: 0, config: 0 }) : null))
+  seedGameInProgress('fortythieves', { state, undoStack, moves: 0, elapsedSeconds: 0, config: 0 })
   await render(<FortyThievesScreen />)
   await flush() // loadGameInProgress -> restoreGame
   expect(screen.queryAllByTestId(/^card-|^waste-|^stock-/).length).toBe(expectedCards)
@@ -361,6 +362,9 @@ afterEach(async () => {
   jest.useRealTimers()
   jest.restoreAllMocks()
 })
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('Forty Thieves screen - the win celebration waits for the winning card to fly in and land', () => {
   it('the winning card flies (not vanishes), and neither the foundations nor the banner change until it has landed and a beat has passed', async () => {

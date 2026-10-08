@@ -78,3 +78,24 @@ export function isValidStats(value: unknown): value is StatsState {
   const firstOk = v.firstGameResult === undefined || v.firstGameResult === null || v.firstGameResult === 'win' || v.firstGameResult === 'loss' || v.firstGameResult === 'draw'
   return profilesOk && firstOk
 }
+
+// A stored blob may predate a game id that has since been added (e.g. Yukon) - `variants[id]` is
+// then `undefined` entirely, not just missing bestMoves/bestScore, so DEFAULT_VARIANT is spread in
+// first as the base for a genuinely missing entry, same as emptyVariants() does for a fresh profile.
+function backfillVariants(variants: Record<SolitaireGameId, VariantStats>): Record<SolitaireGameId, VariantStats> {
+  return Object.fromEntries(SOLITAIRE_GAME_IDS.map((id) => [id, { ...DEFAULT_VARIANT, ...variants[id], bestMoves: variants[id]?.bestMoves ?? null, bestScore: variants[id]?.bestScore ?? null, hintsUsed: variants[id]?.hintsUsed ?? 0, winsWithoutHint: variants[id]?.winsWithoutHint ?? 0 }])) as Record<SolitaireGameId, VariantStats>
+}
+
+// Applied by the achievements slice when stats rehydrate (see redux/achievementsSlice.ts).
+// bestMoves/bestScore/hintsUsed/winsWithoutHint are newer than the rest of VariantStats, so stats
+// saved before them have variants that already pass isValidStats (see its tolerant check for these
+// fields) but genuinely lack the keys: backfilled here, device-wide and inside every profile's own
+// bucket, rather than resetting anything to defaults.
+export function migrateStats(stored: StatsState): StatsState {
+  return {
+    ...stored,
+    variants: backfillVariants(stored.variants),
+    profiles: Object.fromEntries(Object.entries(stored.profiles ?? {}).map(([id, p]) => [id, { ...p, variants: backfillVariants(p.variants) }])),
+    firstGameResult: stored.firstGameResult ?? null
+  }
+}

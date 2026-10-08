@@ -31,9 +31,7 @@ import { buildScorpionPreview } from '@/games/scorpion/previewLayout'
 import { buildSpiderPreview } from '@/games/spider/previewLayout'
 import { buildTriPeaksPreview } from '@/games/tripeaks/previewLayout'
 import { buildYukonPreview } from '@/games/yukon/previewLayout'
-import { preloadGameInProgress } from '@/stores/gameInProgress'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
-import { SolitaireGameId } from '@/stores/statsTypes'
 
 interface GameEntry {
   href: '/klondike' | '/spider' | '/freecell' | '/pyramid' | '/yukon' | '/golf' | '/tripeaks' | '/canfield' | '/scorpion' | '/fortythieves' | '/acesup'
@@ -172,7 +170,7 @@ function HomeContent() {
       {isWide ? (
         // Wide: a vertical tile (preview on top, text under it) - a horizontal row needs ~290pt, which two
         // columns beside the left pane can't give it. The rules button floats over the preview's corner.
-        <Pressable style={wideTileStyle} onPressIn={() => preloadGameInProgress(g.href.slice(1) as SolitaireGameId)}>
+        <Pressable style={wideTileStyle}>
           <View>
             <GamePreview game={g.href.slice(1) as PreviewGame} placements={previewsRevealed ? g.placements : []} colors={colors} style={styles.tilePreview} />
             {renderRulesButton(g, styles.tileInfoButton, '#fff')}
@@ -185,7 +183,7 @@ function HomeContent() {
           </Text>
         </Pressable>
       ) : (
-        <Pressable style={styles.card} onPressIn={() => preloadGameInProgress(g.href.slice(1) as SolitaireGameId)}>
+        <Pressable style={styles.card}>
           <GamePreview game={g.href.slice(1) as PreviewGame} placements={previewsRevealed ? g.placements : []} colors={colors} style={styles.preview} />
           <View style={styles.cardText}>
             <Text style={styles.cardTitle}>{g.title}</Text>

@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { StyleSheet } from 'react-native'
 
@@ -6,6 +5,8 @@ import { markGhostPending } from '@/components/cardFacePaint'
 import { Card, Suit } from '@/engine/types'
 import { TriPeaksState } from '@/games/tripeaks/rules'
 import TriPeaksScreen from '@/games/tripeaks/TriPeaksScreen'
+
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The REAL TriPeaksScreen's board cells (real rules, flight concurrency, the memoized TriPeaksCell with its real useTakeOffHold
@@ -19,7 +20,6 @@ import TriPeaksScreen from '@/games/tripeaks/TriPeaksScreen'
 //   - an unrelated screen render does not re-render a covered cell (TriPeaksCell is memoized, its callbacks stable).
 // ---------------------------------------------------------------------------------------------------------------------
 
-const SAVE_KEY = 'solitaire.game-in-progress.v1.tripeaks'
 const FLIGHT_MS = 80
 
 // Every playShake() is one withSequence() call, so counting those counts the shakes actually played.
@@ -59,6 +59,7 @@ const mockDeal = {
   cancel: () => {}
 }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('react-native-reanimated', () => {
   const { useRef } = require('react')
   const base = jest.requireActual('../../../__mocks__/react-native-reanimated')
@@ -177,7 +178,7 @@ async function flush(ms = 0) {
 }
 
 async function mount(state: TriPeaksState) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack: [], moves: 0, elapsedSeconds: 0, config: 0 }) : null))
+  seedGameInProgress('tripeaks', { state, undoStack: [], moves: 0, elapsedSeconds: 0, config: 0 })
   await render(<TriPeaksScreen />)
   await flush() // loadGameInProgress -> restoreGame
 }
@@ -221,6 +222,9 @@ afterEach(async () => {
 })
 
 // ------------------------------------------------------------------------------------------------ tests
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('TriPeaks cells - a shake is never replayed on a card the next deal put under others', () => {
   it('the card shaken last, dealt COVERED by a New Game, does not shake when it is uncovered (as it turns face-up) - and still shakes when tapped stuck', async () => {

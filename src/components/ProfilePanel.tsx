@@ -5,9 +5,10 @@ import { useRouter } from 'expo-router'
 import { StyleSheet, useWindowDimensions, View } from 'react-native'
 import { useTheme } from 'react-native-paper'
 
-import { DEFAULT_SEED_COLOR, previewCardBack } from '@/components/theme'
+import { previewCardBack } from '@/components/theme'
 import { useFrameAutoAlign } from '@/components/useFrameAutoAlign'
 import { useProfilePickerAlign } from '@/components/useProfilePickerAlign'
+import { DEFAULT_SEED_COLOR } from '@/constants/theme'
 import { useProfiles } from '@/stores/profiles'
 
 // The popover host ids of the two triggers - shared with the frame-aware placement hooks' `open` below. The

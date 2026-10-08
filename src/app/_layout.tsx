@@ -1,4 +1,4 @@
-import { Provider as ThemeProvider, type ThemeSettings, useAutoPaperTheme, useThemeSettings } from '@rific/auto-paper'
+import { useAutoPaperTheme, useThemeSettings } from '@rific/auto-paper'
 import { FeedbackPressProvider, hapticActions, type HapticSettings, soundActions, type SoundSettings } from '@rific/feedback-press'
 import { Toaster, ToastProvider } from '@rific/toaster'
 import { OrientationProvider, useThemedRootBackground } from '@tastic/core'
@@ -7,7 +7,7 @@ import { DarkTheme, Stack, ThemeProvider as NavigationThemeProvider } from 'expo
 import { DeviceMotion } from 'expo-sensors'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
-import { type ReactNode, useCallback, useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect } from 'react'
 import { Platform, StyleSheet, View } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import * as RNPaper from 'react-native-paper'
@@ -18,17 +18,17 @@ import { PersistGate } from 'redux-persist/integration/react'
 import { GuideHost } from '@/components/GuideHost'
 import { RotatedFrame } from '@/components/RotatedScreen'
 import { TableBackground } from '@/components/TableBackground'
-import { DEFAULT_SEED_COLOR, previewCardBack, useTableColors } from '@/components/theme'
+import { previewCardBack, useTableColors } from '@/components/theme'
+import { ThemeBridge } from '@/components/ThemeBridge'
 import { UpdateDialog } from '@/components/UpdateDialog'
 import { useCardSoundPlayers } from '@/components/useCardSounds'
-import { CARD_FONT_FAMILY, useFontsPreload } from '@/components/useFontsPreload'
+import { useFontsPreload } from '@/components/useFontsPreload'
+import { DEFAULT_SEED_COLOR } from '@/constants/theme'
 import { useSettings } from '@/hooks/useSettings'
 import { persistor, type RootState, store } from '@/redux/store'
 import { GameStatsProvider } from '@/stores/gameStats'
-import { LastActiveGameProvider, loadLastActiveGame } from '@/stores/lastActiveGame'
+import { LastActiveGameProvider } from '@/stores/lastActiveGame'
 import { ProfilesProvider, useProfiles } from '@/stores/profiles'
-import { SolitaireGameId } from '@/stores/statsTypes'
-import { loadThemeSettings, saveThemeSettings } from '@/stores/themeSettings'
 import { useSplashReady } from '@/utils/splashGate'
 
 SplashScreen.preventAutoHideAsync()
@@ -129,7 +129,7 @@ function ThemedToaster() {
 /** Keeps auto-paper's own theme (colors.primary/secondary/tertiary, used by every Paper-flavored
  * dialog/button app-wide - see GameChrome's ConfirmDialog) seeded from the active profile/guest's
  * color, instead of the two silently drifting apart. Without this, auto-paper's seed is whatever
- * loadThemeSettings() last persisted (or the DEFAULT_SEED_COLOR fallback above, on a first launch)
+ * the store's `theme` slice last persisted (or its DEFAULT_SEED_COLOR default, on a first launch)
  * and never changes again, regardless of which profile is active or what color they've picked -
  * confirmed live: the card back/felt track the active profile correctly, but every Paper dialog
  * stayed on one fixed color forever.
@@ -144,9 +144,8 @@ function ThemedToaster() {
  * than invent a second, differently-muted formula) keeps the chrome and the table reading as one
  * palette instead of two similarly-muted-but-not-quite-matching ones.
  *
- * Renders nothing itself; must sit inside ProfilesProvider, ThemeProvider, AND (for the `dark`
- * read below) ThemeProvider's own PaperProvider (it does, below - all three wrap it) to read all
- * three. Mirrors useTableColors()'s own DEFAULT_SEED_COLOR fallback exactly, so a guest with no
+ * Renders nothing itself; must sit inside ProfilesProvider and ThemeBridge (whose auto-paper Provider
+ * also supplies the PaperProvider the `dark` read below needs) - it does, below. Mirrors useTableColors()'s own DEFAULT_SEED_COLOR fallback exactly, so a guest with no
  * override picked yet still gets the identical seed on both sides instead of diverging there too. */
 function ProfileThemeSync() {
   const { tableColorOverride } = useProfiles()
@@ -161,7 +160,7 @@ function ProfileThemeSync() {
 /** Draws every profile color app-wide (each ProfileChip, the picker's selected row, the profile
  * editor's swatches, and @tastic/hud components that show a ProfileChip) through the same
  * previewCardBack blend the card backs and ProfileThemeSync use, so a profile never shows as its raw,
- * vivid swatch next to the muted table. Must sit inside ThemeProvider for the `dark` read. */
+ * vivid swatch next to the muted table. Must sit inside ThemeBridge for the `dark` read. */
 function MutedProfileColors({ children }: { children: ReactNode }) {
   const { dark } = useAutoPaperTheme()
   const preview = useCallback((hex: string) => previewCardBack(hex, dark), [dark])
@@ -221,65 +220,27 @@ function FeedbackBridge({ children, playCardSound, playInvalidSound }: FeedbackB
 }
 
 export default function RootLayout() {
-  const [themeInitialValue, setThemeInitialValue] = useState<Partial<ThemeSettings> | undefined>(undefined)
-  const [themeLoaded, setThemeLoaded] = useState(false)
-  const [lastActiveGame, setLastActiveGame] = useState<SolitaireGameId | null>(null)
-  const [lastActiveGameLoaded, setLastActiveGameLoaded] = useState(false)
-  // Registers the 'fonts' gate itself (see useFontsPreload's own doc) - unlike the theme and
-  // lastActiveGame gates above, font loading is driven by expo-font's own useFonts hook rather than an AsyncStorage read,
-  // so there's no separate useEffect/setState pair for it here.
+  // Registers the 'fonts' gate itself (see useFontsPreload's own doc): expo-font's own load is the one
+  // thing left that has to finish before anything renders. Every other splash gate is marked from
+  // inside PersistGate once its Redux state has rehydrated: 'theme' by ThemeBridge, 'haptics'/'sound' by
+  // FeedbackBridge, 'profiles' by ProfilesProvider.
   const fontsLoaded = useFontsPreload()
   const { playCardSound, playInvalidSound } = useCardSoundPlayers()
 
-  useEffect(() => {
-    loadThemeSettings().then((stored) => {
-      // Only matters for the single initial paint on a genuinely first launch (stored is null
-      // pre-first-launch) - ProfileThemeSync (below) overwrites this with the active
-      // profile/guest's own (muted) color the instant it mounts, in that same initial commit.
-      // Matching its own DEFAULT_SEED_COLOR fallback here rather than auto-paper's stock purple
-      // avoids a real, if imperceptibly brief, flash between the two.
-      setThemeInitialValue(stored ?? { color: DEFAULT_SEED_COLOR })
-      setThemeLoaded(true)
-    })
-    loadLastActiveGame().then((g) => {
-      setLastActiveGame(g)
-      setLastActiveGameLoaded(true)
-    })
-  }, [])
-
-  useSplashReady('theme', themeLoaded)
-  useSplashReady('lastActiveGame', lastActiveGameLoaded)
-  // 'fonts' is registered inside useFontsPreload itself, not here - see its own doc comment.
-  // 'haptics'/'sound'/'profiles' are registered further down the tree instead (FeedbackBridge,
-  // ProfilesProvider), each once its own bit of Redux state has actually rehydrated, rather than
-  // from this top-level pre-mount loader - see their own comments. `profiles` used to be loaded
-  // here too (loadInitialProfilesState, pre-mount, before ReduxProvider/PersistGate even mounted);
-  // now that it's Redux-backed it needs useSelector/useDispatch, which only work below
-  // ReduxProvider, so it moved to the same "owns its own gate, registered deep in the tree" shape
-  // 'haptics'/'sound' already had.
-
-  if (!themeLoaded || !lastActiveGameLoaded || !fontsLoaded) return null
+  if (!fontsLoaded) return null
 
   return (
     <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider>
-        <LastActiveGameProvider initialValue={lastActiveGame}>
-          <ThemeProvider initialValue={themeInitialValue} onChange={saveThemeSettings} fontFamily={CARD_FONT_FAMILY}>
-            <ReduxProvider store={store}>
-              <PersistGate persistor={persistor}>
-                {/* ProfilesProvider/GameStatsProvider now live here, inside PersistGate, instead
-                  of wrapping the whole app the way they did before this migration. `profiles` is
-                  Redux-backed now (see stores/profiles.tsx), so it needs useSelector/useDispatch,
-                  which only work below ReduxProvider; GameStatsProvider calls useProfiles() itself
-                  (for activeProfileId), so it has to stay nested inside ProfilesProvider wherever
-                  that ends up - the exact pre-existing parent/child relationship between the two,
-                  unchanged, just both shifted down together as a unit. Nothing else here moved -
-                  LastActiveGameProvider/ThemeProvider/ReduxProvider keep the exact
-                  same relative order and position they had before this migration (confirmed by grep
-                  that nothing in their own subtrees needs useProfiles()/useGameStats() besides
-                  what's already inside this new nesting) - so ReduxProvider itself did NOT need to
-                  move to wrap the whole app; only the two providers with a real dependency on it
-                  did. See this app's CLAUDE.md for the fuller version of this reasoning. */}
+        <ReduxProvider store={store}>
+          <PersistGate persistor={persistor}>
+            {/* Everything this app persists (settings, theme, profiles, stats, the last active game,
+            saved boards) lives in the Redux store, so every provider that reads it sits inside
+            PersistGate and sees rehydrated values from its first render. ThemeBridge comes first because
+            everything below reads the theme; GameStatsProvider stays inside ProfilesProvider because
+            it calls useProfiles() (for activeProfileId). */}
+            <ThemeBridge>
+              <LastActiveGameProvider>
                 <ProfilesProvider>
                   <MutedProfileColors>
                     <GameStatsProvider>
@@ -303,10 +264,10 @@ export default function RootLayout() {
                     </GameStatsProvider>
                   </MutedProfileColors>
                 </ProfilesProvider>
-              </PersistGate>
-            </ReduxProvider>
-          </ThemeProvider>
-        </LastActiveGameProvider>
+              </LastActiveGameProvider>
+            </ThemeBridge>
+          </PersistGate>
+        </ReduxProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   )

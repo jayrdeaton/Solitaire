@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { StyleSheet } from 'react-native'
 
@@ -7,6 +6,8 @@ import { FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { Card, Suit } from '@/engine/types'
 import PyramidScreen from '@/games/pyramid/PyramidScreen'
 import { PyramidState } from '@/games/pyramid/rules'
+
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The REAL PyramidScreen's board cells and pair-flight ghosts (real rules, flight concurrency, undo stack, the memoized
@@ -21,7 +22,6 @@ import { PyramidState } from '@/games/pyramid/rules'
 //     hold), while everything the landing owes (the discard count, the claim) is settled at the landing itself.
 // ---------------------------------------------------------------------------------------------------------------------
 
-const SAVE_KEY = 'solitaire.game-in-progress.v1.pyramid'
 /** How long a pair-flight ghost flies: the very timer FlyingPairCard arms. */
 const PAIR_FLIGHT_MS = springSettleMs(FLIGHT_SPRING)
 const FLIGHT_MS = 80
@@ -70,6 +70,7 @@ const mockDealer = {
 }
 const mockDropZones = { register: () => {}, unregister: () => {}, hitTest: async () => null }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('react-native-reanimated', () => {
   const { useRef } = require('react')
   const base = jest.requireActual('../../../__mocks__/react-native-reanimated')
@@ -230,7 +231,7 @@ async function flush(ms = 0) {
 }
 
 async function mount(state: PyramidState) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack: [], moves: 0, elapsedSeconds: 0 }) : null))
+  seedGameInProgress('pyramid', { state, undoStack: [], moves: 0, elapsedSeconds: 0 })
   await render(<PyramidScreen />)
   await flush() // loadGameInProgress -> restoreGame
   expect(screen.queryByTestId('stock-top')).not.toBeNull()
@@ -273,6 +274,9 @@ afterEach(async () => {
 })
 
 // ------------------------------------------------------------------------------------------------ tests
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('Pyramid cells - a shake is never replayed on a card the next deal put under others', () => {
   it('the card shaken last, dealt COVERED by a New Game, does not shake when a pair uncovers it - and still shakes when tapped stuck', async () => {

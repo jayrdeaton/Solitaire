@@ -1,13 +1,14 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
 import { Card, Suit } from '@/engine/types'
 import { TriPeaksState } from '@/games/tripeaks/rules'
 import TriPeaksScreen from '@/games/tripeaks/TriPeaksScreen'
 
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
+
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for TriPeaks' win: the REAL TriPeaksScreen, real rules, real useFlightConcurrency / useDerivedWinCheck /
-// useWinReveal / useGameSession / gameInProgress store, seeded with a saved game through the AsyncStorage mock (same
+// useWinReveal / useGameSession / gameInProgress store, seeded with a saved game through the test store (src/testUtils/gameInProgressStore.ts) (same
 // approach as freeCellScreenAutoPlay.test.tsx). Only the parts that need native views, gestures or animation are replaced
 // by stand-ins that honour the contract the screen relies on:
 //   - the ghost's CardRegistry is modelled on what is actually RENDERED: a card can only be measured while a stand-in
@@ -20,7 +21,6 @@ import TriPeaksScreen from '@/games/tripeaks/TriPeaksScreen'
 
 const FLIGHT_MS = 80
 const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
-const SAVE_KEY = 'solitaire.game-in-progress.v1.tripeaks'
 const REGISTRY_POINT = { x: 10, y: 10 }
 const VIEW_POINT = { x: 5, y: 5 }
 
@@ -96,6 +96,7 @@ const mockDeal = {
   cancel: () => {}
 }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/components/winning/WinCascadeLayer', () => ({
@@ -242,7 +243,7 @@ async function flush(ms = 0) {
 }
 
 async function mount(state: TriPeaksState) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack: [], moves: 0, elapsedSeconds: 0, config: 0 }) : null))
+  seedGameInProgress('tripeaks', { state, undoStack: [], moves: 0, elapsedSeconds: 0, config: 0 })
   await render(<TriPeaksScreen />)
   await flush() // loadGameInProgress -> restoreGame
 }
@@ -292,6 +293,9 @@ afterEach(async () => {
   jest.useRealTimers()
   jest.restoreAllMocks()
 })
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('TriPeaks screen - the win celebration waits for the winning card to fly in and land', () => {
   it('the winning card flies onto the still-visible waste pile, and nothing celebrates until it has landed and a beat has passed', async () => {

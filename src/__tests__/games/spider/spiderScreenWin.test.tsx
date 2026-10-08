@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { StrictMode } from 'react'
 
@@ -8,9 +7,11 @@ import { Card } from '@/engine/types'
 import { SpiderState } from '@/games/spider/rules'
 import SpiderScreen from '@/games/spider/SpiderScreen'
 
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
+
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for Spider's WIN: the REAL SpiderScreen, real rules, real useFlightConcurrency / useDerivedWinCheck /
-// useWinReveal / useGameSession / gameInProgress store (seeded through the AsyncStorage mock) and the real
+// useWinReveal / useGameSession / gameInProgress store (seeded through the test store (src/testUtils/gameInProgressStore.ts)) and the real
 // SequenceFlightGhosts (the sweep of a completed run to its foundation slot). Only what needs native views, gestures or
 // animation is replaced, by a stand-in honoring the contract the screen relies on - see freeCellScreenAutoPlay.test.tsx,
 // whose harness this follows. Unlike that one, the card registry is faithful: measure(id) answers only for a card some pile
@@ -20,7 +21,6 @@ import SpiderScreen from '@/games/spider/SpiderScreen'
 
 const FLIGHT_MS = 80
 const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
-const SAVE_KEY = 'solitaire.game-in-progress.v1.spider'
 
 const mockRecordWon = jest.fn()
 const mockMeasureView = jest.fn(async (): Promise<{ x: number; y: number } | null> => ({ x: 5, y: 5 }))
@@ -116,6 +116,7 @@ const mockDeal = {
   cancel: () => {}
 }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/components/winning/WinCascadeLayer', () => ({
@@ -292,7 +293,7 @@ async function flush(ms = 0) {
 }
 
 async function mount(state: SpiderState) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack: [], moves: 5, elapsedSeconds: 30, config: 1 }) : null))
+  seedGameInProgress('spider', { state, undoStack: [], moves: 5, elapsedSeconds: 30, config: 1 })
   await render(<SpiderScreen />)
   await flush() // loadGameInProgress -> restoreGame
   expect(screen.queryAllByTestId(/^card-/).length).toBe(state.tableau.flat().length)
@@ -409,6 +410,9 @@ afterEach(async () => {
   jest.useRealTimers()
   jest.restoreAllMocks()
 })
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('Spider screen - the winning move never makes a card teleport', () => {
   it('the winning card flies onto the run it completes, then the whole run flies to its slot - nothing is hidden or removed without a flight', async () => {
@@ -843,13 +847,8 @@ describe('Spider screen - a New Game while a run flies to or from its slot leave
     // restoreGame over a game in progress is the mount effect's second run under StrictMode - see the restore tests below.
     const saves = [firstRunOneMoveAway(), firstRunOneMoveAway()].map((state) => JSON.stringify({ state, undoStack: [], moves: 5, elapsedSeconds: 30, config: 1 }))
     const answers: (() => void)[] = []
-    jest.spyOn(AsyncStorage, 'getItem').mockImplementation(
-      (key: string) =>
-        new Promise<string | null>((resolve) => {
-          if (key === SAVE_KEY) answers.push(() => resolve(saves[answers.length - 1]))
-          else resolve(null)
-        })
-    )
+    // Each load (StrictMode mounts twice) resolves only when the test says so, like a slow storage read.
+    jest.spyOn(require('@/stores/gameInProgress'), 'loadGameInProgress').mockImplementation(() => new Promise((resolve) => answers.push(() => resolve(JSON.parse(saves[answers.length - 1])))))
     await render(
       <StrictMode>
         <SpiderScreen />
@@ -1183,13 +1182,8 @@ describe('Spider screen - restoring a saved game over one in progress', () => {
   async function mountWithTwoLoads(first: SpiderState, second: SpiderState) {
     const saves = [first, second].map((state) => JSON.stringify({ state, undoStack: [], moves: 5, elapsedSeconds: 30, config: 1 }))
     const answers: (() => void)[] = []
-    jest.spyOn(AsyncStorage, 'getItem').mockImplementation(
-      (key: string) =>
-        new Promise<string | null>((resolve) => {
-          if (key === SAVE_KEY) answers.push(() => resolve(saves[answers.length - 1]))
-          else resolve(null)
-        })
-    )
+    // Each load (StrictMode mounts twice) resolves only when the test says so, like a slow storage read.
+    jest.spyOn(require('@/stores/gameInProgress'), 'loadGameInProgress').mockImplementation(() => new Promise((resolve) => answers.push(() => resolve(JSON.parse(saves[answers.length - 1])))))
     await render(
       <StrictMode>
         <SpiderScreen />

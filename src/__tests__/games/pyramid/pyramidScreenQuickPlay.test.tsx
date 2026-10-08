@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
 import { FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
@@ -6,6 +5,8 @@ import { Card, Suit } from '@/engine/types'
 import PyramidScreen, { DEFER_MAX_WAIT_MS, topLandedCard } from '@/games/pyramid/PyramidScreen'
 import { PyramidController, PyramidState } from '@/games/pyramid/rules'
 import { WIN_REVEAL_HOLD_MS } from '@/games/shared/useWinReveal'
+
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // RAPID-INPUT tests for the REAL PyramidScreen (same harness approach as pyramidScreenWin.test.tsx: real rules, flight
@@ -34,7 +35,6 @@ let mockFlightMs = FLIGHT_MS
 /** How long every measurement (registry, plain view, the tapped card's own measure, the drop hit test) takes - the window in which other input arrives. */
 let mockMeasureMs = 0
 let mockHitTestMs = 0
-const SAVE_KEY = 'solitaire.game-in-progress.v1.pyramid'
 const MEAS = 30
 /** How long a pair-flight ghost stays up, however far it goes: the very timer PyramidScreen's FlyingPairCard arms (dragSpring.ts's springSettleMs of
  * FLIGHT_SPRING, the one flight time) - derived, so re-pacing the flights (FLIGHT_TIME_SCALE) re-times every wait below with it. */
@@ -131,6 +131,7 @@ const mockDropZones = {
   }
 }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dragdrop/DropZoneRegistry', () => ({ useDropZoneRegistry: () => mockDropZones }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDealer }))
@@ -324,7 +325,7 @@ async function flush(ms = 0) {
 }
 
 async function mount(state: PyramidState) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack: [], moves: 0, elapsedSeconds: 0 }) : null))
+  seedGameInProgress('pyramid', { state, undoStack: [], moves: 0, elapsedSeconds: 0 })
   await render(<PyramidScreen />)
   await flush() // loadGameInProgress -> restoreGame
   expect(screen.queryByTestId('stock-top')).not.toBeNull()
@@ -394,6 +395,9 @@ afterEach(async () => {
 })
 
 // ------------------------------------------------------------------------------------------------ tests
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('Pyramid screen quick play - pair flights are independent', () => {
   it('a second pair taken while the first pair is still flying: all four ghosts stay in the air, every one lands, nothing is left claimed, and undo works', async () => {

@@ -35,7 +35,6 @@ let mockRotation: ViewRotation = 0
 let mockWindow = { width: 402, height: 874 }
 let mockInsets: Insets = { top: 0, right: 0, bottom: 0, left: 0 }
 let mockFocused = true
-let mockLoaded = true
 
 interface BaseStatsProps {
   onBack: () => void
@@ -95,7 +94,7 @@ jest.mock('@/utils/navigation', () => ({ safeBack: jest.fn() }))
 jest.mock('@/stores/gameStats', () => {
   const { DEFAULT_STATS } = jest.requireActual('@/stores/statsValidation')
   return {
-    useGameStats: () => ({ stats: DEFAULT_STATS, unlockedAchievements: [], loaded: mockLoaded, resetAll: mockResetAll })
+    useGameStats: () => ({ stats: DEFAULT_STATS, unlockedAchievements: [], resetAll: mockResetAll })
   }
 })
 jest.mock('@/stores/profiles', () => ({
@@ -239,7 +238,6 @@ beforeEach(() => {
   mockWindow = { ...PORTRAIT_WINDOW }
   mockInsets = { top: 0, right: 0, bottom: 0, left: 0 }
   mockFocused = true
-  mockLoaded = true
   mockProfilesInsetsSeen.current = null
   mockBaseStats.mockClear()
   mockProfilesScreen.mockClear()
@@ -385,14 +383,8 @@ describe('Achievements screen', () => {
     expect(rotatedFrameOf(pathOrFail(t, byTestId('portal-probe'), 'portal probe'))).toBe(frame)
   })
 
-  it('shows the loading indicator (and no stat sections) until the stats have loaded', async () => {
-    mockLoaded = false
+  it('renders the stat sections straight away (stats come from the already-rehydrated store)', async () => {
     await render(<Achievements />)
-    expect(screen.getByTestId('loading-indicator')).toBeTruthy()
-    expect(screen.queryAllByTestId('stat-section')).toHaveLength(0)
-
-    mockLoaded = true
-    await screen.rerender(<Achievements />)
     expect(screen.queryByTestId('loading-indicator')).toBeNull()
     expect(screen.queryAllByTestId('stat-section').length).toBeGreaterThan(0)
   })

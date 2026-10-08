@@ -1,15 +1,28 @@
-type Store = typeof import('@/stores/gameInProgress')
+type Api = typeof import('@/stores/gameInProgress')
+type Redux = typeof import('@/redux/store')
 
-const KEY = 'solitaire.game-in-progress.v1.klondike'
 const board = (moves: number) => ({ state: { tableau: [] as number[], n: moves }, undoStack: [], moves, elapsedSeconds: moves })
+// redux-persist stores each key of a persisted slice as its own JSON string inside the entry.
+const persistedMoves = (disk: Map<string, string>, gameId: string): number | undefined => {
+  const raw = disk.get(`persist:gameInProgress.${gameId}`)
+  if (!raw) return undefined
+  const saved = JSON.parse(JSON.parse(raw).saved)
+  return saved?.moves
+}
 
 describe('game-in-progress persistence (coalesced saves)', () => {
-  let store: Store
+  let api: Api
+  let redux: Redux
   let disk: Map<string, string>
   let setItem: jest.SpyInstance
+  let dispatch: jest.SpyInstance
   let appStateHandler: ((s: string) => void) | undefined
 
-  beforeEach(() => {
+  // Every setSaved dispatch for one game - one per actual save into the store.
+  const savesOf = (gameId: string) => dispatch.mock.calls.filter(([action]) => action.type === `gameInProgress/${gameId}/setSaved`)
+  const movesInStore = (gameId: 'klondike' | 'spider') => (redux.store.getState().gameInProgress[gameId].saved as { moves: number } | null)?.moves
+
+  beforeEach(async () => {
     jest.useFakeTimers()
     jest.resetModules()
     // Everything is required AFTER resetModules so the spies below are on the very instances the store under
@@ -25,7 +38,11 @@ describe('game-in-progress persistence (coalesced saves)', () => {
       appStateHandler = handler
       return { remove: jest.fn() }
     }) as never)
-    store = require('@/stores/gameInProgress')
+    redux = require('@/redux/store')
+    // Rehydration has to finish before redux-persist writes anything (PersistGate guarantees the same in the app).
+    while (!redux.persistor.getState().bootstrapped) await jest.advanceTimersByTimeAsync(10)
+    dispatch = jest.spyOn(redux.store, 'dispatch')
+    api = require('@/stores/gameInProgress')
   })
 
   afterEach(() => {
@@ -33,155 +50,97 @@ describe('game-in-progress persistence (coalesced saves)', () => {
     jest.restoreAllMocks()
   })
 
-  it('writes nothing per move, then one write of the latest board once moves stop', async () => {
-    for (let i = 1; i <= 20; i++) store.saveGameInProgress('klondike', board(i))
+  it('stores nothing per move, then one save of the latest board once moves stop', async () => {
+    for (let i = 1; i <= 20; i++) api.saveGameInProgress('klondike', board(i))
 
-    expect(setItem).not.toHaveBeenCalled()
+    expect(savesOf('klondike')).toHaveLength(0)
 
     await jest.advanceTimersByTimeAsync(600)
 
-    expect(setItem).toHaveBeenCalledTimes(1)
-    expect(JSON.parse(disk.get(KEY)!).moves).toBe(20)
+    expect(savesOf('klondike')).toHaveLength(1)
+    expect(movesInStore('klondike')).toBe(20)
   })
 
-  it('still writes during a long unbroken burst of moves (bounded wait)', async () => {
+  it('still saves during a long unbroken burst of moves (bounded wait)', async () => {
     // A move every 100ms for 4s never lets the quiet-period debounce elapse on its own.
     for (let i = 1; i <= 40; i++) {
-      store.saveGameInProgress('klondike', board(i))
+      api.saveGameInProgress('klondike', board(i))
       await jest.advanceTimersByTimeAsync(100)
     }
 
-    expect(setItem.mock.calls.length).toBeGreaterThanOrEqual(1)
-    expect(JSON.parse(disk.get(KEY)!).moves).toBeGreaterThan(20)
+    expect(savesOf('klondike').length).toBeGreaterThanOrEqual(1)
+    expect(movesInStore('klondike')).toBeGreaterThan(20)
   })
 
-  it('flushes immediately on demand (screen unmount)', async () => {
-    store.saveGameInProgress('klondike', board(7))
+  it('flushes immediately on demand (screen unmount), all the way to storage', async () => {
+    api.saveGameInProgress('klondike', board(7))
 
-    await store.flushGameInProgress()
+    await api.flushGameInProgress()
 
-    expect(JSON.parse(disk.get(KEY)!).moves).toBe(7)
-    // and the pending timer does not write a second time
+    expect(movesInStore('klondike')).toBe(7)
+    expect(persistedMoves(disk, 'klondike')).toBe(7)
+    // and the pending timer does not save a second time
     await jest.advanceTimersByTimeAsync(2000)
-    expect(setItem).toHaveBeenCalledTimes(1)
+    expect(savesOf('klondike')).toHaveLength(1)
   })
 
   it('flushes when the app leaves the foreground', async () => {
-    store.saveGameInProgress('klondike', board(3))
+    api.saveGameInProgress('klondike', board(3))
     expect(appStateHandler).toBeDefined()
 
     appStateHandler!('background')
-    await Promise.resolve()
-    await Promise.resolve()
+    await jest.advanceTimersByTimeAsync(0)
 
-    expect(JSON.parse(disk.get(KEY)!).moves).toBe(3)
+    expect(movesInStore('klondike')).toBe(3)
+    expect(persistedMoves(disk, 'klondike')).toBe(3)
   })
 
   it('does not flush on a return to the foreground', async () => {
-    store.saveGameInProgress('klondike', board(3))
+    api.saveGameInProgress('klondike', board(3))
 
     appStateHandler!('active')
     await Promise.resolve()
 
-    expect(setItem).not.toHaveBeenCalled()
+    expect(savesOf('klondike')).toHaveLength(0)
   })
 
   it('a pending save can never resurrect a cleared game (win / New Game / stats reset)', async () => {
-    store.saveGameInProgress('klondike', board(5))
+    api.saveGameInProgress('klondike', board(5))
 
-    await store.clearGameInProgress('klondike')
+    await api.clearGameInProgress('klondike')
     await jest.advanceTimersByTimeAsync(5000)
 
-    expect(disk.has(KEY)).toBe(false)
-    expect(setItem).not.toHaveBeenCalled()
+    expect(movesInStore('klondike')).toBeUndefined()
+    expect(savesOf('klondike').every(([action]) => action.payload === null)).toBe(true)
   })
 
   it('a read sees the latest board even if its save is still waiting out the debounce', async () => {
-    store.saveGameInProgress('klondike', board(9))
+    api.saveGameInProgress('klondike', board(9))
 
-    const loaded = await store.loadGameInProgress<{ n: number }>('klondike')
+    const loaded = await api.loadGameInProgress<{ n: number }>('klondike')
 
     expect(loaded?.moves).toBe(9)
   })
 
-  it('keeps each game in its own slot', async () => {
-    store.saveGameInProgress('klondike', board(1))
-    store.saveGameInProgress('spider', board(2))
+  it('keeps each game in its own slot and its own storage entry', async () => {
+    api.saveGameInProgress('klondike', board(1))
+    api.saveGameInProgress('spider', board(2))
 
     await jest.advanceTimersByTimeAsync(600)
+    await api.flushGameInProgress()
 
-    expect(JSON.parse(disk.get(KEY)!).moves).toBe(1)
-    expect(JSON.parse(disk.get('solitaire.game-in-progress.v1.spider')!).moves).toBe(2)
-  })
-
-  describe('preload on press-in', () => {
-    let getItem: jest.SpyInstance
-    beforeEach(() => {
-      getItem = jest.spyOn(require('@react-native-async-storage/async-storage'), 'getItem')
-    })
-
-    it('a load right after a preload reuses the read that is already in flight', async () => {
-      disk.set(KEY, JSON.stringify(board(4)))
-
-      store.preloadGameInProgress('klondike')
-      const loaded = await store.loadGameInProgress('klondike')
-
-      expect(loaded?.moves).toBe(4)
-      expect(getItem).toHaveBeenCalledTimes(1)
-    })
-
-    it('is used once - the next load reads storage again', async () => {
-      disk.set(KEY, JSON.stringify(board(4)))
-
-      store.preloadGameInProgress('klondike')
-      await store.loadGameInProgress('klondike')
-      await store.loadGameInProgress('klondike')
-
-      expect(getItem).toHaveBeenCalledTimes(2)
-    })
-
-    it('a save after the preload makes it stale, so the load sees the new board', async () => {
-      disk.set(KEY, JSON.stringify(board(4)))
-      store.preloadGameInProgress('klondike')
-
-      store.saveGameInProgress('klondike', board(9))
-      const loaded = await store.loadGameInProgress('klondike')
-
-      expect(loaded?.moves).toBe(9)
-    })
-
-    it('a clear after the preload makes it stale, so the load sees no game', async () => {
-      disk.set(KEY, JSON.stringify(board(4)))
-      store.preloadGameInProgress('klondike')
-
-      await store.clearGameInProgress('klondike')
-
-      expect(await store.loadGameInProgress('klondike')).toBeNull()
-    })
-
-    it('does not start a read while a save is waiting out its debounce (it would be stale)', async () => {
-      disk.set(KEY, JSON.stringify(board(4)))
-      store.saveGameInProgress('klondike', board(9))
-
-      store.preloadGameInProgress('klondike')
-
-      expect(getItem).not.toHaveBeenCalled()
-      expect((await store.loadGameInProgress('klondike'))?.moves).toBe(9)
-    })
-
-    it('a failing preloaded read resolves to no game rather than rejecting', async () => {
-      getItem.mockRejectedValueOnce(new Error('boom'))
-
-      store.preloadGameInProgress('klondike')
-
-      expect(await store.loadGameInProgress('klondike')).toBeNull()
-    })
+    expect(persistedMoves(disk, 'klondike')).toBe(1)
+    expect(persistedMoves(disk, 'spider')).toBe(2)
+    // Never in the root entry: a saved board can run to megabytes.
+    expect(disk.get('persist:root') ?? '').not.toContain('gameInProgress')
   })
 
   it('swallows a failing write (best effort, never an unhandled rejection)', async () => {
     setItem.mockRejectedValue(new Error('disk full'))
-    store.saveGameInProgress('klondike', board(1))
+    // redux-persist reports the failed write itself; that log is expected here.
+    jest.spyOn(console, 'error').mockImplementation(() => {})
+    api.saveGameInProgress('klondike', board(1))
 
-    await expect(store.flushGameInProgress()).resolves.toBeUndefined()
+    await expect(api.flushGameInProgress()).resolves.toBeUndefined()
   })
 })

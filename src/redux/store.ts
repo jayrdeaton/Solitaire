@@ -1,12 +1,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { combineReducers, configureStore, type Middleware } from '@reduxjs/toolkit'
+import { createThemeReducer } from '@rific/auto-paper'
 import { defaultSoundSettings, hapticReducer, soundReducer, type SoundSettings } from '@rific/feedback-press'
 import { createReturningPlayerMigrate } from '@tastic/hud/guide'
 import { profilesReducer } from '@tastic/profile'
 import { FLUSH, PAUSE, PERSIST, persistReducer, persistStore, PURGE, REGISTER, REHYDRATE } from 'redux-persist'
 
+import { DEFAULT_SEED_COLOR } from '@/constants/theme'
+
+import achievements from './achievementsSlice'
 import activeProfile from './activeProfileSlice'
+import gameInProgress from './gameInProgressSlice'
 import guide, { LEGACY_STORAGE_KEYS } from './guideSlice'
+import lastActiveGame from './lastActiveGameSlice'
 import settings from './settingsSlice'
 import tableColor from './tableColorSlice'
 
@@ -26,6 +32,17 @@ const initialSoundSettings: SoundSettings = { ...defaultSoundSettings, enabled: 
 const appSoundReducer = (state: SoundSettings = initialSoundSettings, action: { type: string }): SoundSettings => soundReducer(state, action)
 
 const rootReducer = combineReducers({
+  // auto-paper's appearance/color settings, bridged into its Provider by components/Theme.tsx. Seeded
+  // with DEFAULT_SEED_COLOR so a first launch paints the same color useTableColors() falls back to
+  // (ProfileThemeSync then sets the active profile's own muted color in that same first commit).
+  theme: createThemeReducer({ color: DEFAULT_SEED_COLOR }),
+  // The game screen the player was last on (see stores/lastActiveGame.tsx).
+  lastActiveGame,
+  // Each game's resumable board, persisted under its own keys and so blacklisted below (see
+  // gameInProgressSlice.ts).
+  gameInProgress,
+  // Stats and unlocked achievements (see achievementsSlice.ts).
+  achievements,
   haptic: hapticReducer,
   sound: appSoundReducer,
   // The shared App Group roster (see @tastic/profile's resolveInitialProfiles/
@@ -54,7 +71,9 @@ export const persistConfig = {
   // Grandfathers players from the shipped pre-redux builds (last one 25532f0, otaVersion 3) past the
   // guide: they have no root store yet, only that build's own keys, which would otherwise look like a
   // fresh install. A no-op once a root store exists. See LEGACY_STORAGE_KEYS in guideSlice.ts.
-  migrate: createReturningPlayerMigrate(AsyncStorage, LEGACY_STORAGE_KEYS)
+  migrate: createReturningPlayerMigrate(AsyncStorage, LEGACY_STORAGE_KEYS),
+  // Persisted per game under its own keys instead (see gameInProgressSlice.ts).
+  blacklist: ['gameInProgress']
 }
 
 const persistedReducer = persistReducer(persistConfig, rootReducer)
@@ -64,7 +83,10 @@ export const store = configureStore({
     const defaultMiddleware = getDefaultMiddleware({
       immutableCheck: false,
       serializableCheck: {
-        ignoredActions: [FLUSH, REHYDRATE, PAUSE, PERSIST, PURGE, REGISTER]
+        ignoredActions: [FLUSH, REHYDRATE, PAUSE, PERSIST, PURGE, REGISTER],
+        // Saved boards are plain data but can run to megabytes; walking them on every action in dev
+        // would stall the app for nothing.
+        ignoredPaths: ['gameInProgress']
       }
     })
     return defaultMiddleware.concat(errorMiddleware)

@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { Profiler } from 'react'
 import { StyleSheet } from 'react-native'
@@ -8,6 +7,8 @@ import { TAKE_OFF_RELEASE_LAG_MS } from '@/components/dealing/DealLayer'
 import { Card } from '@/engine/types'
 import AcesUpScreen from '@/games/acesup/AcesUpScreen'
 import { AcesUpController, AcesUpState } from '@/games/acesup/rules'
+
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Undoing a round deal flies its four cards back to the stock through DealLayer, and the revert that takes them off their piles
@@ -23,7 +24,6 @@ import { AcesUpController, AcesUpState } from '@/games/acesup/rules'
 // unless a test holds it; a faithful card registry. "Drawn" = a PlayingCard whose host view has no ancestor at opacity 0.
 // ---------------------------------------------------------------------------------------------------------------------
 
-const SAVE_KEY = 'solitaire.game-in-progress.v1.acesup'
 /** What measureView answers for the stock (the undo's destination): null makes it unmeasurable. */
 const mockStock: { rect: { x: number; y: number } | null } = { rect: { x: 5, y: 5 } }
 
@@ -41,6 +41,7 @@ const mockGhost = {
   show: () => ({ hide: () => {}, flyTo: (_x: number, _y: number, onDone?: () => void) => setTimeout(() => onDone?.(), 80) })
 }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('react-native-reanimated', () => {
   const { useReducer, useRef } = require('react')
   const base = jest.requireActual('../../../__mocks__/react-native-reanimated')
@@ -218,7 +219,7 @@ function watch(ids: string[]) {
 }
 
 async function mount(state: AcesUpState, undoStack: unknown[]) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack, moves: 5, elapsedSeconds: 30 }) : null))
+  seedGameInProgress('acesup', { state, undoStack, moves: 5, elapsedSeconds: 30 })
   await render(
     <Profiler id='acesup' onRender={recordCommit}>
       <AcesUpScreen />
@@ -272,6 +273,9 @@ afterEach(async () => {
   jest.useRealTimers()
   jest.restoreAllMocks()
 })
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('Aces Up - undoing a round deal keeps every dealt card drawn until its own ghost takes off', () => {
   it('each card stays on its pile - inert, where it was - until its ghost is up over it, then the pile lets go', async () => {

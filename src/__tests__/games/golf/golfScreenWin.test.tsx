@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
 import { PileRef } from '@/engine/gameTypes'
@@ -6,9 +5,11 @@ import { Card, Suit } from '@/engine/types'
 import GolfScreen from '@/games/golf/GolfScreen'
 import { GolfState } from '@/games/golf/rules'
 
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
+
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for Golf's win: the REAL GolfScreen, real rules, real useFlightConcurrency / useDerivedWinCheck /
-// useWinReveal / useGameSession / gameInProgress store, seeded with a saved game through the AsyncStorage mock (same
+// useWinReveal / useGameSession / gameInProgress store, seeded with a saved game through the test store (src/testUtils/gameInProgressStore.ts) (same
 // approach as freeCellScreenAutoPlay.test.tsx). Only the parts that need native views, gestures or animation are replaced
 // by stand-ins that honour the contract the screen relies on:
 //   - the ghost's CardRegistry is modelled on what is actually RENDERED: a card can only be measured while a stand-in
@@ -21,7 +22,6 @@ import { GolfState } from '@/games/golf/rules'
 
 const FLIGHT_MS = 80
 const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
-const SAVE_KEY = 'solitaire.game-in-progress.v1.golf'
 const REGISTRY_POINT = { x: 10, y: 10 }
 const VIEW_POINT = { x: 5, y: 5 }
 
@@ -99,6 +99,7 @@ const mockDeal = {
   cancel: () => {}
 }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/components/winning/WinCascadeLayer', () => ({
@@ -257,7 +258,7 @@ async function flush(ms = 0) {
 }
 
 async function mount(state: GolfState) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack: [], moves: 0, elapsedSeconds: 0, config: 0 }) : null))
+  seedGameInProgress('golf', { state, undoStack: [], moves: 0, elapsedSeconds: 0, config: 0 })
   await render(<GolfScreen />)
   await flush() // loadGameInProgress -> restoreGame
 }
@@ -309,6 +310,9 @@ afterEach(async () => {
   jest.useRealTimers()
   jest.restoreAllMocks()
 })
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('Golf screen - the win celebration waits for the winning card to fly in and land', () => {
   it('the winning card flies onto the still-visible waste pile, and nothing celebrates until it has landed and a beat has passed', async () => {
@@ -564,7 +568,7 @@ describe('Golf screen - a card never lands without its own flight', () => {
   })
 
   it("paints an empty waste under the starter card while it is dealt, not the starter itself (or the last game's top card)", async () => {
-    jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async () => null) // nothing saved: a fresh deal
+    resetGameInProgress() // nothing saved: a fresh deal
     await render(<GolfScreen />)
     await flush(FLIGHT_MS / 2) // dealt, nothing landed yet
 
@@ -577,7 +581,7 @@ describe('Golf screen - a card never lands without its own flight', () => {
   })
 
   it('a card of the initial deal whose destination cannot be measured is not left invisible for the rest of the hand', async () => {
-    jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async () => null) // nothing saved: a fresh deal
+    resetGameInProgress() // nothing saved: a fresh deal
     // The deal measures every dealt card's destination the moment it commits - miss the first one asked about.
     let missed: string | null = null
     jest.spyOn(mockGhost.cardRegistry, 'measure').mockImplementation(async (cardId: string) => {

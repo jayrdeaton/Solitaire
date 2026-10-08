@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { Profiler } from 'react'
 import { StyleSheet } from 'react-native'
@@ -8,6 +7,8 @@ import { TAKE_OFF_RELEASE_LAG_MS } from '@/components/dealing/DealLayer'
 import { Card } from '@/engine/types'
 import { createSpiderController, SpiderState } from '@/games/spider/rules'
 import SpiderScreen from '@/games/spider/SpiderScreen'
+
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Undoing a stock deal flies the ten dealt cards back to the stock through DealLayer, and the revert that takes them out of
@@ -29,8 +30,6 @@ import SpiderScreen from '@/games/spider/SpiderScreen'
 // "Drawn" = a PlayingCard whose host view has no ancestor at opacity 0.
 // ---------------------------------------------------------------------------------------------------------------------
 
-const SAVE_KEY = 'solitaire.game-in-progress.v1.spider'
-
 const mockRegistered = new Map<string, unknown>()
 /** Ghost faces that do not report painted until the test says so. */
 const mockPaint = { holdGhost: new Set<string>(), ghostWaiting: new Map<string, (() => void)[]>() }
@@ -45,6 +44,7 @@ const mockGhost = {
   show: () => ({ hide: () => {}, flyTo: (_x: number, _y: number, onDone?: () => void) => setTimeout(() => onDone?.(), 80) })
 }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('react-native-reanimated', () => {
   const { useReducer, useRef } = require('react')
   const base = jest.requireActual('../../../__mocks__/react-native-reanimated')
@@ -245,7 +245,7 @@ function watch(ids: string[]) {
 }
 
 async function mount(state: SpiderState, undoStack: unknown[]) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack, moves: 5, elapsedSeconds: 30, config: 1 }) : null))
+  seedGameInProgress('spider', { state, undoStack, moves: 5, elapsedSeconds: 30, config: 1 })
   await render(
     <Profiler id='spider' onRender={recordCommit}>
       <SpiderScreen />
@@ -298,6 +298,9 @@ afterEach(async () => {
   jest.useRealTimers()
   jest.restoreAllMocks()
 })
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('Spider - undoing a stock deal keeps every dealt card drawn until its own ghost takes off', () => {
   it('each card stays in its column - inert, where it was - until its ghost is up over it, then the column lets go', async () => {

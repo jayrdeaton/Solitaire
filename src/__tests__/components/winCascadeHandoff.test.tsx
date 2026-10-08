@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { useEffect } from 'react'
 import { StyleSheet, type ViewStyle } from 'react-native'
@@ -7,6 +6,8 @@ import { ChainSpec, useWinCascade, WIN_CASCADE_PAINT_MAX_MS, WinCascadeControlle
 import { Card, Suit, SUITS } from '@/engine/types'
 import KlondikeScreen from '@/games/klondike/KlondikeScreen'
 import { KlondikeState } from '@/games/klondike/rules'
+
+import { resetGameInProgress, seedGameInProgress } from '../../testUtils/gameInProgressStore'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The win cascade's take-over from the real piles, against a face that paints LATE. A card face is one React Native <Image>, and its
@@ -25,6 +26,7 @@ import { KlondikeState } from '@/games/klondike/rules'
 
 const mockFrames = new Set<{ current: (info: { timestamp: number }) => void }>()
 
+jest.mock('@/redux/store', () => require('../../testUtils/gameInProgressStore').storeModule)
 jest.mock('react-native-reanimated', () => {
   const base = jest.requireActual('../../__mocks__/react-native-reanimated')
   const { useEffect: useMockEffect, useRef } = require('react')
@@ -119,6 +121,9 @@ afterEach(() => {
 })
 
 // ------------------------------------------------------------------------------------------------ the layer
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('WinCascadeGhosts - shown only once the parked faces have painted', () => {
   const CARD_WIDTH = 64
@@ -292,7 +297,6 @@ describe('WinCascadeGhosts - shown only once the parked faces have painted', () 
 
 // ------------------------------------------------------------------------------------------------ a real screen
 
-const SAVE_KEY = 'solitaire.game-in-progress.v1.klondike'
 const FLIGHT_MS = 80
 const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
 
@@ -426,7 +430,7 @@ describe('a game screen hands its piles over to the real cascade only once the g
   const foundationTops = () => SUITS.map((suit) => screen.getByTestId(`foundation-${suit}`).props.children as string)
 
   async function mountWinnable() {
-    jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state: KING_IN_COLUMN(), undoStack: [], moves: 0, elapsedSeconds: 0, config: 1 }) : null))
+    seedGameInProgress('klondike', { state: KING_IN_COLUMN(), undoStack: [], moves: 0, elapsedSeconds: 0, config: 1 })
     await render(<KlondikeScreen />)
     await advance(0) // loadGameInProgress -> restoreGame
     mockBlankCommits.length = 0

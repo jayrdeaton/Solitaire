@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { useEffect } from 'react'
 
@@ -8,10 +7,12 @@ import KlondikeScreen from '@/games/klondike/KlondikeScreen'
 import * as klondikeRules from '@/games/klondike/rules'
 import { KlondikeState } from '@/games/klondike/rules'
 
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
+
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for Klondike's win flow and its "a card never moves without its own flight" rule: the REAL
 // KlondikeScreen, real game rules, real useFlightConcurrency / useAutoFoundationCascade / useGameSession /
-// useFoundationWinCheck / useWinReveal / gameInProgress store, seeded with a saved game through the AsyncStorage mock.
+// useFoundationWinCheck / useWinReveal / gameInProgress store, seeded with a saved game through the test store (src/testUtils/gameInProgressStore.ts).
 // Only what needs native views, gestures or animation is replaced, each by a stand-in honoring the contract the screen
 // relies on (same approach as freeCellScreenAutoPlay.test.tsx):
 //   - PileView / StockWaste / FoundationCell: render the card ids they are given AND register the cards they would
@@ -26,7 +27,6 @@ const FLIGHT_MS = 80
 /** How long a fake flight stays in the air - a test raises it to outlast the celebration's hold. */
 const mockFlight = { ms: FLIGHT_MS }
 const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
-const SAVE_KEY = 'solitaire.game-in-progress.v1.klondike'
 
 const mockSettings = { autoMove: true }
 const mockRecordWon = jest.fn()
@@ -116,6 +116,7 @@ const mockDeal = {
   cancel: () => {}
 }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/components/winning/WinCascadeLayer', () => ({
@@ -312,7 +313,7 @@ async function flushUntil(done: () => boolean, maxMs = 2000) {
 
 /** `undoStack`/`moves` seed the save too (an old save's undo entries, for the legacy-shape tests). */
 async function mount(state: KlondikeState, expectedCards: number, undoStack: unknown[] = [], moves = 0) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state, undoStack, moves, elapsedSeconds: 0, config: 1 }) : null))
+  seedGameInProgress('klondike', { state, undoStack, moves, elapsedSeconds: 0, config: 1 })
   await render(<KlondikeScreen />)
   await flush() // loadGameInProgress -> restoreGame
   expect(screen.queryAllByTestId(/^card-|^waste-top/).length).toBe(expectedCards)
@@ -361,6 +362,9 @@ afterEach(async () => {
   jest.useRealTimers()
   jest.restoreAllMocks()
 })
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('Klondike screen - the win celebration waits for the winning card to fly in and land', () => {
   it.each([

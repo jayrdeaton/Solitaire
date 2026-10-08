@@ -1,14 +1,15 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
 import { Card, Suit } from '@/engine/types'
 import AcesUpScreen from '@/games/acesup/AcesUpScreen'
 import { AcesUpState } from '@/games/acesup/rules'
 
+import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
+
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for what Aces Up's WINNING discard does: the REAL AcesUpScreen (real rules, real useFlightConcurrency /
 // useDerivedWinCheck / useStuckLossCheck / useWinReveal / useGameSession / gameInProgress store), seeded with a saved game through
-// the AsyncStorage mock. Only the parts that need native views, gestures or animation are replaced, each by a stand-in that honors
+// the test store (src/testUtils/gameInProgressStore.ts). Only the parts that need native views, gestures or animation are replaced, each by a stand-in that honors
 // the same contract the screen relies on (same approach as freeCellScreenAutoPlay.test.tsx / pyramidScreenWin.test.tsx):
 //   - PileView: renders the card ids it was handed (so the test sees what each pile shows at every moment); a tap calls
 //     onPressCard(card, indexFromTop, measure) like the real one.
@@ -25,7 +26,6 @@ const FLIGHT_MS = 80
 /** How long the fake ghost takes to land - a test raises it past the win hold to prove the celebration waits for the LANDING. */
 let mockFlightMs = FLIGHT_MS
 const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
-const SAVE_KEY = 'solitaire.game-in-progress.v1.acesup'
 
 const mockRecordWon = jest.fn()
 
@@ -81,6 +81,7 @@ const mockGhost = {
 }
 const mockDeal = { start: () => {}, cancel: () => {} }
 
+jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/components/winning/WinCascadeLayer', () => ({
@@ -215,7 +216,7 @@ async function flush(ms = 0) {
 }
 
 async function mount(saved: AcesUpState, expectedCards: number) {
-  jest.spyOn(AsyncStorage, 'getItem').mockImplementation(async (key: string) => (key === SAVE_KEY ? JSON.stringify({ state: saved, undoStack: [], moves: 0, elapsedSeconds: 0 }) : null))
+  seedGameInProgress('acesup', { state: saved, undoStack: [], moves: 0, elapsedSeconds: 0 })
   await render(<AcesUpScreen />)
   await flush() // loadGameInProgress -> restoreGame
   expect(screen.queryAllByTestId(/^card-/).length).toBe(expectedCards)
@@ -257,6 +258,9 @@ afterEach(async () => {
   jest.useRealTimers()
   jest.restoreAllMocks()
 })
+
+// Each test starts with no saved games (the store helper is shared across the file).
+afterEach(() => resetGameInProgress())
 
 describe('Aces Up screen - the winning discard', () => {
   it('flies to the discard, and neither the four Aces nor the banner change until it has landed and a beat has passed', async () => {
