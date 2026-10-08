@@ -216,8 +216,7 @@ export function ProfilesProvider({ children }: Props) {
       effect above has fully resolved, so nothing can lock onto a pre-reconciliation snapshot. Also
       registers the 'profiles' splash gate (utils/splashGate.ts) from here instead of from
       _layout.tsx's own pre-mount loaders, now that resolving profiles genuinely depends on Redux/
-      PersistGate having mounted first - the same "own gate, registered from deep in the tree" shape
-      _layout.tsx's FeedbackBridge already uses for 'haptics'/'sound'. See @rific/splash-gate's own
+      PersistGate having mounted first. See @rific/splash-gate's own
       README ("Guarding against a child that renders before its data does") for the general pattern
       this follows. */}
       <SplashGate gate='profiles' ready={loaded}>

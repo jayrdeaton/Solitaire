@@ -29,7 +29,6 @@ import { persistor, type RootState, store } from '@/redux/store'
 import { GameStatsProvider } from '@/stores/gameStats'
 import { LastActiveGameProvider } from '@/stores/lastActiveGame'
 import { ProfilesProvider, useProfiles } from '@/stores/profiles'
-import { useSplashReady } from '@/utils/splashGate'
 
 SplashScreen.preventAutoHideAsync()
 
@@ -205,13 +204,6 @@ function FeedbackBridge({ children, playCardSound, playInvalidSound }: FeedbackB
   const onChange = useCallback((next: HapticSettings) => dispatch(hapticActions.initialize(next)), [dispatch])
   const onSoundChange = useCallback((next: SoundSettings) => dispatch(soundActions.initialize(next)), [dispatch])
 
-  // PersistGate (an ancestor, see RootLayout below) already blocks rendering until redux-persist
-  // has rehydrated, so by the time this mounts haptic/sound are already the real persisted values
-  // — these gates are always ready the instant FeedbackBridge exists, unlike the old version's
-  // async AsyncStorage load.
-  useSplashReady('haptics', true)
-  useSplashReady('sound', true)
-
   return (
     <FeedbackPressProvider initialValue={haptic} onChange={onChange} soundInitialValue={sound} onSoundChange={onSoundChange} paper={RNPaper} sound={{ selection: playCardSound, notification: playInvalidSound }}>
       {children}
@@ -222,8 +214,8 @@ function FeedbackBridge({ children, playCardSound, playInvalidSound }: FeedbackB
 export default function RootLayout() {
   // Registers the 'fonts' gate itself (see useFontsPreload's own doc): expo-font's own load is the one
   // thing left that has to finish before anything renders. Every other splash gate is marked from
-  // inside PersistGate once its Redux state has rehydrated: 'theme' by ThemeBridge, 'haptics'/'sound' by
-  // FeedbackBridge, 'profiles' by ProfilesProvider.
+  // inside PersistGate once its Redux state has rehydrated: 'theme' by ThemeBridge, 'profiles' by
+  // ProfilesProvider.
   const fontsLoaded = useFontsPreload()
   const { playCardSound, playInvalidSound } = useCardSoundPlayers()
 
