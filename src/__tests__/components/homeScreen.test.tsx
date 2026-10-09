@@ -5,14 +5,15 @@ import Home from '@/app/index'
 import { computeHomeLayout } from '@/components/homeLayout'
 
 // ---------------------------------------------------------------------------------------------------------------------
-// A render test of the REAL Home screen (src/app/index.tsx): the real RotatedGameView, the real @tastic/core rotation math
-// (rotateInsets / rotateDimensions / toRotationStyle), the real Paper Portal.Host, the real @tastic/hud usePopoverHost +
-// PressAwayOverlay and the real homeLayout. Only what needs a native runtime, a store or a provider is replaced:
+// A render test of the REAL Home screen (src/app/index.tsx): the real RotatedScreen (@tastic/hud's RotatedFrame over
+// @tastic/core's FakeLandscapeView), the real @tastic/core rotation math (rotateInsets / rotateDimensions /
+// toRotationStyle), the real Paper Portal.Host, the real @tastic/hud usePopoverHost + PressAwayOverlay and the real
+// homeLayout. Only what needs a native runtime, a store or a provider is replaced:
 //   - rotation, the window and the safe-area insets are mutable (`mockRotation`, `mockWindow`, `mockInsets`). useRotation
 //     AND useRotatedWindowDimensions are both replaced (the latter imports the former internally, so replacing only
-//     useRotation would leave it reading rotation 0), and react-native's useWindowDimensions - which RotatedGameView reads
-//     directly - is replaced at its module.
-//   - the heavy children (HeroCards, ProfilePanel, GamePreview, the two dialogs, GameStatusBar) are recording stand-ins.
+//     useRotation would leave it reading rotation 0), and react-native's useWindowDimensions - which RotatedFrame and
+//     FakeLandscapeView read directly - is replaced at its module.
+//   - the heavy children (HeroCards, ProfilePanel, GamePreview, the two dialogs, RotationAwareStatusBar) are recording stand-ins.
 //   - @rific/feedback-press's IconButton/Pressable are thin RN Pressables that keep accessibilityLabel/onPress/style (the real
 //     ones, without a provider, drop `style` - which would hide the corner offsets under test).
 // The tree is inspected through screen.toJSON() (host elements only, in tree order), so "ancestor of", "sibling order" and
@@ -41,8 +42,10 @@ const mockUnmounts: Record<string, number> = {}
 jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({ __esModule: true, default: () => ({ ...mockWindow, scale: 1, fontScale: 1 }) }))
 jest.mock('@tastic/core', () => {
   const actual = jest.requireActual('@tastic/core')
+  const { View } = require('react-native')
   return {
     ...actual,
+    RotationAwareStatusBar: () => <View testID='status-bar' />,
     useRotation: () => mockRotation,
     useRotatedWindowDimensions: () => actual.rotateDimensions(mockWindow.width, mockWindow.height, mockRotation)
   }
@@ -86,10 +89,6 @@ jest.mock('@/components/useFontsPreload', () => ({ CARD_FONT_FAMILY: 'TestSerif'
 jest.mock('@/components/theme', () => {
   const actual = jest.requireActual('@/components/theme')
   return { ...actual, useTableColors: () => actual.lightColors }
-})
-jest.mock('@/components/GameStatusBar', () => {
-  const { View } = require('react-native')
-  return { GameStatusBar: () => <View testID='status-bar' /> }
 })
 jest.mock('@/components/HeroCards', () => {
   const { View } = require('react-native')

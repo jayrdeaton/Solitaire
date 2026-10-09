@@ -147,8 +147,15 @@ jest.mock('@/components/winning/WinCascadeLayer', () => ({
 // A foundation slot container measures like any view unless its suit is in mockUnmeasurableSlots; every other view (the stock/waste
 // refs the stand-ins never attach, so null) keeps answering.
 jest.mock('@/components/dealing/measureView', () => ({ measureView: async (view: { suit?: string } | null) => (view?.suit && mockUnmeasurableSlots.has(view.suit) ? null : { x: 5, y: 5 }) }))
-jest.mock('@/components/RotatedGameView', () => ({ RotatedGameView: ({ children }: { children: unknown }) => children }))
-jest.mock('@/components/GameStatusBar', () => ({ GameStatusBar: () => null }))
+// Records the game screen's status bar props (withGameProviders mounts it) instead of rendering expo-status-bar.
+let mockStatusBarProps: object | null = null
+jest.mock('@tastic/core', () => ({
+  ...jest.requireActual('@tastic/core'),
+  RotationAwareStatusBar: (props: object) => {
+    mockStatusBarProps = props
+    return null
+  }
+}))
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => {}, hapticCard: () => {}, hapticInvalid: () => {} }) }))
 jest.mock('@rific/feedback-press', () => ({ useVibration: () => ({ short: () => {}, selection: () => {} }) }))
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))
@@ -365,6 +372,16 @@ afterEach(async () => {
 
 // Each test starts with no saved games (the store helper is shared across the file).
 afterEach(() => resetGameInProgress())
+
+describe('Klondike screen - status bar', () => {
+  // withGameProviders gives every game the same bar Home/Achievements/Profiles get from RotatedScreen: always light,
+  // because the felt is dark in every appearance mode (the default 'auto' would turn its text dark in light mode).
+  it('gets the light, rotation-aware status bar', async () => {
+    mockStatusBarProps = null
+    await mount(KING_IN_COLUMN(), 1)
+    expect(mockStatusBarProps).toEqual({ style: 'light' })
+  })
+})
 
 describe('Klondike screen - the win celebration waits for the winning card to fly in and land', () => {
   it.each([

@@ -252,8 +252,7 @@ jest.mock('@/components/dealing/measureView', () => ({
     return { x: view.__pile === 'discard' ? 100 : view.__pile === 'stock' ? 200 : view.__pile === 'waste' ? 300 : 5, y: 5 }
   }
 }))
-jest.mock('@/components/RotatedGameView', () => ({ RotatedGameView: ({ children }: { children: unknown }) => children }))
-jest.mock('@/components/GameStatusBar', () => ({ GameStatusBar: () => null }))
+jest.mock('@tastic/core', () => ({ ...jest.requireActual('@tastic/core'), RotationAwareStatusBar: () => null }))
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => {}, hapticCard: () => {}, hapticInvalid: () => {} }) }))
 jest.mock('@rific/feedback-press', () => ({ useVibration: () => ({ short: () => {}, selection: () => {} }) }))
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))

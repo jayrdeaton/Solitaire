@@ -22,8 +22,8 @@ interface Props {
 // paper.Portal.Host). That host is OUTSIDE every rotated frame, so unlike Home's own dialogs (portaled
 // into RotatedScreen's in-frame host and told rotation={0}) the card can't inherit the frame's turn and
 // has to be handed it. It reads the same useRotation() that turns Home's frame (RotatedFrame), so it
-// sits at the angle Home's Settings dialog visually does; Lock Orientation needs no argument here (see
-// lockableDeviceMotion). `children` is the stable element _layout passes in, so a tilt-driven re-render
+// sits at the angle Home's Settings dialog visually does; Lock Orientation needs no argument here (_layout.tsx's
+// OrientationBridge freezes the provider's one shared reading with freezeWhileLocked). `children` is the stable element _layout passes in, so a tilt-driven re-render
 // here never re-renders the stack under it.
 //
 // The card is laid out against the PORTRAIT window even when turned, so hud sizes a quarter-turned card

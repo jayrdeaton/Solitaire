@@ -14,7 +14,7 @@ import { useTableColors } from './theme'
  * `tableFeltDark` accent on top, brighter through the middle where it's fully transparent.
  *
  * Fills whatever positioned/flex-sized parent it's given (same as StyleSheet.absoluteFill). It is
- * deliberately NOT inside RotatedGameView: a fake landscape rotation turns the game frame, not the
+ * deliberately NOT inside FakeLandscapeView: a fake landscape rotation turns the game frame, not the
  * device screen, and an ellipse fitted to the portrait screen reads as the same wide ellipse once the
  * phone is held sideways - so the one root felt is right at every angle, with nothing to re-key. */
 export function TableBackground() {

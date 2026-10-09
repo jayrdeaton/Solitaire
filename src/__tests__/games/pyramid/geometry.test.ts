@@ -11,7 +11,7 @@ const WIN_H = 874
 const CARD_W = 50
 const GAP = 6
 
-/** Independent forward model of RotatedGameView: the triangle container sits at a known LOCAL
+/** Independent forward model of FakeLandscapeView: the triangle container sits at a known LOCAL
  * position in a rotated frame centred in the window; returns the bbox top-left iOS would report for
  * (a) the container and (b) a card inside it. */
 function forward(rotation: number, containerLeft: number, containerTop: number, cardWidth: number) {

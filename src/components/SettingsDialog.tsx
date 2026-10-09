@@ -85,7 +85,7 @@ interface SettingsDialogProps {
 // Thin adapter over @tastic/hud's shared settings shell, matching the rest of the fleet's own
 // SettingsDialog.tsx convention. No deferBottomEdgeGestures - Solitaire has no edge-anchored swipe
 // controls, so there's nothing for that one to guard against (unlike lockOrientation, wired up below
-// - see lockableDeviceMotion.ts for how the lock actually takes effect). Check for Updates is left showing (its own Platform.OS check
+// - see _layout.tsx's OrientationBridge, OrientationProvider's freezeWhileLocked, for how the lock actually takes effect). Check for Updates is left showing (its own Platform.OS check
 // already hides it on web) - the root layout's UpdateDialog handles the autoCheck/autoPrompt flow,
 // this just adds the manual "Check for Updates" button/version row.
 export function SettingsDialog({ visible, onDismiss, children, rotation, showHowToPlay = false }: SettingsDialogProps) {

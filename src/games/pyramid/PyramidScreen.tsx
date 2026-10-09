@@ -444,7 +444,7 @@ function PyramidScreenInner() {
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
   const { contentWidth, isWide, availableHeight: layoutAvailableHeight } = useGameLayout()
-  // The screen is visually rotated by RotatedGameView, so every measured container origin below is a
+  // The screen is visually rotated by FakeLandscapeView, so every measured container origin below is a
   // rotated bounding box - see geometry.ts's pyramidCellScreenPoint.
   const rotation = useRotation()
   const { cardWidth: widthCardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TRIANGLE_WIDTH_UNITS)

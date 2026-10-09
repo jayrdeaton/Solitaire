@@ -304,7 +304,7 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
   // measure(), both viewport-relative on web - see CardRegistry.ts/PileView.tsx), but this overlay
   // - a screen-level sibling of {children}, not a descendant - isn't necessarily anchored at the true
   // viewport origin (it can sit below a native header on this app's web target - confirmed live), and
-  // under a landscape hold it lives inside RotatedGameView's rotated frame, so a screen-space point
+  // under a landscape hold it lives inside FakeLandscapeView's rotated frame, so a screen-space point
   // isn't a valid position inside it as-is. useOverlayFrame measures the overlay once mounted (and
   // again on resize/rotation) and toLocal converts each ghost's screen-space position accordingly -
   // see overlayFrame.ts.

@@ -52,7 +52,13 @@ jest.mock('react-native-reanimated', () => {
   }
 })
 
-jest.mock('@tastic/core', () => ({ ...jest.requireActual('@tastic/core'), useRotation: () => 0, useRotatedWindowDimensions: () => ({ width: 400, height: 800 }), rotateInsets: (insets: unknown) => insets }))
+jest.mock('@tastic/core', () => ({
+  ...jest.requireActual('@tastic/core'),
+  RotationAwareStatusBar: () => null,
+  useRotation: () => 0,
+  useRotatedWindowDimensions: () => ({ width: 400, height: 800 }),
+  rotateInsets: (insets: unknown) => insets
+}))
 
 /** Every mounted card face by id: whether its bitmap has been delivered, and the PlayingCard's latest onFacePainted. */
 const mockFaces = new Map<string, { painted: boolean; report?: () => void }>()
@@ -345,8 +351,6 @@ function MockRegister({ cardId }: { cardId: string | undefined }) {
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))
 jest.mock('@/components/dealing/measureView', () => ({ measureView: async () => ({ x: 5, y: 5 }) }))
-jest.mock('@/components/RotatedGameView', () => ({ RotatedGameView: ({ children }: { children: unknown }) => children }))
-jest.mock('@/components/GameStatusBar', () => ({ GameStatusBar: () => null }))
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => {}, hapticCard: () => {}, hapticInvalid: () => {} }) }))
 jest.mock('@rific/feedback-press', () => ({ useVibration: () => ({ short: () => {}, selection: () => {} }) }))
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))

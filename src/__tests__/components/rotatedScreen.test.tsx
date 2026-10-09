@@ -1,24 +1,27 @@
+import { FakeLandscapeView } from '@tastic/core'
+import { RotatedFrame } from '@tastic/hud'
 import { render, screen } from '@testing-library/react-native'
 import { useContext, useEffect } from 'react'
 import { StyleSheet, Text, View, type ViewStyle } from 'react-native'
 import { Portal } from 'react-native-paper'
 import { type EdgeInsets, SafeAreaInsetsContext } from 'react-native-safe-area-context'
 
-import { RotatedGameView } from '@/components/RotatedGameView'
-import { RotatedFrame, RotatedScreen } from '@/components/RotatedScreen'
+import { RotatedScreen } from '@/components/RotatedScreen'
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Render tests of the REAL RotatedFrame / RotatedScreen / RotatedGameView (src/components/RotatedScreen.tsx,
-// RotatedGameView.tsx): the real @tastic/core rotation math (rotateInsets / rotateDimensions / toRotationStyle), the real
-// Paper Portal + Portal.Host and the real safe-area context + provider. Same technique as homeScreen.test.tsx: only what
-// needs a native runtime or a provider is replaced.
+// Render tests of the REAL RotatedScreen (src/components/RotatedScreen.tsx) and the package frames it and the root overlays
+// are built on (@tastic/hud's RotatedFrame, over @tastic/core's FakeLandscapeView): the real @tastic/core rotation math
+// (rotateInsets / rotateDimensions / toRotationStyle), the real Paper Portal + Portal.Host and the real safe-area context +
+// provider. Same technique as homeScreen.test.tsx: only what needs a native runtime or a provider is replaced.
 //   - rotation, the window and the safe-area insets are mutable (`mockRotation`, `mockWindow`, `mockInsets`). useRotation AND
-//     useRotatedWindowDimensions are both replaced, and react-native's useWindowDimensions (which RotatedGameView reads
-//     directly) is replaced at its module.
+//     useRotatedWindowDimensions are both replaced, and react-native's useWindowDimensions (which RotatedFrame and
+//     FakeLandscapeView read directly) is replaced at its module. RotatedFrame turns its FakeLandscapeView by the mocked
+//     useRotation(); a bare FakeLandscapeView reads the orientation state itself, so the tests hand it `rotation`.
 //   - react-native-safe-area-context keeps its REAL SafeAreaInsetsContext (and Provider); only the FRAME's own read
 //     (`useSafeAreaInsets`) is a mutable stand-in. The children read the context itself through `Probe`, so what they see is
 //     exactly what the frame's provider hands its subtree.
-//   - expo-router's useIsFocused is mutable (`mockFocused`) and GameStatusBar is a stand-in with a testID.
+//   - expo-router's useIsFocused is mutable (`mockFocused`) and @tastic/core's RotationAwareStatusBar is a stand-in with a
+//     testID that records its props.
 // The tree is inspected through screen.toJSON() (host elements only, in tree order), so "inside the frame" and "ancestor of"
 // are asserted on what would really reach the native side.
 // ---------------------------------------------------------------------------------------------------------------------
@@ -29,6 +32,8 @@ let mockRotation: ViewRotation = 0
 let mockWindow = { width: 402, height: 874 }
 let mockInsets = { top: 0, right: 0, bottom: 0, left: 0 }
 let mockFocused = true
+/** The props RotationAwareStatusBar's stand-in last rendered with. */
+let mockStatusBarProps: object | null = null
 
 /** How many times each probe has been MOUNTED / UNMOUNTED - an unchanged tree keeps these at 1 / 0 across a rotation. */
 const mockMounts: Record<string, number> = {}
@@ -39,8 +44,13 @@ const mockSeenInsets = jest.fn((_insets: EdgeInsets | null) => {})
 jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({ __esModule: true, default: () => ({ ...mockWindow, scale: 1, fontScale: 1 }) }))
 jest.mock('@tastic/core', () => {
   const actual = jest.requireActual('@tastic/core')
+  const { View: RNView } = require('react-native')
   return {
     ...actual,
+    RotationAwareStatusBar: (props: object) => {
+      mockStatusBarProps = props
+      return <RNView testID='status-bar' />
+    },
     useRotation: () => mockRotation,
     useRotatedWindowDimensions: () => actual.rotateDimensions(mockWindow.width, mockWindow.height, mockRotation)
   }
@@ -52,10 +62,6 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => mockInsets
 }))
 jest.mock('expo-router', () => ({ useIsFocused: () => mockFocused }))
-jest.mock('@/components/GameStatusBar', () => {
-  const { View: RNView } = require('react-native')
-  return { GameStatusBar: () => <RNView testID='status-bar' /> }
-})
 
 // ------------------------------------------------------------------------------------------------- probes
 
@@ -165,6 +171,7 @@ beforeEach(() => {
   mockWindow = { ...PORTRAIT_WINDOW }
   mockInsets = { ...PHYSICAL_INSETS }
   mockFocused = true
+  mockStatusBarProps = null
   for (const key of Object.keys(mockMounts)) delete mockMounts[key]
   for (const key of Object.keys(mockUnmounts)) delete mockUnmounts[key]
   mockSeenInsets.mockClear()
@@ -182,8 +189,9 @@ describe('RotatedFrame: geometry', () => {
 
     const { path, outer, inner } = frameOf()
     expect(transformedAncestors(path)).toHaveLength(0)
+    // FakeLandscapeView puts the caller's flex:1 on the outer View; the inner one just fills it.
     expect(styleOf(outer)).toMatchObject({ flex: 1 })
-    expect(styleOf(inner)).toMatchObject({ flex: 1 })
+    expect(styleOf(inner)).toMatchObject({ flexGrow: 1, flexShrink: 1 })
     expect(styleOf(inner).transform).toBeUndefined()
     // Not the absolutely positioned, swapped-footprint frame of a landscape hold.
     expect(styleOf(inner).position).toBeUndefined()
@@ -522,37 +530,35 @@ describe('RotatedFrame: passThrough', () => {
   })
 })
 
-describe('RotatedGameView: passThrough on its own', () => {
+describe('FakeLandscapeView: passThrough on its own', () => {
   it.each([
     ['0', 0],
     ['+90', 90],
     ['-90', -90],
     ['180', 180]
   ] as const)('at %s: the inner View is box-none with passThrough, undefined without; the outer View is box-none either way', async (_name, rotation) => {
-    mockRotation = rotation
-
     await render(
-      <RotatedGameView passThrough>
+      <FakeLandscapeView rotation={rotation} passThrough>
         <Probe />
-      </RotatedGameView>
+      </FakeLandscapeView>
     )
     let { outer, inner } = frameOf()
     expect(outer.props.pointerEvents).toBe('box-none')
     expect(inner.props.pointerEvents).toBe('box-none')
 
     await screen.rerender(
-      <RotatedGameView passThrough={false}>
+      <FakeLandscapeView rotation={rotation} passThrough={false}>
         <Probe />
-      </RotatedGameView>
+      </FakeLandscapeView>
     )
     ;({ outer, inner } = frameOf())
     expect(outer.props.pointerEvents).toBe('box-none')
     expect(inner.props.pointerEvents).toBeUndefined()
 
     await screen.rerender(
-      <RotatedGameView>
+      <FakeLandscapeView rotation={rotation}>
         <Probe />
-      </RotatedGameView>
+      </FakeLandscapeView>
     )
     ;({ outer, inner } = frameOf())
     expect(outer.props.pointerEvents).toBe('box-none')
@@ -560,11 +566,10 @@ describe('RotatedGameView: passThrough on its own', () => {
   })
 
   it.each([0, 90] as const)('applies its style prop to the inner View at %s', async (rotation) => {
-    mockRotation = rotation
     await render(
-      <RotatedGameView style={TINTED}>
+      <FakeLandscapeView rotation={rotation} style={TINTED}>
         <Probe />
-      </RotatedGameView>
+      </FakeLandscapeView>
     )
 
     const { outer, inner } = frameOf()
@@ -640,7 +645,7 @@ describe('RotatedFrame: one tree at every angle', () => {
 // ------------------------------------------------------------------------------------------------- RotatedScreen
 
 describe('RotatedScreen', () => {
-  it('renders the status bar beside the frame (not inside it) while focused', async () => {
+  it('renders the light status bar beside the frame (not inside it) while focused', async () => {
     await render(
       <RotatedScreen>
         <Probe />
@@ -648,6 +653,8 @@ describe('RotatedScreen', () => {
     )
 
     expect(screen.getByTestId('status-bar')).toBeTruthy()
+    // Always light (the felt is dark in every appearance mode), and unlocked like the frame's own rotation reading.
+    expect(mockStatusBarProps).toEqual({ style: 'light' })
     expect(screen.getByTestId('probe')).toBeTruthy()
     // The status bar is a root sibling of the frame: turning the frame must not turn it.
     const roots = snapshot()

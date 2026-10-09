@@ -6,7 +6,7 @@ const WIN_H = 874
 const CARD_W = 96
 const CARD_H = 140
 
-/** Independent forward model of FakeLandscapeView/RotatedGameView: a container of local size
+/** Independent forward model of FakeLandscapeView: a container of local size
  * (localW x localH), centred in the window, rotated `rotation` degrees clockwise about its centre. Maps a
  * card's LOCAL top-left to the top-left of the bounding box iOS reports for it in screen space. */
 function localToScreenBBoxTopLeft(lx: number, ly: number, rotation: number) {

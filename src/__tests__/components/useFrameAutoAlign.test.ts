@@ -1,7 +1,7 @@
 import { localOffsetToScreenPoint } from '@/components/overlayFrameMath'
 import { computeFramePlacement, FRAME_ALIGN_EDGE_MARGIN, frameRectFromScreen } from '@/components/useFrameAutoAlign'
 
-// A 402x874 portrait window. RotatedGameView keeps the game frame centred in it and rotates it, so the frame's
+// A 402x874 portrait window. FakeLandscapeView keeps the game frame centred in it and rotates it, so the frame's
 // own (local) size is 402x874 at 0/180 and 874x402 at +/-90 - and its screen bounding box always fills the window.
 const WIN_W = 402
 const WIN_H = 874

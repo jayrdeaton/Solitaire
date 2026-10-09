@@ -1,11 +1,10 @@
+import { FakeLandscapeView, RotationAwareStatusBar } from '@tastic/core'
 import { ComponentType } from 'react'
 import { StyleSheet } from 'react-native'
 import { Portal } from 'react-native-paper'
 
 import { DealProvider } from '@/components/dealing/DealLayer'
 import { DragGhostProvider } from '@/components/dragdrop/DragGhostLayer'
-import { GameStatusBar } from '@/components/GameStatusBar'
-import { RotatedGameView } from '@/components/RotatedGameView'
 import { WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
 
 /**
@@ -16,8 +15,8 @@ import { WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
  * children), WinCascadeProvider innermost. Byte-identical across all four games before this
  * extraction.
  *
- * RotatedGameView (this app's stable-structure stand-in for @tastic/core's FakeLandscapeView) wraps
- * OUTSIDE all three - not just around Inner - because DealProvider and DragGhostProvider each render
+ * @tastic/core's FakeLandscapeView (one element tree at every angle, so a rotation never remounts the
+ * board) wraps OUTSIDE all three - not just around Inner - because DealProvider and DragGhostProvider each render
  * their own screen-level ghost-overlay View as a sibling of `{children}`, one level outside anything
  * Inner itself can reach (see DealLayer.tsx/DragGhostLayer.tsx's own always-mounted overlay views).
  * Wrapping only Inner would leave a card mid-drag or mid-deal rendering unrotated while the board
@@ -25,11 +24,11 @@ import { WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
  * screen-space positions into the rotated frame themselves - see overlayFrame.ts. This is every game
  * screen's own entire exported component (src/app/<game>.tsx re-exports withGameProviders(Inner)
  * directly), so this one wrapper is what gives a game screen the rotation. Home, Achievements and Profiles
- * get the same frame from RotatedScreen (components/RotatedScreen.tsx: RotatedGameView + a Portal.Host + a focus-gated
- * status bar), and the root layout's toaster/update dialog from RotatedFrame - so nothing in the app is left in
- * physical portrait.
+ * get the same frame from RotatedScreen (components/RotatedScreen.tsx: @tastic/hud's RotatedFrame, which is a
+ * FakeLandscapeView + a Portal.Host, plus a focus-gated status bar), and the root layout's toaster/update dialog from
+ * RotatedFrame - so nothing in the app is left in physical portrait.
  *
- * The Portal.Host sits inside RotatedGameView and OUTSIDE the three providers, for two reasons. (1) The
+ * The Portal.Host sits inside FakeLandscapeView and OUTSIDE the three providers, for two reasons. (1) The
  * game's dialogs (Settings, Rules, the New Game confirm) render through Paper's Portal, which by default
  * mounts at the APP ROOT - outside the rotated frame - so each had to rotate itself with a transform while
  * its layout (a `maxHeight: '90%'` sheet, etc.) was still resolved against the PORTRAIT window: once
@@ -40,15 +39,19 @@ import { WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
  * painting above the deal/drag ghost overlays and DealLayer's full-screen skip-tap layer (which are
  * later siblings of Inner) - a host inside GameChrome would have put them below those.
  *
- * GameStatusBar sits beside it (it renders nothing itself) so the OS status bar hides exactly when
- * the board is rotated - see its own doc comment.
+ * @tastic/core's RotationAwareStatusBar sits beside it (it renders nothing itself) so the OS status bar
+ * hides exactly when the board is rotated: the bar is glued to the device's physical top edge and can't
+ * turn with the content, so under a +/-90deg or 180deg rotation a visible one renders sideways or
+ * upside-down. It reads the same orientation state FakeLandscapeView does (both unlocked), so the two
+ * can never disagree. Always `light`: the felt is dark-toned in every appearance mode (see theme.ts), so
+ * the default `auto` flips to dark text in a light-mode system and reads poorly against it.
  */
 export function withGameProviders(Inner: ComponentType): ComponentType {
   return function GameScreen() {
     return (
       <>
-        <GameStatusBar />
-        <RotatedGameView style={styles.root}>
+        <RotationAwareStatusBar style='light' />
+        <FakeLandscapeView style={styles.root}>
           <Portal.Host>
             <DealProvider>
               <DragGhostProvider>
@@ -58,7 +61,7 @@ export function withGameProviders(Inner: ComponentType): ComponentType {
               </DragGhostProvider>
             </DealProvider>
           </Portal.Host>
-        </RotatedGameView>
+        </FakeLandscapeView>
       </>
     )
   }

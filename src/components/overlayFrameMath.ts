@@ -21,7 +21,7 @@ export interface OverlayFrame {
  * Every measurement in this app (measureInWindow, Reanimated's measure(), the pointer's
  * absoluteX/Y) is in true screen space, and for a rotated view iOS reports its transformed
  * bounding box - the top-left of the rotated footprint, not of the card's own unrotated box. A ghost
- * overlay living inside RotatedGameView is positioned in the ROTATED local frame instead, so
+ * overlay living inside FakeLandscapeView is positioned in the ROTATED local frame instead, so
  * `screen - overlayOffset` (correct only at rotation 0) sends a ghost to the wrong place - and, for
  * a drag, moves it along the wrong axis - at any other angle. Going through the card's centre
  * (which a rotation leaves fixed relative to the container's centre) and rotating by -angle gets
@@ -48,7 +48,7 @@ export function toLocal(sx: number, sy: number, cw: number, ch: number, frame: O
 
 /** Pure-JS mirror of toLocal for a caller that has no overlay to measure (see WinCascadeProvider):
  * assumes the rotated container is centred in a window of `winWidth` x `winHeight`, which is exactly
- * how RotatedGameView lays it out. */
+ * how @tastic/core's FakeLandscapeView lays it out. */
 export function screenToLocalPoint(sx: number, sy: number, cw: number, ch: number, rotation: number, winWidth: number, winHeight: number): { x: number; y: number } {
   const swapped = rotation === 90 || rotation === -90
   const frame = { rotation: { value: rotation }, cx: { value: winWidth / 2 }, cy: { value: winHeight / 2 }, lw: { value: swapped ? winHeight : winWidth }, lh: { value: swapped ? winWidth : winHeight } } as unknown as OverlayFrame

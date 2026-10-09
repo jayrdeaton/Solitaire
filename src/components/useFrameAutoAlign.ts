@@ -22,7 +22,7 @@ export interface FrameRect {
  *
  * Every measurement in this app is a rect in true screen space, and for a view inside a rotated frame it is
  * the transformed bounding box (see overlayFrameMath.ts) - `width`/`height` are therefore swapped at
- * +/-90deg. screenToLocalPoint undoes the rotation about the frame's centre, which RotatedGameView keeps at
+ * +/-90deg. screenToLocalPoint undoes the rotation about the frame's centre, which FakeLandscapeView keeps at
  * the window's own centre (`windowWidth`/`windowHeight` are the RAW window here, not the rotated one). */
 export function frameRectFromScreen(screenX: number, screenY: number, boxWidth: number, boxHeight: number, rotation: number, windowWidth: number, windowHeight: number): FrameRect {
   const swapped = rotation === 90 || rotation === -90

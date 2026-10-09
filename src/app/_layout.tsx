@@ -2,6 +2,7 @@ import { useAutoPaperTheme, useThemeSettings } from '@rific/auto-paper'
 import { FeedbackPressProvider, hapticActions, type HapticSettings, soundActions, type SoundSettings } from '@rific/feedback-press'
 import { Toaster, ToastProvider } from '@rific/toaster'
 import { OrientationProvider, useThemedRootBackground } from '@tastic/core'
+import { RotatedFrame } from '@tastic/hud'
 import { ProfileColorProvider } from '@tastic/profile'
 import { DarkTheme, Stack, ThemeProvider as NavigationThemeProvider } from 'expo-router'
 import { DeviceMotion } from 'expo-sensors'
@@ -16,7 +17,6 @@ import { Provider as ReduxProvider, useDispatch, useSelector } from 'react-redux
 import { PersistGate } from 'redux-persist/integration/react'
 
 import { GuideHost } from '@/components/GuideHost'
-import { RotatedFrame } from '@/components/RotatedScreen'
 import { TableBackground } from '@/components/TableBackground'
 import { previewCardBack, useTableColors } from '@/components/theme'
 import { ThemeBridge } from '@/components/ThemeBridge'
@@ -69,7 +69,7 @@ function ThemedStack() {
       system and reads poorly against it. Mounted here, next to the Stack, rather than once at the
       very root - confirmed live on iOS that a root-level instance never took effect (the bar stayed
       dark on the menu) while this one does. Game screens, Home, Achievements and Profiles layer their own
-      rotation-aware hide on top - see GameStatusBar and RotatedScreen. */}
+      rotation-aware hide on top - see withGameProviders and RotatedScreen. */}
       <StatusBar style='light' />
       <NavigationThemeProvider value={TRANSPARENT_NAVIGATION_THEME}>
         <Stack screenOptions={screenOptions}>
@@ -100,9 +100,9 @@ function ThemedStack() {
  * frame's bottom edge; `portalHost` so the update dialog's Paper Portal lands inside the frame (its `rotation`
  * stays 0). The absoluteFill wrapper takes the frame out of the Stack's layout. The toaster renders inline in the
  * frame (ToastProvider is given no `paper`, so it does not portal); only the update dialog uses the frame's
- * Portal.Host. Two of the toaster's behaviours still assume an upright screen: its swipe-to-dismiss reads the
- * pan in window space (wrong axis when turned - toasts still auto-dismiss) until @rific/toaster learns a `rotation`
- * prop, and its keyboard-aware lift is switched off when turned (ThemedToaster). */
+ * Portal.Host. The toaster needs no rotation prop: as of @rific/toaster 0.7.1 its swipe-to-dismiss is measured in
+ * the toast's own coordinates, and its keyboard-aware lift stays right because OrientationProvider's
+ * `portraitWhileKeyboard` turns the frame back to 0 while the keyboard is up. */
 function RootOverlays() {
   return (
     <View style={styles.overlays} pointerEvents='box-none'>
@@ -168,7 +168,7 @@ function MutedProfileColors({ children }: { children: ReactNode }) {
 
 /** Mounted once, wrapping every route via ThemedStack below AND the root overlays (toaster, update dialog) -
  * every screen's rotated frame (see RotatedScreen, and withGameProviders for the games) reads the live rotation
- * this provides via @tastic/core's useRotation()/RotatedGameView. Reads the persisted Lock Orientation setting
+ * this provides via @tastic/core's useRotation()/FakeLandscapeView. Reads the persisted Lock Orientation setting
  * through useSettings() (the Redux `settings` slice), so it sits inside PersistGate: the saved lock is already
  * rehydrated when this first renders. */
 function OrientationBridge({ children }: { children: ReactNode }) {

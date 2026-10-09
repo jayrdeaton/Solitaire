@@ -193,7 +193,7 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
   const [cascade, setCascade] = useState<CascadeState>({ mode: 'idle' })
   const [generation, setGeneration] = useState(0)
   // Rotation-aware: winWidth/winHeight swap when rendered inside a rotated wrapper (see
-  // RotatedGameView), so the cascade bounces within the screen's real, post-rotation footprint -
+  // FakeLandscapeView), so the cascade bounces within the screen's real, post-rotation footprint -
   // exact identity with plain useWindowDimensions() for any screen with no such wrapper.
   const { width: winWidth, height: winHeight } = useRotatedWindowDimensions()
   // Read at startChains-call time via the ref (not the useMemo's own deps) so the controller

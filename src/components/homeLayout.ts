@@ -15,7 +15,7 @@ import { HERO_FAN_HEIGHT, HERO_FAN_SPAN } from './heroFan'
  * game tiles. The trophy (top-left) and cog (top-right) corner buttons stay where they are; the right
  * pane stops short of the cog so tiles never scroll underneath it.
  *
- * Everything here works in the ROTATED frame's own coordinates (see RotatedGameView): `width`/`height`
+ * Everything here works in the ROTATED frame's own coordinates (see RotatedScreen): `width`/`height`
  * are the rotated footprint and `insets` are the safe-area insets already remapped onto the frame's
  * edges (rotateInsets). Note the rotated top/bottom insets are ~0 under a portrait-locked OS - a phone
  * held sideways only has left/right insets - so nothing here leans on them for breathing room.

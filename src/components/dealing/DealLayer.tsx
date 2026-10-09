@@ -675,7 +675,7 @@ export function DealProvider({ children }: { children: ReactNode }) {
   // necessarily anchored at the true viewport origin: it renders wherever the containing block
   // wrapping this whole screen sits, which can be below a native header (confirmed live on this
   // app's web target - see DragGhostLayer.tsx's identical fix), and under a landscape hold it sits
-  // inside RotatedGameView's rotated frame. Left uncorrected, every dealt card lands somewhere
+  // inside FakeLandscapeView's rotated frame. Left uncorrected, every dealt card lands somewhere
   // other than where it was measured - "flies to a spot below its pile, then snaps up" once the
   // real, correctly-flowed destination card is revealed. useOverlayFrame measures the overlay once
   // it mounts (and again on resize/rotation) and toLocal converts each ghost's position - see

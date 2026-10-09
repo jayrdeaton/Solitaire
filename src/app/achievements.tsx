@@ -18,7 +18,7 @@ import { DEFAULT_PROFILE_STATS } from '@/stores/statsValidation'
 import { safeBack } from '@/utils/navigation'
 
 // Widest the stats column gets in the WIDE (landscape) layout - a list of stat rows stretched across a 874pt
-// screen reads badly. Portrait is never capped (see RotatedFrame).
+// screen reads badly. Portrait is never capped (see @tastic/hud's RotatedFrame).
 const SCREEN_MAX_WIDTH = 640
 
 const GAME_TITLES: Record<SolitaireGameId, string> = {

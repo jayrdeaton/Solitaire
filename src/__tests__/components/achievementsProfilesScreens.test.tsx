@@ -7,12 +7,13 @@ import { safeBack } from '@/utils/navigation'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // A render test of the REAL Achievements and Profiles screens (src/app/achievements.tsx, src/app/profiles.tsx): the real
-// RotatedScreen/RotatedFrame/RotatedGameView, the real @tastic/core rotation math (rotateInsets / rotateDimensions /
-// toRotationStyle) and the real Paper Portal.Host. Only what needs a native runtime, a store or a library screen is
-// replaced (the same scaffolding as homeScreen.test.tsx):
+// RotatedScreen, @tastic/hud's RotatedFrame and @tastic/core's FakeLandscapeView, the real @tastic/core rotation math
+// (rotateInsets / rotateDimensions / toRotationStyle) and the real Paper Portal.Host. Only what needs a native runtime, a
+// store or a library screen is replaced (the same scaffolding as homeScreen.test.tsx):
 //   - rotation, the window and the PHYSICAL safe-area insets are mutable (`mockRotation`, `mockWindow`, `mockInsets`).
 //     useRotation AND useRotatedWindowDimensions are both replaced (the latter imports the former internally), and
-//     react-native's useWindowDimensions - which RotatedGameView reads directly - is replaced at its module.
+//     react-native's useWindowDimensions - which RotatedFrame and FakeLandscapeView read directly - is replaced at its
+//     module.
 //   - useSafeAreaInsets reads the CONTEXT value when a provider is above it (the real SafeAreaInsetsContext, which is what
 //     RotatedFrame's `rotatedSafeArea` provides) and only falls back to the physical `mockInsets` without one - so what the
 //     screens see is exactly what a real device would hand them through the provider chain.
@@ -67,8 +68,10 @@ const mockStoreActions = { createProfile: jest.fn(), updateProfile: jest.fn(), d
 jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({ __esModule: true, default: () => ({ ...mockWindow, scale: 1, fontScale: 1 }) }))
 jest.mock('@tastic/core', () => {
   const actual = jest.requireActual('@tastic/core')
+  const { View } = require('react-native')
   return {
     ...actual,
+    RotationAwareStatusBar: () => <View testID='status-bar' />,
     useRotation: () => mockRotation,
     useRotatedWindowDimensions: () => actual.rotateDimensions(mockWindow.width, mockWindow.height, mockRotation)
   }
@@ -112,10 +115,6 @@ jest.mock('@/components/theme', () => {
 jest.mock('@/components/GameLoading', () => {
   const { View } = require('react-native')
   return { LoadingIndicator: () => <View testID='loading-indicator' /> }
-})
-jest.mock('@/components/GameStatusBar', () => {
-  const { View } = require('react-native')
-  return { GameStatusBar: () => <View testID='status-bar' /> }
 })
 jest.mock('@tastic/hud', () => {
   const { View, Pressable } = require('react-native')
