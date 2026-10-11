@@ -26,7 +26,7 @@ import { YUKON_RULES } from '@/constants/gameRules'
 import { AutoCompleteStep, findSafeAutoPlay, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
-import { alwaysValidRun, detectRevealedCard, runCountFrom, top } from '@/engine/pile'
+import { alwaysValidRun, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card, SUITS } from '@/engine/types'
@@ -553,9 +553,9 @@ function YukonScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, winRevealed])
 
-  // Auto-play-to-foundation: only ever fires as a direct consequence of the player's own move - see
-  // useAutoFoundationCascade for the trigger model (armFromForwardMove/armFromAceEvent, called from
-  // applyMove below), and engine/autoFoundation.ts for the two mechanisms computeNextStep composes.
+  // Auto-play-to-foundation: only ever follows the player's own play of a card to a foundation - see
+  // useAutoFoundationCascade for the trigger model (afterPlayerMove, called from applyMove below; any
+  // other move of theirs stops it), and engine/autoFoundation.ts for the two mechanisms computeNextStep composes.
   // Declared here, just above the hook call that uses them, rather than lower in the component
   // (Klondike/FreeCell's equivalent functions are declared further down and still lint clean there,
   // but the same forward-reference shape trips react-hooks/immutability in this file specifically -
@@ -584,7 +584,7 @@ function YukonScreenInner() {
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
-    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current) {
+    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current || !cascade.isArmed()) {
       settleFlight()
       return false
     }
@@ -783,6 +783,11 @@ function YukonScreenInner() {
     // commitState just did, not the same stale board both closures captured.
     const current = stateRef.current
     if (!current) return false
+    // The card flying is the card the player tapped or grabbed (or the auto-play chose); tryMove only knows positions, so if
+    // the board moved on since - an auto-play took that very card between the tap and now - it would move whatever now sits
+    // there, under a ghost of a different card. Refuse instead (FreeCell's moveHeadCard check).
+    const sourcePile = resolvePile(from, current)
+    if (sourcePile?.[sourcePile.length - count]?.id !== anchorCardId) return false
     const result = controller.tryMove(current, { from, to, count })
     if (result) {
       const moveInfo: MoveInfo = { from, to, count, anchorCardId }
@@ -794,18 +799,9 @@ function YukonScreenInner() {
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
-      // (Never armed while auto-move is off: the cascade could then fire later, after it's back on.)
-      if (settings.autoMoveToFoundation && !opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
-      // Reveals an ace: auto-play it immediately as a reward for the move that uncovered it (see
-      // useAutoFoundationCascade's armFromAceEvent), regardless of whether THIS move was itself
-      // silent - a cascaded tableau-to-foundation play can just as well reveal a fresh ace
-      // underneath as a manual one can, and that ace deserves the same instant payoff either way.
-      if (from.zone === 'tableau') {
-        const revealed = detectRevealedCard(current.tableau[from.index], result.tableau[from.index], count)
-        if (settings.autoMoveToFoundation && revealed && revealed.rank === 1) {
-          cascade.armFromAceEvent({ ref: from, card: revealed }, { zone: 'foundation', index: SUITS.indexOf(revealed.suit) })
-        }
-      }
+      // Only the player's own play of a card to a foundation starts auto-play; any other move of theirs
+      // stops it, so a card it uncovers (an ace flipped up on the tableau, say) is theirs to find and play.
+      if (!opts?.silent) cascade.afterPlayerMove(to)
       return true
     }
     return false
@@ -819,6 +815,21 @@ function YukonScreenInner() {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
     const flyingId = beginFlying(to, count)
     pendingFlightRef.current.push({ cardId: anchorCardId, to, gen: dealTokenRef.current, flyingId, flight })
+    return true
+  }
+
+  // A foundation card dragged back down to the tableau (rules.ts's tryMove) - the only drag here that doesn't start on
+  // the tableau, so the only one that runs its own hit test (Klondike's attemptDrop, same shape). Claims its flight
+  // before the hit-test await so undo sees the drop as in flight for its whole duration, and refuses outright while an
+  // undo is running (the drag's ghost just snaps back).
+  async function attemptFoundationDrop(foundationIndex: number, absoluteX: number, absoluteY: number, anchorCardId: string, flight: DragFlightHandle): Promise<boolean> {
+    if (undoBusyRef.current) return false
+    startFlights(1)
+    const target = await dropZones.hitTest(absoluteX, absoluteY)
+    if (!target || undoBusyRef.current || !completeMove({ zone: 'foundation', index: foundationIndex }, target, 1, anchorCardId, flight)) {
+      settleFlight()
+      return false
+    }
     return true
   }
 
@@ -929,6 +940,11 @@ function YukonScreenInner() {
                     slotRef={(el) => {
                       foundationSlotRefs.current[i] = el
                     }}
+                    // A foundation card may come back down to the tableau (rules.ts's tryMove) - by drag only, and never
+                    // once the deal is won. Any move to a column stops a running auto-play (applyMove), so it isn't sent
+                    // straight back up.
+                    under={pile[pile.length - 2] ?? null}
+                    onDrop={won ? undefined : (x, y, flight, dragged) => attemptFoundationDrop(i, x, y, dragged.id, flight)}
                   />
                 </DropZone>
               )

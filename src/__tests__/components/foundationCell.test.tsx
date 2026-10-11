@@ -13,6 +13,11 @@ jest.mock('@/components/PlayingCard', () => {
     FoundationSlot: () => <View testID='slot' />
   }
 })
+// The top card is a DraggableCard (its drag is slotTakeOffHold.test.tsx's business) - drawn here as the card it shows.
+jest.mock('@/components/dragdrop/DraggableCard', () => {
+  const { View } = require('react-native')
+  return { DraggableCard: ({ card }: { card: { id: string } }) => <View testID={`card-${card.id}`} /> }
+})
 
 const spade = (rank: number): Card => ({ id: `spades-${rank}-0`, suit: 'spades', rank, faceUp: true }) as Card
 

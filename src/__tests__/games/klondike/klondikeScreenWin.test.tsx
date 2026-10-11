@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { useEffect } from 'react'
 
+import { AUTO_PLAY_STAGGER_MS } from '@/components/dragdrop/dragSpring'
+import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
 import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
 import KlondikeScreen from '@/games/klondike/KlondikeScreen'
@@ -32,6 +34,8 @@ const mockSettings = { autoMove: true }
 const mockRecordWon = jest.fn()
 const mockPiles = new Map<number, { cards: Card[]; drag: { onDrop: (to: PileRef, count: number, anchorCardId: string, flight: unknown) => Promise<boolean> | boolean } }>()
 let mockPileInstance = 0
+/** Each foundation cell's onDrop as last rendered, by suit (undefined: its card can't be picked up). */
+const mockFoundationDrops = new Map<string, ((x: number, y: number, flight: unknown, dragged: Card) => Promise<boolean> | boolean) | undefined>()
 
 interface MockFlightLog {
   /** Every ghost.show() - one per card flight the screen started (tap, drop, cascade step, undo). */
@@ -146,7 +150,14 @@ jest.mock('@/components/winning/WinCascadeLayer', () => ({
 }))
 // A foundation slot container measures like any view unless its suit is in mockUnmeasurableSlots; every other view (the stock/waste
 // refs the stand-ins never attach, so null) keeps answering.
-jest.mock('@/components/dealing/measureView', () => ({ measureView: async (view: { suit?: string } | null) => (view?.suit && mockUnmeasurableSlots.has(view.suit) ? null : { x: 5, y: 5 }) }))
+/** How long a container measurement takes to come back (a real one is a native round trip) - 0 resolves at once. */
+let mockMeasureViewMs = 0
+jest.mock('@/components/dealing/measureView', () => ({
+  measureView: async (view: { suit?: string } | null) => {
+    if (mockMeasureViewMs > 0) await new Promise((resolve) => setTimeout(resolve, mockMeasureViewMs))
+    return view?.suit && mockUnmeasurableSlots.has(view.suit) ? null : { x: 5, y: 5 }
+  }
+}))
 // Records the game screen's status bar props (withGameProviders mounts it) instead of rendering expo-status-bar.
 let mockStatusBarProps: object | null = null
 jest.mock('@tastic/core', () => ({
@@ -188,7 +199,8 @@ jest.mock('@/games/shared/FoundationCell', () => {
   const { Text: MockText, View: MockView } = require('react-native')
   const { useEffect: mockEffect } = require('react')
   const { useFrozenWhileHidden } = jest.requireActual('@/components/useFrozenWhileHidden')
-  function MockFoundationCell({ card, suit, isFlyingHere, settledCard, slotRef }: { card?: { id: string }; suit: string; isFlyingHere: boolean; settledCard?: { id: string } | null; slotRef?: (el: { suit: string } | null) => void }) {
+  function MockFoundationCell({ card, suit, isFlyingHere, settledCard, slotRef, onDrop }: { card?: { id: string }; suit: string; isFlyingHere: boolean; settledCard?: { id: string } | null; slotRef?: (el: { suit: string } | null) => void; onDrop?: (x: number, y: number, flight: unknown, dragged: Card) => Promise<boolean> | boolean }) {
+    mockFoundationDrops.set(suit, onDrop)
     const frozenCopy = useFrozenWhileHidden(card, isFlyingHere)
     const underGhost = settledCard === undefined ? frozenCopy : settledCard
     // Like the real cell's outer container: always mounted, whether or not a real card is drawn, and handed to the screen as the slot to measure.
@@ -211,6 +223,7 @@ jest.mock('@/games/shared/FoundationCell', () => {
 })
 jest.mock('@/components/StockWaste', () => {
   const { Pressable: MockPressable, Text: MockText, View: MockView } = require('react-native')
+  const { useFrozenWhileHidden } = jest.requireActual('@/components/useFrozenWhileHidden')
   function MockWasteTop({ card, onPress }: { card: { id: string }; onPress: (measure: () => Promise<{ x: number; y: number }>) => void }) {
     return (
       <MockPressable testID='waste-top' onPress={() => onPress(async () => ({ x: 10, y: 10 }))}>
@@ -219,14 +232,21 @@ jest.mock('@/components/StockWaste', () => {
       </MockPressable>
     )
   }
-  return {
-    StockWaste: (props: { wasteTop?: { id: string }; onDrawStock: () => void; onWastePress: (measure: () => Promise<{ x: number; y: number }>) => void }) => (
+  // Also reports what the real waste paints under incoming ghost(s) - the frozen copy of its pre-flight top while
+  // wasteHiddenCount > 0 ('empty' for the bare slot), 'none' when nothing lands there - and whether the stock is frozen.
+  function MockStockWaste(props: { wasteTop?: { id: string }; wasteHiddenCount?: number; stockHidden?: boolean; onDrawStock: () => void; onWastePress: (measure: () => Promise<{ x: number; y: number }>) => void }) {
+    const landing = (props.wasteHiddenCount ?? 0) > 0
+    const frozenTop = useFrozenWhileHidden(props.wasteTop, landing)
+    return (
       <MockView>
         <MockPressable testID='stock-pile' onPress={() => props.onDrawStock()} />
         {props.wasteTop ? <MockWasteTop card={props.wasteTop} onPress={props.onWastePress} /> : null}
+        <MockText testID='under-waste'>{landing ? (frozenTop ? frozenTop.id : 'empty') : 'none'}</MockText>
+        <MockText testID='stock-hidden'>{String(!!props.stockHidden)}</MockText>
       </MockView>
     )
   }
+  return { StockWaste: MockStockWaste }
 })
 jest.mock('@/components/PileView', () => {
   const { Pressable: MockPressable, View: MockView } = require('react-native')
@@ -347,8 +367,10 @@ beforeEach(() => {
   jest.useFakeTimers()
   mockSettings.autoMove = true
   mockFlight.ms = FLIGHT_MS
+  mockMeasureViewMs = 0
   mockPiles.clear()
   mockPileInstance = 0
+  mockFoundationDrops.clear()
   mockRegistered.clear()
   mockLog.shown = []
   mockLog.dealt = []
@@ -775,5 +797,238 @@ describe('Klondike screen - a foundation pile keeps showing the card that has la
 
     await flushUntil(() => mockLog.inAir === 1)
     expect(underGhost('clubs')).toBe(id('clubs', 1)) // the Ace has landed and stays there under the 2's ghost
+  })
+})
+
+describe("Klondike screen - auto-play only ever follows the player's own play of a card to a foundation", () => {
+  it('a drawn ace stays on the waste for the player to find and play', async () => {
+    await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)]], stock: [card('spades', 7, false), card('clubs', 1, false)], foundation: foundations({}) }), 2)
+
+    await tap('stock-pile')
+    await flush(2000)
+
+    expect(mockLog.shown).toEqual([id('clubs', 1)]) // the draw's own flight, and nothing after it
+    expect(wasteTop()).toBe(id('clubs', 1))
+    expect(foundationTop('clubs')).toBe('empty')
+  })
+
+  it("a draw stops a cascade still running from the player's last play, so it cannot take the card just drawn", async () => {
+    // Tapping 5 of hearts arms auto-play (6 of hearts would follow); the stock holds the Ace of diamonds.
+    await mount(board({ tableau: [[card('hearts', 5)], [card('hearts', 6)], [card('diamonds', 3, false), card('diamonds', 2)]], stock: [card('diamonds', 1, false)], foundation: foundations({ clubs: 13, spades: 13, hearts: 4 }) }), 4)
+
+    await tapCard(id('hearts', 5))
+    await tap('stock-pile') // before the cascade's first card leaves
+    await flush(2000)
+
+    expect(mockLog.shown).toEqual([id('hearts', 5), id('diamonds', 1)]) // the tap and the draw - no auto-played card
+    expect(foundationTop('hearts')).toBe(id('hearts', 5))
+    expect(pileIds(1)).toEqual([id('hearts', 6)])
+    expect(wasteTop()).toBe(id('diamonds', 1))
+    expect(foundationTop('diamonds')).toBe('empty')
+  })
+
+  it('an ace a column move flips up stays there for the player to find and play', async () => {
+    await mount(board({ tableau: [[card('clubs', 1, false), card('hearts', 9)], [card('spades', 10)]], foundation: foundations({}) }), 3)
+
+    await tapCard(id('hearts', 9)) // onto the 10 of spades: the face-down Ace of clubs turns over
+    await flush(2000)
+
+    expect(mockLog.shown).toEqual([id('hearts', 9)]) // the move's own flight, and nothing after it
+    expect(pileIds(0)).toEqual([id('clubs', 1)])
+    expect(foundationTop('clubs')).toBe('empty')
+  })
+
+  it('an ace a move from the waste uncovers on the waste stays there too', async () => {
+    await mount(board({ tableau: [[card('spades', 10)]], waste: [card('diamonds', 1), card('hearts', 9)], foundation: foundations({}) }), 2)
+
+    await tap('waste-top') // the 9 of hearts onto the 10 of spades: the Ace of diamonds is the waste's top now
+    await flush(2000)
+
+    expect(mockLog.shown).toEqual([id('hearts', 9)])
+    expect(wasteTop()).toBe(id('diamonds', 1))
+    expect(foundationTop('diamonds')).toBe('empty')
+  })
+
+  it("a column move stops a cascade still running from the player's last play, so it cannot take the ace that move flips up", async () => {
+    // Tapping 5 of hearts arms auto-play (6 of hearts would follow); moving the 9 of spades onto the 10 of diamonds turns the
+    // face-down Ace of diamonds over.
+    await mount(board({ tableau: [[card('hearts', 5)], [card('hearts', 6)], [card('diamonds', 1, false), card('spades', 9)], [card('diamonds', 10)]], foundation: foundations({ clubs: 13, spades: 7, hearts: 4 }) }), 5)
+
+    await tapCard(id('hearts', 5))
+    await tapCard(id('spades', 9)) // before the cascade's first card leaves
+    await flush(2000)
+
+    expect(mockLog.shown).toEqual([id('hearts', 5), id('spades', 9)]) // the two moves - no auto-played card
+    expect(foundationTop('hearts')).toBe(id('hearts', 5))
+    expect(pileIds(1)).toEqual([id('hearts', 6)])
+    expect(pileIds(2)).toEqual([id('diamonds', 1)])
+    expect(foundationTop('diamonds')).toBe('empty')
+  })
+
+  it('an auto-played card still being measured when the player taps the stock does not go up after the draw', async () => {
+    // Real measurements are native round trips: the cascade's next card is still being measured when the stock tap lands, and
+    // the draw's own measurement comes back after that.
+    jest.spyOn(mockRegistry, 'measure').mockImplementation(async (cardId: string) => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      return mockRegistered.has(cardId) ? { x: 10, y: 10, width: 40, height: 56 } : null
+    })
+    await mount(board({ tableau: [[card('hearts', 5)], [card('hearts', 6)], [card('diamonds', 1, false), card('diamonds', 2)]], stock: [card('diamonds', 7, false)], foundation: foundations({ clubs: 13, spades: 13, hearts: 4 }) }), 4)
+
+    await tapCard(id('hearts', 5)) // arms auto-play: the 6 of hearts follows one gap later...
+    await flush(AUTO_PLAY_STAGGER_MS + STEP_MS) // ...and is being measured now
+    mockMeasureViewMs = 40
+    await tap('stock-pile')
+    await flush(2000)
+
+    expect(mockLog.shown).toEqual([id('hearts', 5), id('diamonds', 7)]) // the tap and the draw - the 6 never left
+    expect(pileIds(1)).toEqual([id('hearts', 6)])
+    expect(foundationTop('hearts')).toBe(id('hearts', 5))
+    expect(wasteTop()).toBe(id('diamonds', 7))
+  })
+
+  it('a New Game while a cascade is still running does not carry it on into the new deal', async () => {
+    const newController = klondikeRules.createKlondikeController
+    // The new deal has a face-up Ace on top of a column: the old cascade would have sent it straight up.
+    jest.spyOn(klondikeRules, 'createKlondikeController').mockImplementation((draw) => ({ ...newController(draw), newGame: () => board({ tableau: [[card('spades', 9, false), card('clubs', 1)], [card('hearts', 8)]], stock: [card('diamonds', 4, false)], foundation: foundations({}) }) }))
+    await mount(FIVE_THEN_SIX(), 4)
+
+    await tapCard(id('hearts', 5)) // arms auto-play: the 6 of hearts would follow
+    await tap('new-game') // before it leaves
+    await flush(2000)
+
+    expect(mockLog.shown).toEqual([id('hearts', 5)]) // the tap's own flight, and nothing after it
+    expect(foundationTop('clubs')).toBe('empty')
+    expect(screen.getByTestId(`card-${id('clubs', 1)}`)).toBeTruthy()
+  })
+})
+
+describe('Klondike screen - a card never moves in place of the one the player picked', () => {
+  it('a drop for a card that has since left is refused, instead of moving whatever now sits in its place', async () => {
+    await mount(board({ tableau: [[card('clubs', 1, false), card('hearts', 9)], [card('spades', 10)]], foundation: foundations({}) }), 3)
+    const nine = id('hearts', 9)
+    // The drag of the 9 of hearts, picked up while it was still on top of the face-down Ace of clubs...
+    const staleDrag = [...mockPiles.values()].find((p) => p.cards.some((c) => c.id === nine))!.drag
+    // ...but the 9 has moved on before the drop arrives (an auto-play, say - here a tap sends it onto the 10 of spades).
+    await tapCard(nine)
+    await flush(200)
+    const shownBefore = mockLog.shown.length
+
+    let applied: boolean = true
+    await act(async () => {
+      applied = await staleDrag.onDrop({ zone: 'foundation', index: SUITS.indexOf('clubs') }, 1, nine, { release: () => {}, flyTo: () => {}, hide: () => {} })
+    })
+    await flush(200)
+
+    expect(applied).toBe(false) // the Ace of clubs, on top of that column now, did NOT go up under a ghost of the 9
+    expect(foundationTop('clubs')).toBe('empty')
+    expect(mockLog.shown).toHaveLength(shownBefore)
+  })
+})
+
+describe('Klondike screen - recycling the waste', () => {
+  const underWaste = () => screen.getByTestId('under-waste').props.children as string
+  const stockHidden = () => screen.getByTestId('stock-hidden').props.children as string
+
+  it('empties the waste as its cards fly back to the stock - the card on top is not left behind on the waste as well', async () => {
+    await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)]], waste: [card('spades', 7), card('clubs', 4)], foundation: foundations({}) }), 3)
+
+    await tap('stock-pile')
+    await flush()
+
+    expect(mockLog.shown).toEqual([`${id('spades', 7)}+${id('clubs', 4)}`]) // the whole waste flies, its top card showing
+    expect(wasteTop()).toBe('none')
+    expect(underWaste()).toBe('none') // nothing lands on the waste: no frozen copy of the 4 of clubs drawn there under the flight
+    expect(stockHidden()).toBe('true') // the stock is where it lands: it keeps its empty look until then
+
+    await flush(FLIGHT_MS + STEP_MS)
+    expect(stockHidden()).toBe('false')
+    expect(wasteTop()).toBe('none')
+  })
+
+  it('undoing it empties the stock as the cards take off, flying them face down onto the waste - no back is left on the stock meanwhile', async () => {
+    await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)]], waste: [card('spades', 7), card('clubs', 4)], foundation: foundations({}) }), 3)
+    await tap('stock-pile')
+    await flush(FLIGHT_MS + STEP_MS)
+    const show = jest.spyOn(mockGhost, 'show')
+
+    await tap('undo')
+    await flush()
+
+    expect(show).toHaveBeenCalledTimes(1)
+    // One back for the whole pile, carrying the id of the card that ends on top of the waste (the landed ghost waits for its face).
+    expect(show.mock.calls[0][0].cards).toEqual([{ ...card('clubs', 4), faceUp: false }])
+    expect(stockHidden()).toBe('false') // the stock is where the cards LEAVE: not frozen on a back while they are in the air
+    expect(underWaste()).toBe('empty') // the waste is where they land: its empty slot until then
+    expect(wasteTop()).toBe(id('clubs', 4))
+
+    await flush(FLIGHT_MS + STEP_MS)
+    expect(underWaste()).toBe('none')
+    expect(wasteTop()).toBe(id('clubs', 4))
+  })
+})
+
+describe('Klondike screen - a foundation card back down to the tableau', () => {
+  /** Drags `dragged` off its foundation and drops it on tableau column `column` (the hit test's answer). */
+  async function dropFromFoundation(suit: Suit, dragged: Card, column: number) {
+    jest.spyOn(DropZoneRegistry.prototype, 'hitTest').mockResolvedValue({ zone: 'tableau', index: column })
+    const onDrop = mockFoundationDrops.get(suit)
+    expect(onDrop).toBeDefined()
+    let applied: boolean = false
+    await act(async () => {
+      applied = await onDrop!(0, 0, mockMakeFlight(), dragged)
+    })
+    return applied
+  }
+
+  it('flies onto the column and counts as a move, and one Undo flies it back up', async () => {
+    await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)], [card('diamonds', 3)]], foundation: foundations({ clubs: 2 }) }), 3)
+
+    expect(await dropFromFoundation('clubs', card('clubs', 2), 1)).toBe(true)
+    await flush(200)
+    expect(foundationTop('clubs')).toBe(id('clubs', 1))
+    expect(pileIds(1)).toEqual([id('diamonds', 3), id('clubs', 2)])
+    expect(movesCount()).toBe('1')
+    expect(mockLog.hides).toBe(0) // the drag's ghost flew to the column - the card never just appeared there
+
+    await tap('undo')
+    await flush(200)
+    expect(foundationTop('clubs')).toBe(id('clubs', 2))
+    expect(pileIds(1)).toEqual([id('diamonds', 3)])
+    expect(mockLog.shown).toEqual([id('clubs', 2)]) // the undo's own flight, back up
+    expect(mockLog.hides).toBe(0)
+  })
+
+  it('is refused (it snaps back) on a column it cannot go on', async () => {
+    await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)], [card('spades', 3)]], foundation: foundations({ clubs: 2 }) }), 3)
+
+    expect(await dropFromFoundation('clubs', card('clubs', 2), 1)).toBe(false)
+    await flush(200)
+    expect(foundationTop('clubs')).toBe(id('clubs', 2))
+    expect(movesCount()).toBe('0')
+  })
+
+  it("stops an auto-play still running from the player's last play, like any column move", async () => {
+    // Tapping 5 of hearts arms auto-play (the 6 of hearts would follow); the 7 of spades comes down onto the 8 of diamonds
+    // before the cascade's first card leaves.
+    await mount(board({ tableau: [[card('hearts', 5)], [card('hearts', 6)], [card('diamonds', 8)], [card('diamonds', 1, false), card('diamonds', 2)]], foundation: foundations({ clubs: 13, spades: 7, hearts: 4 }) }), 5)
+
+    await tapCard(id('hearts', 5))
+    expect(await dropFromFoundation('spades', card('spades', 7), 2)).toBe(true)
+    await flush(2000)
+
+    expect(pileIds(2)).toEqual([id('diamonds', 8), id('spades', 7)])
+    expect(foundationTop('spades')).toBe(id('spades', 6))
+    expect(pileIds(1)).toEqual([id('hearts', 6)]) // the cascade stopped: nothing went up after the drop
+    expect(mockLog.shown).toEqual([id('hearts', 5)])
+  })
+
+  it('offers no drag once the deal is won', async () => {
+    await mount(KING_IN_COLUMN(), 1)
+    expect(mockFoundationDrops.get('diamonds')).toBeDefined()
+
+    await tapCard(id('clubs', 13))
+    await flush(200)
+    expect(screen.getByTestId('chrome-won').props.children).toBe('true')
+    SUITS.forEach((suit) => expect(mockFoundationDrops.get(suit)).toBeUndefined())
   })
 })

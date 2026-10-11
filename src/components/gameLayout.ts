@@ -178,15 +178,16 @@ export function useFittedCardWidth(widthCardWidth: number, model: BoardHeightMod
  * derived layout assumed the row would fill the window, so a shrunken row would otherwise sit as a
  * tight clump in the middle of a mostly empty content column. Spreads the leftover width across the
  * gaps, clamped to [CARD_GAP_MIN, CARD_GAP_MAX] - the same ceiling cardLayoutForRow already applies
- * once cards max out - which also gives the (small) cards bigger drop targets. */
-export function fittedGap(rowWidth: number, cardWidth: number, columns: number): number {
-  if (columns <= 1) return CARD_GAP_MIN
-  return Math.min(CARD_GAP_MAX, Math.max(CARD_GAP_MIN, (rowWidth - cardWidth * columns) / (columns - 1)))
+ * once cards max out - which also gives the (small) cards bigger drop targets. `minGap` is the floor the
+ * row was sized with (cardLayoutForRow's), for a row that needs more than CARD_GAP_MIN. */
+export function fittedGap(rowWidth: number, cardWidth: number, columns: number, minGap = CARD_GAP_MIN): number {
+  if (columns <= 1) return minGap
+  return Math.min(CARD_GAP_MAX, Math.max(minGap, (rowWidth - cardWidth * columns) / (columns - 1)))
 }
 
 /** A screen's final card gap: the width-derived one unless the height fit actually shrank the cards
  * (only ever in the wide layout), in which case the leftover width is spread - see fittedGap. */
-export function useFittedGap(widthGap: number, widthCardWidth: number, cardWidth: number, rowWidth: number, columns: number): number {
+export function useFittedGap(widthGap: number, widthCardWidth: number, cardWidth: number, rowWidth: number, columns: number, minGap = CARD_GAP_MIN): number {
   const { isWide } = useGameLayout()
-  return isWide && cardWidth < widthCardWidth ? fittedGap(rowWidth, cardWidth, columns) : widthGap
+  return isWide && cardWidth < widthCardWidth ? fittedGap(rowWidth, cardWidth, columns, minGap) : widthGap
 }

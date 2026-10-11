@@ -350,6 +350,31 @@ describe('FoundationCell', () => {
     expect(real(X)).toBeUndefined()
     expect(screen.getByTestId('empty-slot')).toBeTruthy()
   })
+
+  it('lets its top card be dragged only when the screen offers onDrop (Klondike, Yukon, Canfield) - and never tapped', async () => {
+    const onDrop = jest.fn(() => false)
+    const r = await render(foundation({ card: X }))
+    expect(lastPanEnabled()).toBe(false) // FreeCell, Forty Thieves
+    const before = stateOf(X).instance
+    await r.rerender(foundation({ card: X, onDrop }))
+    expect(lastPanEnabled()).toBe(true)
+    expect(stateOf(X).instance).toBe(before) // turning the drag on (or off, once won) never remounts the card
+    expect(real(X)!.props.onPress).toBeUndefined()
+    expect(registered()).toContain(X.id) // still registered by the cell itself, for flights landing on it
+  })
+
+  it('offers no drag while a card is landing on the pile, or while it still draws a card that has left', async () => {
+    const onDrop = jest.fn(() => false)
+    const r = await render(foundation({ card: X, onDrop }))
+    await r.rerender(foundation({ card: W, onDrop, isFlyingHere: true }))
+    expect(lastPanEnabled()).toBe(false) // the card under the finger would be the one still in the air
+    await r.rerender(foundation({ card: X, onDrop }))
+    expect(lastPanEnabled()).toBe(true)
+    takeOff(X.id)
+    await r.rerender(foundation({ card: W, onDrop }))
+    expect(drawn(real(X))).toBe(true)
+    expect(lastPanEnabled()).toBe(false)
+  })
 })
 
 // ------------------------------------------------------------------------------------------------ DiscardCell

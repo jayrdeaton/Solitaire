@@ -200,7 +200,9 @@ export function createYukonController(): GameController<YukonState> {
     const { from, to, count } = move
     if (count < 1) return null
     if (from.zone === to.zone && from.index === to.index) return null
-    if (from.zone === 'foundation') return null // cards never move back out of foundation
+    // A foundation's top card may come back down onto the tableau, one card at a time (as in Klondike - see its tryMove).
+    // Never onto another foundation, and legalMoves never offers it, so Hint can't suggest it.
+    if (from.zone === 'foundation' && (to.zone !== 'tableau' || count !== 1)) return null
 
     const sourcePile = getPile(state, from)
     if (!sourcePile || sourcePile.length < count) return null

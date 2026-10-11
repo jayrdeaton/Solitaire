@@ -637,6 +637,20 @@ describe('Canfield screen - a foundation pile keeps showing the card that has la
   })
 })
 
+describe("Canfield screen - auto-play only ever follows the player's own play of a card to a foundation", () => {
+  it('a foundation starter a move from the reserve turns over stays there for the player to find and play', async () => {
+    mockAutoMove = true
+    await mount(board({ tableau: [[card('spades', 10)]], reserve: [{ ...card('clubs', 1), faceUp: false }, card('hearts', 9)], foundation: [[], [], [], []] }), [], 2)
+
+    await press(`reserve-${id('hearts', 9)}`) // onto the 10 of spades: the reserve's Ace of clubs turns over
+    await flush(2000)
+
+    expect(mockLog.shown).toEqual([id('hearts', 9)]) // the move's own flight, and nothing after it
+    expect(foundationTop('clubs')).toBe('empty')
+    expect(screen.queryByTestId(`reserve-${id('clubs', 1)}`)).not.toBeNull()
+  })
+})
+
 describe('Canfield screen - every auto-played step is its own undo step', () => {
   const moves = () => screen.getByTestId('moves').props.children as number
 

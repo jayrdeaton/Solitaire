@@ -2,6 +2,7 @@ import { CardSizeProvider, faceUpFanOffset, RANK_INK_RIGHT_FRACTION } from '@tas
 import { render, screen } from '@testing-library/react-native'
 import { StyleSheet, ViewStyle } from 'react-native'
 
+import { markGhostPending } from '@/components/cardFacePaint'
 import { StockWaste } from '@/components/StockWaste'
 import * as wasteFan from '@/components/wasteFan'
 import { WASTE_FAN_CLEAR_MARGIN_FRACTION, wasteFanStep, wasteFanStepFor } from '@/components/wasteFan'
@@ -10,9 +11,13 @@ import type { Card } from '@/engine/types'
 // The real StockWaste, with the card art and the gesture-driven card replaced by bare views. What is under test is which card the waste
 // slot paints UNDER the flying ghost(s) while its real top is hidden (wasteHiddenCount > 0): the frozen copy of the pre-flight top by
 // default, or - when the screen passes one - settledWasteTop, the top card that has already landed.
+// It also reports the card it draws (nativeID) and what a drag would uncover under it (accessibilityLabel): the card it was handed,
+// the empty outline, or nothing.
 jest.mock('@/components/dragdrop/DraggableCard', () => {
   const { View } = require('react-native')
-  return { DraggableCard: ({ hidden }: { hidden?: boolean }) => <View testID='waste-top' accessibilityHint={hidden ? 'hidden' : 'visible'} /> }
+  return {
+    DraggableCard: ({ card, hidden, underCard, emptyFallback }: { card: { id: string }; hidden?: boolean; underCard?: { id: string } | null; emptyFallback?: unknown }) => <View testID='waste-top' nativeID={card.id} accessibilityHint={hidden ? 'hidden' : 'visible'} accessibilityLabel={underCard ? underCard.id : emptyFallback ? 'outline' : 'nothing'} />
+  }
 })
 jest.mock('@/components/dragdrop/DropZone', () => {
   const { View } = require('react-native')
@@ -211,5 +216,36 @@ describe('StockWaste - one card landing on a fanned waste', () => {
     expect(screen.queryByTestId('card-hearts-4-0')).not.toBeNull()
     await rerender(waste({ ...next, wasteHiddenCount: 1 })) // the 5 has landed, the 6 is still in the air
     expect(screen.queryByTestId('card-hearts-5-0')).not.toBeNull()
+  })
+})
+
+describe('StockWaste - what a drag uncovers when it lifts the top card', () => {
+  const underLifted = () => screen.getByTestId('waste-top').props.accessibilityLabel as string
+
+  it('draw-1: the card under the top, not the empty outline', async () => {
+    await render(waste({ wasteTop: heart(4), wasteUnder: heart(3) }))
+    expect(underLifted()).toBe('hearts-3-0')
+  })
+
+  it('a lone card: the empty outline', async () => {
+    await render(waste({ wasteTop: heart(4) }))
+    expect(underLifted()).toBe('outline')
+  })
+
+  it('draw-3: nothing more - the fan already shows that card beside the slot, and an outline would cross its face', async () => {
+    await render(waste({ wasteTop: heart(4), wasteBehind: [heart(3), heart(2)], wasteUnder: heart(3) }))
+    expect(underLifted()).toBe('nothing')
+  })
+
+  it('a card still drawn after it has left (its ghost not on screen yet): the waste top, the card that is under it now', async () => {
+    const { rerender } = await render(waste({ wasteTop: heart(4), wasteUnder: heart(3) }))
+    const release = markGhostPending([heart(4).id])
+    try {
+      await rerender(waste({ wasteTop: heart(3), wasteUnder: heart(2) }))
+      expect(screen.getByTestId('waste-top').props.nativeID).toBe('hearts-4-0') // held
+      expect(underLifted()).toBe('hearts-3-0') // not the 2, two cards down
+    } finally {
+      release()
+    }
   })
 })

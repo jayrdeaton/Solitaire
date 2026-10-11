@@ -113,19 +113,40 @@ describe('Yukon tryMove', () => {
     expect(result).toBeNull()
   })
 
-  it('rejects moving from foundation', () => {
+  it("lets a foundation's top card come back down onto a legal tableau spot", () => {
     const controller = createYukonController()
-    const ace: Card = { id: 'clubs-1-0', suit: 'clubs', rank: 1, faceUp: true }
+    const clubs = SUITS.indexOf('clubs')
     const state: YukonState = {
-      tableau: [[], [], [], [], [], [], []],
-      foundation: [[ace], [], [], []]
+      tableau: [[card('hearts', 3)], [], [], [], [], [], []],
+      foundation: SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : []))
     }
-    const result = controller.tryMove(state, {
-      from: { zone: 'foundation', index: 0 },
-      to: { zone: 'tableau', index: 0 },
-      count: 1
-    })
-    expect(result).toBeNull()
+    const result = controller.tryMove(state, { from: { zone: 'foundation', index: clubs }, to: { zone: 'tableau', index: 0 }, count: 1 })
+    expect(result).not.toBeNull()
+    expect(result!.foundation[clubs].map((c) => c.id)).toEqual(['clubs-1-0'])
+    expect(result!.tableau[0].map((c) => c.id)).toEqual(['hearts-3-0', 'clubs-2-0'])
+  })
+
+  it('refuses a foundation card anywhere but a legal tableau spot, and more than one card at a time', () => {
+    const controller = createYukonController()
+    const clubs = SUITS.indexOf('clubs')
+    const state: YukonState = {
+      tableau: [[card('spades', 3)], [card('hearts', 3)], [], [], [], [], []],
+      foundation: SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : s === 'diamonds' ? [card('diamonds', 1)] : []))
+    }
+    const from = { zone: 'foundation' as const, index: clubs }
+    expect(controller.tryMove(state, { from, to: { zone: 'tableau', index: 0 }, count: 1 })).toBeNull() // same color
+    expect(controller.tryMove(state, { from, to: { zone: 'foundation', index: SUITS.indexOf('diamonds') }, count: 1 })).toBeNull()
+    expect(controller.tryMove(state, { from, to: { zone: 'tableau', index: 1 }, count: 2 })).toBeNull()
+  })
+
+  it('never offers a foundation card in legalMoves, so Hint cannot suggest a card going straight back down', () => {
+    const controller = createYukonController()
+    const state: YukonState = {
+      tableau: [[card('hearts', 3)], [], [], [], [], [], []],
+      foundation: SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : []))
+    }
+    expect(controller.tryMove(state, { from: { zone: 'foundation', index: SUITS.indexOf('clubs') }, to: { zone: 'tableau', index: 0 }, count: 1 })).not.toBeNull()
+    expect(controller.legalMoves(state).filter((m) => m.from.zone === 'foundation')).toEqual([])
   })
 
   it('allows any face-up card to start an empty tableau column, not just a King', () => {

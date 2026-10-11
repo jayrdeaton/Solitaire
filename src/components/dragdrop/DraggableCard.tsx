@@ -10,6 +10,7 @@ import { REVEAL_MAX_MS, useGhostPendingAmong, whenFacesPainted } from '../cardFa
 import { PlayingCard } from '../PlayingCard'
 import { useShakeStyle } from '../shakeAnimation'
 import { useCardSoundEffects } from '../useCardSounds'
+import { useFrozenWhileHidden } from '../useFrozenWhileHidden'
 import { DragFlightHandle, useDragGhost } from './DragGhostLayer'
 
 interface DraggableCardProps {
@@ -34,8 +35,11 @@ interface DraggableCardProps {
   /** Attempt to drop at this screen point. `flight` is this drag's own independent ghost flight -
    * a caller whose move applies should hold onto it and fly/hide it itself once the real
    * destination is measurable (see DragFlightHandle), instead of it just vanishing. Return true if
-   * a move was applied (skips the snap-back). */
-  onDrop?: (absoluteX: number, absoluteY: number, flight: DragFlightHandle) => Promise<boolean> | boolean
+   * a move was applied (skips the snap-back). `dragged` is the card this drag picked up, which the
+   * pile's top may no longer be by the drop (a card auto-played onto a foundation while its top was
+   * lifted) - a caller moving "the top card" should anchor its move on it, so a stale drop is refused
+   * instead of moving a card the player never touched. */
+  onDrop?: (absoluteX: number, absoluteY: number, flight: DragFlightHandle, dragged: Card) => Promise<boolean> | boolean
   /** Hide this card - it's mid-flight in the screen-level ghost layer after a tap-to-move landed
    * here (see DragGhostLayer's flyTo). Distinct from the internal drag-hiding below, since this
    * card isn't the one driving the gesture. */
@@ -47,6 +51,15 @@ interface DraggableCardProps {
    * span without this: the underlying data doesn't change until a drag actually drops, so the slot
    * would just go blank instead of reverting to its placeholder while the card is lifted. */
   emptyFallback?: ReactNode
+  /** The card under this one in its pile, shown in its place (instead of `emptyFallback`) while this card is lifted for a
+   * drag - lifting the waste's top card shows the next one, as with a real pile. For a card a slot is still drawing after
+   * it has left (useTakeOffHold), that is the pile's top. Not while the caller hides the card (`hidden`): its own overlay
+   * is in charge then. Kept mounted and invisible the rest of the time, so its face has painted long before a drag shows
+   * it (a face mounted as the drag starts is blank for a frame or two - see cardFacePaint.ts). It keeps the card it showed
+   * when the card was lifted until the card is shown again: an applied drop changes the pile under a slot that stays
+   * hidden until its next card's face paints (see revealToken), and the card under THAT one would otherwise flash there
+   * first. */
+  underCard?: Card | null
   /** Bumped (to any new value) to play a shake - see shakeAnimation.ts. A counter rather than a
    * boolean so tapping the same stuck card twice in a row re-triggers the shake both times,
    * instead of the second tap being a no-op state transition. */
@@ -80,7 +93,7 @@ interface DraggableCardProps {
  * underlying native handler, which can orphan a drag that's still in progress mid-gesture and
  * leave the card frozen wherever it was when that happened, since onEnd would never fire.
  */
-export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHold, onPress, onDrop, hidden, emptyFallback, shakeToken, registryId, style, testID }: DraggableCardProps) {
+export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHold, onPress, onDrop, hidden, emptyFallback, underCard, shakeToken, registryId, style, testID }: DraggableCardProps) {
   const viewRef = useAnimatedRef<Animated.View>()
   const ghost = useDragGhost()
   const { playCardSound } = useCardSoundEffects()
@@ -106,6 +119,8 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
   // hand off to the caller's onDrop) and by nothing else, since only one drag can ever be in
   // progress on this card at a time.
   const flightRef = useRef<DragFlightHandle | null>(null)
+  // The card that flight carries - handed to onDrop (see its `dragged`), since `card` may have moved on by the drop.
+  const draggedRef = useRef<Card | null>(null)
   // Bumped at every drag start. A drag's late outcome (its drop resolving, its snap-back landing)
   // only clears `dragging` if no NEWER drag has begun in the meantime - otherwise it would reveal
   // the card under the new drag's own ghost.
@@ -137,6 +152,7 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
   const handleStart = useCallback(() => {
     wasDraggingRef.current = true
     dragTokenRef.current += 1
+    draggedRef.current = latest.current.card
     flightRef.current = ghost.showLive({ cards: [latest.current.card], offsetStep: 0, cardWidth: latest.current.cardWidth }, { originX, originY, dx, dy })
     playCardSound()
     setDragging(true)
@@ -147,12 +163,13 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
     ;(async () => {
       const dropFn = latest.current.onDrop
       const flight = flightRef.current
+      const dragged = draggedRef.current
       const token = dragTokenRef.current
       // Before anything awaits: from the moment the drag ends this ghost runs on values of its own,
       // so a quick next drag from this same card can never hijack it while the drop is still being
       // resolved (see DragFlightHandle.release).
       flight?.release()
-      const applied = dropFn && flight ? await dropFn(absoluteX, absoluteY, flight) : false
+      const applied = dropFn && flight && dragged ? await dropFn(absoluteX, absoluteY, flight, dragged) : false
       if (applied) {
         // Don't hide the ghost here - the caller's onDrop (mirroring handleCardTap) has already
         // marked this card's destination "incoming" and will measure its real landed position
@@ -218,6 +235,8 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
   // here until then - hidden (with its empty-slot fallback) only once the ghost is on screen.
   const dragGhostPending = useGhostPendingAmong(dragging ? [card.id] : NO_IDS) !== ''
   const hiddenForDrag = dragging && !dragGhostPending
+  const shownUnder = useFrozenWhileHidden(underCard, hiddenForDrag)
+  const underVisible = hiddenForDrag && !hidden
 
   // After an applied drop the slot shows its next card (or unmounts): the same Image re-sourced, which on iOS keeps the
   // DRAGGED card's bitmap until the next one arrives - the dragged card back at its source for a frame or two while its
@@ -257,6 +276,13 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
 
   return (
     <View style={style}>
+      {/* Beneath the card, so the card covers it until it is lifted. Never touchable (its card is `disabled` too: on web a
+      Pressable inside still takes clicks and Tab focus), and hidden from assistive tech while invisible - as PileOverlay. */}
+      {shownUnder && (
+        <View style={[StyleSheet.absoluteFill, styles.under, !underVisible && styles.hiddenWhileFlying]} aria-hidden={!underVisible}>
+          <PlayingCard card={shownUnder} disabled />
+        </View>
+      )}
       <GestureDetector gesture={pan}>
         <Animated.View ref={viewRef} style={[(hiddenForDrag || hidden) && styles.hiddenWhileFlying, shakeStyle]}>
           <PlayingCard card={card} selected={selected} hinted={hinted} disabled={disabled} dimmed={dimmed} dimHold={dimHold} onPress={onPress ? handlePress : undefined} testID={testID} />
@@ -266,7 +292,7 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
       passing `hidden` (e.g. a tap-to-move flight landing here) already has its own "what was here
       before" overlay for that case (see FreecellCell/StockWaste), so showing this too would double
       up two overlays at once. */}
-      {hiddenForDrag && emptyFallback && (
+      {hiddenForDrag && !shownUnder && emptyFallback && (
         <View style={StyleSheet.absoluteFill} pointerEvents='none'>
           {emptyFallback}
         </View>
@@ -280,5 +306,8 @@ const NO_IDS: readonly string[] = []
 const styles = StyleSheet.create({
   hiddenWhileFlying: {
     opacity: 0
+  },
+  under: {
+    pointerEvents: 'none'
   }
 })

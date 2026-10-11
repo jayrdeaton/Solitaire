@@ -12,7 +12,7 @@ import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
-import { cardLayoutForRow } from '@/components/cardLayout'
+import { cardLayoutForRow, SPLIT_TOP_ROW_MIN_GAP, splitTopRowGroupGap } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { dealStaggerMs, paceFaceUpDeal } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
@@ -60,7 +60,7 @@ import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/game
 import { BOARD_MODEL } from './boardModel'
 import { buildFortyThievesDealSequence } from './dealSequence'
 import { FortyThievesSettingsSection } from './FortyThievesSettingsSection'
-import { createFortyThievesController, findFoundationSlot, FortyThievesState, isFullyAutoCompletableWithDraws, nextAutoCompleteMoveWithDraws } from './rules'
+import { createFortyThievesController, FortyThievesState, isFullyAutoCompletableWithDraws, nextAutoCompleteMoveWithDraws } from './rules'
 
 const TABLEAU_COLUMNS = 10
 const TABLEAU_MIN_HEIGHT = 360
@@ -81,7 +81,7 @@ function makeStyles() {
     topRow: {
       alignItems: 'flex-start',
       flexDirection: 'row',
-      gap: 18,
+      justifyContent: 'space-between',
       marginBottom: 16
     }
   })
@@ -120,12 +120,15 @@ function FortyThievesScreenInner() {
   const session = useGameSession()
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
-  const { contentWidth, isWide } = useGameLayout()
-  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
+  const { contentWidth } = useGameLayout()
+  // The tableau's gap floor is doubled so the top row can squeeze its foundations and its waste/stock pair to half of it
+  // and pool the rest between the two groups - see SPLIT_TOP_ROW_MIN_GAP.
+  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, SPLIT_TOP_ROW_MIN_GAP)
   // The width-derived size in portrait (unchanged); in the wide layout also shrunk until the whole board
   // (top row + the tallest starting column) fits the window's short axis - see boardModel.ts.
   const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
-  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
+  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, SPLIT_TOP_ROW_MIN_GAP)
+  const topRowGroupGap = splitTopRowGroupGap(gap)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
   const deal = useDealAnimator()
@@ -194,6 +197,8 @@ function FortyThievesScreenInner() {
 
   function startNewGame() {
     const myToken = ++dealTokenRef.current
+    // A cascade still running from the old deal must not carry on into this one (see useAutoFoundationCascade's disarm).
+    cascade.disarm()
     controllerRef.current = createFortyThievesController(settings.fortyThievesRunMoves)
     setRunMoves(settings.fortyThievesRunMoves)
     const s = controllerRef.current.newGame(randomSeed())
@@ -220,6 +225,8 @@ function FortyThievesScreenInner() {
   // written before undo persistence existed - see SavedGame's own doc comment).
   function restoreGame(saved: SavedGame<FortyThievesState>) {
     ++dealTokenRef.current
+    // Nothing auto-plays on a resumed board until the player's own next foundation play.
+    cascade.disarm()
     // config is persisted as 0/1 (see the save effect below) since SavedGame.config is a plain
     // number - narrowed back to a boolean here, falling back to the live setting only if missing.
     const moves = saved.config === 1 || saved.config === 0 ? saved.config === 1 : settings.fortyThievesRunMoves
@@ -356,9 +363,9 @@ function FortyThievesScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // Auto-play-to-foundation: only ever fires as a direct consequence of the player's own move - see
-  // useAutoFoundationCascade for the trigger model (armFromForwardMove/armFromAceEvent, called from
-  // applyMove/handleDrawStock below), and rules.ts's own header comment on why this game only ever
+  // Auto-play-to-foundation: only ever follows the player's own play of a card to a foundation - see
+  // useAutoFoundationCascade for the trigger model (afterPlayerMove, called from applyMove below; any
+  // other move of theirs and a stock draw stop it), and rules.ts's own header comment on why this game only ever
   // fires once the whole remaining deal is provably clearable (no continuous "safe" heuristic,
   // unlike Klondike/FreeCell/Yukon/Canfield - no computeNextStep fallback to one below either).
   const cascade = useAutoFoundationCascade<FortyThievesState>({
@@ -490,6 +497,11 @@ function FortyThievesScreenInner() {
     // OTHER's commitState just did, not the same stale board both closures captured.
     const current = stateRef.current
     if (!current) return false
+    // The card flying is the card the player tapped or grabbed (or the auto-play chose); tryMove only knows positions, so if
+    // the board moved on since - an auto-play took that very card between the tap and now - it would move whatever now sits
+    // there, under a ghost of a different card. Refuse instead (FreeCell's moveHeadCard check).
+    const sourcePile = resolvePile(from, current)
+    if (sourcePile?.[sourcePile.length - count]?.id !== anchorCardId) return false
     const result = controllerRef.current.tryMove(current, { from, to, count })
     if (result) {
       // A silent auto-play is still its own undo step (the board right before it), so the player can
@@ -499,10 +511,9 @@ function FortyThievesScreenInner() {
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
-      if (!opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
-      // No reveal check here - this game's tableau is dealt (and only ever receives) already
-      // face-up cards (see rules.ts's own header comment), so there is no "reveal the newly-exposed
-      // card" event to detect at all, unlike Klondike/Canfield/Yukon.
+      // Only the player's own play of a card to a foundation starts auto-play; any other move of theirs
+      // stops it, so a card it uncovers (the waste's next card, say) is theirs to find and play.
+      if (!opts?.silent) cascade.afterPlayerMove(to)
       return true
     }
     return false
@@ -534,7 +545,7 @@ function FortyThievesScreenInner() {
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
-    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current) {
+    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current || !cascade.isArmed()) {
       settleFlight()
       return false
     }
@@ -566,7 +577,7 @@ function FortyThievesScreenInner() {
     startFlights(1)
 
     const origin = await measureView(stockViewRef.current)
-    if (!origin || stateRef.current !== current || undoBusyRef.current) {
+    if (!origin || stateRef.current !== current || undoBusyRef.current || !cascade.isArmed()) {
       settleFlight()
       return
     }
@@ -614,25 +625,23 @@ function FortyThievesScreenInner() {
     const result = controllerRef.current.drawStock(current)
     if (!result) return
     startFlights(1)
-    if (!opts?.sweep) session.registerMove()
+    // A draw is the player's, but it is not a play: it never sets auto-play off, and it stops a cascade
+    // still running from their last play, so a card they just drew is theirs to find and play.
+    if (!opts?.sweep) {
+      session.registerMove()
+      cascade.disarm()
+    }
 
     const drawnCard = top(result.waste)!
-    // Drawing an ace is meant to auto-play it immediately as a reward, regardless of whether this
-    // is a genuine player tap or a sweep's own forced draw - see useAutoFoundationCascade's
-    // armFromAceEvent. A sweep's own draws only ever reach this point via a plain 'draw' step (see
-    // engine/autoFoundation.ts's AutoCompleteStep) - one where the newly drawn card DIDN'T come
-    // back as immediately playable - so this can only ever matter for a genuine player tap in
-    // practice, but it costs nothing to leave it unconditional rather than special-cased away.
-    if (drawnCard.rank === 1) {
-      // Never null for an ace: exactly 8 aces exist for exactly 8 slots, an ace can only ever
-      // match findFoundationSlot's empty-pile branch (never a non-empty one - see its own logic),
-      // and this one hasn't been placed anywhere yet, so at least one slot must still be open.
-      const slot = findFoundationSlot(result.foundation, drawnCard)!
-      cascade.armFromAceEvent({ ref: { zone: 'waste', index: 0 }, card: drawnCard }, { zone: 'foundation', index: slot })
-    }
     const move: MoveInfo = { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: 1, anchorCardId: drawnCard.id }
 
     const origin = await measureView(stockViewRef.current)
+    // The cascade's own draw (a sweep) must not commit once the player's move has ended the cascade, or over a board that
+    // moved on while it was measuring (committing `result` would undo whatever landed meanwhile).
+    if (opts?.sweep && (!cascade.isArmed() || stateRef.current !== current)) {
+      settleFlight()
+      return
+    }
     if (!origin) {
       pushUndo(current, move)
       commitState(result)
@@ -709,11 +718,11 @@ function FortyThievesScreenInner() {
   return (
     <CardSizeProvider width={cardWidth}>
       <GameChrome title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
-        {/* Portrait keeps topRow's own fixed 18pt gap between the foundations and the stock/waste pair (as it
-        always had); only the wide layout swaps in the card gap, so the row lines up with the fitted (and
-        gap-spread) tableau grid below it. */}
-        <View style={[styles.topRow, isWide && { gap }]}>
-          <View style={[styles.foundationsGroup, { gap }]}>
+        {/* As wide as the tableau, the foundations at its left edge and the waste/stock pair at its right. It used to
+        put a fixed 18pt between the two in portrait, which made it 16pt wider than the tableau: it ran off both
+        edges of a phone. */}
+        <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
+          <View style={[styles.foundationsGroup, { gap: topRowGroupGap }]}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)
               // Several tap flights can be headed to one pile at once (they overlap), so count the cards still
@@ -739,7 +748,7 @@ function FortyThievesScreenInner() {
             })}
           </View>
 
-          <StockWaste canRecycle={false} dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} />
+          <StockWaste canRecycle={false} dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteUnder={state.waste[state.waste.length - 2]} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={topRowGroupGap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight, dragged) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, dragged.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} />
         </View>
 
         <View style={[styles.tableauRow, { gap }]}>

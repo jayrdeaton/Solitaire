@@ -192,7 +192,10 @@ function tryMove(state: CanfieldState, move: Move): CanfieldState | null {
   const { from, to, count } = move
   if (count < 1) return null
   if (from.zone === to.zone && from.index === to.index) return null
-  if (from.zone === 'foundation') return null // cards never move back out of foundation
+  // A foundation's top card may come back down onto the tableau, one card at a time (as in Klondike - see its tryMove;
+  // the starter included, which leaves its foundation needing a foundationRank card again). Never onto another
+  // foundation, and legalMoves never offers it, so Hint can't suggest it.
+  if (from.zone === 'foundation' && (to.zone !== 'tableau' || count !== 1)) return null
   if (from.zone === 'stock') return null // stock cards only move via drawStock
 
   const sourcePile = getPile(state, from)
@@ -443,19 +446,11 @@ export function isSafeAutoPlay(state: CanfieldState, card: Card): boolean {
   return oppMinLength >= cyclicPosition(card.rank, state.foundationRank)
 }
 
-/** True for a card at cyclic position 0 - this game's foundation-starting rank, the "ace" of its
- * own 13-card cycle (set per-deal from whichever card was cut first; see foundationRank). Exported
- * for CanfieldScreen.tsx's draw/reveal auto-play trigger, which needs this in place of a hardcoded
- * `card.rank === 1` check - Canfield's own cycle doesn't necessarily start at Ace. */
-export function isFoundationStarterCard(card: Card, foundationRank: Rank): boolean {
-  return cyclicPosition(card.rank, foundationRank) === 0
-}
-
 /** Cyclic-foundation counterpart of engine/autoFoundation.ts's findSafeAutoPlay - same shape, using
- * this file's own canPlaceOnFoundationCyclic/isSafeAutoPlay instead of the shared Ace-start ones. A
- * waste-top card at its foundation-starting rank is included here like any other card - drawing or
- * revealing one is meant to play it immediately as a deliberate payoff for the player (see
- * useAutoFoundationCascade's armFromAceEvent, same as every other game). */
+ * this file's own canPlaceOnFoundationCyclic/isSafeAutoPlay instead of the shared Ace-start ones. The
+ * waste top is scanned like any other accessible card, but only a cascade the player's own play of a
+ * card to a foundation set off ever runs this, and the player's next draw or other move stops it -
+ * a card they just drew or uncovered is never played for them (see useAutoFoundationCascade). */
 export function findSafeAutoPlay(state: CanfieldState, accessible: AccessibleCard[]): AccessibleCard | null {
   for (const entry of accessible) {
     const f = suitIndex(entry.card.suit)

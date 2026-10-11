@@ -1259,7 +1259,7 @@ function PyramidScreenInner() {
     setUndoStack((stack) => stack.slice(0, -1))
     setSelected(null)
 
-    if (!stockOrigin || !wasteDest) {
+    if (!stockOrigin || !wasteDest || prevState.waste.length === 0) {
       commitState(prevState)
       settle()
       return
@@ -1271,13 +1271,16 @@ function PyramidScreenInner() {
     const cards = prevState.waste
     playCardSound()
     hapticCard()
-    const flight = trackFlight(ghost.show({ cards, offsetStep: 0, cardWidth }, { x: stockOrigin.x, y: stockOrigin.y }))
+    // The stock is the pile these cards LEAVE, so it empties as they take off (no stockHidden: freezing it kept a back on the
+    // stock for the whole flight). The ghost is the stock as it looked, face down - drawn in the commit it mounts, so the
+    // stock never empties under a ghost not on screen yet - and it turns up on the waste as it lands, the mirror image of the
+    // recycle. One back stands for the pile (a stack only shows its top, and every back is an SVG), carrying the id of the
+    // card that ends on top of the waste, so the landed ghost stays until that face has painted.
+    const flight = trackFlight(ghost.show({ cards: [{ ...cards[cards.length - 1], faceUp: false }], offsetStep: 0, cardWidth }, { x: stockOrigin.x, y: stockOrigin.y }))
     const flyingId = beginFlying({ zone: 'waste', index: 0 }, move.count)
-    setStockHidden(true)
     commitState(prevState)
     flight.flyTo(wasteDest.x, wasteDest.y, () => {
       untrackFlight(flight)
-      setStockHidden(false)
       endFlying(flyingId)
       settle()
     })
@@ -1846,7 +1849,7 @@ function PyramidScreenInner() {
         <View style={styles.board}>
           <View style={[styles.controlRow, { width }]}>
             <DiscardCell card={handoff ? undefined : discardCards[discardCards.length - 1]} isFlyingHere={discardFlying} settledCard={discardSettled} viewRef={discardViewRef} />
-            <StockWaste gap={gap} dropZones={dropZones} stockTopCard={stockCards[stockCards.length - 1]} wasteTop={wasteTop} wasteSelected={!!selected && selected.zone === 'waste'} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} wasteHiddenCount={flying.some((f) => f.to.zone === 'waste') ? 1 : 0} settledWasteTop={settledWasteTop} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} onDrawStock={handleDrawStock} onWastePress={handleSelectWaste} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, state.waste[state.waste.length - 1]?.id, x, y, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
+            <StockWaste gap={gap} dropZones={dropZones} stockTopCard={stockCards[stockCards.length - 1]} wasteTop={wasteTop} wasteUnder={wasteCards[wasteCards.length - 2]} wasteSelected={!!selected && selected.zone === 'waste'} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} wasteHiddenCount={flying.some((f) => f.to.zone === 'waste') ? 1 : 0} settledWasteTop={settledWasteTop} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} onDrawStock={handleDrawStock} onWastePress={handleSelectWaste} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, state.waste[state.waste.length - 1]?.id, x, y, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
           </View>
 
           <View ref={triangleViewRef} collapsable={false} style={[styles.triangle, { width, height }]}>

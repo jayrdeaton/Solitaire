@@ -42,7 +42,7 @@ import { CANFIELD_RULES } from '@/constants/gameRules'
 import { AutoCompleteStep, isFullyAutoCompletableWithDraws, nextAutoCompleteMoveWithDraws } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
-import { detectRevealedCard, runCountFrom, top } from '@/engine/pile'
+import { runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card, SUITS } from '@/engine/types'
@@ -66,41 +66,27 @@ import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/game
 import { BOARD_MODEL } from './boardModel'
 import { CanfieldSettingsSection } from './CanfieldSettingsSection'
 import { buildCanfieldDealSequence } from './dealSequence'
-import { CanfieldState, createCanfieldController, findSafeAutoPlay, isDescendingAltColorCyclic, isFoundationStarterCard } from './rules'
+import { CanfieldState, createCanfieldController, findSafeAutoPlay, isDescendingAltColorCyclic } from './rules'
 
 // Floor for useTableauMaxHeight below, not a fixed height anymore - a short screen never fans out
 // less generously than this, but a screen with real headroom to spare now gets more of it.
 const TABLEAU_MIN_HEIGHT = 460
-// LAYOUT DECISION: the top row needs 7 card-slots (4 foundations + 1 reserve + stock/waste), but
-// the tableau below is only 4 columns wide - the opposite of every other game here, where the top
-// row and tableau are similar widths. Sizing cardWidth off the tableau's own 4 columns (Klondike's
-// approach - see its own TABLEAU_COLUMNS-based cardLayoutForRow call) would let the top row's 7
-// slots overflow the screen on anything narrower than a very wide window. Instead, cardWidth is
-// sized off this TOP row's own 7 slots - the widest row on screen - the same "widest row sets the
-// scale, narrower rows center underneath" idiom Pyramid already uses (its 7-card triangle base
-// sets cardWidth via its own TRIANGLE_WIDTH_UNITS, while the narrower stock/discard control row
-// centers under it - see PyramidScreen.tsx). The 4-column tableau then renders smaller and centers
-// underneath the top row (see `board`'s alignItems: 'center' below).
+// LAYOUT DECISION: the board is a grid of 7 card slots - Klondike's. The top row IS Klondike's: the 4
+// foundations at the left, an open slot, then the waste and the stock, with the draw-3 waste fan spreading
+// left into the open slot. The row under it puts the 4 tableau columns under the foundations, leaves the
+// open slot open, and puts the reserve under the waste (a slot clear of the last column, so it doesn't
+// read as a fifth one). cardWidth is sized off those 7 slots, not the 4 tableau columns: sized off the
+// tableau (Klondike's approach - see its own TABLEAU_COLUMNS-based cardLayoutForRow call) the top row
+// would overflow anything narrower than a very wide window. Both rows are exactly 7 slots wide (`rowWidth`)
+// and share the one `gap`, so every column lines up even once cards hit CARD_WIDTH_MAX and
+// cardLayoutForRow starts growing the gap past CARD_GAP_MIN.
 //
-// The `gap` returned alongside cardWidth by the one cardLayoutForRow call below is deliberately
-// reused as EVERY real gap inside the top row (its own inter-group `gap`, foundationsGroup's
-// internal `gap`, and StockWaste's own internal CARD_GAP_MIN gap all stay equal), which makes this
-// reservation pixel-exact rather than a rough guess: 4 foundations + 1 reserve + 2 (stock/waste) =
-// 7 card-widths, with 6 gaps between them (2 between the 3 groups + 3 inside foundationsGroup + 1
-// inside StockWaste) - exactly matching cardLayoutForRow's own `7*cardWidth + gap*6` reservation
-// formula, so the top row's real rendered width never exceeds (or falls meaningfully short of)
-// what was reserved for it. The narrower 4-column tableau row underneath breathes by that same
-// `gap` too (see TABLEAU_GAP's old declaration, now gone - it and TOP_ROW_GAP have collapsed into
-// this one shared runtime value), so the two rows always match even once cards hit CARD_WIDTH_MAX
-// and cardLayoutForRow starts growing the gap past CARD_GAP_MIN.
+// The reserve used to sit in the top row, between the foundations and the waste: the fan covered all but
+// ~11pt of it, and had to stay at the plain face-up strip (a covered 10's '0' clipped) so as not to bury it
+// further. In the tableau row it has a slot to itself, and the fan widens like Klondike's (its far card
+// stays ~1pt clear of the last foundation on a phone - the same as Klondike's).
 const TOP_ROW_UNITS = 7
 
-// Whether the draw-3 waste fan may spread past the plain face-up strip to keep a covered '10' whole (StockWaste's widenFan, and the
-// same step in this screen's draw/undo flights). It can't here: the top row is sized to exactly its 7 slots, so the fan has no clear
-// room - it already paints over the reserve slot beside the waste (twice the step, less the gap: ~39pt of a 50pt reserve card at 402pt
-// wide; the reserve stays tappable, the fan cards ignore touches, but only its left ~11pt shows), and widening the step from 0.45W to
-// ~0.53W would leave ~3pt of it. Flip to true once the top row reserves real room for the fan.
-const WASTE_FAN_WIDENS = false
 const WASTE: PileRef = { zone: 'waste', index: 0 }
 
 /** The one card that seeds every foundation's starting rank - rules.ts's newGame cuts it from the
@@ -130,7 +116,7 @@ function foundationStarter(s: CanfieldState): Card | undefined {
  * defeating the hide entirely. `isFlyingHere` (real moves onto the reserve, i.e. only ever an
  * undo - see its own doc comment below) is never true on a component's first render, so it has a
  * genuine prior frame for useFrozenWhileHidden to freeze and keeps using that overlay untouched. */
-export function ReserveCell({ card, isFlyingHere, dealHidden, shakeToken, highlighted, onPress, onDrop }: { card: Card | undefined; isFlyingHere: boolean; dealHidden?: boolean; shakeToken?: number; highlighted?: boolean; onPress: (measure: () => Promise<{ x: number; y: number }>) => void; onDrop: (x: number, y: number, flight: DragFlightHandle) => Promise<boolean> | boolean }) {
+export function ReserveCell({ card, under, isFlyingHere, dealHidden, shakeToken, highlighted, onPress, onDrop }: { card: Card | undefined; under?: Card; isFlyingHere: boolean; dealHidden?: boolean; shakeToken?: number; highlighted?: boolean; onPress: (measure: () => Promise<{ x: number; y: number }>) => void; onDrop: (x: number, y: number, flight: DragFlightHandle, dragged: Card) => Promise<boolean> | boolean }) {
   const frozen = useFrozenWhileHidden(card, isFlyingHere)
   const underlay = isFlyingHere ? frozen : card
   // Take-off hold: keeps drawing a card that has just left while its ghost is not on screen yet (useTakeOffHold).
@@ -148,7 +134,7 @@ export function ReserveCell({ card, isFlyingHere, dealHidden, shakeToken, highli
       {/* A held card is inert - no drag, no tap, even with a card under it: the same call as StockWaste's waste top (a tap
       there is a repeat tap on what still looks like the card that left; passing it on would send a card never seen, and
       drawn nowhere until its own ghost painted). */}
-      {shown ? <DraggableCard card={shown} hidden={flyingHere || dealHidden || revealing} disabled={holding} registryId={holding ? (card?.id ?? null) : undefined} shakeToken={holding ? undefined : shakeToken} hinted={highlighted && !holding} emptyFallback={<EmptySlot />} onPress={holding ? undefined : onPress} onDrop={holding ? undefined : onDrop} testID='reserve-top' /> : <EmptySlot testID='reserve-top' hinted={highlighted} />}
+      {shown ? <DraggableCard card={shown} hidden={flyingHere || dealHidden || revealing} disabled={holding} registryId={holding ? (card?.id ?? null) : undefined} shakeToken={holding ? undefined : shakeToken} hinted={highlighted && !holding} underCard={holding ? card : under} emptyFallback={<EmptySlot />} onPress={holding ? undefined : onPress} onDrop={holding ? undefined : onDrop} testID='reserve-top' /> : <EmptySlot testID='reserve-top' hinted={highlighted} />}
       {/* Mounted (invisible) whenever there is a card, not just while an undo is landing here - see PileOverlay. */}
       {(isFlyingHere || card) && <PileOverlay visible={overlayVisible}>{underlay ? <PlayingCard card={underlay} disabled /> : <EmptySlot />}</PileOverlay>}
     </View>
@@ -194,6 +180,8 @@ function CanfieldScreenInner() {
   // cards shrink until a tableau column with room to grow fits (see boardModel.ts).
   const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
   const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TOP_ROW_UNITS)
+  // Both rows' width: the 7 slots and the 6 gaps between them.
+  const rowWidth = cardWidth * TOP_ROW_UNITS + gap * (TOP_ROW_UNITS - 1)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
   const rotation = useRotation()
@@ -479,7 +467,7 @@ function CanfieldScreenInner() {
           settleFlight()
           return
         }
-        const fanOffset = wasteFanStepFor(cardWidth, WASTE_FAN_WIDENS)
+        const fanOffset = wasteFanStepFor(cardWidth)
         const n = p.drawnCards.length
         const entries: DealCardSpec[] = p.drawnCards.map((card, i) => {
           const distanceFromTop = n - 1 - i // i=0 is the oldest/farthest card, i=n-1 is the new top
@@ -510,9 +498,9 @@ function CanfieldScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // Auto-play-to-foundation: only ever fires as a direct consequence of the player's own move - see
-  // useAutoFoundationCascade for the trigger model (armFromForwardMove/armFromAceEvent, called from
-  // applyMove/handleDrawStock below), and engine/autoFoundation.ts for the two mechanisms
+  // Auto-play-to-foundation: only ever follows the player's own play of a card to a foundation - see
+  // useAutoFoundationCascade for the trigger model (afterPlayerMove, called from applyMove below; any
+  // other move of theirs and a stock draw stop it), and engine/autoFoundation.ts for the two mechanisms
   // computeNextStep composes.
   const cascade = useAutoFoundationCascade<CanfieldState>({
     state,
@@ -639,7 +627,7 @@ function CanfieldScreenInner() {
       setUndoStack((stack) => stack.slice(0, -1))
 
       if (topPos && stockDest) {
-        const fanOffset = wasteFanStepFor(cardWidth, WASTE_FAN_WIDENS)
+        const fanOffset = wasteFanStepFor(cardWidth)
         const entries: DealCardSpec[] = movingCards
           .slice()
           .reverse() // newest/top (last dealt) first
@@ -713,23 +701,20 @@ function CanfieldScreenInner() {
     // KlondikeScreen's identical applyMove).
     const current = stateRef.current
     if (!current) return false
+    // The card flying is the card the player tapped or grabbed (or the auto-play chose); tryMove only knows positions, so if
+    // the board moved on since - an auto-play took that very card between the tap and now - it would move whatever now sits
+    // there, under a ghost of a different card. Refuse instead (FreeCell's moveHeadCard check).
+    const sourcePile = resolvePile(from, current)
+    if (sourcePile?.[sourcePile.length - count]?.id !== anchorCardId) return false
     const result = controllerRef.current.tryMove(current, { from, to, count })
     if (result) {
       pushUndo(current, { from, to, count, anchorCardId })
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
-      if (!opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
-      // Reveals a foundation-starter card off the RESERVE (not the tableau - Canfield's tableau is
-      // always dealt face-up, so there's no tableau reveal event here at all): auto-play it
-      // immediately as a reward for the move that uncovered it, regardless of whether THIS move was
-      // itself silent - see useAutoFoundationCascade's armFromAceEvent.
-      if (from.zone === 'reserve') {
-        const revealed = detectRevealedCard(current.reserve, result.reserve, count)
-        if (revealed && isFoundationStarterCard(revealed, result.foundationRank)) {
-          cascade.armFromAceEvent({ ref: from, card: revealed }, { zone: 'foundation', index: SUITS.indexOf(revealed.suit) })
-        }
-      }
+      // Only the player's own play of a card to a foundation starts auto-play; any other move of theirs
+      // stops it, so a card it uncovers (the reserve's next card, say) is theirs to find and play.
+      if (!opts?.silent) cascade.afterPlayerMove(to)
       return true
     }
     return false
@@ -778,7 +763,7 @@ function CanfieldScreenInner() {
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
-    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current) {
+    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current || !cascade.isArmed()) {
       settleFlight()
       return false
     }
@@ -813,7 +798,7 @@ function CanfieldScreenInner() {
     startFlights(1)
 
     const origin = await measureView(stockViewRef.current)
-    if (!origin || stateRef.current !== current || undoBusyRef.current) {
+    if (!origin || stateRef.current !== current || undoBusyRef.current || !cascade.isArmed()) {
       settleFlight()
       return
     }
@@ -867,7 +852,12 @@ function CanfieldScreenInner() {
     const result = controllerRef.current.drawStock(current)
     if (!result) return
     startFlights(1)
-    if (!opts?.sweep) session.registerMove()
+    // A draw is the player's, but it is not a play: it never sets auto-play off, and it stops a cascade
+    // still running from their last play, so a card they just drew is theirs to find and play.
+    if (!opts?.sweep) {
+      session.registerMove()
+      cascade.disarm()
+    }
 
     const drawnCard = top(result.waste)
     if (!drawnCard) {
@@ -877,14 +867,6 @@ function CanfieldScreenInner() {
       commitState(result)
       settleFlight()
       return
-    }
-
-    // Drawing (or revealing) a foundation-starter card is meant to auto-play it immediately as a
-    // reward, regardless of whether this is a genuine player tap or a sweep's own forced draw - see
-    // useAutoFoundationCascade's armFromAceEvent. Canfield's "ace" is whatever rank the foundation
-    // actually starts from (isFoundationStarterCard), not always rank 1.
-    if (isFoundationStarterCard(drawnCard, result.foundationRank)) {
-      cascade.armFromAceEvent({ ref: { zone: 'waste', index: 0 }, card: drawnCard }, { zone: 'foundation', index: SUITS.indexOf(drawnCard.suit) })
     }
 
     const drawnCount = result.waste.length - current.waste.length
@@ -900,6 +882,12 @@ function CanfieldScreenInner() {
     }
 
     const origin = await measureView(stockViewRef.current)
+    // The cascade's own draw (a sweep) must not commit once the player's move has ended the cascade, or over a board that
+    // moved on while it was measuring (committing `result` would undo whatever landed meanwhile).
+    if (opts?.sweep && (!cascade.isArmed() || stateRef.current !== current)) {
+      settleFlight()
+      return
+    }
     if (!origin) {
       pushUndo(current, move)
       commitState(result)
@@ -1001,86 +989,90 @@ function CanfieldScreenInner() {
   return (
     <CardSizeProvider width={cardWidth}>
       <GameChrome title='Canfield' subtitle={`Draw ${canfieldDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<CanfieldSettingsSection />} rules={CANFIELD_RULES}>
-        <View style={styles.board}>
-          <View style={[styles.topRow, { gap }]}>
-            <View style={[styles.foundationsGroup, { gap }]}>
-              {state.foundation.map((pile, i) => {
-                const t = top(pile)
-                // The foundation-starter card is part of the initial deal sequence too (see
-                // dealSequence.ts's 'foundation' step) - widen the regular flying.to check with the
-                // same dealHiddenIds membership the reserve's own top card uses, so the starter stays
-                // hidden until its own deal flight lands instead of showing at full opacity from the
-                // very first frame of a fresh deal.
-                //
-                // Several tap flights can also be headed to one pile at once (they overlap): count the cards
-                // still in the air so the pile keeps showing the top card that has already LANDED under the
-                // rest (see FoundationCell's settledCard). A card still hidden by the deal has not landed,
-                // whatever the pile says, so it never counts: that slot shows empty until its own flight arrives
-                // (the starter is the pile's bottom card, so there is nothing beneath it to show instead).
-                const flightsInAir = flying.filter((f) => f.to.zone === 'foundation' && f.to.index === i).reduce((sum, f) => sum + f.count, 0)
-                const isFlyingHere = flightsInAir > 0 || (!!t && dealHiddenIds.has(t.id))
-                const landed = pile[pile.length - 1 - flightsInAir]
-                const cascadeTookOver = winRevealed && cascadeHandoff?.state === state && cascadeHandoff.piles.has(i)
-                return (
-                  <DropZone key={i} registry={dropZones} pileRef={{ zone: 'foundation', index: i }} style={[styles.foundationSlot, { width: cardWidth }]}>
-                    <FoundationCell
-                      card={cascadeTookOver ? undefined : t}
-                      isFlyingHere={isFlyingHere}
-                      settledCard={landed && !dealHiddenIds.has(landed.id) ? landed : null}
-                      suit={SUITS[i]}
-                      rank={state.foundationRank}
-                      highlighted={hintCountFor(activeHint, { zone: 'foundation', index: i }) > 0}
-                      slotRef={(el) => {
-                        foundationSlotRefs.current[i] = el
-                      }}
-                    />
-                  </DropZone>
-                )
-              })}
-            </View>
-
-            <DropZone registry={dropZones} pileRef={{ zone: 'reserve', index: 0 }} style={[styles.reserveSlot, { width: cardWidth }]}>
-              <ReserveCell card={reserveTop} isFlyingHere={reserveFlyingHere} dealHidden={reserveDealHidden} shakeToken={reserveTop && shake?.cardId === reserveTop.id ? shake.token : undefined} highlighted={hintCountFor(activeHint, { zone: 'reserve', index: 0 }) > 0} onPress={(measure) => handleCardTap({ zone: 'reserve', index: 0 }, reserveTop!.id, measure)} onDrop={(x, y, flight) => attemptDrop({ zone: 'reserve', index: 0 }, 1, x, y, reserveTop!.id, flight)} />
-            </DropZone>
-
-            <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} widenFan={WASTE_FAN_WIDENS} />
-          </View>
-
-          <View style={[styles.tableauRow, { gap }]}>
-            {state.tableau.map((col, colIndex) => {
-              const dragConfig: PileDragConfig = {
-                registry: dropZones,
-                getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
-                // Claims a flight slot (see activeFlightCountRef's doc comment above) purely so undo
-                // sees this drop as in-flight for its whole duration, not just once completeMove
-                // lands one - PileView.tsx (shared, not ours to edit) already ran its own hitTest
-                // await before invoking this callback, so this is the earliest point CanfieldScreen
-                // gets a look-in. Rejects outright if undo is running (see attemptDrop's identical
-                // comment on why undo holds full mutual exclusion, not just a one-way wait).
-                onDrop: (to, count, anchorCardId, flight) => {
-                  if (undoBusyRef.current) return false
-                  startFlights(1)
-                  if (!completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)) {
-                    settleFlight()
-                    return false
-                  }
-                  return true
-                }
-              }
-              const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === colIndex).reduce((sum, f) => sum + f.count, 0)
+        <View style={[styles.topRow, { width: rowWidth }]}>
+          <View style={[styles.foundationsGroup, { gap }]}>
+            {state.foundation.map((pile, i) => {
+              const t = top(pile)
+              // The foundation-starter card is part of the initial deal sequence too (see
+              // dealSequence.ts's 'foundation' step) - widen the regular flying.to check with the
+              // same dealHiddenIds membership the reserve's own top card uses, so the starter stays
+              // hidden until its own deal flight lands instead of showing at full opacity from the
+              // very first frame of a fresh deal.
+              //
+              // Several tap flights can also be headed to one pile at once (they overlap): count the cards
+              // still in the air so the pile keeps showing the top card that has already LANDED under the
+              // rest (see FoundationCell's settledCard). A card still hidden by the deal has not landed,
+              // whatever the pile says, so it never counts: that slot shows empty until its own flight arrives
+              // (the starter is the pile's bottom card, so there is nothing beneath it to show instead).
+              const flightsInAir = flying.filter((f) => f.to.zone === 'foundation' && f.to.index === i).reduce((sum, f) => sum + f.count, 0)
+              const isFlyingHere = flightsInAir > 0 || (!!t && dealHiddenIds.has(t.id))
+              const landed = pile[pile.length - 1 - flightsInAir]
+              const cascadeTookOver = winRevealed && cascadeHandoff?.state === state && cascadeHandoff.piles.has(i)
               return (
-                <DropZone key={colIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: colIndex }} style={[styles.tableauColumn, { width: cardWidth }]}>
-                  {/* dimUnplayable: unlike Klondike (genuine face-down burial reads as unavailable
-                  via the card back alone), Canfield's tableau - like FreeCell's - is always
-                  entirely face-up (every card that ever lands here, from waste/reserve/another
-                  tableau run, is already face-up per rules.ts), so a face-up card that isn't
-                  currently the head of a movable run needs its own dimmed cue to read as
-                  temporarily stuck rather than pickable. */}
-                  <PileView cards={col} onPressCard={(card, indexFromTop, measure) => handleCardTap({ zone: 'tableau', index: colIndex }, card.id, measure, indexFromTop)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} dimUnplayable={settings.dimUnplayable} shakeCardId={shake?.cardId} shakeCount={shake?.count} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} />
+                <DropZone key={i} registry={dropZones} pileRef={{ zone: 'foundation', index: i }} style={[styles.foundationSlot, { width: cardWidth }]}>
+                  <FoundationCell
+                    card={cascadeTookOver ? undefined : t}
+                    isFlyingHere={isFlyingHere}
+                    settledCard={landed && !dealHiddenIds.has(landed.id) ? landed : null}
+                    suit={SUITS[i]}
+                    rank={state.foundationRank}
+                    highlighted={hintCountFor(activeHint, { zone: 'foundation', index: i }) > 0}
+                    slotRef={(el) => {
+                      foundationSlotRefs.current[i] = el
+                    }}
+                    // A foundation card may come back down to the tableau (rules.ts's tryMove) - by drag only, and never
+                    // once the deal is won. Any move to a column stops a running auto-play (applyMove), so it isn't sent
+                    // straight back up.
+                    under={pile[pile.length - 2] ?? null}
+                    onDrop={won ? undefined : (x, y, flight, dragged) => attemptDrop({ zone: 'foundation', index: i }, 1, x, y, dragged.id, flight)}
+                  />
                 </DropZone>
               )
             })}
           </View>
+
+          <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteUnder={state.waste[state.waste.length - 2]} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight, dragged) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, dragged.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} />
+        </View>
+
+        <View style={[styles.tableauRow, { gap, width: rowWidth }]}>
+          {state.tableau.map((col, colIndex) => {
+            const dragConfig: PileDragConfig = {
+              registry: dropZones,
+              getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
+              // Claims a flight slot (see activeFlightCountRef's doc comment above) purely so undo
+              // sees this drop as in-flight for its whole duration, not just once completeMove
+              // lands one - PileView.tsx (shared, not ours to edit) already ran its own hitTest
+              // await before invoking this callback, so this is the earliest point CanfieldScreen
+              // gets a look-in. Rejects outright if undo is running (see attemptDrop's identical
+              // comment on why undo holds full mutual exclusion, not just a one-way wait).
+              onDrop: (to, count, anchorCardId, flight) => {
+                if (undoBusyRef.current) return false
+                startFlights(1)
+                if (!completeMove({ zone: 'tableau', index: colIndex }, to, count, anchorCardId, flight)) {
+                  settleFlight()
+                  return false
+                }
+                return true
+              }
+            }
+            const hiddenCount = flying.filter((f) => f.to.zone === 'tableau' && f.to.index === colIndex).reduce((sum, f) => sum + f.count, 0)
+            return (
+              <DropZone key={colIndex} registry={dropZones} pileRef={{ zone: 'tableau', index: colIndex }} style={[styles.tableauColumn, { width: cardWidth }]}>
+                {/* dimUnplayable: unlike Klondike (genuine face-down burial reads as unavailable
+                via the card back alone), Canfield's tableau - like FreeCell's - is always
+                entirely face-up (every card that ever lands here, from waste/reserve/another
+                tableau run, is already face-up per rules.ts), so a face-up card that isn't
+                currently the head of a movable run needs its own dimmed cue to read as
+                temporarily stuck rather than pickable. */}
+                <PileView cards={col} onPressCard={(card, indexFromTop, measure) => handleCardTap({ zone: 'tableau', index: colIndex }, card.id, measure, indexFromTop)} maxHeight={tableauMaxHeight} drag={dragConfig} hiddenCount={hiddenCount} hiddenCardIds={dealHiddenIds} dimUnplayable={settings.dimUnplayable} shakeCardId={shake?.cardId} shakeCount={shake?.count} shakeToken={shake?.token} hintCount={hintCountFor(activeHint, { zone: 'tableau', index: colIndex })} />
+              </DropZone>
+            )
+          })}
+          {/* The open slot (the waste fan's, in the row above), then the reserve under the waste - see LAYOUT DECISION. */}
+          <View style={[styles.openSlot, { width: cardWidth }]} />
+          <DropZone registry={dropZones} pileRef={{ zone: 'reserve', index: 0 }} style={[styles.reserveSlot, { width: cardWidth }]}>
+            <ReserveCell card={reserveTop} under={state.reserve[state.reserve.length - 2]} isFlyingHere={reserveFlyingHere} dealHidden={reserveDealHidden} shakeToken={reserveTop && shake?.cardId === reserveTop.id ? shake.token : undefined} highlighted={hintCountFor(activeHint, { zone: 'reserve', index: 0 }) > 0} onPress={(measure) => handleCardTap({ zone: 'reserve', index: 0 }, reserveTop!.id, measure)} onDrop={(x, y, flight, dragged) => attemptDrop({ zone: 'reserve', index: 0 }, 1, x, y, dragged.id, flight)} />
+          </DropZone>
         </View>
       </GameChrome>
       {/* Fireworks and the bouncing cascade both paint above the whole board by plain sibling order
@@ -1096,16 +1088,18 @@ function CanfieldScreenInner() {
 
 function makeStyles() {
   return StyleSheet.create({
-    // Centers the narrower 4-column tableauRow underneath the wider 7-slot topRow - see this
-    // file's own LAYOUT DECISION comment near TOP_ROW_UNITS above.
-    board: {
-      alignItems: 'center'
-    },
     foundationSlot: {},
     foundationsGroup: {
       flexDirection: 'row'
     },
-    reserveSlot: {},
+    // Card-tall, not stretched to the tallest tableau column like the columns beside them (whose height is
+    // their drop target).
+    openSlot: {
+      alignSelf: 'flex-start'
+    },
+    reserveSlot: {
+      alignSelf: 'flex-start'
+    },
     tableauColumn: {},
     tableauRow: {
       flexDirection: 'row',
@@ -1113,6 +1107,7 @@ function makeStyles() {
     },
     topRow: {
       flexDirection: 'row',
+      justifyContent: 'space-between',
       marginBottom: 16
     }
   })

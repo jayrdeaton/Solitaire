@@ -211,6 +211,54 @@ describe('Canfield foundation tryMove', () => {
     expect(result).not.toBeNull()
     expect(result!.foundation[SUITS.indexOf('hearts')].map((c) => c.id)).toEqual(['hearts-13-0', 'hearts-1-0'])
   })
+
+  it("lets a foundation's top card come back down onto a legal tableau spot - wrapping, and the starter included", () => {
+    const hearts = SUITS.indexOf('hearts')
+    const king: Card = { id: 'hearts-13-0', suit: 'hearts', rank: 13, faceUp: true }
+    const ace: Card = { id: 'hearts-1-0', suit: 'hearts', rank: 1, faceUp: true }
+    const blackAce: Card = { id: 'spades-1-0', suit: 'spades', rank: 1, faceUp: true }
+    const blackTwo: Card = { id: 'clubs-2-0', suit: 'clubs', rank: 2, faceUp: true }
+    const state: CanfieldState = {
+      tableau: [[blackTwo], [blackAce], [], []],
+      foundation: SUITS.map((s) => (s === 'hearts' ? [king, ace] : [])),
+      foundationRank: 13,
+      reserve: [],
+      stock: [],
+      waste: []
+    }
+    const from = { zone: 'foundation' as const, index: hearts }
+    const afterAce = CanfieldController.tryMove(state, { from, to: { zone: 'tableau', index: 0 }, count: 1 })
+    expect(afterAce).not.toBeNull()
+    expect(afterAce!.tableau[0].map((c) => c.id)).toEqual(['clubs-2-0', 'hearts-1-0'])
+    // The starter (a King here) goes on an Ace - the tableau wraps too - and its foundation needs a King again.
+    const afterStarter = CanfieldController.tryMove(afterAce!, { from, to: { zone: 'tableau', index: 1 }, count: 1 })
+    expect(afterStarter).not.toBeNull()
+    expect(afterStarter!.foundation[hearts]).toEqual([])
+    expect(afterStarter!.tableau[1].map((c) => c.id)).toEqual(['spades-1-0', 'hearts-13-0'])
+  })
+
+  it('refuses a foundation card on an empty column while the reserve has cards, on another foundation, or two at a time', () => {
+    const hearts = SUITS.indexOf('hearts')
+    const seven: Card = { id: 'hearts-7-0', suit: 'hearts', rank: 7, faceUp: true }
+    const eight: Card = { id: 'hearts-8-0', suit: 'hearts', rank: 8, faceUp: true }
+    const nine: Card = { id: 'spades-9-0', suit: 'spades', rank: 9, faceUp: true }
+    const reserveTop: Card = { id: 'clubs-4-0', suit: 'clubs', rank: 4, faceUp: true }
+    const state: CanfieldState = {
+      tableau: [[nine], [], [], []],
+      foundation: SUITS.map((s) => (s === 'hearts' ? [seven, eight] : [])),
+      foundationRank: 7,
+      reserve: [reserveTop],
+      stock: [],
+      waste: []
+    }
+    const from = { zone: 'foundation' as const, index: hearts }
+    expect(CanfieldController.tryMove(state, { from, to: { zone: 'tableau', index: 1 }, count: 1 })).toBeNull() // empty columns take the reserve
+    expect(CanfieldController.tryMove({ ...state, reserve: [] }, { from, to: { zone: 'tableau', index: 1 }, count: 1 })).not.toBeNull()
+    expect(CanfieldController.tryMove(state, { from, to: { zone: 'foundation', index: SUITS.indexOf('clubs') }, count: 1 })).toBeNull()
+    expect(CanfieldController.tryMove(state, { from, to: { zone: 'tableau', index: 0 }, count: 2 })).toBeNull()
+    expect(CanfieldController.tryMove(state, { from, to: { zone: 'tableau', index: 0 }, count: 1 })).not.toBeNull() // 8 on 9
+    expect(CanfieldController.legalMoves(state).filter((m) => m.from.zone === 'foundation')).toEqual([])
+  })
 })
 
 describe('Canfield drawStock', () => {

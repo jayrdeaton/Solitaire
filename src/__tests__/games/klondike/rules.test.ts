@@ -96,21 +96,48 @@ describe('Klondike tryMove', () => {
     expect(result).toBeNull()
   })
 
-  it('rejects moving from foundation', () => {
+  it("lets a foundation's top card come back down onto a legal tableau spot", () => {
     const controller = createKlondikeController(1)
-    const ace: Card = { id: 'clubs-1-0', suit: 'clubs', rank: 1, faceUp: true }
+    const clubs = SUITS.indexOf('clubs')
     const state: KlondikeState = {
-      tableau: [[], [], [], [], [], [], []],
-      foundation: [[ace], [], [], []],
+      tableau: [[card('hearts', 3)], [], [], [], [], [], []],
+      foundation: SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : [])),
       stock: [],
       waste: []
     }
-    const result = controller.tryMove(state, {
-      from: { zone: 'foundation', index: 0 },
-      to: { zone: 'tableau', index: 0 },
-      count: 1
-    })
-    expect(result).toBeNull()
+    const result = controller.tryMove(state, { from: { zone: 'foundation', index: clubs }, to: { zone: 'tableau', index: 0 }, count: 1 })
+    expect(result).not.toBeNull()
+    expect(result!.foundation[clubs].map((c) => c.id)).toEqual(['clubs-1-0'])
+    expect(result!.tableau[0].map((c) => c.id)).toEqual(['hearts-3-0', 'clubs-2-0'])
+  })
+
+  it('refuses a foundation card anywhere but a legal tableau spot, and more than one card at a time', () => {
+    const controller = createKlondikeController(1)
+    const clubs = SUITS.indexOf('clubs')
+    const state: KlondikeState = {
+      tableau: [[card('spades', 3)], [], [card('hearts', 3)], [], [], [], []],
+      foundation: SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : s === 'diamonds' ? [card('diamonds', 1)] : [])),
+      stock: [],
+      waste: []
+    }
+    const from = { zone: 'foundation' as const, index: clubs }
+    expect(controller.tryMove(state, { from, to: { zone: 'tableau', index: 0 }, count: 1 })).toBeNull() // same color
+    expect(controller.tryMove(state, { from, to: { zone: 'tableau', index: 1 }, count: 1 })).toBeNull() // empty column: Kings only
+    expect(controller.tryMove(state, { from, to: { zone: 'foundation', index: SUITS.indexOf('diamonds') }, count: 1 })).toBeNull()
+    expect(controller.tryMove(state, { from, to: { zone: 'waste', index: 0 }, count: 1 })).toBeNull()
+    expect(controller.tryMove(state, { from, to: { zone: 'tableau', index: 2 }, count: 2 })).toBeNull()
+  })
+
+  it('never offers a foundation card in legalMoves, so Hint cannot suggest a card going straight back down', () => {
+    const controller = createKlondikeController(1)
+    const state: KlondikeState = {
+      tableau: [[card('hearts', 3)], [], [], [], [], [], []],
+      foundation: SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : [])),
+      stock: [],
+      waste: []
+    }
+    expect(controller.tryMove(state, { from: { zone: 'foundation', index: SUITS.indexOf('clubs') }, to: { zone: 'tableau', index: 0 }, count: 1 })).not.toBeNull()
+    expect(controller.legalMoves(state).filter((m) => m.from.zone === 'foundation')).toEqual([])
   })
 
   it('only allows a King to start an empty tableau column', () => {

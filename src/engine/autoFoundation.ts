@@ -55,10 +55,9 @@ export function isSafeAutoPlay(foundation: Card[][], card: Card): boolean {
  * foundation right now AND passing isSafeAutoPlay. Call again after each resulting move; a move
  * can make the next card both accessible and safe.
  *
- * A waste-top ace is included here like any other card - drawing or revealing an ace is meant to
- * play it immediately as a deliberate payoff for the player (see useAutoFoundationCascade's
- * armFromAceEvent, which is what actually surfaces this in practice as soon as the ace lands,
- * rather than waiting on this function to be reached via the normal cascade). */
+ * The waste top is scanned like any other accessible card, but only a cascade the player's own play
+ * of a card to a foundation set off ever runs this, and the player's next draw or other move stops
+ * it - a card they just drew or uncovered is never played for them (see useAutoFoundationCascade). */
 export function findSafeAutoPlay(accessible: AccessibleCard[], foundation: Card[][]): AccessibleCard | null {
   for (const entry of accessible) {
     if (canPlaceOnFoundation(foundation[suitIndex(entry.card.suit)], entry.card) && isSafeAutoPlay(foundation, entry.card)) {

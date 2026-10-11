@@ -3,7 +3,7 @@ import { act, renderHook } from '@testing-library/react-native'
 import { AUTO_PLAY_STAGGER_MS } from '@/components/dragdrop/dragSpring'
 import { AutoCompleteStep } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
-import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
+import { AutoFoundationCascade, useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 
 const PLAY_ENTRY: AccessibleCard = { ref: { zone: 'tableau', index: 0 }, card: { id: 'hearts-5-0', suit: 'hearts', rank: 5, faceUp: true } }
 const PLAY_TO: PileRef = { zone: 'foundation', index: 2 }
@@ -12,6 +12,7 @@ const STEP_PLAY: AutoCompleteStep = { kind: 'play', entry: PLAY_ENTRY, to: PLAY_
 const ACE_ENTRY: AccessibleCard = { ref: { zone: 'waste', index: 0 }, card: { id: 'clubs-1-0', suit: 'clubs', rank: 1, faceUp: true } }
 const ACE_TO: PileRef = { zone: 'foundation', index: 0 }
 const WASTE: PileRef = { zone: 'waste', index: 0 }
+const COLUMN: PileRef = { zone: 'tableau', index: 4 }
 
 // Far longer than the gap between two cards, like every real flight (~483ms of ghost against 96ms), so cards overlap.
 const FLIGHT_MS = 480
@@ -72,10 +73,10 @@ function setup(overrides: Partial<Config> = {}) {
         }),
       { initialProps: { state: 'board-0' } as Props }
     )
-  /** The player's own move to `to` - committed, and arming the cascade the way applyMove does, in the same breath. */
-  async function playerMove(rerender: (props: Props) => Promise<void>, arm: () => void, to: PileRef = PLAY_TO) {
+  /** The player's own move to `to` - committed, and reported to the cascade the way applyMove does, in the same breath. */
+  async function playerMove(rerender: (props: Props) => Promise<void>, cascade: AutoFoundationCascade, to: PileRef = PLAY_TO) {
     commit(to)
-    arm()
+    cascade.afterPlayerMove(to)
     await rerender({ state: board.current })
   }
   return { board, commit, playerMove, firePlay, fireDraw, fireDrawAndPlay, enabled, isBusy, computeNextStep, render }
@@ -102,11 +103,43 @@ describe('useAutoFoundationCascade', () => {
     await unmount()
   })
 
+  it("never starts from the player's move to anywhere but a foundation - not even one that uncovers a playable card", async () => {
+    const { playerMove, firePlay, computeNextStep, render } = setup()
+    const { result, rerender, unmount } = await render()
+
+    // computeNextStep would offer a card every time (e.g. an ace the move flipped up), but nothing may even look
+    for (const to of [COLUMN, WASTE, { zone: 'freecell', index: 0 }, { zone: 'reserve', index: 0 }]) {
+      await playerMove(rerender, result.current, to)
+      await advance(AUTO_PLAY_STAGGER_MS * 3)
+    }
+    expect(computeNextStep).not.toHaveBeenCalled()
+    expect(firePlay).not.toHaveBeenCalled()
+    await unmount()
+  })
+
+  it("the player's next move to anywhere but a foundation stops the cascade their last play set off; their next foundation play starts a new one", async () => {
+    const { playerMove, firePlay, render } = setup()
+    const { result, rerender, unmount } = await render()
+
+    await playerMove(rerender, result.current)
+    await advance(AUTO_PLAY_STAGGER_MS)
+    expect(firePlay).toHaveBeenCalledTimes(1)
+
+    await playerMove(rerender, result.current, COLUMN) // e.g. a column move that flips up an ace: that card is theirs
+    await advance(AUTO_PLAY_STAGGER_MS * 5)
+    expect(firePlay).toHaveBeenCalledTimes(1)
+
+    await playerMove(rerender, result.current)
+    await advance(AUTO_PLAY_STAGGER_MS)
+    expect(firePlay).toHaveBeenCalledTimes(2)
+    await unmount()
+  })
+
   it("follows the player's own card one gap later, while that card is still in the air", async () => {
     const { board, playerMove, firePlay, render } = setup()
     const { result, rerender, unmount } = await render()
 
-    await playerMove(rerender, () => result.current.armFromForwardMove())
+    await playerMove(rerender, result.current)
     await advance(AUTO_PLAY_STAGGER_MS - 1)
     expect(firePlay).not.toHaveBeenCalled()
     await advance(1)
@@ -121,7 +154,7 @@ describe('useAutoFoundationCascade', () => {
     computeNextStep.mockImplementation(() => (board.n < 5 ? STEP_PLAY : null)) // the player's move, then four cards
     const { result, rerender, unmount } = await render()
 
-    await playerMove(rerender, () => result.current.armFromForwardMove())
+    await playerMove(rerender, result.current)
     for (let i = 1; i <= 4; i++) {
       await advance(AUTO_PLAY_STAGGER_MS)
       expect(firePlay).toHaveBeenCalledTimes(i)
@@ -136,59 +169,17 @@ describe('useAutoFoundationCascade', () => {
     await unmount()
   })
 
-  it('armFromAceEvent fires the pinned entry first (skipping computeNextStep), then continues the cascade normally', async () => {
-    const { firePlay, computeNextStep, render, board } = setup()
-    computeNextStep.mockReturnValueOnce(STEP_PLAY).mockReturnValue(null)
+  it('a card still flying in to its own pile (one the sweep just drew) waits for it to land, then goes at once', async () => {
+    const { board, playerMove, firePlay, fireDraw, computeNextStep, render } = setup()
+    // the player's move, the sweep's draw, then a play of the drawn card off the waste
+    const steps: (AutoCompleteStep | null)[] = [null, { kind: 'draw' }, { kind: 'play', entry: ACE_ENTRY, to: ACE_TO }]
+    computeNextStep.mockImplementation(() => steps[board.n] ?? null)
     const { result, rerender, unmount } = await render()
 
-    board.n += 1 // the move that revealed the ace (in place - nothing is landing on its pile)
-    board.current = 'board-1'
-    result.current.armFromAceEvent({ ...ACE_ENTRY, ref: { zone: 'tableau', index: 3 } }, ACE_TO)
-    await rerender({ state: 'board-1' })
-    await advance(AUTO_PLAY_STAGGER_MS)
-    expect(firePlay).toHaveBeenNthCalledWith(1, { ...ACE_ENTRY, ref: { zone: 'tableau', index: 3 } }, ACE_TO)
-    expect(computeNextStep).not.toHaveBeenCalled() // the pin short-circuits the scan
-
-    await advance(AUTO_PLAY_STAGGER_MS) // the next card leaves while the ace is still in the air
-    expect(computeNextStep).toHaveBeenCalledTimes(1)
-    expect(firePlay).toHaveBeenNthCalledWith(2, STEP_PLAY.entry, STEP_PLAY.to)
-    await unmount()
-  })
-
-  it('an ace pinned by one of its own moves (a reveal) goes next, on the same gap', async () => {
-    const { board, playerMove, firePlay, computeNextStep, render } = setup()
-    computeNextStep.mockImplementation(() => (board.n < 4 ? STEP_PLAY : null))
-    const revealed = { ...ACE_ENTRY, ref: { zone: 'tableau', index: 3 } as PileRef }
-    const hooks: { pinAce?: () => void } = {}
-    firePlay.mockImplementationOnce(async (_entry, to) => {
-      board.n += 1
-      board.current = `board-${board.n}`
-      board.landing.set(key(to), 1)
-      hooks.pinAce?.() // the move uncovered an ace - armFromAceEvent from inside applyMove
-      return true
-    })
-    const { result, rerender, unmount } = await render()
-    hooks.pinAce = () => result.current.armFromAceEvent(revealed, ACE_TO)
-
-    await playerMove(rerender, () => result.current.armFromForwardMove())
-    await advance(AUTO_PLAY_STAGGER_MS)
-    expect(firePlay).toHaveBeenCalledTimes(1)
-    await advance(AUTO_PLAY_STAGGER_MS)
-    expect(firePlay).toHaveBeenNthCalledWith(2, revealed, ACE_TO)
-    await advance(AUTO_PLAY_STAGGER_MS)
-    expect(firePlay).toHaveBeenNthCalledWith(3, STEP_PLAY.entry, STEP_PLAY.to)
-    await unmount()
-  })
-
-  it('a card still flying in to its own pile (a drawn ace) waits for it to land, then goes at once', async () => {
-    const { board, commit, firePlay, computeNextStep, render } = setup()
-    computeNextStep.mockReturnValue(null)
-    const { result, rerender, unmount } = await render()
-
-    commit(WASTE) // the player's draw: the ace is flying onto the waste
-    result.current.armFromAceEvent(ACE_ENTRY, ACE_TO)
-    await rerender({ state: board.current })
-    await advance(FLIGHT_MS - 1)
+    await playerMove(rerender, result.current)
+    await advance(AUTO_PLAY_STAGGER_MS) // t=96: the draw - its card is flying onto the waste
+    expect(fireDraw).toHaveBeenCalledTimes(1)
+    await advance(FLIGHT_MS - 1) // one ms before it lands
     expect(firePlay).not.toHaveBeenCalled() // picked up mid-air it would show twice
     await advance(1 + POLL_MS)
     expect(firePlay).toHaveBeenCalledWith(ACE_ENTRY, ACE_TO) // landed: no further gap
@@ -202,7 +193,7 @@ describe('useAutoFoundationCascade', () => {
     computeNextStep.mockImplementation(() => steps[board.n] ?? null)
     const { result, rerender, unmount } = await render()
 
-    await playerMove(rerender, () => result.current.armFromForwardMove())
+    await playerMove(rerender, result.current)
     await advance(AUTO_PLAY_STAGGER_MS) // t=96: nothing is landing on the stock/waste - the draw goes
     expect(fireDraw).toHaveBeenCalledTimes(1)
     expect(fireDraw).toHaveBeenCalledWith({ sweep: true })
@@ -219,12 +210,13 @@ describe('useAutoFoundationCascade', () => {
 
   it('a draw-and-play is held back the same way', async () => {
     const { board, commit, fireDrawAndPlay, computeNextStep, render } = setup()
-    const steps: (AutoCompleteStep | null)[] = [null, { kind: 'drawAndPlay', entry: ACE_ENTRY, to: ACE_TO }]
+    const steps: (AutoCompleteStep | null)[] = [null, null, { kind: 'drawAndPlay', entry: ACE_ENTRY, to: ACE_TO }]
     computeNextStep.mockImplementation(() => steps[board.n] ?? null)
     const { result, rerender, unmount } = await render()
 
-    commit(WASTE) // the player's own draw is still landing on the waste
-    result.current.armFromForwardMove()
+    commit(WASTE) // a card the player dropped on the waste is still landing there
+    commit(PLAY_TO) // and their foundation play arms the cascade
+    result.current.afterPlayerMove(PLAY_TO)
     await rerender({ state: board.current })
     await advance(FLIGHT_MS - 1)
     expect(fireDrawAndPlay).not.toHaveBeenCalled()
@@ -237,7 +229,7 @@ describe('useAutoFoundationCascade', () => {
     const { playerMove, firePlay, render } = setup()
     const { result, rerender, unmount } = await render()
 
-    await playerMove(rerender, () => result.current.armFromForwardMove())
+    await playerMove(rerender, result.current)
     await advance(AUTO_PLAY_STAGGER_MS * 2)
     expect(firePlay).toHaveBeenCalledTimes(2)
 
@@ -252,44 +244,83 @@ describe('useAutoFoundationCascade', () => {
     firePlay.mockImplementation(async () => false) // e.g. the card never measures
     const { result, rerender, unmount } = await render()
 
-    await playerMove(rerender, () => result.current.armFromForwardMove())
+    await playerMove(rerender, result.current)
+    await advance(AUTO_PLAY_STAGGER_MS * 10)
+    expect(firePlay).toHaveBeenCalledTimes(3)
+    await rerender({ state: 'board-x' }) // a later board change, no foundation play: it stays stopped
     await advance(AUTO_PLAY_STAGGER_MS * 10)
     expect(firePlay).toHaveBeenCalledTimes(3)
     await unmount()
   })
 
-  it('stops mid-cascade when Auto-Move is turned off', async () => {
+  it('stops mid-cascade when Auto-Move is turned off, and does not pick up again when it is turned back on', async () => {
     const { enabled, playerMove, firePlay, render } = setup()
     const { result, rerender, unmount } = await render()
 
-    await playerMove(rerender, () => result.current.armFromForwardMove())
+    await playerMove(rerender, result.current)
     await advance(AUTO_PLAY_STAGGER_MS)
     enabled.mockReturnValue(false)
     await advance(AUTO_PLAY_STAGGER_MS * 3)
     expect(firePlay).toHaveBeenCalledTimes(1)
-    await unmount()
-  })
 
-  it('stops mid-cascade when an undo starts', async () => {
-    const { isBusy, playerMove, firePlay, render } = setup()
-    const { result, rerender, unmount } = await render()
-
-    await playerMove(rerender, () => result.current.armFromForwardMove())
-    await advance(AUTO_PLAY_STAGGER_MS)
-    isBusy.mockReturnValue(true)
+    enabled.mockReturnValue(true)
+    await playerMove(rerender, result.current, COLUMN) // the player's next move goes to a column
     await advance(AUTO_PLAY_STAGGER_MS * 3)
     expect(firePlay).toHaveBeenCalledTimes(1)
     await unmount()
   })
 
-  it('does not start while Auto-Move is off, or while an undo is running', async () => {
+  it('stops mid-cascade when an undo starts, and does not pick up again once it is done', async () => {
+    const { isBusy, playerMove, firePlay, render } = setup()
+    const { result, rerender, unmount } = await render()
+
+    await playerMove(rerender, result.current)
+    await advance(AUTO_PLAY_STAGGER_MS)
+    isBusy.mockReturnValue(true)
+    await advance(AUTO_PLAY_STAGGER_MS * 3)
+    expect(firePlay).toHaveBeenCalledTimes(1)
+
+    isBusy.mockReturnValue(false)
+    await rerender({ state: 'board-x' }) // a later board change, no foundation play
+    await advance(AUTO_PLAY_STAGGER_MS * 3)
+    expect(firePlay).toHaveBeenCalledTimes(1)
+    await unmount()
+  })
+
+  it('a wait for a landing that never comes ends the cascade - a later board change fires nothing', async () => {
+    const { board, commit, playerMove, firePlay, computeNextStep, render } = setup()
+    computeNextStep.mockReturnValue({ kind: 'play', entry: ACE_ENTRY, to: ACE_TO })
+    board.landing.set(key(WASTE), 1) // a card that never lands on the waste
+    const { result, rerender, unmount } = await render()
+
+    await playerMove(rerender, result.current)
+    await advance(AUTO_PLAY_STAGGER_MS + 3000 + POLL_MS * 2) // past the hook's 3s MAX_LANDING_WAIT_MS
+    expect(firePlay).not.toHaveBeenCalled()
+
+    board.landing.set(key(WASTE), 0)
+    commit(COLUMN) // the player's next move goes to a column
+    await rerender({ state: board.current })
+    await advance(AUTO_PLAY_STAGGER_MS * 3)
+    expect(firePlay).not.toHaveBeenCalled()
+    await unmount()
+  })
+
+  it('does not start while Auto-Move is off, or while an undo is running - and that play never fires later', async () => {
     for (const blocked of ['enabled', 'isBusy'] as const) {
       const harness = setup()
       if (blocked === 'enabled') harness.enabled.mockReturnValue(false)
       else harness.isBusy.mockReturnValue(true)
       const { result, rerender, unmount } = await harness.render()
 
-      await harness.playerMove(rerender, () => result.current.armFromForwardMove())
+      await harness.playerMove(rerender, result.current)
+      await advance(AUTO_PLAY_STAGGER_MS * 3)
+      expect([blocked, harness.firePlay.mock.calls.length]).toEqual([blocked, 0])
+
+      // Auto-Move turned back on / the undo done, then a board change that is not a foundation play
+      harness.enabled.mockReturnValue(true)
+      harness.isBusy.mockReturnValue(false)
+      harness.commit(COLUMN)
+      await rerender({ state: harness.board.current })
       await advance(AUTO_PLAY_STAGGER_MS * 3)
       expect([blocked, harness.firePlay.mock.calls.length]).toEqual([blocked, 0])
       await unmount()
@@ -300,7 +331,7 @@ describe('useAutoFoundationCascade', () => {
     const { firePlay, computeNextStep, render } = setup()
     const { result, rerender, unmount } = await render()
 
-    result.current.armFromForwardMove()
+    result.current.afterPlayerMove(PLAY_TO)
     result.current.disarm() // e.g. an undo / new game landed in the same breath
     await rerender({ state: 'board-1' })
     await advance(AUTO_PLAY_STAGGER_MS * 3)
@@ -309,16 +340,20 @@ describe('useAutoFoundationCascade', () => {
     await unmount()
   })
 
-  it('disarm() also drops a pinned ace, so it cannot fire on a later board', async () => {
-    const { firePlay, computeNextStep, render } = setup()
-    computeNextStep.mockReturnValue(null)
+  it("isArmed() follows the player's moves and the loop, so a fire that awaited can re-check before it commits", async () => {
+    const { board, playerMove, computeNextStep, render } = setup()
+    computeNextStep.mockImplementation(() => (board.n < 3 ? STEP_PLAY : null))
     const { result, rerender, unmount } = await render()
 
-    result.current.armFromAceEvent(ACE_ENTRY, ACE_TO)
-    result.current.disarm()
-    await rerender({ state: 'board-1' })
-    await advance(AUTO_PLAY_STAGGER_MS * 3)
-    expect(firePlay).not.toHaveBeenCalled()
+    expect(result.current.isArmed()).toBe(false)
+    await playerMove(rerender, result.current)
+    expect(result.current.isArmed()).toBe(true)
+    await playerMove(rerender, result.current, COLUMN) // the player's move elsewhere ends it
+    expect(result.current.isArmed()).toBe(false)
+
+    await playerMove(rerender, result.current)
+    await advance(AUTO_PLAY_STAGGER_MS * 5) // runs dry
+    expect(result.current.isArmed()).toBe(false)
     await unmount()
   })
 
@@ -326,7 +361,7 @@ describe('useAutoFoundationCascade', () => {
     const { playerMove, firePlay, render } = setup()
     const { result, rerender, unmount } = await render()
 
-    await playerMove(rerender, () => result.current.armFromForwardMove())
+    await playerMove(rerender, result.current)
     await advance(AUTO_PLAY_STAGGER_MS)
     await unmount()
     await advance(AUTO_PLAY_STAGGER_MS * 5)

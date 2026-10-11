@@ -1,11 +1,8 @@
 import { cardWidthForRow } from '@tastic/cards'
 
 /**
- * The one minimum gap every game screen's own card row/tableau uses - and, via StockWaste.tsx's
- * own internal stock/waste spacing, the same value a screen embedding <StockWaste> is implicitly
- * relying on when it folds StockWaste's footprint into its own row-width reservation math (see
- * CanfieldScreen.tsx's TOP_ROW_UNITS/TOP_ROW_GAP doc comment for why that reservation has to be
- * pixel-exact). Every game used to declare its own local TABLEAU_GAP/COL_GAP/PILE_GAP - same idea,
+ * The one minimum gap every game screen's own card row/tableau uses - and StockWaste.tsx's default
+ * stock/waste spacing, for a screen that doesn't pass its own. Every game used to declare its own local TABLEAU_GAP/COL_GAP/PILE_GAP - same idea,
  * different numbers (4 to 16) picked independently per screen - now unified to one shared floor:
  * cardLayoutForRow below only ever grows the actual gap PAST this once a row's cards have already
  * hit their own max size and there's real leftover width to give them, so the common case (a phone-
@@ -46,13 +43,34 @@ export const CARD_GAP_MAX = 24
  * window, which is exactly where the old fixed-gap behavior looked worst: an already-maxed-out
  * card row just floating in a sea of dead space rather than the cards' own gaps breathing with it.
  * The gap itself is further clamped at CARD_GAP_MAX, so that "breathing room" has its own ceiling
- * instead of growing without bound on a very wide window with few columns.
+ * instead of growing without bound on a very wide window with few columns. `minGap` raises the floor
+ * for a row that needs more than CARD_GAP_MIN between its columns (SPLIT_TOP_ROW_MIN_GAP).
  */
-export function cardLayoutForRow(availableWidth: number, columns: number): { cardWidth: number; gap: number } {
-  const cardWidth = cardWidthForRow(availableWidth, columns, CARD_GAP_MIN)
+export function cardLayoutForRow(availableWidth: number, columns: number, minGap = CARD_GAP_MIN): { cardWidth: number; gap: number } {
+  const cardWidth = cardWidthForRow(availableWidth, columns, minGap)
   if (cardWidth < CARD_WIDTH_MAX || columns <= 1) {
-    return { cardWidth, gap: CARD_GAP_MIN }
+    return { cardWidth, gap: minGap }
   }
   const gap = (availableWidth - CARD_WIDTH_MAX * columns) / (columns - 1)
-  return { cardWidth: CARD_WIDTH_MAX, gap: Math.min(CARD_GAP_MAX, Math.max(CARD_GAP_MIN, gap)) }
+  return { cardWidth: CARD_WIDTH_MAX, gap: Math.min(CARD_GAP_MAX, Math.max(minGap, gap)) }
+}
+
+/**
+ * A top row made of two groups over a tableau of the same width - FreeCell's foundations | freecells,
+ * Forty Thieves' foundations | waste and stock - squeezes each group to HALF the tableau's gap and
+ * pools what that saves between the two groups (space-between, in a row as wide as the tableau), so
+ * they read as two groups instead of one unbroken run of slots. With the tableau's gap at its floor
+ * there is nothing to squeeze, so such a screen sizes its tableau with this floor instead of
+ * CARD_GAP_MIN (cardLayoutForRow's `minGap`): a group's gap then never drops below CARD_GAP_MIN,
+ * and the split is columns * gap / 2 (the row's columns - 1 gaps, less its columns - 2 half gaps):
+ * FreeCell's 8 columns get 4 * gap, 16pt on a phone, for ~1.75pt of card width, and Forty Thieves'
+ * 10 get 5 * gap. Smaller top-row cards would have kept the tableau's full size, but every card
+ * moving between the rows would then change size in flight, and every ghost layer flies a card at
+ * one size.
+ */
+export const SPLIT_TOP_ROW_MIN_GAP = CARD_GAP_MIN * 2
+
+/** The gap between the cards inside each group of a split top row - see SPLIT_TOP_ROW_MIN_GAP. */
+export function splitTopRowGroupGap(tableauGap: number): number {
+  return tableauGap / 2
 }

@@ -1111,13 +1111,39 @@ describe('Pyramid screen quick play - undoing a move puts its ghosts up in the s
       if (mockLog.shown.length > shownBefore) {
         // The ghost is up: its flight has to have started at the same moment, not after a post-commit measurement.
         expect(mockLog.flown.length).toBe(flownBefore + 1)
-        expect(text('stock-hidden')).toBe('true')
+        // A draw's card lands ON the stock, which keeps its pre-flight look until then; a recycle's cards LEAVE it, so it is not frozen.
+        expect(text('stock-hidden')).toBe(isRecycle ? 'false' : 'true')
         sawFlight = true
       }
     }
     expect(sawFlight).toBe(true)
     await landEverything()
     expect(text('stock-hidden')).toBe('false')
+  })
+
+  it('an undone recycle empties the stock as its cards take off, flying them face down, and the waste shows its empty slot until they land', async () => {
+    await mount(TWO_PAIRS({ waste: [card('hearts', 2), card('hearts', 3)] }))
+    await press('stock-top') // the recycle
+    await landEverything()
+    expect(text('stock-top')).not.toBe('empty')
+    mockFlightMs = 300
+    const show = jest.spyOn(mockGhost, 'show')
+
+    await press('undo')
+    await flush(100)
+    expect(show).toHaveBeenCalledTimes(1)
+    // One back for the whole pile, carrying the id of the card that ends on top of the waste (the landed ghost waits for its face).
+    expect(show.mock.calls[0][0].cards).toEqual([{ ...card('hearts', 3), faceUp: false }])
+    expect(text('stock-top')).toBe('empty')
+    expect(text('stock-hidden')).toBe('false') // not frozen on a back while the whole stock is in the air
+    expect(text('waste-hidden')).toBe('1')
+    expect(text('waste-settled')).toBe('undefined') // the frozen copy: the empty waste from before the undo
+    expect(mockLog.inAir).toBe(1)
+
+    await flush(300)
+    expect(mockLog.inAir).toBe(0)
+    expect(text('waste-hidden')).toBe('0')
+    expect(wasteShows()).toBe(id('hearts', 3))
   })
 
   it('an undone draw keeps the stock slot frozen until the returning ghost lands, then reveals the returned card', async () => {

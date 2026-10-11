@@ -7,8 +7,8 @@ import { BOARD_MODEL as CANFIELD_BOARD_MODEL, HEADROOM_FACE_UP, TALLEST_COLUMN }
 import { createCanfieldController } from '@/games/canfield/rules'
 import { BOARD_MODEL as KLONDIKE_BOARD_MODEL } from '@/games/klondike/boardModel'
 
-// CanfieldScreen sizes its cards off the top row's 7 slots (4 foundations + reserve + stock/waste),
-// not its 4 tableau columns - see TOP_ROW_UNITS there.
+// CanfieldScreen sizes its cards off the board's 7 slots (the top row's 4 foundations + an open slot +
+// waste + stock), not its 4 tableau columns - see TOP_ROW_UNITS there.
 const TOP_ROW_UNITS = 7
 // A phone held sideways: the rotated footprint and the insets remapped onto it (see gameLayout.test.ts).
 const PHONE_LANDSCAPE = computeGameLayout(874, 402, { top: 0, right: 0, bottom: 21, left: 59 })
@@ -36,8 +36,8 @@ describe('Canfield boardModel', () => {
     const state = createCanfieldController(3).newGame(12345)
     expect(state.reserve).toHaveLength(13)
     expect(state.tableau).toHaveLength(4)
-    // Only the reserve's top card is ever rendered (ReserveCell), so the board is exactly: one top-row
-    // card + one tableau card + the headroom fans - nothing for 13 reserve cards.
+    // Only the reserve's top card is ever rendered (ReserveCell, one card in the tableau row), so the board
+    // is exactly: one top-row card + one tableau card + the headroom fans - nothing for 13 reserve cards.
     const cardHeight = 1 / CARD_ASPECT
     expect(CANFIELD_BOARD_MODEL.perWidth).toBeCloseTo(2 * cardHeight + HEADROOM_FACE_UP * FACE_UP_FAN_RATIO)
   })

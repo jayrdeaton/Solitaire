@@ -645,6 +645,20 @@ describe('Yukon screen - auto-play and undo', () => {
   })
 })
 
+describe("Yukon screen - auto-play only ever follows the player's own play of a card to a foundation", () => {
+  it('an ace a column move flips up stays there for the player to find and play', async () => {
+    mockSettings.autoMove = true
+    await mount(board([[{ ...card('clubs', 1), faceUp: false }, card('hearts', 9)], [card('spades', 10)]], [[], [], [], []]), [], 3)
+
+    await tap(id('hearts', 9)) // onto the 10 of spades: the face-down Ace of clubs turns over
+    await flush(2000)
+
+    expect(mockLog.shown).toEqual([id('hearts', 9)]) // the move's own flight, and nothing after it
+    expect(foundationTop('clubs')).toBe('empty')
+    expect(screen.queryByTestId(`card-${id('clubs', 1)}`)).not.toBeNull()
+  })
+})
+
 describe("Yukon screen - the deck placeholder leaves with the last card, on the deal layer's own clock", () => {
   const PLACEHOLDER = 'yukon-deck-origin'
   const deckShown = () => screen.queryByTestId(PLACEHOLDER) !== null

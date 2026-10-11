@@ -368,7 +368,7 @@ afterEach(async () => {
 // Each test starts with no saved games (the store helper is shared across the file).
 afterEach(() => resetGameInProgress())
 
-describe('FreeCell screen - the safe-card cascade needs a TAP that went to a foundation', () => {
+describe("FreeCell screen - the safe-card cascade needs the player's own play of a card to a foundation", () => {
   it('a resumed board never plays anything by itself, even one full of safe cards', async () => {
     await mount(SAFE_CARDS_BOARD())
     await flush(3000)
@@ -481,15 +481,25 @@ describe('FreeCell screen - the safe-card cascade needs a TAP that went to a fou
     expect(cardsOnBoard()).toBe(52)
   })
 
-  it('dragging that same card onto the foundation does NOT start it', async () => {
+  it('dragging that same card onto the foundation starts it too - a drag is as much a play as a tap', async () => {
     await mount(SAFE_CARDS_BOARD())
 
     await dragTo(id('clubs', 1), CLUBS_FOUNDATION)
     await flush(3000)
 
-    // The drop landed on the foundation, and that is all: no card was sent up after it (the Aces of hearts and spades sit
-    // right there, safe, waiting).
-    expect(foundationTops()).toEqual({ clubs: id('clubs', 1), diamonds: 'empty', hearts: 'empty', spades: 'empty' })
+    // The same follow-ups as the tap's: the Aces of hearts and spades, then the 2 of hearts (the drag's own ghost comes from
+    // PileView, so it isn't counted here).
+    expect(foundationTops()).toEqual({ clubs: id('clubs', 1), diamonds: 'empty', hearts: id('hearts', 2), spades: id('spades', 1) })
+    expect(mockLog.shown).toHaveLength(3)
+  })
+
+  it('dragging a card onto a column does not start it, even when it uncovers safe cards', async () => {
+    await mount(TWO_DEADLOCKS_BOARD())
+
+    await dragTo(id('diamonds', 2), { zone: 'tableau', index: 0 }) // onto the black 3 of clubs: the Ace of diamonds is uncovered
+    await flush(3000)
+
+    expect(foundationTops()).toEqual({ clubs: 'empty', diamonds: 'empty', hearts: 'empty', spades: 'empty' })
     expect(mockLog.shown).toEqual([])
   })
 
@@ -515,59 +525,72 @@ describe('FreeCell screen - the safe-card cascade needs a TAP that went to a fou
   })
 })
 
-describe('FreeCell screen - once every column is solved the rest finishes itself', () => {
-  it('a tap that moves a card to a column (not a foundation) and leaves the board finishable sweeps the whole board up', async () => {
-    await mount(ONE_MOVE_FROM_FINISHABLE())
+describe('FreeCell screen - once every column is solved, a foundation play finishes the rest', () => {
+  it("a tap to a foundation on a finishable board sweeps the whole board up, the first card a stagger after the player's own", async () => {
+    await mount(FINISHABLE())
     await flush(3000)
-    expect(mockLog.shown).toEqual([]) // finishable-in-one-move is not finishable: nothing happens by itself
+    expect(mockLog.shown).toEqual([]) // a finishable board alone starts nothing
 
-    await tap(id('clubs', 2)) // 2 of clubs -> off the Ace, onto an empty column
-    expect(cardsOnBoard()).toBe(52) // the tap's own move is not a foundation move...
-    expect(foundationTops()).toEqual({ clubs: 'empty', diamonds: 'empty', hearts: 'empty', spades: 'empty' })
-    await flush(10000) // ...but it leaves the board finishable
-
-    expect(cardsOnBoard()).toBe(0)
-    expect(screen.getByTestId('win-banner')).toBeTruthy()
-    expect(screen.getByTestId('fireworks')).toBeTruthy()
-    expect(mockRecordWon).toHaveBeenCalledTimes(1)
-    expect(mockLog.shown).toHaveLength(1 + 52) // the tap, then every card of the game
-    // The 52 finish cards leave a stagger apart (to within one STEP_MS, the harness's resolution), the first a stagger after the tap - while
-    // the tapped card is still in the air.
-    const [tapFlight, ...finish] = mockLog.flights
-    expect(finish).toHaveLength(52)
-    expect(finish[0].start).toBeLessThan(tapFlight.end)
-    for (let i = 1; i < finish.length; i++) expect(finish[i].start - finish[i - 1].start).toBeGreaterThanOrEqual(AUTO_PLAY_STAGGER_MS - STEP_MS)
-    expect(finish[1].start - finish[0].start).toBeLessThan(AUTO_PLAY_STAGGER_MS + 2 * STEP_MS)
-    // ...except the tapped 2 of clubs itself, which goes up only once it has landed on its column (taken mid-air it would show twice).
-    const tappedAgain = finish.find((f) => f.cards === id('clubs', 2))!
-    expect(tappedAgain.start).toBeGreaterThanOrEqual(tapFlight.end)
-  })
-
-  it("a card the player's own move is still flying in to waits for it to land before going up (taken mid-air it would show twice)", async () => {
-    await mount(CLUBS_LEFT_TWO_ON_ACE(), 13)
-
-    await tap(id('clubs', 2)) // off the Ace, onto an empty column
-    await flush(5000)
-
-    const [tapFlight, ...finish] = mockLog.flights
-    expect(tapFlight.cards).toBe(id('clubs', 2))
-    expect(finish.slice(0, 2).map((f) => f.cards)).toEqual([id('clubs', 1), id('clubs', 2)])
-    expect(finish[0].start).toBeLessThan(tapFlight.end) // the Ace is not in the way of anything: it follows at once
-    expect(finish[1].start).toBeGreaterThanOrEqual(tapFlight.end) // the 2 waits for its own flight to land first
-    expect(cardsOnBoard()).toBe(0)
-  })
-
-  it('a DRAG that leaves the board finishable does too', async () => {
-    await mount(ONE_MOVE_FROM_FINISHABLE())
-
-    await dragTo(id('clubs', 2), EMPTY_COLUMN)
-    expect(cardsOnBoard()).toBe(52)
+    await tap(id('clubs', 1))
     await flush(10000)
 
     expect(cardsOnBoard()).toBe(0)
     expect(screen.getByTestId('win-banner')).toBeTruthy()
     expect(screen.getByTestId('fireworks')).toBeTruthy()
-    expect(mockLog.shown).toHaveLength(52) // every card of the game, none of them the drag's own flight
+    expect(mockRecordWon).toHaveBeenCalledTimes(1)
+    expect(mockLog.shown).toHaveLength(1 + 51) // the tap, then every other card of the game
+    // The 51 finish cards leave a stagger apart (to within one STEP_MS, the harness's resolution), the first a stagger after the tap - while
+    // the tapped card is still in the air.
+    const [tapFlight, ...finish] = mockLog.flights
+    expect(finish).toHaveLength(51)
+    expect(finish[0].start).toBeLessThan(tapFlight.end)
+    for (let i = 1; i < finish.length; i++) expect(finish[i].start - finish[i - 1].start).toBeGreaterThanOrEqual(AUTO_PLAY_STAGGER_MS - STEP_MS)
+    expect(finish[1].start - finish[0].start).toBeLessThan(AUTO_PLAY_STAGGER_MS + 2 * STEP_MS)
+  })
+
+  it('a tap that moves a card to a column and leaves the board finishable does NOT start it - the next foundation play does', async () => {
+    await mount(ONE_MOVE_FROM_FINISHABLE())
+
+    await tap(id('clubs', 2)) // 2 of clubs -> off the Ace, onto an empty column: now every column is sorted
+    await flush(5000)
+    expect(cardsOnBoard()).toBe(52) // nothing went up for them: finding the finish is the player's
+    expect(mockLog.shown).toHaveLength(1)
+
+    await tap(id('clubs', 1)) // their own foundation play
+    await flush(10000)
+    expect(cardsOnBoard()).toBe(0)
+    expect(mockLog.shown).toHaveLength(2 + 51)
+  })
+
+  it("a card the player's own earlier move is still flying in to waits for it to land before going up (taken mid-air it would show twice)", async () => {
+    await mount(CLUBS_LEFT_TWO_ON_ACE(), 13)
+
+    await tap(id('clubs', 2)) // off the Ace, onto an empty column - starts nothing
+    await tap(id('clubs', 1)) // and at once the Ace to its foundation, while the 2 is still flying: the finish wants the 2 next
+    await flush(5000)
+
+    const [columnFlight, aceFlight, ...finish] = mockLog.flights
+    expect(columnFlight.cards).toBe(id('clubs', 2))
+    expect(aceFlight.cards).toBe(id('clubs', 1))
+    expect(finish[0].cards).toBe(id('clubs', 2))
+    expect(finish[0].start).toBeGreaterThanOrEqual(columnFlight.end) // the 2 waits for its own flight to land first
+    expect(cardsOnBoard()).toBe(0)
+  })
+
+  it('a DRAG to a column that leaves the board finishable does not start it either; a drag to the foundation does', async () => {
+    await mount(ONE_MOVE_FROM_FINISHABLE())
+
+    await dragTo(id('clubs', 2), EMPTY_COLUMN)
+    await flush(5000)
+    expect(cardsOnBoard()).toBe(52)
+    expect(mockLog.shown).toEqual([])
+
+    await dragTo(id('clubs', 1), CLUBS_FOUNDATION)
+    await flush(10000)
+    expect(cardsOnBoard()).toBe(0)
+    expect(screen.getByTestId('win-banner')).toBeTruthy()
+    expect(screen.getByTestId('fireworks')).toBeTruthy()
+    expect(mockLog.shown).toHaveLength(51) // every other card of the game, none of them the drags' own flights
   })
 
   it('a resumed board that is already finishable is left alone until the player moves', async () => {
@@ -578,9 +601,9 @@ describe('FreeCell screen - once every column is solved the rest finishes itself
   })
 
   it('the last card leaves one stagger after the card before it, like every other - no pause in front of it - and the win cascade still waits for it to land', async () => {
-    await mount(ONE_MOVE_FROM_FINISHABLE())
+    await mount(FINISHABLE())
 
-    await tap(id('clubs', 2))
+    await tap(id('clubs', 1))
     await flush(10000)
 
     const finish = mockLog.flights.slice(1) // after the player's own card
@@ -592,9 +615,9 @@ describe('FreeCell screen - once every column is solved the rest finishes itself
   })
 
   it('flights overlap - it does not wait for each card to land before sending the next', async () => {
-    await mount(ONE_MOVE_FROM_FINISHABLE())
+    await mount(FINISHABLE())
 
-    await tap(id('clubs', 2))
+    await tap(id('clubs', 1))
     await flush(10000)
 
     expect(mockLog.maxInAir).toBeGreaterThanOrEqual(2)
@@ -602,12 +625,12 @@ describe('FreeCell screen - once every column is solved the rest finishes itself
 
   it('does not run when Auto-Move to Foundation is off', async () => {
     mockSettings.autoMove = false
-    await mount(ONE_MOVE_FROM_FINISHABLE())
+    await mount(FINISHABLE())
 
-    await tap(id('clubs', 2))
+    await tap(id('clubs', 1))
     await flush(10000)
 
-    expect(cardsOnBoard()).toBe(52)
+    expect(cardsOnBoard()).toBe(51)
     expect(mockLog.shown).toHaveLength(1)
   })
 
@@ -630,7 +653,7 @@ describe('FreeCell screen - once every column is solved the rest finishes itself
 
   it('a new deal that happens to be finishable is not swept up either', async () => {
     await mount(SAFE_CARDS_BOARD())
-    await tap(id('diamonds', 2)) // a player move: the finish is now "allowed"
+    await tap(id('clubs', 1)) // a foundation play: the finish is now "allowed" (the board isn't finishable, so it waits)
     await flush(3000)
     const before = mockLog.shown.length
     jest.spyOn(FreeCellController, 'newGame').mockReturnValue(FINISHABLE())
@@ -676,15 +699,15 @@ describe('FreeCell screen - the win celebration waits for the winning card to fl
   })
 
   it('a finish that wins the game does the same for its last card', async () => {
-    await mount(ONE_MOVE_FROM_FINISHABLE())
+    await mount(FINISHABLE())
 
-    await tap(id('clubs', 2))
+    await tap(id('clubs', 1))
     await flush(10000)
 
     expect(screen.getByTestId('win-banner')).toBeTruthy()
     expect(screen.getByTestId('fireworks')).toBeTruthy()
     expect(mockLog.airAtWinCascade).toBe(0) // the win cascade started only once every finish flight, the last card's too, had landed
-    expect(mockLog.shown).toHaveLength(1 + 52)
+    expect(mockLog.shown).toHaveLength(1 + 51)
   })
 
   it('is not withheld by a flight that never lands', async () => {
@@ -728,9 +751,9 @@ describe('FreeCell screen - the foundation piles hand over to the win cascade on
   })
 
   it('a finish that wins the game hands over the same way, after its last flight', async () => {
-    await mount(ONE_MOVE_FROM_FINISHABLE())
+    await mount(FINISHABLE())
 
-    await tap(id('clubs', 2))
+    await tap(id('clubs', 1))
     await flushUntil(() => mockLog.events.includes('ghosts-shown'), 10000)
 
     expect(mockLog.chainsAtWinCascade).toBe(4)

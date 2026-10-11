@@ -629,6 +629,7 @@ function GolfScreenInner() {
             dropZones={dropZones}
             stockTopCard={top(state.stock)}
             wasteTop={wasteTopCard}
+            wasteUnder={wasteTopCard ? state.waste[state.waste.length - 2] : undefined}
             wasteHiddenCount={wasteHiddenCount}
             // While the starter card is still being dealt, the waste is really empty: without this the slot painted its frozen
             // 'card from before the flight' under the ghost - the starter itself on a first deal, the last game's top card on New

@@ -1,6 +1,8 @@
 import { Button } from '@rific/feedback-press'
+import { useRotatedWindowDimensions } from '@tastic/core'
 import { ScrollView, StyleSheet, View } from 'react-native'
 import { Modal, Portal, Text, useTheme } from 'react-native-paper'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { CARD_FONT_FAMILY } from './useFontsPreload'
 
@@ -21,10 +23,19 @@ interface RulesDialogProps {
  * string with no scroll area, not a bulleted list). */
 export function RulesDialog({ visible, onDismiss, title, rules, compact = false }: RulesDialogProps) {
   const { colors } = useTheme()
+  // The sheet's cap is a number, never a percentage. On iOS Paper's Surface splits its style over two
+  // views, and maxHeight lands on the INNER one, so '80%' resolved against the outer view's
+  // content-sized height: the outer white sheet came out 80% of the screen and the content was clipped
+  // to 80% of THAT, leaving an empty band under the button. This is the size '80%' already gives on
+  // web/Android: a share of Paper's Modal wrapper, the frame (the turned window, since the dialog
+  // portals into the rotated frame's host) less the top/bottom insets Paper sets as its margins.
+  const { height } = useRotatedWindowDimensions()
+  const { top, bottom } = useSafeAreaInsets()
+  const maxHeight = Math.max(0, height - top - bottom) * (compact ? COMPACT_MAX_HEIGHT_RATIO : MAX_HEIGHT_RATIO)
 
   return (
     <Portal>
-      <Modal visible={visible} onDismiss={onDismiss} contentContainerStyle={[styles.container, compact && styles.containerCompact, { backgroundColor: colors.surface }]}>
+      <Modal visible={visible} onDismiss={onDismiss} contentContainerStyle={[styles.container, compact && styles.containerCompact, { backgroundColor: colors.surface, maxHeight }]}>
         <Text style={[styles.title, { color: colors.onSurface }]}>{title}</Text>
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
           {rules.map((rule, i) => (
@@ -47,6 +58,9 @@ export function RulesDialog({ visible, onDismiss, title, rules, compact = false 
   )
 }
 
+const MAX_HEIGHT_RATIO = 0.8
+const COMPACT_MAX_HEIGHT_RATIO = 0.94
+
 const styles = StyleSheet.create({
   bullet: {
     fontSize: 15,
@@ -64,11 +78,9 @@ const styles = StyleSheet.create({
   container: {
     borderRadius: 16,
     marginHorizontal: 24,
-    maxHeight: '80%',
     padding: 24
   },
   containerCompact: {
-    maxHeight: '94%',
     padding: 16
   },
   row: {

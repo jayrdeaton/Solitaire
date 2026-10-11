@@ -6,7 +6,7 @@ import { useRotation } from '@tastic/core'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
-import { cardLayoutForRow } from '@/components/cardLayout'
+import { cardLayoutForRow, SPLIT_TOP_ROW_MIN_GAP, splitTopRowGroupGap } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS, dealStaggerMs, paceFaceUpDeal } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
@@ -54,7 +54,7 @@ import { withGameProviders } from '@/games/shared/withGameProviders'
 import { useSettings } from '@/hooks/useSettings'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 
-import { allowsFinish, armsSafeCascade, canAutoFinish, nextFinishMove, nextSafeCascadeStep } from './autoPlay'
+import { canAutoFinish, nextFinishMove, nextSafeCascadeStep } from './autoPlay'
 import { BOARD_MODEL } from './boardModel'
 import { buildFreeCellDealSequence } from './dealSequence'
 import { countEmptyFreecells, countEmptyTableauColumns, FreeCellController, FreeCellState, maxSupermoveCount, moveHeadCard } from './rules'
@@ -165,11 +165,14 @@ function FreeCellScreenInner() {
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
   const { contentWidth } = useGameLayout()
   const rotation = useRotation()
-  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
+  // The tableau's gap floor is doubled so the top row can squeeze its foundations and freecells to half of it and
+  // pool the rest between the two groups - see SPLIT_TOP_ROW_MIN_GAP.
+  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, SPLIT_TOP_ROW_MIN_GAP)
   // The width-derived size in portrait (unchanged); in the wide layout also shrunk until the whole board
   // (top row + the tallest starting column) fits the window's short axis - see boardModel.ts.
   const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
-  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
+  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, SPLIT_TOP_ROW_MIN_GAP)
+  const topRowGroupGap = splitTopRowGroupGap(gap)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
   const ghost = useDragGhost()
   // `gen` is the `dealTokenRef` value at the moment this flight was queued - re-checked once the async
@@ -530,9 +533,8 @@ function FreeCellScreenInner() {
   }, [state, winRevealed])
 
   // Auto-play-to-foundation has two independent halves, both only ever started by the player's own
-  // move - see autoPlay.ts for the full policy. The safe-card cascade (this hook) starts ONLY from a
-  // tap that tap-to-move sent to a foundation (applyMove's armsSafeCascade), never from a drag.
-  // FreeCell has no stock, so armFromAceEvent is never called here at all.
+  // play of a card to a foundation, a tap or a drag (applyMove's afterPlayerMove calls) - see
+  // autoPlay.ts for the full policy. This one is the safe-card cascade.
   const cascade = useAutoFoundationCascade<FreeCellState>({
     state,
     isLanding,
@@ -542,8 +544,9 @@ function FreeCellScreenInner() {
     computeNextStep: nextSafeCascadeStep,
     firePlay
   })
-  // The finish: the moment every remaining card can go up on its own, sweep them all up at once,
-  // whatever kind of move (tap, drag, to a column or a freecell) made the board finishable.
+  // The finish: once every remaining card can go up on its own, sweep them all up at once - when the
+  // player's foundation play, or the cascade it set off, made the board finishable (never a move to a
+  // column or a freecell).
   const finish = useAutoFinish<FreeCellState>({
     state,
     enabled: () => settings.autoMoveToFoundation,
@@ -736,7 +739,7 @@ function FreeCellScreenInner() {
   // `silent` is for the auto-play-to-foundation feature (see maybeAutoPlay/fireAutoMove below): an
   // auto-played card isn't a player decision, so it doesn't count toward the moves/score the player
   // is judged on. It is still its own undo step, like any other move.
-  function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean; viaTap?: boolean }) {
+  function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean }) {
     // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
     // closure's `state` - two actions can now be triggered back-to-back before React re-renders
     // (see PATTERN_OVERLAP_GATE), and each must build its own tryMove on top of whatever the OTHER's
@@ -758,11 +761,12 @@ function FreeCellScreenInner() {
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
-      // Tap vs drag matters here: only a tap sent to a foundation starts the safe-card cascade,
-      // but ANY player move may let the finish start (see autoPlay.ts).
-      // (Never armed while auto-move is off: the cascade could then fire later, after it's back on.)
-      if (settings.autoMoveToFoundation && armsSafeCascade(to, opts ?? {})) cascade.armFromForwardMove()
-      if (allowsFinish(opts ?? {})) finish.allow()
+      // Only the player's own play of a card to a foundation (a tap or a drag) starts auto-play; any other
+      // move of theirs stops it, so a card it uncovers is theirs to play (see autoPlay.ts).
+      if (!opts?.silent) {
+        cascade.afterPlayerMove(to)
+        finish.afterPlayerMove(to)
+      }
       return true
     }
     return false
@@ -837,7 +841,7 @@ function FreeCellScreenInner() {
     hapticCard()
     const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
 
-    if (!completeMove(move.from, move.to, move.count, cardId, flight, { viaTap: true })) {
+    if (!completeMove(move.from, move.to, move.count, cardId, flight)) {
       flight.hide()
       settleFlight()
     }
@@ -847,7 +851,7 @@ function FreeCellScreenInner() {
   // drag's drop) - applies the move, then marks the destination "incoming" and stashes the
   // anchor card id for the [state]-effect above to measure and fly the ghost onto, instead of it
   // just vanishing/appearing at the destination instantly.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; viaTap?: boolean }): boolean {
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) {
       // tableauRunCount's dimming only rules out a run that could NEVER move anywhere (the
       // best-case cap, assuming a non-empty destination - see its own comment). A run that passed
@@ -883,12 +887,14 @@ function FreeCellScreenInner() {
   // before applying its move (every other mutator here either has no await at all, or - like
   // handleUndo - captures everything it needs from the pre-move state synchronously first). Guard
   // against something else changing state during that gap by snapshotting stateRef before the
-  // await and bailing if it no longer matches after.
-  async function firePlay(entry: AccessibleCard, to: PileRef): Promise<boolean> {
+  // await and bailing if it no longer matches after. `stillOn` is re-checked there too: whichever
+  // automation sent this card - the cascade (its isArmed, the default) or the finish (its isAllowed) -
+  // may have been ended meanwhile by the player's move elsewhere, an undo or a new deal.
+  async function firePlay(entry: AccessibleCard, to: PileRef, stillOn: () => boolean = () => cascade.isArmed()): Promise<boolean> {
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
-    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current) {
+    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current || !stillOn()) {
       settleFlight()
       return false
     }
@@ -922,7 +928,7 @@ function FreeCellScreenInner() {
     // player may have moved.
     if (!finish.isAllowed() || !settings.autoMoveToFoundation || undoBusyRef.current) return false
     const step = nextStep()
-    return step && !isLanding(step.entry.ref) ? firePlay(step.entry, step.to) : false
+    return step && !isLanding(step.entry.ref) ? firePlay(step.entry, step.to, () => finish.isAllowed()) : false
   }
 
   // Drag-and-drop's own entry point into flight bookkeeping (see activeFlightCountRef's doc
@@ -1022,7 +1028,7 @@ function FreeCellScreenInner() {
     <CardSizeProvider width={cardWidth}>
       <GameChrome title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={FREECELL_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
-          <View style={[styles.foundationsGroup, { gap }]}>
+          <View style={[styles.foundationsGroup, { gap: topRowGroupGap }]}>
             {state.foundation.map((pile, i) => {
               const t = top(pile)
               // How many of this pile's cards are still in the air: the finish overlaps flights, so
@@ -1046,7 +1052,7 @@ function FreeCellScreenInner() {
             })}
           </View>
 
-          <View style={[styles.freecellsGroup, { gap }]}>
+          <View style={[styles.freecellsGroup, { gap: topRowGroupGap }]}>
             {state.freecells.map((card, i) => {
               const ref: PileRef = { zone: 'freecell', index: i }
               // dealHiddenIds also covers a cascaded card returning HERE via handleUndo's own

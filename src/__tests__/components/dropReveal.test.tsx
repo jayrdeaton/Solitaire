@@ -1,5 +1,5 @@
 import { CardSizeProvider } from '@tastic/cards'
-import { act, render, screen } from '@testing-library/react-native'
+import { act, render, screen, within } from '@testing-library/react-native'
 import { ReactNode, useState } from 'react'
 import { View } from 'react-native'
 
@@ -8,6 +8,7 @@ import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragGhostProvider } from '@/components/dragdrop/DragGhostLayer'
 import { useTakeOffHold } from '@/components/useTakeOffHold'
 import { Card } from '@/engine/types'
+import { FoundationCell } from '@/games/shared/FoundationCell'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // DraggableCard's post-drop reveal (its revealToken): after an applied drop the slot shows its next card, the same face
@@ -116,7 +117,7 @@ jest.mock('@/components/PlayingCard', () => {
     }, [onFacePainted])
     return <MockView testID={`card:${card.id}`} />
   }
-  return { PlayingCard: MockPlayingCard, EmptySlot: () => <MockView /> }
+  return { PlayingCard: MockPlayingCard, EmptySlot: () => <MockView />, FoundationSlot: () => <MockView testID='foundation-slot' /> }
 })
 jest.mock('@/components/overlayFrame', () => {
   // toLocal with this frame is the identity on a screen point (the overlay sits at the window origin, unrotated).
@@ -224,5 +225,170 @@ describe('DraggableCard - a drop applied before its drag ghost has painted', () 
     expect(boardHidden(NEXT.id)).toBe(true)
     await act(async () => loaded())
     expect(boardHidden(NEXT.id)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The card under a lifted card (DraggableCard's underCard): lifting the top card of a pile shows the next one in its place,
+// not the slot's empty outline - before, while the drop resolves and its reveal waits, and through a snap-back.
+// ---------------------------------------------------------------------------------------------------------------------
+
+const UNDER_NEXT = card('hearts-2-0')
+
+/** A pile slot whose drag uncovers the card under its top - as StockWaste/ReserveCell wire it: while the slot still draws
+ * a card that has left (the hold), the card under it is the pile's top. `applied` false: every drop snaps back. */
+function PileSlot({ initial, applied = true }: { initial: Card[]; applied?: boolean }) {
+  const [pile, setPile] = useState(initial)
+  const top = pile[pile.length - 1]
+  const { shown, holding } = useTakeOffHold(top)
+  if (!shown) return null
+  const onDrop = async () => {
+    if (!applied) return false
+    setPile((p) => p.slice(0, -1))
+    return true
+  }
+  return (
+    <View testID='slot'>
+      <DraggableCard card={shown} disabled={holding} registryId={holding ? (top?.id ?? null) : undefined} underCard={holding ? top : pile[pile.length - 2]} onDrop={onDrop} emptyFallback={<View testID='fallback' />} />
+    </View>
+  )
+}
+/** The ids of the cards the slot draws - those with no invisible view around them. */
+function drawnInSlot(): string[] {
+  const invisible = (el: { props: { style?: unknown }; parent: unknown } | null): boolean => {
+    for (let node = el; node; node = node.parent as typeof el) if (([node.props.style].flat(Infinity) as { opacity?: number }[]).some((s) => s?.opacity === 0)) return true
+    return false
+  }
+  return within(screen.getByTestId('slot'))
+    .queryAllByTestId(/^card:/, { includeHiddenElements: true })
+    .filter((el) => !invisible(el))
+    .map((el) => String(el.props.testID).slice('card:'.length))
+}
+const lift = () =>
+  act(async () => {
+    mockPans[0].onStart!({ absoluteX: 50, absoluteY: 320 })
+  })
+const drop = () =>
+  act(async () => {
+    mockPans[0].onEnd!({ absoluteX: 80, absoluteY: 380 })
+  })
+
+describe('DraggableCard - the card under a lifted card', () => {
+  it('shows the card under it once its drag ghost is on screen, not the empty outline - and keeps it mounted, unseen, before', async () => {
+    await render(tree(<PileSlot initial={[UNDER_NEXT, NEXT, DRAGGED]} />))
+    expect(drawnInSlot()).toEqual([DRAGGED.id])
+    expect(screen.getByTestId(`card:${NEXT.id}`, { includeHiddenElements: true })).toBeTruthy() // already mounted, so its face has painted when the drag shows it
+
+    await lift()
+    expect(drawnInSlot()).toEqual([NEXT.id])
+    expect(screen.queryByTestId('fallback')).toBeNull()
+  })
+
+  it('keeps showing that card while an applied drop waits for the next face to paint - never the card under it', async () => {
+    await render(tree(<PileSlot initial={[UNDER_NEXT, NEXT, DRAGGED]} />))
+    await lift()
+    const loaded = faceLoading(NEXT.id)
+    await drop()
+    expect(boardHidden(NEXT.id)).toBe(true) // the slot's own card is still waiting for its face
+    expect(drawnInSlot()).toEqual([NEXT.id]) // ... the card under the dragged one stands in for it
+    await act(async () => loaded())
+    expect(boardHidden(NEXT.id)).toBe(false)
+    expect(drawnInSlot()).toEqual([NEXT.id]) // the slot's own card now; the card under it is mounted again, unseen
+  })
+
+  it('a quick flick (dropped before its ghost painted) shows the new top under the ghost, not the card two down', async () => {
+    await render(tree(<PileSlot initial={[UNDER_NEXT, NEXT, DRAGGED]} />))
+    mockPaint.defer = true
+    await lift()
+    await drop()
+    expect(drawnInSlot()).toEqual([DRAGGED.id]) // the hold: the dragged card stays drawn until its ghost shows
+    const loaded = faceLoading(NEXT.id)
+    await act(async () => paintAll())
+    expect(drawnInSlot()).toEqual([NEXT.id])
+    await act(async () => loaded())
+    expect(boardHidden(NEXT.id)).toBe(false)
+  })
+
+  it('shows it through a snap-back, and the card again once it is back', async () => {
+    await render(tree(<PileSlot initial={[NEXT, DRAGGED]} applied={false} />))
+    await lift()
+    await drop()
+    expect(drawnInSlot()).toEqual([NEXT.id])
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(2000)
+    })
+    expect(drawnInSlot()).toEqual([DRAGGED.id])
+  })
+
+  it('shows the empty outline when nothing is under the lifted card', async () => {
+    await render(tree(<PileSlot initial={[DRAGGED]} />))
+    await lift()
+    expect(drawnInSlot()).toEqual([])
+    expect(screen.getByTestId('fallback')).toBeTruthy()
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// A foundation card dragged back down to the tableau (Klondike, Yukon, Canfield): FoundationCell's top card is a
+// DraggableCard, and its drop is told which card the drag picked up - the pile's top may have changed by then.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** A foundation pile wired as those screens wire it. A drop is applied (the pile loses its top) only while the dragged card
+ * is still on top - the screens' applyMove anchor check - and snaps back otherwise. A new `pile` prop lands cards on it. */
+function FoundationPile({ pile: initial, dropped }: { pile: Card[]; dropped: jest.Mock }) {
+  const [pile, setPile] = useState(initial)
+  const [seen, setSeen] = useState(initial)
+  if (seen !== initial) {
+    setSeen(initial)
+    setPile(initial)
+  }
+  const onDrop = async (_x: number, _y: number, _flight: unknown, dragged: Card) => {
+    dropped(dragged.id)
+    if (pile[pile.length - 1]?.id !== dragged.id) return false
+    setPile((p) => p.slice(0, -1))
+    return true
+  }
+  return (
+    <View testID='slot'>
+      <FoundationCell card={pile[pile.length - 1]} isFlyingHere={false} suit='hearts' under={pile[pile.length - 2] ?? null} onDrop={onDrop} />
+    </View>
+  )
+}
+
+describe('FoundationCell - dragging a card back down', () => {
+  it('shows the card under the lifted one, and after an applied drop reveals it once its face has painted', async () => {
+    const dropped = jest.fn()
+    await render(tree(<FoundationPile pile={[NEXT, DRAGGED]} dropped={dropped} />))
+    expect(drawnInSlot()).toEqual([DRAGGED.id])
+    await lift()
+    expect(drawnInSlot()).toEqual([NEXT.id])
+    const loaded = faceLoading(NEXT.id)
+    await drop()
+    expect(dropped).toHaveBeenCalledWith(DRAGGED.id)
+    expect(boardHidden(NEXT.id)).toBe(true) // the slot's own card, re-sourced to the new top, is still loading...
+    expect(drawnInSlot()).toEqual([NEXT.id]) // ...and the card under the lifted one stands in for it
+    await act(async () => loaded())
+    expect(boardHidden(NEXT.id)).toBe(false)
+  })
+
+  it('shows the empty foundation under a lifted bottom card', async () => {
+    await render(tree(<FoundationPile pile={[DRAGGED]} dropped={jest.fn()} />))
+    await lift()
+    expect(drawnInSlot()).toEqual([])
+    expect(screen.getByTestId('foundation-slot')).toBeTruthy()
+  })
+
+  it('tells the drop the card it lifted, not a card auto-played onto the pile meanwhile - so the drop is refused and snaps back', async () => {
+    const LANDED = card('hearts-5-0')
+    const dropped = jest.fn()
+    const r = await render(tree(<FoundationPile pile={[NEXT, DRAGGED]} dropped={dropped} />))
+    await lift()
+    await r.rerender(tree(<FoundationPile pile={[NEXT, DRAGGED, LANDED]} dropped={dropped} />))
+    await drop()
+    expect(dropped).toHaveBeenCalledWith(DRAGGED.id)
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(2000)
+    })
+    expect(drawnInSlot()).toEqual([LANDED.id])
   })
 })

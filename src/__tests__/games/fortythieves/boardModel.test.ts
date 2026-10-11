@@ -1,6 +1,6 @@
 import { CARD_ASPECT, faceUpFanOffset } from '@tastic/cards'
 
-import { cardLayoutForRow } from '@/components/cardLayout'
+import { cardLayoutForRow, SPLIT_TOP_ROW_MIN_GAP } from '@/components/cardLayout'
 import { columnBoardModel, computeGameLayout, fitCardWidthToHeight, GAME_CONTENT_PADDING } from '@/components/gameLayout'
 import { Card } from '@/engine/types'
 import { BOARD_MODEL, TALLEST_COLUMN } from '@/games/fortythieves/boardModel'
@@ -17,7 +17,8 @@ function tallestColumn(tableau: Card[][]) {
 
 function widthCardWidthFor(windowWidth: number, windowHeight: number) {
   const layout = computeGameLayout(windowWidth, windowHeight, windowHeight > windowWidth ? { top: 59, right: 0, bottom: 34, left: 0 } : WIDE_INSETS)
-  return { layout, widthCardWidth: cardLayoutForRow(layout.contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS).cardWidth }
+  // The screen sizes its tableau with the split top row's doubled gap floor (see SPLIT_TOP_ROW_MIN_GAP).
+  return { layout, widthCardWidth: cardLayoutForRow(layout.contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, SPLIT_TOP_ROW_MIN_GAP).cardWidth }
 }
 
 describe('Forty Thieves board model', () => {
@@ -74,6 +75,6 @@ describe('Forty Thieves board model', () => {
     const { layout, widthCardWidth } = widthCardWidthFor(402, 874)
     expect(layout.isWide).toBe(false)
     expect(layout.contentWidth).toBe(402) // the full window width, exactly as before the wide layout existed
-    expect(widthCardWidth).toBe(cardLayoutForRow(402 - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS).cardWidth)
+    expect(widthCardWidth).toBe(cardLayoutForRow(402 - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, SPLIT_TOP_ROW_MIN_GAP).cardWidth)
   })
 })

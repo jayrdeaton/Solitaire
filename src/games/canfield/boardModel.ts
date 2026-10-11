@@ -1,8 +1,8 @@
 import { columnBoardModel } from '@/components/gameLayout'
 
 /** The tallest tableau column at the START of a deal (rules.ts's newGame): all four columns get a
- * single face-up card. The 13-card reserve is NOT a tableau column - it is shown as one card slot in
- * the top row (see below) - so it doesn't count here. */
+ * single face-up card. The 13-card reserve is NOT a tableau column - it is shown as one card slot
+ * beside them (see below) - so it doesn't count here. */
 export const TALLEST_COLUMN = { faceDown: 0, faceUp: 1 }
 
 /** Face-up cards of headroom on top of that single starting card. Canfield needs more than the
@@ -16,11 +16,12 @@ export const TALLEST_COLUMN = { faceDown: 0, faceUp: 1 }
 export const HEADROOM_FACE_UP = 6
 
 /** What CanfieldScreen's board is made of, for sizing cards to a short (landscape) window - see
- * gameLayout.ts's columnBoardModel. The row above the tableau is exactly ONE card tall: 4 foundations,
- * the reserve (a single DraggableCard showing only its top card - the other 12 are never drawn) and
- * the stock/waste pair (a draw-3 waste fans out sideways, so it adds no height). The paddings are the
- * screen's own topRow marginBottom (16) and tableauRow paddingBottom (20), the model's defaults.
- * Cards here are ALSO width-limited, unlike the other column games: cardWidth is derived from the
- * top row's 7 slots (see TOP_ROW_UNITS in CanfieldScreen), not the 4-column tableau, so in a wide
- * window the width-derived size is large and the height fit is what actually binds. */
+ * gameLayout.ts's columnBoardModel. The row above the tableau is exactly ONE card tall: 4 foundations
+ * and the stock/waste pair (a draw-3 waste fans out sideways, so it adds no height). The reserve sits
+ * in the tableau row beside the columns, as one card (a single DraggableCard showing only its top
+ * card - the other 12 are never drawn), so it adds nothing either: every column is at least one card
+ * tall. The paddings are the screen's own topRow marginBottom (16) and tableauRow paddingBottom (20),
+ * the model's defaults. cardWidth is derived from the board's 7 slots (see TOP_ROW_UNITS in
+ * CanfieldScreen), not the 4-column tableau, so in a wide window the width-derived size is large and
+ * the height fit is what actually binds. */
 export const BOARD_MODEL = columnBoardModel({ ...TALLEST_COLUMN, headroomFaceUp: HEADROOM_FACE_UP })

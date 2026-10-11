@@ -1,6 +1,5 @@
-import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
-import { allowsFinish, armsSafeCascade, canAutoFinish, nextFinishMove, nextSafeCascadeStep } from '@/games/freecell/autoPlay'
+import { canAutoFinish, nextFinishMove, nextSafeCascadeStep } from '@/games/freecell/autoPlay'
 import { FreeCellState } from '@/games/freecell/rules'
 
 function card(suit: Suit, rank: Card['rank']): Card {
@@ -22,42 +21,6 @@ function emptyBoard(): FreeCellState {
 function foundationUpTo(suit: Suit, upTo: number): Card[] {
   return column(suit, upTo as Card['rank'], 1).reverse()
 }
-
-const FOUNDATION: PileRef = { zone: 'foundation', index: 2 }
-const TABLEAU: PileRef = { zone: 'tableau', index: 3 }
-const FREECELL: PileRef = { zone: 'freecell', index: 0 }
-
-describe("armsSafeCascade - only the player's own TAP to a foundation starts the cascade", () => {
-  it('starts from a tap that resolved to a foundation', () => {
-    expect(armsSafeCascade(FOUNDATION, { viaTap: true })).toBe(true)
-  })
-
-  it('does NOT start from a drag onto a foundation', () => {
-    expect(armsSafeCascade(FOUNDATION, {})).toBe(false)
-    expect(armsSafeCascade(FOUNDATION, { viaTap: false })).toBe(false)
-  })
-
-  it('does NOT start from a tap that resolved to a column or a freecell', () => {
-    expect(armsSafeCascade(TABLEAU, { viaTap: true })).toBe(false)
-    expect(armsSafeCascade(FREECELL, { viaTap: true })).toBe(false)
-  })
-
-  it('never starts from an auto-played (silent) move, even one that looks like a tap', () => {
-    expect(armsSafeCascade(FOUNDATION, { silent: true, viaTap: true })).toBe(false)
-    expect(armsSafeCascade(FOUNDATION, { silent: true })).toBe(false)
-  })
-})
-
-describe('allowsFinish - any move the player made', () => {
-  it('a tap, a drag, to anywhere', () => {
-    expect(allowsFinish({ viaTap: true })).toBe(true)
-    expect(allowsFinish({})).toBe(true)
-  })
-
-  it('never an auto-played (silent) move', () => {
-    expect(allowsFinish({ silent: true })).toBe(false)
-  })
-})
 
 describe('canAutoFinish / nextFinishMove', () => {
   it('is true once every column is sorted highest to lowest, even with nothing on a foundation yet', () => {

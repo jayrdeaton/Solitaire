@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react'
 import { View } from 'react-native'
 
-import { useDragGhost } from '@/components/dragdrop/DragGhostLayer'
+import { DraggableCard } from '@/components/dragdrop/DraggableCard'
+import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { PileOverlay } from '@/components/PileOverlay'
 import { FoundationSlot, PlayingCard } from '@/components/PlayingCard'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
@@ -42,9 +43,20 @@ interface FoundationCellProps {
    * showing the card from before the whole stream. The caller derives it from the pile and how
    * many of its cards are still in the air: `pile[pile.length - 1 - flightsInAir] ?? null`. */
   settledCard?: Card | null
+  /** Lets the player drag the top card off the pile (never tap it: a stray tap would undo progress) - Klondike, Yukon and
+   * Canfield, whose foundation cards may come back down to the tableau. DraggableCard's onDrop contract: anchor the move on
+   * `dragged`, not on the pile's top at drop time (a card auto-played here meanwhile would be moved instead). Omitted (FreeCell,
+   * Forty Thieves, or a won board) the card can't be picked up. Turning it on or off never remounts the card: the top card
+   * is always a DraggableCard, its drag merely disabled, since a remount is a fresh face Image, blank for a frame or two
+   * (cardFacePaint.ts). Never offered while a card is landing here (the card under the finger would be one still in the
+   * air) or while the slot still draws a card that has left (useTakeOffHold). */
+  onDrop?: (absoluteX: number, absoluteY: number, flight: DragFlightHandle, dragged: Card) => Promise<boolean> | boolean
+  /** The card under `card` in this pile (null: none), drawn in the slot while `card` is lifted - see DraggableCard's
+   * underCard. Only matters with `onDrop`. */
+  under?: Card | null
 }
 
-export function FoundationCell({ card, isFlyingHere, suit, rank, highlighted, slotRef, settledCard }: FoundationCellProps) {
+export function FoundationCell({ card, isFlyingHere, suit, rank, highlighted, slotRef, settledCard, onDrop, under }: FoundationCellProps) {
   const ghost = useDragGhost()
   const viewRef = useRef<View>(null)
   const frozenCopy = useFrozenWhileHidden(card, isFlyingHere)
@@ -73,7 +85,9 @@ export function FoundationCell({ card, isFlyingHere, suit, rank, highlighted, sl
       }}
       collapsable={false}
     >
-      {shown ? <PlayingCard card={shown} hinted={highlighted && !holding} style={overlayVisible && HIDDEN_CARD_STYLE} /> : <FoundationSlot suit={suit} rank={rank} hinted={highlighted} />}
+      {/* Registered by this cell (the pile's real top, `card`, above), never by the DraggableCard itself (registryId null).
+      While the slot still draws a card that has left, the card under it is the pile's top. */}
+      {shown ? <DraggableCard card={shown} hinted={highlighted && !holding} hidden={overlayVisible} disabled={holding} registryId={null} underCard={holding ? card : under} emptyFallback={<FoundationSlot suit={suit} rank={rank} />} onDrop={holding || isFlyingHere ? undefined : onDrop} /> : <FoundationSlot suit={suit} rank={rank} hinted={highlighted} />}
       {/* Mounted (invisible) whenever there is a card, not just while a flight is in the air: the copy that shows under an
       incoming ghost is then the card that was already on top, already painted, instead of a new Image that would show a
       blank face for a frame or two as the flight starts (see PileOverlay). */}

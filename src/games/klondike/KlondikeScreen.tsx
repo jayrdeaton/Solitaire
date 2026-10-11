@@ -30,7 +30,7 @@ import { KLONDIKE_RULES } from '@/constants/gameRules'
 import { AutoCompleteStep, findSafeAutoPlay, isFullyAutoCompletableWithDraws, nextAutoCompleteMoveWithDraws } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
-import { detectRevealedCard, isDescendingAltColor, runCountFrom, top } from '@/engine/pile'
+import { isDescendingAltColor, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card, SUITS } from '@/engine/types'
@@ -247,6 +247,8 @@ function KlondikeScreenInner() {
 
   function startNewGame() {
     const myToken = ++dealTokenRef.current
+    // A cascade still running from the old deal must not carry on into this one (see useAutoFoundationCascade's disarm).
+    cascade.disarm()
     controllerRef.current = createKlondikeController(settings.klondikeDraw)
     setKlondikeDraw(settings.klondikeDraw)
     const s = controllerRef.current.newGame(randomSeed())
@@ -280,6 +282,8 @@ function KlondikeScreenInner() {
   // value is somehow missing/invalid.
   function restoreGame(saved: SavedGame<KlondikeState, KlondikeUndoEntry | LegacyKlondikeUndoEntry>) {
     ++dealTokenRef.current
+    // Nothing auto-plays on a resumed board until the player's own next foundation play.
+    cascade.disarm()
     const draw = saved.config === 1 || saved.config === 3 ? saved.config : settings.klondikeDraw
     controllerRef.current = createKlondikeController(draw)
     setKlondikeDraw(draw)
@@ -606,9 +610,9 @@ function KlondikeScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // Auto-play-to-foundation: only ever fires as a direct consequence of the player's own move - see
-  // useAutoFoundationCascade for the trigger model (armFromForwardMove/armFromAceEvent, called from
-  // applyMove/handleDrawStock below), and engine/autoFoundation.ts for the two mechanisms
+  // Auto-play-to-foundation: only ever follows the player's own play of a card to a foundation - see
+  // useAutoFoundationCascade for the trigger model (afterPlayerMove, called from applyMove below; any
+  // other move of theirs and a stock draw stop it), and engine/autoFoundation.ts for the two mechanisms
   // computeNextStep composes. Its cards follow the player's own one on a short stagger, overlapping
   // each other's flights (see the hook for the one thing a card still waits for: its own pile to
   // stop landing).
@@ -812,13 +816,17 @@ function KlondikeScreenInner() {
       if (stockOrigin && wasteDest && recycledCards.length > 0) {
         playCardSound()
         hapticCard()
-        const flight = ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth }, { x: stockOrigin.x, y: stockOrigin.y })
+        // The stock is the pile these cards LEAVE, so it empties as they take off (no stockHidden: freezing it kept a back
+        // on the stock for the whole flight). The ghost is the stock as it looked, face down - drawn in the commit it
+        // mounts, so the stock never empties under a ghost not on screen yet - and it turns up on the waste as it lands,
+        // the mirror image of the recycle. One back stands for the pile (a stack only shows its top, and every back is an
+        // SVG), carrying the id of the card that ends on top of the waste, so the landed ghost stays until that face has
+        // painted.
+        const flight = ghost.show({ cards: [{ ...recycledCards[recycledCards.length - 1], faceUp: false }], offsetStep: 0, cardWidth }, { x: stockOrigin.x, y: stockOrigin.y })
         const flyingId = beginFlying({ zone: 'waste', index: 0 }, recycledCards.length)
-        setStockHidden(true)
         commitState(prevState)
         flight.flyTo(wasteDest.x, wasteDest.y, () => {
           endFlying(flyingId)
-          setStockHidden(false)
           settleFlight()
         })
       } else {
@@ -941,23 +949,20 @@ function KlondikeScreenInner() {
     // OTHER's commitState just did, not the same stale board both closures captured.
     const current = stateRef.current
     if (!current) return false
+    // The card flying is the card the player tapped or grabbed (or the auto-play chose); tryMove only knows positions, so if
+    // the board moved on since - an auto-play took that very card between the tap and now - it would move whatever now sits
+    // there, under a ghost of a different card. Refuse instead (FreeCell's moveHeadCard check).
+    const sourcePile = resolvePile(from, current)
+    if (sourcePile?.[sourcePile.length - count]?.id !== anchorCardId) return false
     const result = controllerRef.current.tryMove(current, { from, to, count })
     if (result) {
       pushUndo(current, { from, to, count, anchorCardId })
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
-      if (!opts?.silent && to.zone === 'foundation') cascade.armFromForwardMove()
-      // Reveals an ace: auto-play it immediately as a reward for the move that uncovered it (see
-      // useAutoFoundationCascade's armFromAceEvent), regardless of whether THIS move was itself
-      // silent - a cascaded tableau-to-foundation play can just as well reveal a fresh ace
-      // underneath as a manual one can, and that ace deserves the same instant payoff either way.
-      if (from.zone === 'tableau') {
-        const revealed = detectRevealedCard(current.tableau[from.index], result.tableau[from.index], count)
-        if (revealed && revealed.rank === 1) {
-          cascade.armFromAceEvent({ ref: from, card: revealed }, { zone: 'foundation', index: SUITS.indexOf(revealed.suit) })
-        }
-      }
+      // Only the player's own play of a card to a foundation starts auto-play; any other move of theirs
+      // stops it, so a card it uncovers (an ace flipped up on the tableau, say) is theirs to find and play.
+      if (!opts?.silent) cascade.afterPlayerMove(to)
       return true
     }
     return false
@@ -998,7 +1003,7 @@ function KlondikeScreenInner() {
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
-    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current) {
+    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current || !cascade.isArmed()) {
       settleFlight()
       return false
     }
@@ -1036,7 +1041,7 @@ function KlondikeScreenInner() {
     startFlights(1)
 
     const origin = await measureView(stockViewRef.current)
-    if (!origin || stateRef.current !== current || undoBusyRef.current) {
+    if (!origin || stateRef.current !== current || undoBusyRef.current || !cascade.isArmed()) {
       settleFlight()
       return
     }
@@ -1104,7 +1109,12 @@ function KlondikeScreenInner() {
     const result = controllerRef.current.drawStock(current)
     if (!result) return
     startFlights(1)
-    if (!opts?.sweep) session.registerMove()
+    // A draw is the player's, but it is not a play: it never sets auto-play off, and it stops a cascade
+    // still running from their last play, so a card they just drew is theirs to find and play.
+    if (!opts?.sweep) {
+      session.registerMove()
+      cascade.disarm()
+    }
 
     const drawnCard = top(result.waste)
     if (!drawnCard) {
@@ -1116,6 +1126,12 @@ function KlondikeScreenInner() {
       // undoTypes.ts).
       const wasteOrigin = await measureView(wasteViewRef.current)
       const stockDest = await measureView(stockViewRef.current)
+      // The cascade's own draw (a sweep) must not commit once the player's move has ended the cascade, or over a board that
+      // moved on while it was measuring (committing `result` would undo whatever landed meanwhile).
+      if (opts?.sweep && (!cascade.isArmed() || stateRef.current !== current)) {
+        settleFlight()
+        return
+      }
       const recycledCards = current.waste.slice()
       const move: MoveInfo = { from: { zone: 'waste', index: 0 }, to: { zone: 'stock', index: 0 }, count: recycledCards.length, anchorCardId: recycledCards[0]?.id ?? '', cardIds: recycledCards.map((c) => c.id) }
       pushUndo(current, move)
@@ -1127,7 +1143,9 @@ function KlondikeScreenInner() {
           hapticCard()
         }
         const flight = ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth }, { x: wasteOrigin.x, y: wasteOrigin.y })
-        const flyingId = beginFlying({ zone: 'waste', index: 0 }, recycledCards.length)
+        // Landing on the STOCK (Pyramid's recycle too). Counted as landing on the waste, it froze the waste on the card that
+        // had just left it, so that card showed twice for the whole flight: on the waste and as the ghost.
+        const flyingId = beginFlying({ zone: 'stock', index: 0 }, recycledCards.length)
         setStockHidden(true)
         commitState(result)
         flight.flyTo(stockDest.x, stockDest.y, () => {
@@ -1140,17 +1158,6 @@ function KlondikeScreenInner() {
         settleFlight()
       }
       return
-    }
-
-    // Drawing (or revealing) an ace is meant to auto-play it immediately as a reward, regardless of
-    // whether this is a genuine player tap or a sweep's own forced draw - see
-    // useAutoFoundationCascade's armFromAceEvent. A sweep's own draws only ever reach this point via
-    // a plain 'draw' step (see engine/autoFoundation.ts's AutoCompleteStep) - one where the newly
-    // drawn top card DIDN'T come back as immediately playable - so armFromAceEvent here can only
-    // ever matter for a genuine player tap in practice, but it costs nothing to leave it
-    // unconditional rather than special-cased away.
-    if (drawnCard.rank === 1) {
-      cascade.armFromAceEvent({ ref: { zone: 'waste', index: 0 }, card: drawnCard }, { zone: 'foundation', index: SUITS.indexOf(drawnCard.suit) })
     }
 
     // How many cards this draw actually added - normally klondikeDraw, but fewer once the stock
@@ -1169,6 +1176,12 @@ function KlondikeScreenInner() {
     }
 
     const origin = await measureView(stockViewRef.current)
+    // The cascade's own draw (a sweep) must not commit once the player's move has ended the cascade, or over a board that
+    // moved on while it was measuring (committing `result` would undo whatever landed meanwhile).
+    if (opts?.sweep && (!cascade.isArmed() || stateRef.current !== current)) {
+      settleFlight()
+      return
+    }
     if (!origin) {
       pushUndo(current, move)
       commitState(result)
@@ -1292,13 +1305,18 @@ function KlondikeScreenInner() {
                     slotRef={(el) => {
                       foundationSlotRefs.current[i] = el
                     }}
+                    // A foundation card may come back down to the tableau (rules.ts's tryMove) - by drag only, and never
+                    // once the deal is won. Any move to a column stops a running auto-play (applyMove), so it isn't sent
+                    // straight back up.
+                    under={pile[pile.length - 2] ?? null}
+                    onDrop={won ? undefined : (x, y, flight, dragged) => attemptDrop({ zone: 'foundation', index: i }, 1, x, y, dragged.id, flight)}
                   />
                 </DropZone>
               )
             })}
           </View>
 
-          <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0) + cascadeWasteHiddenCount} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, wasteTop!.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
+          <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteUnder={state.waste[state.waste.length - 2]} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0) + cascadeWasteHiddenCount} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight, dragged) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, dragged.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
         </View>
 
         <View style={[styles.tableauRow, { gap }]}>

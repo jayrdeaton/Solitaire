@@ -1,12 +1,16 @@
 import { act, renderHook } from '@testing-library/react-native'
 
-import { useAutoFinish } from '@/games/shared/useAutoFinish'
+import { PileRef } from '@/engine/gameTypes'
+import { AutoFinish, useAutoFinish } from '@/games/shared/useAutoFinish'
 
 interface Props {
   state: string | null
 }
 
 const STAGGER_MS = 60
+const FOUNDATION: PileRef = { zone: 'foundation', index: 1 }
+const COLUMN: PileRef = { zone: 'tableau', index: 2 }
+const FREECELL: PileRef = { zone: 'freecell', index: 0 }
 
 // Same conventions as useAutoFoundationCascade.test.tsx: renderHook/rerender are async here (React
 // 19's concurrent rendering), and every step is awaited. Timers are faked so the loop's stagger can
@@ -46,9 +50,10 @@ async function advance(ms: number) {
   })
 }
 
-/** What the screen does on a player's move: allow() in the same breath as the move's commit, so the next render has a new board. */
-async function playerMove(allow: () => void, rerender: (props: Props) => Promise<void>, state = 'move-1') {
-  allow()
+/** What the screen does on a player's move (to a foundation unless `to` says otherwise): afterPlayerMove in the same breath as
+ * the move's commit, so the next render has a new board. */
+async function playerMove(finish: AutoFinish, rerender: (props: Props) => Promise<void>, state = 'move-1', to: PileRef = FOUNDATION) {
+  finish.afterPlayerMove(to)
   await rerender({ state })
 }
 
@@ -56,7 +61,7 @@ describe('useAutoFinish', () => {
   beforeEach(() => jest.useFakeTimers())
   afterEach(() => jest.useRealTimers())
 
-  it('does not start merely because the board changed - a player move has to allow it first', async () => {
+  it('does not start merely because the board changed - a foundation play has to allow it first', async () => {
     const { fireNext, render } = setup()
     const { rerender, unmount } = await render()
 
@@ -70,7 +75,7 @@ describe('useAutoFinish', () => {
     const { fireNext, render } = setup()
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS - 1)
     expect(fireNext).not.toHaveBeenCalled()
     await advance(1)
@@ -85,28 +90,101 @@ describe('useAutoFinish', () => {
     await unmount()
   })
 
-  it('does not start while the board is not finishable, and starts once a later move makes it so', async () => {
+  it('does not start while the board is not finishable, and starts once a later foundation play makes it so', async () => {
     const { board, fireNext, render } = setup()
     board.remaining = 0 // not finishable yet
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS * 3)
     expect(fireNext).not.toHaveBeenCalled()
 
-    board.remaining = 2 // the player's next move made it finishable
-    await playerMove(() => result.current.allow(), rerender, 'move-2')
+    board.remaining = 2 // the player's next foundation play made it finishable
+    await playerMove(result.current, rerender, 'move-2')
     await advance(STAGGER_MS)
     expect(fireNext).toHaveBeenCalledTimes(1)
     await unmount()
   })
 
-  it('suppress() stops a running finish, and nothing restarts it until the next allow()', async () => {
+  it('starts when the cascade a foundation play set off (a board change, no further player move) makes the board finishable', async () => {
+    const { board, fireNext, render } = setup()
+    board.remaining = 0
+    const { result, rerender, unmount } = await render()
+
+    await playerMove(result.current, rerender)
+    await advance(STAGGER_MS * 3)
+    expect(fireNext).not.toHaveBeenCalled()
+
+    board.remaining = 2 // one of that play's auto-played cards made it finishable
+    await rerender({ state: 'cascade-1' })
+    await advance(STAGGER_MS)
+    expect(fireNext).toHaveBeenCalledTimes(1)
+    await unmount()
+  })
+
+  it("never starts from the player's move to a column or a freecell, even one that makes the board finishable", async () => {
+    const { fireNext, render } = setup()
+    const { result, rerender, unmount } = await render()
+
+    await playerMove(result.current, rerender, 'move-1', COLUMN)
+    await advance(STAGGER_MS * 3)
+    await playerMove(result.current, rerender, 'move-2', FREECELL)
+    await advance(STAGGER_MS * 3)
+    expect(fireNext).not.toHaveBeenCalled()
+    await unmount()
+  })
+
+  it("a foundation play's permission ends with the player's next move elsewhere: a column move that then makes the board finishable starts nothing", async () => {
+    const { board, fireNext, render } = setup()
+    board.remaining = 0
+    const { result, rerender, unmount } = await render()
+
+    await playerMove(result.current, rerender) // a foundation play on a board that is not finishable
+    await advance(STAGGER_MS * 3)
+    board.remaining = 2
+    await playerMove(result.current, rerender, 'move-2', COLUMN) // the column move is what made it finishable
+    await advance(STAGGER_MS * 3)
+    expect(fireNext).not.toHaveBeenCalled()
+    await unmount()
+  })
+
+  it("the player's move to a column or a freecell mid-finish stops it", async () => {
     const { board, fireNext, render } = setup()
     board.remaining = 10
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
+    await advance(STAGGER_MS)
+    expect(fireNext).toHaveBeenCalledTimes(1)
+
+    await playerMove(result.current, rerender, 'move-2', COLUMN)
+    await advance(STAGGER_MS * 4)
+    expect(fireNext).toHaveBeenCalledTimes(1)
+    await unmount()
+  })
+
+  it('once a finish has ended, a later board change does not start another without a fresh foundation play', async () => {
+    const { board, fireNext, render } = setup()
+    const { result, rerender, unmount } = await render()
+
+    await playerMove(result.current, rerender)
+    await advance(STAGGER_MS * 6) // all three cards, then canFinish runs out
+    expect(fireNext).toHaveBeenCalledTimes(3)
+    expect(result.current.isAllowed()).toBe(false)
+
+    board.remaining = 2 // finishable again (an undo's earlier board, say) - but no foundation play
+    await rerender({ state: 'board-x' })
+    await advance(STAGGER_MS * 3)
+    expect(fireNext).toHaveBeenCalledTimes(3)
+    await unmount()
+  })
+
+  it('suppress() stops a running finish, and nothing restarts it until the next foundation play', async () => {
+    const { board, fireNext, render } = setup()
+    board.remaining = 10
+    const { result, rerender, unmount } = await render()
+
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS)
     expect(fireNext).toHaveBeenCalledTimes(1)
 
@@ -118,7 +196,7 @@ describe('useAutoFinish', () => {
     await advance(STAGGER_MS * 2)
     expect(fireNext).toHaveBeenCalledTimes(1) // still suppressed
 
-    await playerMove(() => result.current.allow(), rerender, 'move-2')
+    await playerMove(result.current, rerender, 'move-2')
     await advance(STAGGER_MS)
     expect(fireNext).toHaveBeenCalledTimes(2)
     await unmount()
@@ -128,7 +206,7 @@ describe('useAutoFinish', () => {
     const { fireNext, render } = setup()
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS / 2)
     result.current.suppress()
     await advance(STAGGER_MS * 3)
@@ -136,11 +214,17 @@ describe('useAutoFinish', () => {
     await unmount()
   })
 
-  it('enabled() false never starts it', async () => {
-    const { fireNext, render } = setup({ enabled: jest.fn(() => false) })
+  it('enabled() false never starts it - nor does turning it back on, without a fresh foundation play', async () => {
+    const enabled = jest.fn(() => false)
+    const { fireNext, render } = setup({ enabled })
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
+    await advance(STAGGER_MS * 3)
+    expect(fireNext).not.toHaveBeenCalled()
+
+    enabled.mockReturnValue(true)
+    await rerender({ state: 'board-x' })
     await advance(STAGGER_MS * 3)
     expect(fireNext).not.toHaveBeenCalled()
     await unmount()
@@ -152,7 +236,7 @@ describe('useAutoFinish', () => {
     board.remaining = 10
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS)
     expect(fireNext).toHaveBeenCalledTimes(1)
 
@@ -166,7 +250,7 @@ describe('useAutoFinish', () => {
     const { fireNext, render } = setup({ isBusy: jest.fn(() => true) })
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS * 3)
     expect(fireNext).not.toHaveBeenCalled()
     await unmount()
@@ -177,7 +261,7 @@ describe('useAutoFinish', () => {
     board.remaining = 10
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS)
     expect(fireNext).toHaveBeenCalledTimes(1)
 
@@ -193,7 +277,7 @@ describe('useAutoFinish', () => {
     board.remaining = 10
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS * 10)
     expect(fireNext).toHaveBeenCalledTimes(3)
 
@@ -210,7 +294,7 @@ describe('useAutoFinish', () => {
     board.remaining = 100
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS * 20)
     // miss, miss, HIT (count back to 0), miss, miss, HIT (0 again), then every later call misses: three more, then it
     // gives up. Without the reset it would have given up on the 4th call (3 misses in total, hits or not).
@@ -224,7 +308,7 @@ describe('useAutoFinish', () => {
     board.remaining = 10
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS)
     expect(fireNext).toHaveBeenCalledTimes(1)
 
@@ -239,7 +323,7 @@ describe('useAutoFinish', () => {
     board.remaining = 50
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS)
     expect(fireNext).toHaveBeenCalledTimes(1)
 
@@ -264,7 +348,7 @@ describe('useAutoFinish', () => {
     const { board, render } = setup({ fireNext })
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender) // no further renders after this one
+    await playerMove(result.current, rerender) // no further renders after this one
     await advance(STAGGER_MS * 5)
 
     expect(seen).toEqual(['board-0', 'board-1', 'board-2'])
@@ -279,7 +363,7 @@ describe('useAutoFinish', () => {
     const fireNext = jest.fn(async () => true)
     const { result, rerender, unmount } = await renderHook(({ state, enabled }: FreshProps) => useAutoFinish<string>({ state, enabled, isBusy: () => false, getState: () => 'live', canFinish: () => true, fireNext, staggerMs: STAGGER_MS }), { initialProps: { state: 'board-0', enabled: () => true } as FreshProps })
 
-    result.current.allow()
+    result.current.afterPlayerMove(FOUNDATION)
     await rerender({ state: 'move-1', enabled: () => true })
     await advance(STAGGER_MS)
     expect(fireNext).toHaveBeenCalledTimes(1)
@@ -298,7 +382,7 @@ describe('useAutoFinish', () => {
     }
     const fireNext = jest.fn(async () => true)
     const { result, rerender, unmount } = await renderHook(({ state, staggerMs }: StaggerProps) => useAutoFinish<string>({ state, enabled: () => true, isBusy: () => false, getState: () => 'live', canFinish: () => true, fireNext, staggerMs }), { initialProps: { state: 'board-0', staggerMs: STAGGER_MS } as StaggerProps })
-    result.current.allow()
+    result.current.afterPlayerMove(FOUNDATION)
     await rerender({ state: 'move-1', staggerMs: STAGGER_MS })
     await advance(STAGGER_MS / 2)
     await rerender({ state: 'move-1', staggerMs: 1000 }) // during the first gap, which already started at the old value...
@@ -316,7 +400,7 @@ describe('useAutoFinish', () => {
     const { fireNext, render } = setup()
     const { result, rerender, unmount } = await render()
 
-    result.current.allow()
+    result.current.afterPlayerMove(FOUNDATION)
     await rerender({ state: null }) // getState() still answers 'board-0'
     await advance(STAGGER_MS * 3)
     expect(fireNext).not.toHaveBeenCalled()
@@ -328,7 +412,7 @@ describe('useAutoFinish', () => {
     board.remaining = 10
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS)
     expect(fireNext).toHaveBeenCalledTimes(1)
 
@@ -337,14 +421,17 @@ describe('useAutoFinish', () => {
     expect(fireNext).toHaveBeenCalledTimes(1)
   })
 
-  it('isAllowed() reflects allow(), suppress() and a give-up, so a fireNext that awaited can re-check before firing', async () => {
+  it('isAllowed() reflects afterPlayerMove(), suppress() and a give-up, so a fireNext that awaited can re-check before firing', async () => {
     const { render } = setup()
     const { result, unmount } = await render()
 
     expect(result.current.isAllowed()).toBe(false)
-    result.current.allow()
+    result.current.afterPlayerMove(FOUNDATION)
     expect(result.current.isAllowed()).toBe(true)
     result.current.suppress()
+    expect(result.current.isAllowed()).toBe(false)
+    result.current.afterPlayerMove(FOUNDATION)
+    result.current.afterPlayerMove(COLUMN)
     expect(result.current.isAllowed()).toBe(false)
     await unmount()
   })
@@ -361,7 +448,7 @@ describe('useAutoFinish', () => {
     board.remaining = 10
     const { result, rerender, unmount } = await render()
 
-    await playerMove(() => result.current.allow(), rerender)
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS)
     expect(fireNext).toHaveBeenCalledTimes(1)
 
