@@ -1,91 +1,87 @@
-import { Pressable } from '@rific/feedback-press'
-import { type TableColors } from '@tastic/cards'
-import { useMemo } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { useAutoPaperTheme } from '@rific/auto-paper'
+import { Button } from '@rific/feedback-press'
+import { getOverlayCardColors, overlayActionStyles, overlayStyles } from '@tastic/hud'
+import { StyleSheet, View } from 'react-native'
+import { Icon, Text } from 'react-native-paper'
 
 import { formatTime, GAME_DIALOG_Z_INDEX } from '@/components/GameChrome'
-import { CARD_FONT_FAMILY } from '@/components/useFontsPreload'
 
 export interface WinBannerProps {
-  colors: TableColors
   elapsedSeconds: number
   moves: number
   score: number
   onNewGame: () => void
 }
 
-/** The post-win overlay: a centered card with a score summary and a New Game button, dimming the
- * board behind it. Shared by every game. */
-export function WinBanner({ colors, elapsedSeconds, moves, score, onNewGame }: WinBannerProps) {
-  const styles = useMemo(() => makeStyles(colors), [colors])
+/** The post-win overlay, shared by every game: the fleet's overlay card (@tastic/hud's
+ * overlayStyles/getOverlayCardColors, the shape ConfirmDialog and every other game's game-over
+ * dialog use) with the score summary and a New Game button. Home is GameChrome's own corner button,
+ * which is portaled above this backdrop so it stays live. */
+export function WinBanner({ elapsedSeconds, moves, score, onNewGame }: WinBannerProps) {
+  const { colors, dark } = useAutoPaperTheme()
+  const { fg, fgMuted, cardBg, cardBorder } = getOverlayCardColors(dark)
+  const stats = [
+    { label: 'MOVES', value: String(moves) },
+    { label: 'SCORE', value: String(score) },
+    { label: 'TIME', value: formatTime(elapsedSeconds) }
+  ]
   return (
-    // box-none (not the default 'auto'): this View covers the full screen, but only its centered
-    // winCard content should ever catch a tap - left uncorrected, the transparent surrounding area
-    // silently swallows every touch across the whole screen, including GameChrome's header buttons
-    // underneath it (Home/Undo/Settings), since this renders as a later sibling of GameChrome and
-    // therefore wins pointer-event hit-testing by plain sibling order.
-    <View style={styles.winOverlay} pointerEvents='box-none'>
-      <View style={styles.winCard}>
-        <Text style={styles.winTitle}>You Won!</Text>
-        <Text style={styles.winSubtitle}>
-          Moves: {moves} · Score: {score} · Time: {formatTime(elapsedSeconds)}
+    // The backdrop takes every touch, so nothing behind the dialog (the board, the footer) can be played.
+    // GameChrome's Home and Settings stay live: they're portaled above this backdrop.
+    <View style={[overlayStyles.overlay, styles.overlay]}>
+      <View style={[overlayStyles.card, styles.card, { backgroundColor: cardBg, borderColor: cardBorder }]}>
+        <Icon source='trophy' size={64} color={colors.primary} />
+        <Text variant='headlineLarge' style={[styles.title, { color: colors.primary }]}>
+          You Won!
         </Text>
-        <Text style={styles.winCaption}>Lower is better — fewer moves and less time.</Text>
-        <Pressable style={styles.button} onPress={onNewGame}>
-          <Text style={styles.buttonText}>New Game</Text>
-        </Pressable>
+        <View style={styles.statRow}>
+          {stats.map(({ label, value }) => (
+            <View key={label} style={styles.stat}>
+              <Text variant='labelSmall' style={{ color: fgMuted }}>
+                {label}
+              </Text>
+              <Text variant='headlineSmall' style={{ color: fg }}>
+                {value}
+              </Text>
+            </View>
+          ))}
+        </View>
+        <Text variant='bodySmall' style={[styles.caption, { color: fgMuted }]}>
+          Lower is better. Fewer moves, less time.
+        </Text>
+        <View style={overlayActionStyles.actions}>
+          <Button mode='contained' onPress={onNewGame} style={overlayActionStyles.actionButtonSingle} buttonColor={colors.primary} textColor={colors.onPrimary} testID='win-new-game'>
+            New Game
+          </Button>
+        </View>
       </View>
     </View>
   )
 }
 
-function makeStyles(colors: TableColors) {
-  return StyleSheet.create({
-    button: {
-      backgroundColor: '#ffffffee',
-      borderRadius: 8,
-      paddingHorizontal: 14,
-      paddingVertical: 8
-    },
-    buttonText: {
-      color: colors.tableFeltDark,
-      fontFamily: CARD_FONT_FAMILY,
-      fontWeight: '700'
-    },
-    winCaption: {
-      color: '#777',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 12,
-      marginBottom: 8
-    },
-    winCard: {
-      alignItems: 'center',
-      backgroundColor: '#ffffffee',
-      borderRadius: 16,
-      gap: 12,
-      padding: 28
-    },
-    winOverlay: {
-      alignItems: 'center',
-      backgroundColor: '#00000088',
-      bottom: 0,
-      justifyContent: 'center',
-      left: 0,
-      position: 'absolute',
-      right: 0,
-      top: 0,
-      zIndex: GAME_DIALOG_Z_INDEX
-    },
-    winSubtitle: {
-      color: '#444',
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 16
-    },
-    winTitle: {
-      color: colors.tableFeltDark,
-      fontFamily: CARD_FONT_FAMILY,
-      fontSize: 28,
-      fontWeight: '800'
-    }
-  })
-}
+const styles = StyleSheet.create({
+  caption: {
+    textAlign: 'center'
+  },
+  // ConfirmDialog's own card/overlay additions: the card claims its full maxWidth, and the overlay
+  // keeps it off the screen edges.
+  card: {
+    width: '100%'
+  },
+  overlay: {
+    paddingHorizontal: 24,
+    zIndex: GAME_DIALOG_Z_INDEX
+  },
+  stat: {
+    alignItems: 'center',
+    gap: 2
+  },
+  statRow: {
+    flexDirection: 'row',
+    gap: 28
+  },
+  title: {
+    fontWeight: 'bold',
+    textAlign: 'center'
+  }
+})

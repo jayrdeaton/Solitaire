@@ -4,6 +4,7 @@ import { ConfirmDialog, CornerActionButtons } from '@tastic/hud'
 import { useRouter } from 'expo-router'
 import { ReactNode, useEffect, useState } from 'react'
 import { Pressable as RNPressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Portal } from 'react-native-paper'
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
@@ -337,38 +338,44 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
         </Pressable>
       )}
 
-      {/* box-none: this box spans the full screen width (left:0/right:0) to place Home and Settings
+      {/* Portaled into withGameProviders' in-frame Portal.Host, so Home and Settings sit above everything the
+      screen draws over its board (the win/loss dialog's backdrop, the win cascade, fireworks, flying cards) and
+      stay crisp and live there: the win dialog needs no Home button of its own, and the loss dialog has no room
+      for one. Rendered BEFORE the dialogs below, so their portals (mounted after this one) still cover it.
+      box-none: this box spans the full screen width (left:0/right:0) to place Home and Settings
       at its two far ends, but the dead space between them isn't a button - box-none lets a tap
-      there fall through to tableTapCatcher underneath instead of being silently swallowed (see
+      there fall through to whatever is underneath instead of being silently swallowed (see
       footerWrap's identical fix/comment below). */}
-      <View style={styles.cornerButtons} pointerEvents='box-none'>
-        <CornerActionButtons
-          onBack={() => {
-            // Cleared explicitly on the tap itself, not left to each screen's own unmount cleanup:
-            // on web, React Navigation's Stack keeps the previous screen mounted (hidden, not
-            // unmounted) across a pop (same quirk this app's own ProfilesManager integration hit -
-            // see .claude/CLAUDE.md), so an unmount-based clear never fires there, and app/index.tsx
-            // would see a stale lastActiveGame and immediately redirect right back into this game.
-            clearLastActiveGame()
-            // Every game screen is one level below the main menu with nothing deeper, so this is
-            // always "go home," not "undo the last navigation" - router.back() depended on real
-            // history existing (it errors with "GO_BACK was not handled" whenever this screen was
-            // reached directly, e.g. a deep link, a dev reload straight into /klondike, or the
-            // cold-launch redirect in app/index.tsx). dismissTo() pops back to the Home that's
-            // already in the stack beneath this game (same instance, no remount - the menu is still
-            // exactly as it was), and only falls back to replace semantics when there is no Home
-            // beneath (a deep link / cold-launch resume). replace('/') did NOT do this: it mounted a
-            // brand-new Home on top of the old one, so every round trip leaked one more live Home
-            // (each rebuilding ~370 SVG preview cards on the next tap) and going Home got slower each time.
-            router.dismissTo('/')
-          }}
-          onSettings={() => setSettingsOpen(true)}
-          fg={CHROME_FG}
-          insets={insets}
-          backIcon='home'
-          backLabel='Home'
-        />
-      </View>
+      <Portal>
+        <View style={styles.cornerButtons} pointerEvents='box-none'>
+          <CornerActionButtons
+            onBack={() => {
+              // Cleared explicitly on the tap itself, not left to each screen's own unmount cleanup:
+              // on web, React Navigation's Stack keeps the previous screen mounted (hidden, not
+              // unmounted) across a pop (same quirk this app's own ProfilesManager integration hit -
+              // see .claude/CLAUDE.md), so an unmount-based clear never fires there, and app/index.tsx
+              // would see a stale lastActiveGame and immediately redirect right back into this game.
+              clearLastActiveGame()
+              // Every game screen is one level below the main menu with nothing deeper, so this is
+              // always "go home," not "undo the last navigation" - router.back() depended on real
+              // history existing (it errors with "GO_BACK was not handled" whenever this screen was
+              // reached directly, e.g. a deep link, a dev reload straight into /klondike, or the
+              // cold-launch redirect in app/index.tsx). dismissTo() pops back to the Home that's
+              // already in the stack beneath this game (same instance, no remount - the menu is still
+              // exactly as it was), and only falls back to replace semantics when there is no Home
+              // beneath (a deep link / cold-launch resume). replace('/') did NOT do this: it mounted a
+              // brand-new Home on top of the old one, so every round trip leaked one more live Home
+              // (each rebuilding ~370 SVG preview cards on the next tap) and going Home got slower each time.
+              router.dismissTo('/')
+            }}
+            onSettings={() => setSettingsOpen(true)}
+            fg={CHROME_FG}
+            insets={insets}
+            backIcon='home'
+            backLabel='Home'
+          />
+        </View>
+      </Portal>
 
       {/* Moves + elapsed time + running score - visible throughout play (not part of
       footerAnimatedStyle/footerVisible below), sitting in its own row above the footer. Unlike
@@ -488,7 +495,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
       <ConfirmDialog
         visible={confirmNewGameVisible}
         title='Start a new game?'
-        message='This game is still in progress — starting a new one will count it as a loss.'
+        message='This game is still in progress. Starting a new one counts it as a loss.'
         confirmLabel='New Game'
         cancelLabel='Cancel'
         icon='alert-circle-outline'

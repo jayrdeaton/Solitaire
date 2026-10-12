@@ -755,8 +755,8 @@ function TriPeaksScreenInner() {
       </GameChrome>
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
-      {lossRevealed && !won && <LossBanner colors={colors} onNewGame={handleNewGame} onUndo={handleUndo} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
+      {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

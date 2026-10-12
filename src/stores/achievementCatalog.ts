@@ -19,7 +19,7 @@ const GAME_TITLES: Record<SolitaireGameId, string> = {
   acesup: 'Aces Up'
 }
 
-// One per game — four different predicates, not one value against three thresholds, so these are
+// One per game - four different predicates, not one value against three thresholds, so these are
 // hand-written and carry no progress. All silver: no single game is meaningfully harder to win
 // once than the others, so tiering them against each other would be arbitrary.
 function winEachGameFamily(): AchievementDefinition[] {
@@ -45,7 +45,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
   {
     id: 'first_ever_win',
     title: 'Solved It',
-    description: 'Win a game — any game, any time.',
+    description: 'Win any game, any time.',
     tier: 'bronze',
     icon: 'star',
     isUnlocked: (stats) => getTotalWins(stats) >= 1

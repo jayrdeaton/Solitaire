@@ -40,13 +40,13 @@ function isValidVariant(value: unknown): value is VariantStats {
   const streakOk = typeof streak.currentWinStreak === 'number' && typeof streak.bestWinStreak === 'number'
   const timeOk = value.bestTimeSeconds === null || typeof value.bestTimeSeconds === 'number'
   // bestMoves/bestScore are newer than bestTimeSeconds, so a real persisted blob may predate them
-  // and legitimately lack the key entirely — unlike bestTimeSeconds above, undefined must be
+  // and legitimately lack the key entirely - unlike bestTimeSeconds above, undefined must be
   // accepted here, or every existing install's stats would fail validation and reset to defaults
   // (see gameStats.tsx's migrateStats, which backfills the missing fields on a blob that passes
   // this check).
   const movesOk = value.bestMoves === undefined || value.bestMoves === null || typeof value.bestMoves === 'number'
   const scoreOk = value.bestScore === undefined || value.bestScore === null || typeof value.bestScore === 'number'
-  // hintsUsed/winsWithoutHint are newer still — same undefined-tolerant treatment as bestMoves/
+  // hintsUsed/winsWithoutHint are newer still - same undefined-tolerant treatment as bestMoves/
   // bestScore above, backfilled to 0 by gameStats.tsx's migrateStats.
   const hintsUsedOk = value.hintsUsed === undefined || typeof value.hintsUsed === 'number'
   const winsWithoutHintOk = value.winsWithoutHint === undefined || typeof value.winsWithoutHint === 'number'
@@ -54,7 +54,7 @@ function isValidVariant(value: unknown): value is VariantStats {
 }
 
 // A present variant must be individually valid, but a known game id is allowed to be missing
-// entirely — a blob written before a new game (e.g. Yukon) was added predates that id and legitimately
+// entirely - a blob written before a new game (e.g. Yukon) was added predates that id and legitimately
 // lacks the key, same reasoning as isValidVariant's own tolerance for a missing bestMoves/bestScore
 // above. useAchievements (see node_modules/@tastic/achievements/src/useAchievements.ts) runs this
 // check on the RAW stored blob BEFORE gameStats.tsx's migrateStats ever gets a chance to backfill

@@ -48,7 +48,7 @@ export function RulesDialog({ visible, onDismiss, title, rules, compact = false 
           engine/score.ts) is identical across every game, so duplicating this sentence into all
           11 games' constants/gameRules.ts entries would just be 11 copies to keep in sync. */}
           <Text style={[styles.scoreHeading, { color: colors.onSurface }]}>Scoring</Text>
-          <Text style={[styles.scoreText, { color: colors.onSurfaceVariant }]}>Score is moves + seconds elapsed, so lower is better - a fast, efficient win scores low.</Text>
+          <Text style={[styles.scoreText, { color: colors.onSurfaceVariant }]}>Score is moves plus seconds. Lower is better, so a fast, efficient win scores low.</Text>
         </ScrollView>
         <Button mode='contained' onPress={onDismiss} style={[styles.closeButton, compact && styles.closeButtonCompact]}>
           Got it

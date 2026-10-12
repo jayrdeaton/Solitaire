@@ -787,8 +787,8 @@ function FortyThievesScreenInner() {
       </GameChrome>
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
-      {lossRevealed && !won && <LossBanner colors={colors} onNewGame={startNewGame} onUndo={handleUndo} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {lossRevealed && !won && <LossBanner onNewGame={startNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

@@ -194,7 +194,7 @@ type FeedbackBridgeProps = {
 }
 
 // Redux-backed haptic/sound settings, dispatching through @rific/feedback-press's own
-// hapticActions/soundActions — converged onto the same shape as Expo-Starter/Snake/BoxHockey's
+// hapticActions/soundActions - converged onto the same shape as Expo-Starter/Snake/BoxHockey's
 // FeedbackBridge, replacing this app's old direct-AsyncStorage loadVibrateEnabled/
 // loadSoundFxEnabled version (stores/feedbackSettings.ts).
 function FeedbackBridge({ children, playCardSound, playInvalidSound }: FeedbackBridgeProps) {

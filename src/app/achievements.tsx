@@ -59,7 +59,7 @@ function AchievementsContent() {
   const { stats, unlockedAchievements, resetAll } = useGameStats()
   const { profiles } = useProfiles()
   // Own popover host, independent of whichever profile is active for gameplay elsewhere (see
-  // stores/profiles.tsx's activeProfileId, which only drives the cosmetic card-back/felt color) —
+  // stores/profiles.tsx's activeProfileId, which only drives the cosmetic card-back/felt color) -
   // this screen's own view of "whose stats am I looking at" is local and always resets to All
   // Profiles when reopened, matching every other @tastic game's achievements screen (e.g.
   // LightCycles').
@@ -101,17 +101,17 @@ function AchievementsContent() {
         <StatSection label='OVERALL' fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
           <StatRow label='Games Played' value={String(played)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
           <StatRow label='Wins' value={String(wins)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Win Rate' value={played > 0 ? `${Math.round((wins / played) * 100)}%` : '—'} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Win Rate' value={played > 0 ? `${Math.round((wins / played) * 100)}%` : '-'} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
           <StatRow label='Best Streak' value={String(getBestStreak(statsView))} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
           <StatRow label='Games Solved' value={`${getVariantsWon(statsView)} / ${SOLITAIRE_GAME_IDS.length}`} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Fastest Win' value={bestTime === null ? '—' : formatTime(bestTime)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Fewest Moves' value={bestMoves === null ? '—' : String(bestMoves)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Lowest Score' value={bestScore === null ? '—' : String(bestScore)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Fastest Win' value={bestTime === null ? '-' : formatTime(bestTime)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Fewest Moves' value={bestMoves === null ? '-' : String(bestMoves)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Lowest Score' value={bestScore === null ? '-' : String(bestScore)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
           <StatRow label='Hints Used' value={String(getTotalHintsUsed(statsView))} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
         </StatSection>
 
         {/* Per game. "Abandoned" rather than "lost": a solitaire deal is won or walked away from,
-        never lost outright — see stores/statsTypes.ts. */}
+        never lost outright - see stores/statsTypes.ts. */}
         {SOLITAIRE_GAME_IDS.map((id) => {
           const v = statsView.variants[id]
           return (
@@ -120,9 +120,9 @@ function AchievementsContent() {
               <StatRow label='Won' value={String(v.record.wins)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
               <StatRow label='Abandoned' value={String(v.record.losses)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
               <StatRow label='Streak' value={`${v.streak.currentWinStreak} (best ${v.streak.bestWinStreak})`} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Fastest' value={v.bestTimeSeconds === null ? '—' : formatTime(v.bestTimeSeconds)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Fewest Moves' value={v.bestMoves === null ? '—' : String(v.bestMoves)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Lowest Score' value={v.bestScore === null ? '—' : String(v.bestScore)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+              <StatRow label='Fastest' value={v.bestTimeSeconds === null ? '-' : formatTime(v.bestTimeSeconds)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+              <StatRow label='Fewest Moves' value={v.bestMoves === null ? '-' : String(v.bestMoves)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+              <StatRow label='Lowest Score' value={v.bestScore === null ? '-' : String(v.bestScore)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
             </StatSection>
           )
         })}

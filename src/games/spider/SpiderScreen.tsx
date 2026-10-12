@@ -1885,7 +1885,7 @@ function SpiderScreenInner() {
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <SequenceFlightGhosts flights={sequenceFlights} onCardLanded={handleSequenceFlightLanded} onRetire={retireSequenceFlight} />
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
     </CardSizeProvider>
   )
 }

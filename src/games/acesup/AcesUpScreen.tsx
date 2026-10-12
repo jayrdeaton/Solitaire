@@ -739,8 +739,8 @@ function AcesUpScreenInner() {
       </GameChrome>
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
-      {stuck && !won && <LossBanner colors={colors} onNewGame={startNewGame} onUndo={handleUndo} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {stuck && !won && <LossBanner onNewGame={startNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

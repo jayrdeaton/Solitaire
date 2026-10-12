@@ -12,7 +12,7 @@ export const SOLITAIRE_GAME_IDS: SolitaireGameId[] = ['klondike', 'spider', 'fre
 
 // One game variant's record.
 //
-// A solitaire deal is never "lost" the way a versus match is — it's won, or it's walked away from.
+// A solitaire deal is never "lost" the way a versus match is - it's won, or it's walked away from.
 // So `record.losses` here means ABANDONED: the player explicitly dealt a new game over one that was
 // still in progress, after confirming a warning dialog (see statsEngine.ts's applyDealAbandoned).
 // `record.draws` is unused and stays 0; it rides along because @tastic/achievements' applyResult
@@ -20,18 +20,18 @@ export const SOLITAIRE_GAME_IDS: SolitaireGameId[] = ['klondike', 'spider', 'fre
 export interface VariantStats {
   record: OutcomeRecord
   streak: WinStreakState
-  // Fastest winning time, in whole seconds. null until this variant has been won at least once —
+  // Fastest winning time, in whole seconds. null until this variant has been won at least once -
   // deliberately not 0, which would read as an impossibly fast win to every comparison.
   bestTimeSeconds: number | null
-  // Fewest moves in a win, and lowest score (see engine/score.ts — lower is better). Same
+  // Fewest moves in a win, and lowest score (see engine/score.ts - lower is better). Same
   // null-until-first-win convention as bestTimeSeconds.
   bestMoves: number | null
   bestScore: number | null
-  // Lifetime count of Hint-button presses in this variant — bumped the instant the button is
+  // Lifetime count of Hint-button presses in this variant - bumped the instant the button is
   // pressed (see statsEngine.ts's applyHintUsed), independent of whether that deal is later won or
   // abandoned.
   hintsUsed: number
-  // Lifetime count of wins in this variant where no hint was used during that deal — see
+  // Lifetime count of wins in this variant where no hint was used during that deal - see
   // DealMetrics' own usedHint and statsEngine.ts's bumpVariant.
   winsWithoutHint: number
 }
@@ -54,7 +54,7 @@ export interface StatsState extends ProfileStats {
   // Keyed by Profile.id, populated only while a profile is active when a deal resolves (see
   // stores/profiles.tsx's activeProfileId). Solitaire is single-player, so there's at most one.
   profiles: Record<string, ProfileStats>
-  // Set once, on the very first deal ever resolved — powers the one-off "your first game was a
+  // Set once, on the very first deal ever resolved - powers the one-off "your first game was a
   // win" achievement, which cumulative totals can't express.
   firstGameResult: RoundResult | null
 }

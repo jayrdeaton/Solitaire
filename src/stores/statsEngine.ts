@@ -7,7 +7,7 @@ import { DEFAULT_PROFILE_STATS } from './statsValidation'
 const NO_METRICS: DealMetrics = { seconds: null, moves: null, score: null, usedHint: false }
 
 // Applies one resolved deal to a single variant bucket. 'win' extends the streak and may set new
-// bests (time/moves/score — lower is better for all three); 'loss' (an abandoned deal) breaks it.
+// bests (time/moves/score - lower is better for all three); 'loss' (an abandoned deal) breaks it.
 function bumpVariant(prev: VariantStats, result: 'win' | 'loss', metrics: DealMetrics): VariantStats {
   const isWin = result === 'win'
   const bestTimeSeconds = isWin && metrics.seconds !== null && (prev.bestTimeSeconds === null || metrics.seconds < prev.bestTimeSeconds) ? metrics.seconds : prev.bestTimeSeconds
@@ -100,13 +100,13 @@ export function getTotalWinsWithoutHint(stats: ProfileStats): number {
   return SOLITAIRE_GAME_IDS.reduce((sum, id) => sum + stats.variants[id].winsWithoutHint, 0)
 }
 
-// The longest win streak achieved in any single variant — streaks are per-variant, so "best
+// The longest win streak achieved in any single variant - streaks are per-variant, so "best
 // streak" across the app is the best of them rather than a separate cross-variant tally.
 export function getBestStreak(stats: ProfileStats): number {
   return SOLITAIRE_GAME_IDS.reduce((max, id) => Math.max(max, stats.variants[id].streak.bestWinStreak), 0)
 }
 
-// How many distinct variants have been won at least once — the "win every game" family.
+// How many distinct variants have been won at least once - the "win every game" family.
 export function getVariantsWon(stats: ProfileStats): number {
   const asRecords: Record<string, OutcomeRecord> = Object.fromEntries(SOLITAIRE_GAME_IDS.map((id) => [id, stats.variants[id].record]))
   return countBucketsWithAWin(asRecords)

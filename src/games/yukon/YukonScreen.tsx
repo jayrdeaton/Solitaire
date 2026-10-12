@@ -996,7 +996,7 @@ function YukonScreenInner() {
     not buried under it. */}
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner colors={colors} elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }
