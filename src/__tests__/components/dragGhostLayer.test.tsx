@@ -1,12 +1,14 @@
-import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
+import { CARD_ASPECT, CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { act, render, screen } from '@testing-library/react-native'
 import { ReactNode, useEffect } from 'react'
 import { makeMutable, SharedValue } from 'react-native-reanimated'
 
 import { GHOST_PAINT_MAX_MS, isGhostPending, markGhostPending, trackFaceLoad } from '@/components/cardFacePaint'
+import { columnTops } from '@/components/columnTops'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, DragGhostController, DragGhostProvider, LANDED_GHOST_MAX_MS, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { dropSpringFor, FLIGHT_SPRING, SNAP_BACK_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
+import { clearFanTop, setFanTop } from '@/components/dragdrop/fanTops'
 import { PileView } from '@/components/PileView'
 import { Card } from '@/engine/types'
 
@@ -56,18 +58,27 @@ jest.mock('react-native-reanimated', () => {
     }
   }
   // The card's own host view, tagged so a test finds it: a ghost (its children are keyed card wrappers) or a board card (its child is a PlayingCard).
+  // A fanned ghost's own cards are animated views too (each carries its fan step): tagged `fan:` rather than `board:`.
+  const InGhost = require('react').createContext(false)
   function AnimatedView({ style, children }: { style?: unknown; children?: ReactNode }) {
+    const inGhost = require('react').useContext(InGhost)
     const first = (require('react').Children.toArray(children) as { key?: string; props?: { card?: { id: string } } }[])[0]
-    const testID = first?.props?.card ? `board:${first.props.card.id}` : first?.key != null ? `ghost:${String(first.key).replace(/^\.\$/, '')}` : undefined
-    return (
+    const isGhost = !first?.props?.card && first?.key != null
+    const testID = first?.props?.card ? `${inGhost ? 'fan' : 'board'}:${first.props.card.id}` : isGhost && !inGhost ? `ghost:${String(first.key).replace(/^\.\$/, '')}` : undefined
+    const view = (
       <View testID={testID} style={style}>
         {children}
       </View>
     )
+    return isGhost ? <InGhost.Provider value>{view}</InGhost.Provider> : view
   }
+  const shared = jest.requireActual('../../__mocks__/react-native-reanimated')
   return {
     __esModule: true,
     default: { View: AnimatedView },
+    // PileView's fan glide: an inert layout transition (see the shared mock).
+    Easing: shared.Easing,
+    LinearTransition: shared.LinearTransition,
     makeMutable: (value: number) => new Mutable(value),
     useSharedValue: (value: number) => useRef(new Mutable(value)).current,
     useAnimatedRef: () => useRef({ current: null }).current,
@@ -937,5 +948,81 @@ describe('DraggableCard - rapid drags from one slot', () => {
     await advance(3000)
     expect(arrived).toHaveBeenCalledTimes(1)
     expect(ghostsAt(SLOT_CARD.id)).toEqual([{ x: 25, y: 305 }]) // only the second drag's ghost remains
+  })
+})
+
+// ------------------------------------------------------------------------------------------------ a run's fan step
+
+/** Where each of these cards is drawn down its ghost's fan, from the run's first card (each card's animated offset, evaluated now). */
+function ghostFan(cards: Card[]): number[] {
+  return cards.map((c) => {
+    const styles = [screen.getByTestId(`fan:${c.id}`).props.style].flat(Infinity) as { __worklet?: () => { transform: [{ translateY: number }] } }[]
+    return Math.round(styles.find((s) => s?.__worklet)!.__worklet!().transform[0].translateY * 1e6) / 1e6
+  })
+}
+
+// Columns compress their fans to fit the screen (columnTops), so a run's ghost must not fan at the natural step: it stretched the moment a
+// run lifted off a compressed column and snapped shorter as it landed on one. It takes the spacing the run has in the column it leaves and
+// eases to the spacing of the column it lands on, in step with its flight (fanTops.ts).
+describe('DragGhostProvider - a run is fanned like the columns it leaves and lands on', () => {
+  const C = card('spades-7-0')
+  const RUN = [A, B, C]
+  const NATURAL = faceUpFanOffset(64)
+  const source = {}
+  const destination = {}
+  const layOut = (owner: object, top: number, step: number) => RUN.forEach((c, i) => setFanTop(c.id, owner, top + i * step))
+  afterEach(() => {
+    RUN.forEach((c) => {
+      clearFanTop(c.id, source)
+      clearFanTop(c.id, destination)
+    })
+  })
+
+  it('lifts off at the spacing of the compressed column it leaves, and eases to the spacing of the one it lands on as it flies', async () => {
+    await mountProvider()
+    layOut(source, 300, 16)
+    const flight = await inAct(() => ghost.show({ cards: RUN, offsetStep: NATURAL, cardWidth: 64 }, { x: 10, y: 300 }))
+    expect(ghostFan(RUN)).toEqual([0, 16, 32]) // not the natural 28.8
+
+    // The move commits: the run is laid out in the column it lands on, at that column's spacing, and the ghost flies there.
+    RUN.forEach((c) => clearFanTop(c.id, source))
+    layOut(destination, 500, 24)
+    const arrived = jest.fn()
+    await inAct(() => flight.flyTo(10, 500, arrived))
+    await advance(FLIGHT_SPRING.duration! / 3)
+    const [, mid] = ghostFan(RUN)
+    expect(mid).toBeGreaterThan(16)
+    expect(mid).toBeLessThan(24)
+
+    await advance(springSettleMs(FLIGHT_SPRING) - FLIGHT_SPRING.duration! / 3 - 2)
+    ghostFan(RUN).forEach((y, i) => expect(y).toBeCloseTo(i * 24, 1)) // as the real cards under it are laid out when it lands
+    expect(arrived).not.toHaveBeenCalled()
+  })
+
+  it('a run that is not laid out in a column flies at the step it was given, and a stack with no fan stays stacked', async () => {
+    await mountProvider()
+    const flight = await inAct(() => ghost.show({ cards: [A, B], offsetStep: 20, cardWidth: 64 }, { x: 10, y: 300 }))
+    expect(ghostFan([A, B])).toEqual([0, 20])
+    await inAct(() => flight.flyTo(10, 500, () => {}))
+    await advance(FLIGHT_SPRING.duration!)
+    expect(ghostFan([A, B])).toEqual([0, 20])
+    await advance(3000)
+
+    layOut(source, 300, 16)
+    await inAct(() => ghost.show({ cards: RUN, offsetStep: 0, cardWidth: 64 }, { x: 10, y: 300 }))
+    expect(screen.queryAllByTestId(/^fan:/)).toEqual([]) // no fan to animate: every card sits on the first
+  })
+
+  it("a run dragged out of a compressed PileView is drawn at that column's own spacing", async () => {
+    const cards = [9, 8, 7, 6, 5, 4, 3, 2, 1, 13, 12, 11].map((rank) => ({ id: `hearts-${rank}-0`, suit: 'hearts', rank, faceUp: true }) as Card)
+    const MAX_HEIGHT = 350
+    const drag = { registry: { hitTest: async () => null }, getRunCount: (indexFromTop: number) => indexFromTop + 1, onDrop: async () => false }
+    await mountProvider(<PileView cards={cards} drag={drag as never} onPressCard={() => {}} maxHeight={MAX_HEIGHT} />)
+    const { tops } = columnTops(cards, [], NATURAL, (64 / CARD_ASPECT) * 0.13, 64 / CARD_ASPECT, MAX_HEIGHT)
+    const step = tops[10] - tops[9]
+    expect(step).toBeLessThan(NATURAL - 1) // the column really is compressed
+
+    await dragCard(9, { x: 10, y: 400 }, { dx: 30, dy: 60 }, false) // the last three cards
+    ghostFan(cards.slice(9)).forEach((y, i) => expect(y).toBeCloseTo(i * step, 6))
   })
 })

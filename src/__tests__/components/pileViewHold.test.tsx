@@ -59,18 +59,27 @@ jest.mock('react-native-reanimated', () => {
     }
   }
   // The card's own host view, tagged so a test finds it: a ghost (its children are keyed card wrappers) or a board card (its child is a PlayingCard).
+  // A fanned ghost's own cards are animated views too (each carries its fan step), so nothing inside a ghost is tagged.
+  const InGhost = require('react').createContext(false)
   function AnimatedView({ style, children }: { style?: unknown; children?: ReactNode }) {
+    const inGhost = require('react').useContext(InGhost)
     const first = (require('react').Children.toArray(children) as { key?: string; props?: { card?: { id: string } } }[])[0]
-    const testID = first?.props?.card ? `board:${first.props.card.id}` : first?.key != null ? `ghost:${String(first.key).replace(/^\.\$/, '')}` : undefined
-    return (
+    const isGhost = !first?.props?.card && first?.key != null
+    const testID = inGhost ? undefined : first?.props?.card ? `board:${first.props.card.id}` : isGhost ? `ghost:${String(first.key).replace(/^\.\$/, '')}` : undefined
+    const view = (
       <View testID={testID} style={style}>
         {children}
       </View>
     )
+    return isGhost ? <InGhost.Provider value>{view}</InGhost.Provider> : view
   }
+  const shared = jest.requireActual('../../__mocks__/react-native-reanimated')
   return {
     __esModule: true,
     default: { View: AnimatedView },
+    // PileView's fan glide: an inert layout transition (see the shared mock).
+    Easing: shared.Easing,
+    LinearTransition: shared.LinearTransition,
     makeMutable: (value: number) => new Mutable(value),
     useSharedValue: (value: number) => useRef(new Mutable(value)).current,
     useAnimatedRef: () => useRef({ current: null }).current,

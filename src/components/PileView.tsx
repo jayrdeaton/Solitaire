@@ -1,8 +1,8 @@
 import { faceUpFanOffset, useCardSize } from '@tastic/cards'
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
-import Animated, { measure, runOnJS, SharedValue, useAnimatedRef, useSharedValue } from 'react-native-reanimated'
+import Animated, { Easing, LinearTransition, measure, runOnJS, SharedValue, useAnimatedRef, useSharedValue } from 'react-native-reanimated'
 
 import { PileRef } from '@/engine/gameTypes'
 import { Card } from '@/engine/types'
@@ -10,7 +10,9 @@ import { Card } from '@/engine/types'
 import { isGhostPending, useGhostPendingAmong } from './cardFacePaint'
 import { columnTops, DepartingCard } from './columnTops'
 import { DragFlightHandle, useDragGhost } from './dragdrop/DragGhostLayer'
+import { scaledMs } from './dragdrop/dragSpring'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
+import { clearFanTop, setFanTop } from './dragdrop/fanTops'
 import { EmptySlot, PlayingCard } from './PlayingCard'
 import { useShakeStyle } from './shakeAnimation'
 import { useCardSoundEffects } from './useCardSounds'
@@ -184,6 +186,14 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [card.id, cardRegistry, held])
 
+  // Where this card sits in the fan, for a run's ghost lifting off from here or landing here (fanTops.ts). A layout
+  // effect, so it is current before anything that reacts to this commit (a flight's flyTo) asks.
+  useLayoutEffect(() => {
+    if (held) return
+    setFanTop(card.id, viewRef, top)
+    return () => clearFanTop(card.id, viewRef)
+  }, [card.id, held, top, viewRef])
+
   const handleStart = useCallback(() => {
     wasDraggingRef.current = true
     latest.current.onDragStart(latest.current.indexFromTop, latest.current.runCount)
@@ -263,7 +273,7 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
   // mounts when it is revealed or when dimming turns on, and dimFadeIn makes that a fade rather than a pop.
   return (
     <GestureDetector gesture={pan}>
-      <Animated.View ref={viewRef} style={[cardStyle, isHidden && styles.hidden, held && styles.noTouch, shakeStyle]}>
+      <Animated.View ref={viewRef} layout={FAN_GLIDE} style={[cardStyle, isHidden && styles.hidden, held && styles.noTouch, shakeStyle]}>
         <PlayingCard card={card} selected={selected} hinted={hinted} dimmed={dimmed} dimHold={isHidden} dimFadeIn={dimFadeIn} hidden={isHidden} onPress={onPress ? handlePress : undefined} />
       </Animated.View>
     </GestureDetector>
@@ -287,11 +297,29 @@ const FlyingCardSlot = memo(function FlyingCardSlot({ cardId, top, width, height
     cardRegistry.register(cardId, ref)
     return () => cardRegistry.unregister(cardId, ref)
   }, [cardId, cardRegistry])
+  // The spot a run's ghost lands on is laid out here until it does (fanTops.ts).
+  useLayoutEffect(() => {
+    setFanTop(cardId, ref, top)
+    return () => clearFanTop(cardId, ref)
+  }, [cardId, top])
   const style = useMemo(() => ({ position: 'absolute' as const, left: 0, top, width, height }), [top, width, height])
   return <View ref={ref} collapsable={false} pointerEvents='none' style={style} />
 })
 
 const NO_DEPARTING: readonly DepartingCard[] = []
+
+/** How long a card glides to its new spot when its column squeezes or spreads (see FAN_GLIDE). Follows the flight pace
+ * (scaledMs), and is over well before a flight into the column lands (FLIGHT_SPRING), so the landed card never meets a
+ * fan still on the move. */
+export const FAN_GLIDE_MS = scaledMs(120)
+
+/** A card arriving at or leaving a compressed column moves every card in it (the whole fan rescales - see columnTops),
+ * and they used to jump there. They glide instead, with Reanimated's layout transition rather than an animated `top`:
+ * the LAYOUT is at the new spot at once - which is what CardRegistry, the drop zones and every flight measure, so a card
+ * flying into the column still aims at where it will rest - and only the drawn view glides there, natively, from its old
+ * frame (no first frame at the new spot before the animation starts, as a JS-driven offset would risk). A card that has
+ * not moved, mounts (a landing swaps a FlyingCardSlot for it) or is held where it left (`held`) never glides. */
+const FAN_GLIDE = LinearTransition.duration(FAN_GLIDE_MS).easing(Easing.out(Easing.quad))
 
 /** A vertical fanned stack, used for tableau/reserve columns across every game. */
 function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, onPressEmpty, faceDownOffset, faceUpOffset, maxHeight, style, drag, hiddenCount = 0, hiddenCardIds, dimUnplayable = false, shakeCardId, shakeCount = 1, shakeToken }: PileViewProps) {

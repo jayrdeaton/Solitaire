@@ -19,7 +19,7 @@ const SHEEN_SOURCE = require('../../assets/card-sheen.png')
 /** How long a card turned face-up in place may keep showing its back while its new face loads (see `backUntilPainted`) -
  * normally a frame or two; this only bounds a load that never reports. */
 const FLIP_BACK_MAX_MS = 250
-const sheenStyles = StyleSheet.create({ sheen: { bottom: 0, left: 0, pointerEvents: 'none', position: 'absolute', right: 0, top: 0 } })
+const sheenStyles = StyleSheet.create({ sheen: { bottom: 0, left: 0, pointerEvents: 'none', position: 'absolute', right: 0, top: 0 }, subtle: { opacity: 0.35 } })
 
 interface PlayingCardProps {
   card: Card
@@ -132,14 +132,15 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold,
   // CardFace is ~14-17 native views (a court card's vector figure alone ~100), and the board's mount cost is its view
   // count. Every style x (normal, dark-mode invert) is baked in; invert in LIGHT mode draws the normal face - theme.ts's
   // lightColors mirror the *Inverted tokens so it is meant to be a no-op there.
-  const faceSource = CARD_FACE_BITMAPS[settings.cardStyle][settings.invertDarkModeColors && dark ? 'invert' : 'normal'][card.suit][card.rank - 1]
+  const faceVariant = settings.invertDarkModeColors && dark ? 'invert' : 'normal'
+  const faceSource = CARD_FACE_BITMAPS[settings.cardStyle][faceVariant][card.suit][card.rank - 1]
   return (
     <Pressable testID={testID} onPress={onPress} disabled={disabled} soundDisabled style={[styles.card, styles.shadow, cardSize, style]}>
       <View style={[styles.clip, styles.face]}>
         {/* Kept mounted while `hidden` (one Image, unlike the back's SVG): a dragged card that is revealed again then
         already has its bitmap, instead of loading it in the frame it reappears (see cardFacePaint.ts). */}
         <CardFaceImage cardId={card.id} source={faceSource} style={cardSize} label={`${rankLabel(card.rank)} of ${card.suit}`} onPainted={backUntilPainted || onFacePainted ? handleFaceLoaded : undefined} />
-        <CardSheen />
+        <CardSheen subtle={faceVariant === 'invert'} />
         {backUntilPainted && !hidden ? (
           <View style={[StyleSheet.absoluteFill, styles.back]}>
             {backArt()}
@@ -245,9 +246,12 @@ function CardFaceImage({ cardId, source, style, label, onPainted }: { cardId: st
  * ~7 native views on EVERY card). The PNG is the exact same gradient the SVG drew (objectBoundingBox
  * vector (0,0)->(0.65,0.85), white at 24% -> 7% at 28% -> 0% at 50%), so a non-uniform stretch of it
  * reproduces the SVG's look; every card shares the one decoded bitmap. That's roughly a quarter of a
- * card's view count gone, times every card on the board (and again for each ghost during a deal). */
-const CardSheen = React.memo(function CardSheen() {
-  return <Image source={SHEEN_SOURCE} style={sheenStyles.sheen} resizeMode='stretch' />
+ * card's view count gone, times every card on the board (and again for each ghost during a deal).
+ *
+ * `subtle` is for the inverted (near-black) face: white on #1A1A1A shows far more than on a white face or a mid-grey
+ * back, and at full strength it turned the top-left corner a muddy grey right behind the rank. */
+const CardSheen = React.memo(function CardSheen({ subtle = false }: { subtle?: boolean }) {
+  return <Image source={SHEEN_SOURCE} style={subtle ? [sheenStyles.sheen, sheenStyles.subtle] : sheenStyles.sheen} resizeMode='stretch' />
 })
 
 export function EmptySlot({ onPress, hinted, style, children, testID }: { onPress?: () => void; hinted?: boolean; style?: StyleProp<ViewStyle>; children?: React.ReactNode; testID?: string }) {

@@ -2,6 +2,11 @@
 const RN = require('react-native')
 const passthrough = (value: unknown) => value
 const passthroughLast = (...values: unknown[]) => values[values.length - 1]
+function layoutTransition() {
+  const transition: Record<string, () => unknown> = {}
+  for (const step of ['duration', 'easing', 'delay', 'springify', 'damping', 'stiffness']) transition[step] = () => transition
+  return transition
+}
 
 const Animated = {
   View: RN.View,
@@ -31,11 +36,14 @@ const Animated = {
   Easing: {
     linear: passthrough,
     ease: passthrough,
+    quad: passthrough,
     in: passthrough,
     out: passthrough,
     inOut: passthrough,
     bezier: () => passthrough
   },
+  // A layout transition (PileView's fan glide): inert here, every builder step hands the same transition back.
+  LinearTransition: layoutTransition(),
   default: {
     View: RN.View,
     Text: RN.Text,
