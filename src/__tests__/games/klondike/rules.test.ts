@@ -1,5 +1,6 @@
+import { isFullyAutoCompletable, isFullyAutoCompletableWithDraws } from '@/engine/autoFoundation'
 import { Card, SUITS } from '@/engine/types'
-import { createKlondikeController, KlondikeState } from '@/games/klondike/rules'
+import { canAutoFinish, createKlondikeController, KlondikeState, nextFinishMove } from '@/games/klondike/rules'
 
 function card(suit: Card['suit'], rank: Card['rank'], faceUp = true, deckIndex = 0): Card {
   return { id: `${suit}-${rank}-${deckIndex}`, suit, rank, faceUp }
@@ -432,5 +433,73 @@ describe('Klondike scoreHintMove', () => {
 
     expect(extendsRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
     expect(relocatesWholeRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
+  })
+})
+
+describe('Klondike canAutoFinish / nextFinishMove (the finish: a solved board files itself away)', () => {
+  /** Foundation piles, Ace first, each filled up to the given rank (13 = complete, missing = empty). */
+  function foundationsUpTo(upTo: Partial<Record<Card['suit'], number>>): Card[][] {
+    return SUITS.map((suit) => Array.from({ length: upTo[suit] ?? 0 }, (_, i) => card(suit, (i + 1) as Card['rank'])))
+  }
+  function board(parts: { tableau: Card[][]; foundation: Card[][]; stock?: Card[]; waste?: Card[] }): KlondikeState {
+    return { tableau: Array.from({ length: 7 }, (_, i) => parts.tableau[i] ?? []), foundation: parts.foundation, stock: parts.stock ?? [], waste: parts.waste ?? [] }
+  }
+  /** Nothing face-down, the stock and waste empty, every card able to go up: the Jack, Queen and King of clubs and the other Kings are left. */
+  const solved = () => board({ tableau: [[card('clubs', 11)], [card('diamonds', 13), card('clubs', 12)], [card('hearts', 13)], [card('clubs', 13)], [card('spades', 13)]], foundation: foundationsUpTo({ clubs: 10, diamonds: 12, hearts: 12, spades: 12 }) })
+  const controller = createKlondikeController(1)
+
+  it("is true on a solved board, and nextFinishMove sends every card left to its own suit's foundation until the game is won", () => {
+    let state = solved()
+    expect(canAutoFinish(controller, state)).toBe(true)
+    const sent: string[] = []
+    for (let step = nextFinishMove(controller, state); step; step = nextFinishMove(controller, state)) {
+      expect(step.to).toEqual({ zone: 'foundation', index: SUITS.indexOf(step.entry.card.suit) })
+      sent.push(step.entry.card.id)
+      state = controller.tryMove(state, { from: step.entry.ref, to: step.to, count: 1 })!
+      expect(state).not.toBeNull()
+    }
+    expect(sent).toEqual(['clubs-11-0', 'clubs-12-0', 'diamonds-13-0', 'hearts-13-0', 'clubs-13-0', 'spades-13-0'])
+    expect(controller.isWon(state)).toBe(true)
+    expect(canAutoFinish(controller, state)).toBe(false)
+  })
+
+  it('is false on a won board, though isFullyAutoCompletable says true there', () => {
+    const won = board({ tableau: [], foundation: foundationsUpTo({ clubs: 13, diamonds: 13, hearts: 13, spades: 13 }) })
+    expect(isFullyAutoCompletable(controller, won)).toBe(true)
+    expect(canAutoFinish(controller, won)).toBe(false)
+    expect(nextFinishMove(controller, won)).toBeNull()
+  })
+
+  it('is false while a face-down card is left, though the cards above it could clear and turn it over', () => {
+    const state = board({ tableau: [[card('clubs', 13, false), card('clubs', 12)], [card('diamonds', 13)], [card('hearts', 13)], [card('spades', 13)]], foundation: foundationsUpTo({ clubs: 11, diamonds: 12, hearts: 12, spades: 12 }) })
+    expect(isFullyAutoCompletable(controller, state)).toBe(true)
+    expect(canAutoFinish(controller, state)).toBe(false)
+    expect(nextFinishMove(controller, state)).toBeNull()
+  })
+
+  it('is false while a card is left in the stock, though a clear that draws would reach it', () => {
+    const state = board({ tableau: [[card('clubs', 13)], [card('diamonds', 13)], [card('hearts', 13)]], stock: [card('spades', 13, false)], foundation: foundationsUpTo({ clubs: 12, diamonds: 12, hearts: 12, spades: 12 }) })
+    expect(isFullyAutoCompletableWithDraws(controller, state)).toBe(true)
+    expect(canAutoFinish(controller, state)).toBe(false)
+    expect(nextFinishMove(controller, state)).toBeNull()
+  })
+
+  it('is false while a card is left on the waste, even one that could go straight up', () => {
+    const state = board({ tableau: [[card('clubs', 13)], [card('diamonds', 13)], [card('hearts', 13)]], waste: [card('spades', 13)], foundation: foundationsUpTo({ clubs: 12, diamonds: 12, hearts: 12, spades: 12 }) })
+    expect(isFullyAutoCompletable(controller, state)).toBe(true)
+    expect(canAutoFinish(controller, state)).toBe(false)
+    expect(nextFinishMove(controller, state)).toBeNull()
+  })
+
+  it('is false when a card is buried under a higher one of its own suit, so foundation moves alone cannot clear the board', () => {
+    const state = board({ tableau: [[card('clubs', 11), card('clubs', 12)], [card('clubs', 13)]], foundation: foundationsUpTo({ clubs: 10, diamonds: 13, hearts: 13, spades: 13 }) })
+    expect(canAutoFinish(controller, state)).toBe(false)
+    expect(nextFinishMove(controller, state)).toBeNull()
+  })
+
+  it('does not depend on the draw count the game was dealt with', () => {
+    const drawThree = createKlondikeController(3)
+    expect(canAutoFinish(drawThree, solved())).toBe(true)
+    expect(nextFinishMove(drawThree, solved())).toEqual(nextFinishMove(controller, solved()))
   })
 })

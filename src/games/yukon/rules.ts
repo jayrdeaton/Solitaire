@@ -5,6 +5,7 @@
 // up front - and one looser tableau rule: a moving group need not already be a valid run. See
 // engine/pile.ts's alwaysValidRun for why that needs no new engine code.
 
+import { FinishMove, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
 import { pickBestTableauTarget } from '@/engine/autoMove'
 import { shuffledDeck } from '@/engine/deck'
 import { canPlaceOnFoundation, suitIndex } from '@/engine/foundation'
@@ -341,4 +342,23 @@ export function createYukonController(): GameController<YukonState> {
     accessibleCards,
     scoreHintMove
   }
+}
+
+/**
+ * True once the board is SOLVED - what lets the finish (games/shared/useAutoFinish) file the rest away on its own:
+ * not won yet, nothing hidden (every tableau card face up; Yukon has no stock, waste or reserve), and every remaining
+ * card able to go up by foundation moves alone. Each clause matters: isFullyAutoCompletable is true on a won board
+ * (there is nothing left to do), and it PEEKS - its simulated moves turn each card they uncover face up, so on its own
+ * it can say yes while face-down cards remain, and starting the finish then would give away what is under them.
+ * `controller` is the screen's own (createYukonController).
+ */
+export function canAutoFinish(controller: GameController<YukonState>, state: YukonState): boolean {
+  return !controller.isWon(state) && state.tableau.every((column) => column.every((c) => c.faceUp)) && isFullyAutoCompletable(controller, state)
+}
+
+/** The next card the finish sends up, and its own suit's foundation - or null if there is none (won, or not solved). */
+export function nextFinishMove(controller: GameController<YukonState>, state: YukonState): FinishMove | null {
+  if (!canAutoFinish(controller, state)) return null
+  const entry = nextAutoCompleteMove(controller, state)
+  return entry ? { entry, to: { zone: 'foundation', index: suitIndex(entry.card.suit) } } : null
 }

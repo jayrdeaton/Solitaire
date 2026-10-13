@@ -2,8 +2,8 @@ import { IconButton, Pressable } from '@rific/feedback-press'
 import { rotateInsets, useRotation } from '@tastic/core'
 import { ConfirmDialog, CornerActionButtons } from '@tastic/hud'
 import { useRouter } from 'expo-router'
-import { ReactNode, useEffect, useState } from 'react'
-import { Pressable as RNPressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { ReactNode, useEffect, useRef, useState } from 'react'
+import { GestureResponderEvent, Pressable as RNPressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { Portal } from 'react-native-paper'
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -11,6 +11,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { computeScore } from '@/engine/score'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
 
+import { useBoardScroll } from './boardScroll'
 import { AUTO_PLAY_STAGGER_MS } from './dragdrop/dragSpring'
 import { GAME_CONTENT_BOTTOM_PADDING, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GAME_CONTENT_TOP_PADDING, useGameLayout } from './gameLayout'
 import { RotatedContentGutter } from './RotatedContentGutter'
@@ -100,6 +101,12 @@ const UNDO_HOLD_REPEAT_MS = AUTO_PLAY_STAGGER_MS
 const FOOTER_BOTTOM = 8
 const MOVES_TIMER_BOTTOM = 56
 
+// How far a press on the felt may travel and still count as a tap that toggles the footer. A plain
+// Pressable fires onPress for any release inside its box, however far the finger moved, and nothing
+// else takes over a vertical drag on a board that doesn't scroll (see boardScroll.ts), so a swipe on
+// the felt would hide the footer.
+const FELT_TAP_SLOP = 10
+
 // Wide (landscape) layout only - the footer and the readout live in the side gutters GameLayout
 // reserves (see gameLayout.ts), never over the board. The 8pt margins keep both columns off the
 // gutter's own outer edge / the safe-area inset, and 40 is an IconButton's touch size (24 icon + 2*8
@@ -161,8 +168,9 @@ interface GameChromeProps {
    * below via RulesDialog. Owned by each screen, same as settingsContent, rather than GameChrome
    * looking a gameId up itself. */
   rules: string[]
-  /** The game board itself - foundations/tableau/stock, whatever shape a given game needs. Scrolls
-   * if it doesn't fit (Pyramid's triangle + stock row can exceed a short viewport). */
+  /** The game board itself - foundations/tableau/stock, whatever shape a given game needs. Laid out to
+   * fit the screen; scrolls only when a column too long to compress any further runs past the bottom
+   * (see boardScroll.ts). */
   children: ReactNode
 }
 
@@ -222,6 +230,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   const [footerVisible, setFooterVisible] = useState(true)
   const { clearLastActiveGame } = useLastActiveGame()
   const undoHold = useUndoHold(onUndo, UNDO_HOLD_REPEAT_MS)
+  const { scrollProps, holdHeight, boardKey } = useBoardScroll(movesCount)
 
   const footerOpacity = useSharedValue(1)
   const footerTranslateY = useSharedValue(0)
@@ -255,6 +264,18 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
     movesTimerTranslateY.value = withTiming(next ? 0 : MOVES_TIMER_BOTTOM - FOOTER_BOTTOM, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
     captionOpacity.value = withTiming(next ? 0 : 1, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
     /* eslint-enable react-hooks/immutability */
+  }
+
+  // Only a tap on the felt toggles the footer, not a swipe (see FELT_TAP_SLOP).
+  const feltPressStartRef = useRef({ x: 0, y: 0 })
+  function onFeltPressIn(e: GestureResponderEvent) {
+    feltPressStartRef.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY }
+  }
+  function onFeltPress(e: GestureResponderEvent) {
+    const start = feltPressStartRef.current
+    // A press with no pointer position (Enter on the web, an accessibility click) is a tap: only a measured move is a swipe.
+    const moved = Math.hypot(e.nativeEvent.pageX - start.x, e.nativeEvent.pageY - start.y)
+    if (!(moved > FELT_TAP_SLOP)) toggleFooter()
   }
 
   const footerButtons = (
@@ -291,7 +312,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   return (
     <View style={styles.screen}>
       <RotatedContentGutter maxContentWidth={GAME_CONTENT_MAX_WIDTH} style={styles.gutterRow}>
-        <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: (isWide ? topPadding : GAME_CONTENT_TOP_PADDING) + insets.top }]}>
+        <ScrollView key={boardKey} {...scrollProps} testID='game-board-scroll' style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: (isWide ? topPadding : GAME_CONTENT_TOP_PADDING) + insets.top }, holdHeight > 0 && { minHeight: holdHeight }]}>
           {/* Plain RN Pressable, not @rific/feedback-press's - a background tap toggling the
           footer isn't a button and shouldn't trigger haptic/sound feedback (same reasoning as
           DealLayer's screen-wide skip-tap overlay). Wrapping {children} rather than sitting
@@ -313,7 +334,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
           own always-present touch targets (title, corner buttons). */}
           {/* Wide layout: no tap-to-hide - the footer sits in a gutter, not over the board, so there is
           nothing to declutter. */}
-          <RNPressable onPress={isWide ? undefined : toggleFooter} style={[styles.tableTapCatcher, { paddingBottom: (isWide ? bottomPadding : GAME_CONTENT_BOTTOM_PADDING) + insets.bottom }]}>
+          <RNPressable onPressIn={isWide ? undefined : onFeltPressIn} onPress={isWide ? undefined : onFeltPress} style={[styles.tableTapCatcher, { paddingBottom: (isWide ? bottomPadding : GAME_CONTENT_BOTTOM_PADDING) + insets.bottom }]}>
             {children}
           </RNPressable>
         </ScrollView>
@@ -522,7 +543,7 @@ const styles = StyleSheet.create({
     // Pressable (nested inside this container) can't reach either, since it inherits the same
     // shrink-wrapped height. flexGrow:1 makes this container at least as tall as the ScrollView's
     // own viewport when content is shorter (harmless when content is taller - flexGrow can't
-    // shrink it below that, so a tall board like Pyramid's still scrolls exactly as before).
+    // shrink it below that, so a column running past the bottom still scrolls; see boardScroll.ts).
     flexGrow: 1,
     paddingHorizontal: GAME_CONTENT_PADDING
   },

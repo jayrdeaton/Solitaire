@@ -33,6 +33,7 @@ import { Card, SUITS } from '@/engine/types'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
+import { useAutoFinish } from '@/games/shared/useAutoFinish'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
@@ -49,11 +50,7 @@ import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/game
 
 import { BOARD_MODEL } from './boardModel'
 import { buildYukonDealSequence } from './dealSequence'
-import { createYukonController, YukonState } from './rules'
-
-// Floor for useTableauMaxHeight below, not a fixed height anymore - a short screen never fans out
-// less generously than this, but a screen with real headroom to spare now gets more of it.
-const TABLEAU_MIN_HEIGHT = 420
+import { canAutoFinish, createYukonController, nextFinishMove, YukonState } from './rules'
 const TABLEAU_COLUMNS = 7
 // Yukon has no stock pile of its own to visually deal from (rules.ts's newGame deals straight into
 // the tableau) and no freecells or other permanent zone to repurpose as one either (unlike
@@ -152,7 +149,7 @@ function YukonScreenInner() {
   // cards shrink until the deal's tallest column fits (see boardModel.ts).
   const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
   const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
-  const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
+  const tableauMaxHeight = useTableauMaxHeight(cardWidth)
   const ghost = useDragGhost()
   const deal = useDealAnimator()
   const dealOriginRef = useRef<View>(null)
@@ -229,7 +226,9 @@ function YukonScreenInner() {
 
   function startNewGame() {
     const myToken = ++dealTokenRef.current
-    // An arm left over from the old deal must not fire on this one (see useAutoFoundationCascade's disarm).
+    // An arm left over from the old deal must not fire on this one (see useAutoFoundationCascade's disarm), and a new
+    // deal is never finished for the player, even one that happens to be solved (see useAutoFinish's suppress).
+    finish.suppress()
     cascade.disarm()
     const s = controller.newGame(randomSeed())
     setUndoStack([])
@@ -257,7 +256,9 @@ function YukonScreenInner() {
   // existed - see SavedGame's own doc comment).
   function restoreGame(saved: SavedGame<YukonState, UndoEntry<YukonState, YukonUndoMove>>) {
     ++dealTokenRef.current
-    // Nothing auto-plays on a resumed board until the player's own next foundation move arms it.
+    // Nothing auto-plays on a resumed board until the player's own next move: a foundation play arms the cascade, and
+    // any move that leaves the board solved starts the finish.
+    finish.suppress()
     cascade.disarm()
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
@@ -553,7 +554,7 @@ function YukonScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, winRevealed])
 
-  // Auto-play-to-foundation: only ever follows the player's own play of a card to a foundation - see
+  // Auto-play-to-foundation: the cascade only ever follows the player's own play of a card to a foundation - see
   // useAutoFoundationCascade for the trigger model (afterPlayerMove, called from applyMove below; any
   // other move of theirs stops it), and engine/autoFoundation.ts for the two mechanisms computeNextStep composes.
   // Declared here, just above the hook call that uses them, rather than lower in the component
@@ -561,8 +562,12 @@ function YukonScreenInner() {
   // but the same forward-reference shape trips react-hooks/immutability in this file specifically -
   // this ordering resolves it cleanly with no behavior change, since function declarations hoist
   // either way). Mechanism B (a guaranteed full clear) takes priority and, once true, ignores
-  // mechanism A's caution entirely since there's no longer any player decision left to protect.
+  // mechanism A's caution entirely since there's no longer any player decision left to protect - it can
+  // still be true while face-down cards remain (it turns them over as it goes).
   function computeNextStep(s: YukonState): AutoCompleteStep | null {
+    // Once the board is solved (nothing hidden, nothing left to decide) the finish below takes over at its own,
+    // quicker pace: the cascade steps aside, or the two would fight over the same cards.
+    if (canAutoFinish(controller, s)) return null
     if (!controller.accessibleCards) return null
     const entry = isFullyAutoCompletable(controller, s) ? nextAutoCompleteMove(controller, s) : findSafeAutoPlay(controller.accessibleCards(s), s.foundation)
     return entry ? { kind: 'play', entry, to: { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) } } : null
@@ -578,13 +583,16 @@ function YukonScreenInner() {
   // undoBusyRef gate, even though the cascade hook's own isBusy check already keeps this from being
   // invoked while undo is running - belt and suspenders against the same race those two guard.
   // Resolves once the move is COMMITTED (true) or refused (false), not when it lands - which is what
-  // lets the cascade send the next card while this one is still flying.
-  async function firePlay(entry: AccessibleCard, to: PileRef): Promise<boolean> {
+  // lets the cascade (and the finish) send the next card while this one is still flying. `stillWanted` is
+  // re-checked after the measurement too: whichever automation sent this card - the cascade (its isArmed, the
+  // default) or the finish (its isAllowed, which useAutoFinish passes) - may have been ended meanwhile by the
+  // player's move elsewhere, an undo or a new deal.
+  async function firePlay(entry: AccessibleCard, to: PileRef, stillWanted: () => boolean = () => cascade.isArmed()): Promise<boolean> {
     if (undoBusyRef.current) return false
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
-    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current || !cascade.isArmed()) {
+    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current || !stillWanted()) {
       settleFlight()
       return false
     }
@@ -605,6 +613,20 @@ function YukonScreenInner() {
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     computeNextStep,
+    firePlay
+  })
+  // The finish: once the board is solved (every card face up and able to go up by foundation moves alone), every
+  // remaining card files away on its own at the finish's quicker pace - after ANY move of the player's that leaves the
+  // board that way (except one taking a card back off a foundation), or once the cascade a foundation play set off
+  // turns the last hidden card over (see useAutoFinish).
+  const finish = useAutoFinish<YukonState>({
+    state,
+    enabled: () => settings.autoMoveToFoundation,
+    isBusy: () => undoBusyRef.current,
+    getState: () => stateRef.current,
+    canFinish: (s) => canAutoFinish(controller, s),
+    nextMove: (s) => nextFinishMove(controller, s),
+    isLanding,
     firePlay
   })
 
@@ -694,8 +716,10 @@ function YukonScreenInner() {
     const current = stateRef.current
     const entry = undoStackRef.current[undoStackRef.current.length - 1]
     if (!current || !entry) return
-    // A still-armed auto-play cascade must not fire again on the board this undo reverts to - the
-    // player is taking cards back, one at a time, and would otherwise watch them go straight back up.
+    // A still-armed auto-play cascade, or a finish still running, must not fire again on the board this undo reverts to
+    // (one taken back off a solved board is still solved) - the player is taking cards back, one at a time, and would
+    // otherwise watch them go straight back up.
+    finish.suppress()
     cascade.disarm()
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition - the only move available once it's true is New Game), so any undo reachable while
@@ -799,9 +823,13 @@ function YukonScreenInner() {
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
-      // Only the player's own play of a card to a foundation starts auto-play; any other move of theirs
+      // Only the player's own play of a card to a foundation starts the cascade; any other move of theirs
       // stops it, so a card it uncovers (an ace flipped up on the tableau, say) is theirs to find and play.
-      if (!opts?.silent) cascade.afterPlayerMove(to)
+      // The finish follows ANY move of theirs that leaves the board solved - but not one off a foundation.
+      if (!opts?.silent) {
+        cascade.afterPlayerMove(to)
+        finish.afterPlayerMove(from)
+      }
       return true
     }
     return false
@@ -941,8 +969,8 @@ function YukonScreenInner() {
                       foundationSlotRefs.current[i] = el
                     }}
                     // A foundation card may come back down to the tableau (rules.ts's tryMove) - by drag only, and never
-                    // once the deal is won. Any move to a column stops a running auto-play (applyMove), so it isn't sent
-                    // straight back up.
+                    // once the deal is won. A move off a foundation stops a running cascade and finish, and never starts
+                    // the finish (applyMove), so it isn't sent straight back up; the player's next move can.
                     under={pile[pile.length - 2] ?? null}
                     onDrop={won ? undefined : (x, y, flight, dragged) => attemptFoundationDrop(i, x, y, dragged.id, flight)}
                   />

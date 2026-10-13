@@ -23,7 +23,7 @@ import { ThemeBridge } from '@/components/ThemeBridge'
 import { UpdateDialog } from '@/components/UpdateDialog'
 import { useCardSoundPlayers } from '@/components/useCardSounds'
 import { useFontsPreload } from '@/components/useFontsPreload'
-import { DEFAULT_SEED_COLOR } from '@/constants/theme'
+import { DEFAULT_SEED_COLOR, THEME_HARMONY } from '@/constants/theme'
 import { useSettings } from '@/hooks/useSettings'
 import { persistor, type RootState, store } from '@/redux/store'
 import { GameStatsProvider } from '@/stores/gameStats'
@@ -41,9 +41,8 @@ const TRANSPARENT_NAVIGATION_THEME = { ...DarkTheme, colors: { ...DarkTheme.colo
 
 function ThemedStack() {
   // Hardcoded `true`, not this app's own live system-theme `dark` (see useAutoPaperTheme()'s `dark`
-  // used elsewhere in this file, e.g. ProfileThemeSync) - theme.ts's own felt palettes are dark-toned
-  // in every appearance mode by design ("Both felt palettes below are dark-toned green in every
-  // appearance mode"), so syncing the OS root-window background to a light-system-theme user's live
+  // used elsewhere in this file, e.g. ProfileThemeSync) - the felt (theme.ts) is dark-toned in every
+  // appearance mode and for every profile color by design, so syncing the OS root-window background to a light-system-theme user's live
   // `dark` would flash white against this app's always-dark table during a push/pop transition, which
   // is worse than the black-default corner-flash this hook exists to fix. gestureEnabled left at the
   // hook's own default (false) - this Stack had no prior gestureEnabled setting to preserve.
@@ -138,10 +137,12 @@ function ThemedToaster() {
  * feeding that straight into auto-paper computes an equally vivid MD3 palette, confirmed live:
  * technically tracking the profile, but reading as neon against this app's own consistently muted
  * felt/card palette (theme.ts's own PROFILE_TINT_ALPHA blend exists for exactly this - "low enough
- * to read as muted, not as the profile's own vivid swatch"). previewCardBack already blends toward
- * the same muted base cardBack every card-table render tints toward, so re-running it here (rather
+ * to read as muted, not as the profile's own vivid swatch"). previewCardBack already mutes the profile
+ * color the same way every card-table render does (its own hue, less saturated), so re-running it here (rather
  * than invent a second, differently-muted formula) keeps the chrome and the table reading as one
  * palette instead of two similarly-muted-but-not-quite-matching ones.
+ *
+ * Also sets THEME_HARMONY every time: a theme saved before it changed keeps the old harmony.
  *
  * Renders nothing itself; must sit inside ProfilesProvider and ThemeBridge (whose auto-paper Provider
  * also supplies the PaperProvider the `dark` read below needs) - it does, below. Mirrors useTableColors()'s own DEFAULT_SEED_COLOR fallback exactly, so a guest with no
@@ -151,7 +152,7 @@ function ProfileThemeSync() {
   const { dark } = useAutoPaperTheme()
   const { set } = useThemeSettings()
   useEffect(() => {
-    set({ color: previewCardBack(tableColorOverride ?? DEFAULT_SEED_COLOR, dark) })
+    set({ color: previewCardBack(tableColorOverride ?? DEFAULT_SEED_COLOR, dark), harmony: THEME_HARMONY })
   }, [tableColorOverride, dark, set])
   return null
 }

@@ -41,6 +41,7 @@ import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
+import { useAutoFinish } from '@/games/shared/useAutoFinish'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDimAfterDeal } from '@/games/shared/useDimAfterDeal'
@@ -60,10 +61,9 @@ import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/game
 import { BOARD_MODEL } from './boardModel'
 import { buildFortyThievesDealSequence } from './dealSequence'
 import { FortyThievesSettingsSection } from './FortyThievesSettingsSection'
-import { createFortyThievesController, FortyThievesState, isFullyAutoCompletableWithDraws, nextAutoCompleteMoveWithDraws } from './rules'
+import { canAutoFinish, createFortyThievesController, FortyThievesState, isFullyAutoCompletableWithDraws, nextAutoCompleteMoveWithDraws, nextFinishMove } from './rules'
 
 const TABLEAU_COLUMNS = 10
-const TABLEAU_MIN_HEIGHT = 360
 const NUM_FOUNDATIONS = 8
 const WASTE: PileRef = { zone: 'waste', index: 0 }
 
@@ -129,7 +129,7 @@ function FortyThievesScreenInner() {
   const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
   const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, SPLIT_TOP_ROW_MIN_GAP)
   const topRowGroupGap = splitTopRowGroupGap(gap)
-  const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
+  const tableauMaxHeight = useTableauMaxHeight(cardWidth)
   const ghost = useDragGhost()
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
@@ -197,7 +197,9 @@ function FortyThievesScreenInner() {
 
   function startNewGame() {
     const myToken = ++dealTokenRef.current
-    // A cascade still running from the old deal must not carry on into this one (see useAutoFoundationCascade's disarm).
+    // A cascade or finish still running from the old deal must not carry on into this one, and a deal that happens to be
+    // solved is not filed away until the player moves (see useAutoFoundationCascade's disarm, useAutoFinish's suppress).
+    finish.suppress()
     cascade.disarm()
     controllerRef.current = createFortyThievesController(settings.fortyThievesRunMoves)
     setRunMoves(settings.fortyThievesRunMoves)
@@ -225,7 +227,9 @@ function FortyThievesScreenInner() {
   // written before undo persistence existed - see SavedGame's own doc comment).
   function restoreGame(saved: SavedGame<FortyThievesState>) {
     ++dealTokenRef.current
-    // Nothing auto-plays on a resumed board until the player's own next foundation play.
+    // Nothing auto-plays on a resumed board until the player's own next move: a foundation play for the cascade, any move
+    // for the finish of a solved board.
+    finish.suppress()
     cascade.disarm()
     // config is persisted as 0/1 (see the save effect below) since SavedGame.config is a plain
     // number - narrowed back to a boolean here, falling back to the live setting only if missing.
@@ -363,11 +367,12 @@ function FortyThievesScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // Auto-play-to-foundation: only ever follows the player's own play of a card to a foundation - see
-  // useAutoFoundationCascade for the trigger model (afterPlayerMove, called from applyMove below; any
+  // Auto-play-to-foundation has two halves. This one only ever follows the player's own play of a card to a foundation -
+  // see useAutoFoundationCascade for the trigger model (afterPlayerMove, called from applyMove below; any
   // other move of theirs and a stock draw stop it), and rules.ts's own header comment on why this game only ever
   // fires once the whole remaining deal is provably clearable (no continuous "safe" heuristic,
   // unlike Klondike/FreeCell/Yukon/Canfield - no computeNextStep fallback to one below either).
+  // It steps aside once the board is solved (computeNextStep), where the finish below takes over.
   const cascade = useAutoFoundationCascade<FortyThievesState>({
     state,
     isLanding,
@@ -378,6 +383,19 @@ function FortyThievesScreenInner() {
     firePlay,
     fireDraw: handleDrawStock,
     fireDrawAndPlay
+  })
+  // The finish: once the board is solved (the stock and waste empty, every card able to go up - rules.ts's canAutoFinish),
+  // the rest files away on its own at the finish's quicker pace - after ANY move of the player's that leaves it that way, or
+  // the cascade a foundation play set off (see useAutoFinish). Both read the live controller (it is replaced every deal).
+  const finish = useAutoFinish<FortyThievesState>({
+    state,
+    enabled: () => settings.autoMoveToFoundation,
+    isBusy: () => undoBusyRef.current,
+    getState: () => stateRef.current,
+    canFinish: (s) => canAutoFinish(controllerRef.current, s),
+    nextMove: (s) => nextFinishMove(controllerRef.current, s),
+    isLanding,
+    firePlay
   })
 
   useEffect(() => {
@@ -451,7 +469,9 @@ function FortyThievesScreenInner() {
     }
     // Every auto-played step is its own entry now (see applyMove), so an undo can land between two
     // steps of a cascade that is still armed: dropped here, or the reverted board - provably
-    // finishable again - would set the cascade straight back off with no player move behind it.
+    // finishable again - would set the cascade straight back off with no player move behind it. The
+    // same for the finish: undoing a card off a solved board leaves it solved.
+    finish.suppress()
     cascade.disarm()
     const { move, state: prevState } = entry
     startFlights(1)
@@ -511,9 +531,13 @@ function FortyThievesScreenInner() {
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
-      // Only the player's own play of a card to a foundation starts auto-play; any other move of theirs
-      // stops it, so a card it uncovers (the waste's next card, say) is theirs to find and play.
-      if (!opts?.silent) cascade.afterPlayerMove(to)
+      // Only the player's own play of a card to a foundation starts the cascade; any other move of theirs
+      // stops it, so a card it uncovers (the waste's next card, say) is theirs to find and play. The
+      // finish follows ANY move of theirs that leaves the board solved (see useAutoFinish).
+      if (!opts?.silent) {
+        cascade.afterPlayerMove(to)
+        finish.afterPlayerMove(from)
+      }
       return true
     }
     return false
@@ -531,6 +555,9 @@ function FortyThievesScreenInner() {
   // can also reach through the stock) - a step only ever comes from
   // isFullyAutoCompletableWithDraws/nextAutoCompleteMoveWithDraws, never a continuous heuristic.
   function computeNextStep(s: FortyThievesState): AutoCompleteStep | null {
+    // A solved board is the finish's: it files the cards away at its own, quicker pace, and the two
+    // would otherwise fight over the same cards.
+    if (canAutoFinish(controllerRef.current, s)) return null
     if (!isFullyAutoCompletableWithDraws(controllerRef.current, s)) return null
     return nextAutoCompleteMoveWithDraws(controllerRef.current, s)
   }
@@ -538,14 +565,17 @@ function FortyThievesScreenInner() {
   // Mirrors handleCardTap's tail, but there's no tap event to supply an origin - it has to
   // measure the card's current position itself, which is the one place this feature has an await
   // gap before applying its move. Guard against something else changing state during that gap by
-  // snapshotting stateRef before the await and bailing if it no longer matches after.
+  // snapshotting stateRef before the await and bailing if it no longer matches after. `stillWanted`
+  // is re-checked there too: whichever automation sent this card - the cascade (its isArmed, the
+  // default) or the finish (its isAllowed, which useAutoFinish passes) - may have been ended meanwhile
+  // by the player's move elsewhere, an undo or a new deal.
   // Resolves once the move is COMMITTED (true) or refused (false), not when it lands - which is what
   // lets the cascade send the next card while this one is still flying.
-  async function firePlay(entry: AccessibleCard, to: PileRef): Promise<boolean> {
+  async function firePlay(entry: AccessibleCard, to: PileRef, stillWanted: () => boolean = () => cascade.isArmed()): Promise<boolean> {
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
-    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current || !cascade.isArmed()) {
+    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current || !stillWanted()) {
       settleFlight()
       return false
     }

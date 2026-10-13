@@ -12,12 +12,12 @@ const CARD_INK_BLACK = '#1A1A1A'
 
 // cardBack/cardBackPattern here are only blend anchors - never rendered directly (see theme.ts's useTableColors,
 // which always derives through derivePlayerTableColors using at least DEFAULT_SEED_COLOR),
-// what every seed's own tint gets blended toward. tableFelt/tableFeltDark, by contrast, ARE rendered
-// as-is, for every player: the app's one felt. They are the same two greens as the native splash
-// screen's `backgroundColor` in app.json (`expo-splash-screen` plugin, light + dark) - the splash is
-// compiled into the binary and shown before any JS runs, so it can't know which profile is active,
-// and the felt has to be that same green for the launch to hand off seamlessly. Change one, change
-// the other (src/__tests__/components/splashMatchesFelt.test.ts fails if they drift).
+// what every seed's own tint gets blended toward. They are neutral greys, so the blend only mutes a
+// profile's color (less saturated, pulled toward the grey's lightness) and never shifts its hue: a red
+// profile stays red. They used to be navy, which dragged every hue toward blue (red came out plum).
+// Each grey has the HSL lightness of the navy it replaced, so card backs keep their old weight.
+// tableFelt/tableFeltDark are never rendered either: the felt is derived from the card back too (the
+// app's original hand-picked green, kept only because the TableColors shape needs a value).
 export const lightColors: TableColors = {
   tableFelt: '#0B6E4F',
   tableFeltDark: '#08573F',
@@ -26,9 +26,9 @@ export const lightColors: TableColors = {
   // '#FFFFFF' literal (cardFace itself is currently unused by real gameplay cards), and that's also
   // decoratedCustom's CARD_WHITE default - matching '#FFFFFF' here is what makes this a true no-op.
   cardFaceInverted: '#FFFFFF',
-  cardBack: '#1B4B91',
-  cardBackPattern: '#2E63B8',
-  cardBackPatternInverted: '#2E63B8',
+  cardBack: '#565656',
+  cardBackPattern: '#737373',
+  cardBackPatternInverted: '#737373',
   cardBorder: '#00000055',
   selectedGlow: '#FFD54A',
   textRed: CARD_INK_RED,
@@ -45,9 +45,9 @@ export const darkColors: TableColors = {
   tableFeltDark: '#053D2C',
   cardFace: '#D6D6D6',
   cardFaceInverted: CARD_INK_BLACK,
-  cardBack: '#14346B',
-  cardBackPattern: '#22437F',
-  cardBackPatternInverted: '#22437F',
+  cardBack: '#404040',
+  cardBackPattern: '#515151',
+  cardBackPatternInverted: '#515151',
   cardBorder: '#00000055',
   selectedGlow: '#FFD54A',
   textRed: CARD_INK_RED,

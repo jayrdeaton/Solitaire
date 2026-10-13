@@ -3,6 +3,7 @@ import { act, render, screen } from '@testing-library/react-native'
 import { ReactNode } from 'react'
 
 import { isGhostPending, markGhostPending } from '@/components/cardFacePaint'
+import { MIN_FAN_SCALE } from '@/components/columnTops'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragGhostProvider } from '@/components/dragdrop/DragGhostLayer'
 import { PileView } from '@/components/PileView'
@@ -234,13 +235,14 @@ describe('pick-up hold: a card picked up by a drag stays drawn at its source unt
 // ------------------------------------------------------------------------------------------------ a compressed column
 
 describe('PileView - a compressed column under a card still taking off from it', () => {
-  // Ten face-up cards in 250pt: a fan of 10 x 28.8pt plus a ~90pt card does not fit, so the column is compressed (a long
-  // FreeCell/Spider/Yukon column, or almost any column in landscape) - and one card fewer is a looser fan.
-  const MAX_HEIGHT = 250
+  // Ten face-up cards in 310pt: a fan of 9 x 28.8pt plus a 93pt card does not fit, so the column is compressed (a long
+  // FreeCell/Spider/Yukon column, or almost any column in landscape) - and one card fewer is a looser fan. Every fan here
+  // stays above MIN_FAN_SCALE (ten cards: 0.84), so each fits its maxHeight exactly.
+  const MAX_HEIGHT = 310
   const STEP = faceUpFanOffset(CARD_WIDTH)
   const CARD_HEIGHT = CARD_WIDTH / CARD_ASPECT
   /** The i-th card's top in a freshly laid out column of n face-up cards. */
-  const fitTop = (i: number, n: number) => i * STEP * Math.min(1, (MAX_HEIGHT - CARD_HEIGHT) / (n * STEP))
+  const fitTop = (i: number, n: number) => i * STEP * Math.min(1, (MAX_HEIGHT - CARD_HEIGHT) / ((n - 1) * STEP))
   const COLUMN = [13, 12, 11, 10, 9, 8, 7, 6, 5, 4].map((rank) => card(`hearts-${rank}-0`))
   const C = COLUMN[9]
   const B = COLUMN[8]
@@ -327,5 +329,28 @@ describe('PileView - a compressed column under a card still taking off from it',
     await act(async () => release())
     expect(screen.queryByTestId(`board:${C.id}`)).toBeNull()
     expectTops([...COLUMN.slice(0, 9), X], before)
+  })
+
+  /** The column's own box: the nearest ancestor of a card's view sized as the column (card-wide, with a height). */
+  const boxHeightOf = (id: string) => {
+    let node = screen.getByTestId(`board:${id}`).parent
+    while (node) {
+      const style = Object.assign({}, ...([node.props?.style].flat(Infinity) as object[]).filter(Boolean)) as { width?: number; height?: number }
+      if (style.width === CARD_WIDTH && style.height !== undefined && node.props?.testID === undefined) return style.height
+      node = node.parent
+    }
+    return undefined
+  }
+
+  it('a column that fits keeps a box exactly maxHeight tall', async () => {
+    await render(column(COLUMN))
+    expect(boxHeightOf(COLUMN[0].id)).toBe(MAX_HEIGHT)
+  })
+
+  it('a column too long for MIN_FAN_SCALE stops compressing there and grows its box past maxHeight (what the board scrolls to)', async () => {
+    const LONG = Array.from({ length: 30 }, (_, i) => card(`spades-${(i % 13) + 1}-${i}`))
+    await render(column(LONG))
+    expect(topOf(LONG[1].id) - topOf(LONG[0].id)).toBeCloseTo(STEP * MIN_FAN_SCALE, 6)
+    expect(boxHeightOf(LONG[0].id)).toBeCloseTo(29 * STEP * MIN_FAN_SCALE + CARD_HEIGHT, 6)
   })
 })

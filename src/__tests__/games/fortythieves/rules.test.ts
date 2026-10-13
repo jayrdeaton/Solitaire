@@ -1,6 +1,6 @@
 import { GameController } from '@/engine/gameTypes'
 import { Card, SUITS } from '@/engine/types'
-import { createFortyThievesController, findFoundationSlot, FortyThievesState, isFullyAutoCompletable, isFullyAutoCompletableWithDraws, nextAutoCompleteMove, nextAutoCompleteMoveWithDraws } from '@/games/fortythieves/rules'
+import { canAutoFinish, createFortyThievesController, findFoundationSlot, FortyThievesState, isFullyAutoCompletable, isFullyAutoCompletableWithDraws, nextAutoCompleteMove, nextAutoCompleteMoveWithDraws, nextFinishMove } from '@/games/fortythieves/rules'
 
 const Strict = createFortyThievesController(false)
 const RunMoves = createFortyThievesController(true)
@@ -229,6 +229,62 @@ describe('Forty Thieves isFullyAutoCompletableWithDraws / nextAutoCompleteMoveWi
       { id: 'hearts-2-0', suit: 'hearts', rank: 2, faceUp: false }
     ]
     expect(isFullyAutoCompletableWithDraws(Strict, state)).toBe(false)
+  })
+})
+
+describe('Forty Thieves canAutoFinish / nextFinishMove (the finish of a solved board)', () => {
+  const upTo = (suit: Card['suit'], high: number, deckIndex: number): Card[] => Array.from({ length: high }, (_, i) => card(suit, (i + 1) as Card['rank'], deckIndex))
+  /** The second deck's clubs, 8 down to the King: the cards still on the board in every fixture below. */
+  const clubs = (from: number, to: number): Card[] => Array.from({ length: from - to + 1 }, (_, i) => card('clubs', (from - i) as Card['rank'], 1))
+  /** Every card is home but the second deck's clubs 8 to King. Their pile is index 6 - not clubs' suit index (0), which a
+   * fixed pile-per-suit mapping would pick - and holds the Ace to the 7. */
+  function boardWith(parts: { tableau?: Card[]; stock?: Card[]; waste?: Card[] }): FortyThievesState {
+    const foundation = [upTo('clubs', 13, 0), upTo('diamonds', 13, 0), upTo('hearts', 13, 0), upTo('spades', 13, 0), upTo('diamonds', 13, 1), upTo('hearts', 13, 1), upTo('clubs', 7, 1), upTo('spades', 13, 1)]
+    return { tableau: emptyTableau({ 2: parts.tableau ?? [] }), foundation, stock: parts.stock ?? [], waste: parts.waste ?? [] }
+  }
+  /** Solved: the King to the 8 sorted in column 2, the 8 on top, nothing in the stock or on the waste. */
+  const solved = () => boardWith({ tableau: clubs(13, 8) })
+
+  it('is true on a solved board, and nextFinishMove sends the top card to its own pile (one of two per suit, not a fixed one)', () => {
+    expect(canAutoFinish(Strict, solved())).toBe(true)
+    expect(canAutoFinish(RunMoves, solved())).toBe(true) // run moves never matter to a foundation move
+    expect(nextFinishMove(Strict, solved())).toEqual({ entry: { ref: { zone: 'tableau', index: 2 }, card: card('clubs', 8, 1) }, to: { zone: 'foundation', index: 6 } })
+  })
+
+  it('applying nextFinishMove until it runs out wins the game, and the won board is not "solved" (the finish ends there)', () => {
+    let s = solved()
+    let steps = 0
+    for (let step = nextFinishMove(Strict, s); step; step = nextFinishMove(Strict, s)) {
+      const next = Strict.tryMove(s, { from: step.entry.ref, to: step.to, count: 1 })
+      expect(next).not.toBeNull()
+      s = next!
+      steps++
+    }
+    expect(steps).toBe(6)
+    expect(Strict.isWon(s)).toBe(true)
+    expect(isFullyAutoCompletable(Strict, s)).toBe(true) // the plain check says yes on a won board...
+    expect(canAutoFinish(Strict, s)).toBe(false) // ...so this one has to say no itself
+    expect(nextFinishMove(Strict, s)).toBeNull()
+  })
+
+  it('is false with a card still in the stock, though drawing it would finish the game - the stock is hidden', () => {
+    const s = boardWith({ tableau: clubs(12, 8), stock: [{ ...card('clubs', 13, 1), faceUp: false }] })
+    expect(isFullyAutoCompletableWithDraws(Strict, s)).toBe(true)
+    expect(canAutoFinish(Strict, s)).toBe(false)
+    expect(nextFinishMove(Strict, s)).toBeNull()
+  })
+
+  it('is false with a card still on the waste, though every card could go up by foundation moves alone', () => {
+    const s = boardWith({ tableau: clubs(12, 8), waste: [card('clubs', 13, 1)] })
+    expect(isFullyAutoCompletable(Strict, s)).toBe(true)
+    expect(canAutoFinish(Strict, s)).toBe(false)
+    expect(nextFinishMove(Strict, s)).toBeNull()
+  })
+
+  it('is false while a card that has to go up first is buried', () => {
+    const s = boardWith({ tableau: [...clubs(13, 10), card('clubs', 8, 1), card('clubs', 9, 1)] }) // the 9 sits on the 8
+    expect(canAutoFinish(Strict, s)).toBe(false)
+    expect(nextFinishMove(Strict, s)).toBeNull()
   })
 })
 

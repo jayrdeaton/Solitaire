@@ -1,6 +1,7 @@
+import { isFullyAutoCompletable, isFullyAutoCompletableWithDraws } from '@/engine/autoFoundation'
 import { PileRef } from '@/engine/gameTypes'
-import { Card, SUITS } from '@/engine/types'
-import { CanfieldState, createCanfieldController, findSafeAutoPlay, isSafeAutoPlay } from '@/games/canfield/rules'
+import { Card, Suit, SUITS } from '@/engine/types'
+import { canAutoFinish, CanfieldState, createCanfieldController, findSafeAutoPlay, isSafeAutoPlay, nextFinishMove } from '@/games/canfield/rules'
 
 // Every test here exercises drawCount-independent behavior except the "Canfield drawStock" block
 // below, which specifically tests the draw-3 default (settings.canfieldDraw's default value) - one
@@ -345,6 +346,90 @@ describe('Canfield isSafeAutoPlay / findSafeAutoPlay (cyclic, non-Ace-starting)'
     const state: CanfieldState = { tableau: [[], [], [], []], foundation: [[], [], [], []], foundationRank: 5, reserve: [], stock: [], waste: [] }
     const accessible = [{ ref: { zone: 'waste' as const, index: 0 }, card: startRankCard }]
     expect(findSafeAutoPlay(state, accessible)?.card.id).toBe('hearts-5-0')
+  })
+})
+
+describe('Canfield canAutoFinish / nextFinishMove (a solved board: what the finish files away on its own)', () => {
+  const c = (suit: Suit, rank: number, faceUp = true): Card => ({ id: `${suit}-${rank}-0`, suit, rank, faceUp }) as Card
+  /** The first `count` cards of `suit`'s foundation cycle from the 5 (5, 6, ..., K, A, 2, 3, 4). */
+  const cycle = (suit: Suit, count: number): Card[] => Array.from({ length: count }, (_, i) => c(suit, ((4 + i) % 13) + 1))
+  /** A complete deck, foundationRank 5. Hearts and spades are home, clubs is up to its 2 and diamonds to its Q, and the
+   * 7 cards left (the diamond K, A, 2, 3, 4 and the club 3, 4) wrap past the King. Nothing is hidden, nothing left to draw,
+   * and every card can go up by foundation moves alone. */
+  function solved(parts: Partial<CanfieldState> = {}): CanfieldState {
+    return {
+      tableau: [[c('diamonds', 4), c('clubs', 3)], [c('clubs', 4), c('diamonds', 3)], [c('diamonds', 2), c('diamonds', 13)], [c('diamonds', 1)]],
+      foundation: [cycle('clubs', 11), cycle('diamonds', 8), cycle('hearts', 13), cycle('spades', 13)],
+      foundationRank: 5,
+      reserve: [],
+      stock: [],
+      waste: [],
+      ...parts
+    }
+  }
+  /** solved(), with its diamond Ace (alone in the last column) somewhere else. */
+  const aceIn = (parts: Partial<CanfieldState>) => solved({ tableau: [...solved().tableau.slice(0, 3), []], ...parts })
+
+  it('is true on a solved board, and nextFinishMove walks it to the win one card at a time, each to its own suit foundation, wrapping past the King', () => {
+    let s = solved()
+    const sent: string[] = []
+    while (canAutoFinish(CanfieldController, s)) {
+      const step = nextFinishMove(CanfieldController, s)
+      expect(step).not.toBeNull()
+      expect(step!.to).toEqual({ zone: 'foundation', index: SUITS.indexOf(step!.entry.card.suit) })
+      sent.push(step!.entry.card.id)
+      const next = CanfieldController.tryMove(s, { from: step!.entry.ref, to: step!.to, count: 1 })
+      expect(next).not.toBeNull()
+      s = next!
+    }
+    expect(sent).toEqual(['clubs-3-0', 'diamonds-13-0', 'diamonds-1-0', 'diamonds-2-0', 'diamonds-3-0', 'diamonds-4-0', 'clubs-4-0'])
+    expect(CanfieldController.isWon(s)).toBe(true)
+  })
+
+  it('is false on a won board, although isFullyAutoCompletable says true there', () => {
+    const won = solved({ tableau: [[], [], [], []], foundation: SUITS.map((suit) => cycle(suit, 13)) })
+    expect(CanfieldController.isWon(won)).toBe(true)
+    expect(isFullyAutoCompletable(CanfieldController, won)).toBe(true)
+    expect(canAutoFinish(CanfieldController, won)).toBe(false)
+    expect(nextFinishMove(CanfieldController, won)).toBeNull()
+  })
+
+  it('is false while the reserve, the stock or the waste holds a card, even one that could go straight up', () => {
+    const inReserve = aceIn({ reserve: [c('diamonds', 1)] })
+    const inWaste = aceIn({ waste: [c('diamonds', 1)] })
+    const inStock = aceIn({ stock: [c('diamonds', 1, false)] })
+    // Every one of these would clear: the plain check (which reads the reserve and waste tops) or the draws-aware one (which
+    // also turns the stock over) says so...
+    expect(isFullyAutoCompletable(CanfieldController, inReserve)).toBe(true)
+    expect(isFullyAutoCompletable(CanfieldController, inWaste)).toBe(true)
+    expect(isFullyAutoCompletableWithDraws(CanfieldController, inStock)).toBe(true)
+    // The plain check never draws, so it already says no for the stock: canAutoFinish's own stock check is belt-and-braces,
+    // and the stock case below pins the answer, not that check. The reserve and waste cases do need theirs.
+    expect(isFullyAutoCompletable(CanfieldController, inStock)).toBe(false)
+    // ...but nothing may go up by itself until the player has emptied those piles.
+    for (const s of [inReserve, inWaste, inStock]) {
+      expect(canAutoFinish(CanfieldController, s)).toBe(false)
+      expect(nextFinishMove(CanfieldController, s)).toBeNull()
+    }
+  })
+
+  it('never reads a hidden card to decide: a face-down card under the reserve top keeps it off, and so does one in a column', () => {
+    // The reserve's Ace goes up, which turns over the 2 under it - the plain check would count on a card nobody has seen.
+    const hiddenUnderReserve = solved({ tableau: [[c('diamonds', 4), c('clubs', 3)], [c('clubs', 4), c('diamonds', 3)], [c('diamonds', 13)], []], reserve: [c('diamonds', 2, false), c('diamonds', 1)] })
+    expect(isFullyAutoCompletable(CanfieldController, hiddenUnderReserve)).toBe(true)
+    expect(canAutoFinish(CanfieldController, hiddenUnderReserve)).toBe(false)
+    // A face-down column card the plain check already refuses (accessibleCards skips a face-down top, and tryMove never turns
+    // a column card over), so canAutoFinish's own face-down check is belt-and-braces: this pins the answer, not that check.
+    const faceDownInColumn = aceIn({ tableau: [...solved().tableau.slice(0, 3), [c('diamonds', 1, false)]] })
+    expect(isFullyAutoCompletable(CanfieldController, faceDownInColumn)).toBe(false)
+    expect(canAutoFinish(CanfieldController, faceDownInColumn)).toBe(false)
+  })
+
+  it('is false when a card is stuck under another of its own suit, with nothing hidden', () => {
+    // The club 4 sits on the club 3 it has to follow up.
+    const stuck = solved({ tableau: [[c('clubs', 3), c('clubs', 4)], [c('diamonds', 4), c('diamonds', 3)], [c('diamonds', 2), c('diamonds', 13)], [c('diamonds', 1)]] })
+    expect(canAutoFinish(CanfieldController, stuck)).toBe(false)
+    expect(nextFinishMove(CanfieldController, stuck)).toBeNull()
   })
 })
 

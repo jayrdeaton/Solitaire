@@ -1,7 +1,7 @@
 import { cardLayoutForRow } from '@/components/cardLayout'
-import { columnBoardModel, computeGameLayout, FACE_DOWN_FAN_RATIO, FACE_UP_FAN_RATIO, fitCardWidthToHeight, GAME_CONTENT_PADDING } from '@/components/gameLayout'
+import { columnBoardModel, computeGameLayout, FACE_DOWN_FAN_RATIO, FACE_UP_FAN_RATIO, fitCardWidthToHeight, GAME_CONTENT_PADDING, LONG_COLUMN_MIN_CARD_WIDTH } from '@/components/gameLayout'
 import { Card } from '@/engine/types'
-import { BOARD_MODEL, TALLEST_COLUMN } from '@/games/yukon/boardModel'
+import { BOARD_MODEL, LONG_COLUMN, TALLEST_COLUMN } from '@/games/yukon/boardModel'
 import { createYukonController } from '@/games/yukon/rules'
 
 const TABLEAU_COLUMNS = 7
@@ -33,8 +33,9 @@ describe('Yukon boardModel', () => {
     expect(state.tableau[sizes.indexOf(Math.max(...sizes))]).toHaveLength(TALLEST_COLUMN.faceDown + TALLEST_COLUMN.faceUp)
   })
 
-  it('models a one-card-tall top row over the tallest column with the default headroom', () => {
-    expect(BOARD_MODEL).toEqual(columnBoardModel({ faceDown: 6, faceUp: 5 }))
+  it('models a one-card-tall top row over the tallest column with the default headroom, and a 28-card column at the minimum fan spacing', () => {
+    expect(BOARD_MODEL).toEqual(columnBoardModel({ faceDown: 6, faceUp: 5, longColumn: LONG_COLUMN }))
+    expect(LONG_COLUMN).toEqual({ faceDown: 0, faceUp: 28 })
   })
 
   describe('in the wide layout (874x402 phone, rotated)', () => {
@@ -46,23 +47,27 @@ describe('Yukon boardModel', () => {
       expect(fitted).toBeLessThan(widthCardWidth)
     })
 
+    it('shrinks for its long column only down to LONG_COLUMN_MIN_CARD_WIDTH: a 28-card column cannot fit a phone held sideways at a readable size, so a longer one scrolls', () => {
+      expect(fitted).toBe(LONG_COLUMN_MIN_CARD_WIDTH)
+    })
+
     it('fits the board in the available height and keeps cards a playable size', () => {
       expect(BOARD_MODEL.perWidth * fitted + BOARD_MODEL.fixed).toBeLessThanOrEqual(PHONE_LANDSCAPE.availableHeight + 0.001)
       expect(fitted).toBeGreaterThanOrEqual(40)
     })
 
     it('is a no-op whenever the height is not the binding limit', () => {
-      const roomy = computeGameLayout(2000, 1200, { top: 0, right: 0, bottom: 0, left: 0 })
+      const roomy = computeGameLayout(2400, 2000, { top: 0, right: 0, bottom: 0, left: 0 })
       const roomyWidthCardWidth = widthDerivedCardWidth(roomy.contentWidth)
       expect(fitCardWidthToHeight(roomyWidthCardWidth, roomy.availableHeight, BOARD_MODEL)).toBe(roomyWidthCardWidth)
     })
   })
 
-  it('leaves portrait to the width-derived size: the height never binds on a 402x874 phone', () => {
+  it('leaves portrait to the width-derived size: the deal never binds on a 402x874 phone', () => {
     const widthCardWidth = widthDerivedCardWidth(PHONE_PORTRAIT.contentWidth)
     expect(PHONE_PORTRAIT.isWide).toBe(false)
-    // useFittedCardWidth skips the fit entirely in portrait; this confirms the fit would not have
-    // changed the number anyway, so there is no portrait behaviour to preserve by skipping it.
-    expect(fitCardWidthToHeight(widthCardWidth, PHONE_PORTRAIT.availableHeight, BOARD_MODEL)).toBe(widthCardWidth)
+    // useFittedCardWidth skips the fit entirely in portrait. The deal alone would not change the number; the long column
+    // would (portrait still fits ~23 cards at the minimum spacing), which is why portrait keeps its width-derived cards.
+    expect(fitCardWidthToHeight(widthCardWidth, PHONE_PORTRAIT.availableHeight, { perWidth: BOARD_MODEL.perWidth, fixed: BOARD_MODEL.fixed })).toBe(widthCardWidth)
   })
 })

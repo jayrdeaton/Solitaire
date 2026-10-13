@@ -7,12 +7,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
 import { cardLayoutForRow, SPLIT_TOP_ROW_MIN_GAP, splitTopRowGroupGap } from '@/components/cardLayout'
+import { columnTops } from '@/components/columnTops'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS, dealStaggerMs, paceFaceUpDeal } from '@/components/dealing/dealSpring'
 import { measureView } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
-import { AUTO_PLAY_STAGGER_MS, FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { CARD_HEIGHT_RATIO, useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
@@ -58,21 +58,7 @@ import { canAutoFinish, nextFinishMove, nextSafeCascadeStep } from './autoPlay'
 import { BOARD_MODEL } from './boardModel'
 import { buildFreeCellDealSequence } from './dealSequence'
 import { countEmptyFreecells, countEmptyTableauColumns, FreeCellController, FreeCellState, maxSupermoveCount, moveHeadCard } from './rules'
-
-// Floor for useTableauMaxHeight below, not a fixed height anymore - a short screen never fans out
-// less generously than this, but a screen with real headroom to spare now gets more of it.
-const TABLEAU_MIN_HEIGHT = 460
 const TABLEAU_COLUMNS = 8
-// Gap between one finish card leaving and the next, the first one included (see useAutoFinish): the
-// same gap as every auto-played card (dragSpring.ts's AUTO_PLAY_STAGGER_MS, 96ms at the default
-// pace) against flights that all take the same time (FLIGHT_SPRING), so ~5 are in the air at once
-// and they land in the order they left - the whole sweep reads as one quick stream.
-export const FINISH_STAGGER_MS = AUTO_PLAY_STAGGER_MS
-// How long a finish card waits (at most) for a card still flying in to its own pile to land (see
-// fireFinishStep). It only bounds the wait (the loop leaves the moment that pile has landed): twice a
-// flight's ghost lifetime (springSettleMs of FLIGHT_SPRING, every flight's one time), ~966ms at the
-// default pace - also past the slowest drag drop that may still be settling (~673ms).
-export const FINISH_LANDING_WAIT_MS = 2 * springSettleMs(FLIGHT_SPRING)
 // FreeCell has no stock pile of its own to visually deal from (rules.ts's newGame deals straight
 // into the tableau; freecells start, and stay, empty throughout the deal) - the far-right freecell
 // doubles as the deck the deal animation flies out of instead, showing this face-down placeholder
@@ -173,7 +159,7 @@ function FreeCellScreenInner() {
   const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
   const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, SPLIT_TOP_ROW_MIN_GAP)
   const topRowGroupGap = splitTopRowGroupGap(gap)
-  const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
+  const tableauMaxHeight = useTableauMaxHeight(cardWidth)
   const ghost = useDragGhost()
   // `gen` is the `dealTokenRef` value at the moment this flight was queued - re-checked once the async
   // measurement below resolves, so a flight queued against a game that's since been replaced by
@@ -277,7 +263,7 @@ function FreeCellScreenInner() {
   // sets faceUp: true on the whole deck), so step.card's own faceUp is left as-is.
   //
   // Destinations are computed ANALYTICALLY (this column's own measured container + PileView's own
-  // fan-offset formula, mirrored exactly below) instead of by measuring each real destination CARD
+  // columnTops, called below) instead of by measuring each real destination CARD
   // via CardRegistry, the way this used to work - because a hidden tableau card is no longer mounted
   // at all while the deal hasn't reached it yet (see PileView's own `isFlying` doc comment), so there
   // is no real card there to measure anymore. Only the 8 column CONTAINERS are measured (via
@@ -297,13 +283,9 @@ function FreeCellScreenInner() {
       return
     }
 
-    // Each column's own fan scale (mirrors PileView's `offsets`/`scale` computation exactly - see its
-    // own doc comment) - once per column, not per card, since every card sharing a column shares it.
-    const columnScale = s.tableau.map((col) => {
-      const rawHeight = col.length * faceUpOffset
-      const totalHeight = rawHeight + cardHeight
-      return tableauMaxHeight && totalHeight > tableauMaxHeight ? (tableauMaxHeight - cardHeight) / (rawHeight || 1) : 1
-    })
+    // Each column's card tops from PileView's own columnTops (with PileView's default fan offsets; nothing is held during a
+    // deal), so a dealt card lands exactly where its real card is drawn - a hand-copied formula here drifted from it once.
+    const columnTopsFor = s.tableau.map((col) => columnTops(col, [], faceUpOffset, cardHeight * 0.13, cardHeight, tableauMaxHeight).tops)
 
     const built: DealCardSpec[] = []
     // A column whose container measurement comes back null (the DropZone hasn't mounted/laid out
@@ -319,7 +301,7 @@ function FreeCellScreenInner() {
         unresolvedIds.push(step.cardId)
         return
       }
-      const top = step.rowIndex * faceUpOffset * columnScale[step.colIndex]
+      const top = columnTopsFor[step.colIndex][step.rowIndex]
       // The column rect is a screen-space bounding box: under a fake landscape rotation the fan runs along another screen
       // axis, so the offset is composed through the column's centre (see rectOffsetToScreenPoint) - not `rect.y + top`.
       built.push({
@@ -532,9 +514,9 @@ function FreeCellScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, winRevealed])
 
-  // Auto-play-to-foundation has two independent halves, both only ever started by the player's own
-  // play of a card to a foundation, a tap or a drag (applyMove's afterPlayerMove calls) - see
-  // autoPlay.ts for the full policy. This one is the safe-card cascade.
+  // Auto-play-to-foundation has two independent halves (applyMove's afterPlayerMove calls) - see
+  // autoPlay.ts for the full policy. This one is the safe-card cascade, which only the player's own
+  // play of a card to a foundation (a tap or a drag) starts.
   const cascade = useAutoFoundationCascade<FreeCellState>({
     state,
     isLanding,
@@ -544,17 +526,18 @@ function FreeCellScreenInner() {
     computeNextStep: nextSafeCascadeStep,
     firePlay
   })
-  // The finish: once every remaining card can go up on its own, sweep them all up at once - when the
-  // player's foundation play, or the cascade it set off, made the board finishable (never a move to a
-  // column or a freecell).
+  // The finish: once every column is sorted (nothing hidden, no choice left), every remaining card
+  // files away on its own at the finish's quicker pace - after ANY move of the player's that leaves
+  // the board that way, or the cascade a foundation play set off (see useAutoFinish).
   const finish = useAutoFinish<FreeCellState>({
     state,
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     getState: () => stateRef.current,
     canFinish: canAutoFinish,
-    fireNext: fireFinishStep,
-    staggerMs: FINISH_STAGGER_MS
+    nextMove: nextFinishMove,
+    isLanding,
+    firePlay
   })
 
   function startNewGame() {
@@ -761,11 +744,12 @@ function FreeCellScreenInner() {
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
-      // Only the player's own play of a card to a foundation (a tap or a drag) starts auto-play; any other
-      // move of theirs stops it, so a card it uncovers is theirs to play (see autoPlay.ts).
+      // Only the player's own play of a card to a foundation (a tap or a drag) starts the cascade; any other
+      // move of theirs stops it, so a card it uncovers is theirs to play. The finish follows ANY move of
+      // theirs that leaves the board solved (see autoPlay.ts).
       if (!opts?.silent) {
         cascade.afterPlayerMove(to)
-        finish.afterPlayerMove(to)
+        finish.afterPlayerMove(from)
       }
       return true
     }
@@ -888,8 +872,9 @@ function FreeCellScreenInner() {
   // handleUndo - captures everything it needs from the pre-move state synchronously first). Guard
   // against something else changing state during that gap by snapshotting stateRef before the
   // await and bailing if it no longer matches after. `stillOn` is re-checked there too: whichever
-  // automation sent this card - the cascade (its isArmed, the default) or the finish (its isAllowed) -
-  // may have been ended meanwhile by the player's move elsewhere, an undo or a new deal.
+  // automation sent this card - the cascade (its isArmed, the default) or the finish (its isAllowed,
+  // which useAutoFinish passes) - may have been ended meanwhile by the player's move elsewhere, an undo
+  // or a new deal.
   async function firePlay(entry: AccessibleCard, to: PileRef, stillOn: () => boolean = () => cascade.isArmed()): Promise<boolean> {
     startFlights(1)
     const stateAtStart = stateRef.current
@@ -906,29 +891,6 @@ function FreeCellScreenInner() {
       return false
     }
     return true
-  }
-
-  // One card of the finish (see useAutoFinish/autoPlay.ts's canAutoFinish): the same flight as a
-  // cascade step. Resolves once the move is COMMITTED - not landed - which is what lets the next
-  // card leave before this one arrives. One wait, bounded by FINISH_LANDING_WAIT_MS (two flights): a
-  // card still flying in to its own pile (the one the player's move just put there) lands first -
-  // picked up mid-air it would show twice. The board's LAST card does not wait for the rest: it
-  // leaves one stagger after the card before it like every other (holding it until every earlier
-  // flight had landed read as the stream, a pause, then one straggler). The win cascade can't start
-  // over cards still in the air anyway - it waits for winRevealed, i.e. settled (see useWinReveal).
-  async function fireFinishStep(): Promise<boolean> {
-    const nextStep = () => {
-      const current = stateRef.current
-      return current && nextFinishMove(current)
-    }
-    const deadline = Date.now() + FINISH_LANDING_WAIT_MS
-    for (let step = nextStep(); step && isLanding(step.entry.ref) && Date.now() < deadline; step = nextStep()) await new Promise<void>((resolve) => setTimeout(resolve, 16))
-    // Re-check AFTER the wait: an undo, a new game, a settings flip or an unmount may have landed
-    // while it ran, and the loop's own checks are already behind us. Also re-read the board - the
-    // player may have moved.
-    if (!finish.isAllowed() || !settings.autoMoveToFoundation || undoBusyRef.current) return false
-    const step = nextStep()
-    return step && !isLanding(step.entry.ref) ? firePlay(step.entry, step.to, () => finish.isAllowed()) : false
   }
 
   // Drag-and-drop's own entry point into flight bookkeeping (see activeFlightCountRef's doc

@@ -14,4 +14,9 @@ export const TALLEST_COLUMN = { faceDown: 0, faceUp: 1 }
  * this leaves room for a 6-card pile (1 + 5). It deliberately stops well short of the 13 a pile could
  * reach with no discards at all - that would shrink four cards to a size nobody would choose to play
  * at - and a pile that outgrows the budget compresses like every other column. */
-export const BOARD_MODEL = columnBoardModel({ ...TALLEST_COLUMN, headroomFaceUp: 5 })
+/** The longest pile real play builds, which still fits at PileView's minimum fan spacing (see columnBoardModel): 9 cards -
+ * the 90th percentile of each game's tallest pile over 5,000 simulated deals with the app's Hint (2026-10-13).
+ * AcesUpScreen fits it in portrait too. */
+export const LONG_COLUMN = { faceDown: 0, faceUp: 9 }
+
+export const BOARD_MODEL = columnBoardModel({ ...TALLEST_COLUMN, headroomFaceUp: 5, longColumn: LONG_COLUMN })

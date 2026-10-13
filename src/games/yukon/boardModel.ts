@@ -14,4 +14,10 @@ export const TALLEST_COLUMN = { faceDown: 6, faceUp: 5 }
  * The default face-up headroom is kept on purpose: this deal already starts 11 cards deep, so the
  * headroom sits on top of the deepest start of any Klondike-family game, and budgeting more would
  * shrink cards well past what a phone held sideways can afford (see boardModel.test.ts's floor). */
-export const BOARD_MODEL = columnBoardModel({ ...TALLEST_COLUMN })
+/** The longest column real play builds: 28 face-up cards - the 90th percentile of each game's tallest column over 4,000
+ * simulated deals with a greedy player (2026-10-13); half the games reach 20. Yukon moves whole stacks, so its columns
+ * grow far longer than a phone held sideways can fit at a readable size: this shrinks the cards there only down to
+ * LONG_COLUMN_MIN_CARD_WIDTH, and a longer column scrolls (see columnBoardModel). */
+export const LONG_COLUMN = { faceDown: 0, faceUp: 28 }
+
+export const BOARD_MODEL = columnBoardModel({ ...TALLEST_COLUMN, longColumn: LONG_COLUMN })

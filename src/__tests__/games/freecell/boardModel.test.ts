@@ -3,7 +3,7 @@ import { CARD_ASPECT, faceUpFanOffset } from '@tastic/cards'
 import { cardLayoutForRow, SPLIT_TOP_ROW_MIN_GAP } from '@/components/cardLayout'
 import { columnBoardModel, computeGameLayout, fitCardWidthToHeight, GAME_CONTENT_PADDING } from '@/components/gameLayout'
 import { Card } from '@/engine/types'
-import { BOARD_MODEL, TALLEST_COLUMN } from '@/games/freecell/boardModel'
+import { BOARD_MODEL, LONG_COLUMN, TALLEST_COLUMN } from '@/games/freecell/boardModel'
 import { FreeCellController } from '@/games/freecell/rules'
 
 const TABLEAU_COLUMNS = 8
@@ -28,8 +28,9 @@ describe('FreeCell board model', () => {
     }
   })
 
-  it('is the documented model: one top card row, the dealt column, default headroom and margins', () => {
-    expect(BOARD_MODEL).toEqual(columnBoardModel({ topRowCards: 1, faceDown: 0, faceUp: 7 }))
+  it('is the documented model: one top card row, the dealt column, default headroom and margins, and a 13-card column at the minimum fan spacing', () => {
+    expect(BOARD_MODEL).toEqual(columnBoardModel({ topRowCards: 1, faceDown: 0, faceUp: 7, longColumn: LONG_COLUMN }))
+    expect(LONG_COLUMN).toEqual({ faceDown: 0, faceUp: 13 })
     // Independent of columnBoardModel's own arithmetic: top row + (7 dealt + 3 headroom - 1 fanned) face-up
     // fans + the last, fully visible card, all in card widths.
     const H = 1 / CARD_ASPECT

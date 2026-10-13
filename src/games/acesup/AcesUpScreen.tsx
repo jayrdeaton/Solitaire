@@ -33,7 +33,7 @@ import { measureView } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
-import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { fitCardWidthToHeight, fittedGap, useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { PlayingCard } from '@/components/PlayingCard'
@@ -82,19 +82,20 @@ function AcesUpScreenInner() {
   const { info: infoToast } = useToast()
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
-  const { contentWidth } = useGameLayout()
-  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, NUM_PILES)
-  // The width-derived size in portrait (unchanged); in the wide layout also capped so a pile several
-  // cards deep still fits the ~400pt of height - see boardModel.ts.
-  const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
-  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, NUM_PILES)
+  const { contentWidth, availableHeight } = useGameLayout()
+  const rowWidth = contentWidth - GAME_CONTENT_PADDING * 2
+  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(rowWidth, NUM_PILES)
+  // Capped so a pile as long as real games make it still fits the height (see boardModel.ts) - in BOTH layouts, unlike
+  // the other games: with only four piles, the width-derived card on a short phone (88pt on a 640pt Android) ran a
+  // pile past the bottom by its sixth card, in most games. Tall phones stay width-bound, so their cards are unchanged.
+  const cardWidth = fitCardWidthToHeight(widthCardWidth, availableHeight, BOARD_MODEL)
+  const gap = cardWidth < widthCardWidth ? fittedGap(rowWidth, cardWidth, NUM_PILES) : widthGap
   // Spans the same width as pilesRow below (4 piles + 3 gaps) so topRow's own space-between can
   // put the discard pile and stock at its two ends, mirroring Pyramid's controlRow/triangle.
   const pilesWidth = cardWidth * NUM_PILES + gap * (NUM_PILES - 1)
-  // Was a fixed 320 module constant - now adapts to real window height the same way every other
-  // PileView-using game already does (see useTableauMaxHeight's own doc comment), 320 kept as the
-  // floor so a short/cramped screen never gets less generous than it did before.
-  const tableauMaxHeight = useTableauMaxHeight(cardWidth, 320)
+  // Adapts to the real window height the same way every other PileView-using game does (see
+  // useTableauMaxHeight's own doc comment).
+  const tableauMaxHeight = useTableauMaxHeight(cardWidth)
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
   // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
   // exclusion with everything else; tap/drag/stock-draw can all run concurrently with each other -

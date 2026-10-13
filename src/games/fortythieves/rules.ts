@@ -34,8 +34,13 @@
 // pair for the full reasoning. This game's stock never recycles (see drawStock below), so the
 // single-pass rule needs no extra code to enforce: once drawStock returns null, there is simply no
 // further move to simulate.
+//
+// canAutoFinish/nextFinishMove narrow the plain (non-draws) check to a SOLVED board - nothing left
+// in the stock or on the waste - for the finish (games/shared/useAutoFinish), the one auto-play that
+// follows ANY move of the player's, not just a foundation play. It must never give hidden
+// information away, so unlike the draws-aware check it never reads the stock's order.
 
-import { AutoCompleteStep } from '@/engine/autoFoundation'
+import { AutoCompleteStep, FinishMove } from '@/engine/autoFoundation'
 import { shuffledDeck } from '@/engine/deck'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { isDescendingSameSuit, top } from '@/engine/pile'
@@ -417,6 +422,26 @@ export function isFullyAutoCompletable(controller: Pick<GameController<FortyThie
  * move for real) advances the cascade by exactly one card. */
 export function nextAutoCompleteMove(controller: Pick<GameController<FortyThievesState>, 'accessibleCards' | 'tryMove'>, state: FortyThievesState): AccessibleCard | null {
   return findNextFoundationMove(controller, state)
+}
+
+/** True while the board is SOLVED: nothing hidden and no choice left - the stock and the waste are
+ * empty (the stock is the only place a face-down card can be here, see newGame/drawStock), the game
+ * isn't won yet, and every remaining tableau card can go up by foundation moves alone. The explicit
+ * isWon matters: isFullyAutoCompletable is true on a won board, and the finish would never end. Takes
+ * the controller because the screen's is per deal (controllerRef), though no foundation move depends
+ * on its runMoves. */
+export function canAutoFinish(controller: Pick<GameController<FortyThievesState>, 'isWon' | 'accessibleCards' | 'tryMove'>, state: FortyThievesState): boolean {
+  if (state.stock.length > 0 || state.waste.length > 0) return false
+  return !controller.isWon(state) && isFullyAutoCompletable(controller, state)
+}
+
+/** The next card the finish sends up and the foundation pile it goes to (findFoundationSlot's - one
+ * of two piles per suit, not a fixed one), or null unless the board is solved. */
+export function nextFinishMove(controller: Pick<GameController<FortyThievesState>, 'isWon' | 'accessibleCards' | 'tryMove'>, state: FortyThievesState): FinishMove | null {
+  if (!canAutoFinish(controller, state)) return null
+  const entry = findNextFoundationMove(controller, state)
+  if (!entry) return null
+  return { entry, to: { zone: 'foundation', index: findFoundationSlot(state.foundation, entry.card)! } } // non-null: findNextFoundationMove only returns a card with a slot
 }
 
 /** Draws-aware counterpart of findNextFoundationMove above - own reimplementation for the same

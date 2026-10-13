@@ -8,9 +8,8 @@
       "policy": "fingerprint"
     },
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/images/icon-dark.png",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "experiments": {
       "typedRoutes": true
     },
@@ -18,8 +17,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.infinitetoken.solitaire",
       "icon": {
-        "light": "./assets/icon.png",
-        "dark": "./assets/icon-dark.png"
+        "dark": "./assets/images/icon-dark.png",
+        "light": "./assets/images/icon-light.png"
       },
       "entitlements": {
         "com.apple.security.application-groups": [
@@ -35,16 +34,10 @@
     },
     "android": {
       "package": "com.infinitetoken.solitaire",
-      "adaptiveIcon": {
-        "backgroundColor": "#08573F",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
-      },
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "favicon": "./assets/favicon.png",
+      "favicon": "./assets/images/icon-dark.png",
       "bundler": "metro",
       "output": "static"
     },
@@ -53,13 +46,12 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/splash-icon.png",
-          "backgroundColor": "#0B6E4F",
-          "resizeMode": "contain",
-          "imageWidth": 280,
+          "image": "./assets/images/splash-light.png",
+          "imageWidth": 200,
+          "backgroundColor": "#FAFAFA",
           "dark": {
-            "image": "./assets/splash-icon-dark.png",
-            "backgroundColor": "#08573F"
+            "image": "./assets/images/splash-dark.png",
+            "backgroundColor": "#050505"
           }
         }
       ],

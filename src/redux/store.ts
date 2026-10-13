@@ -6,7 +6,7 @@ import { createReturningPlayerMigrate } from '@tastic/hud/guide'
 import { profilesReducer } from '@tastic/profile'
 import { FLUSH, PAUSE, PERSIST, persistReducer, persistStore, PURGE, REGISTER, REHYDRATE } from 'redux-persist'
 
-import { DEFAULT_SEED_COLOR } from '@/constants/theme'
+import { DEFAULT_SEED_COLOR, THEME_HARMONY } from '@/constants/theme'
 
 import achievements from './achievementsSlice'
 import activeProfile from './activeProfileSlice'
@@ -35,7 +35,7 @@ const rootReducer = combineReducers({
   // auto-paper's appearance/color settings, bridged into its Provider by components/Theme.tsx. Seeded
   // with DEFAULT_SEED_COLOR so a first launch paints the same color useTableColors() falls back to
   // (ProfileThemeSync then sets the active profile's own muted color in that same first commit).
-  theme: createThemeReducer({ color: DEFAULT_SEED_COLOR }),
+  theme: createThemeReducer({ color: DEFAULT_SEED_COLOR, harmony: THEME_HARMONY }),
   // The game screen the player was last on (see stores/lastActiveGame.tsx).
   lastActiveGame,
   // Each game's resumable board, persisted under its own keys and so blacklisted below (see

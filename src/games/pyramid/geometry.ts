@@ -54,10 +54,14 @@ export const PYRAMID_BOARD_MODEL: BoardHeightModel = {
   fixed: CONTROL_ROW_MARGIN_BOTTOM + TRIANGLE_MARGIN_BOTTOM
 }
 
-/** Pyramid's final card width. Portrait keeps its original derivation exactly (`portraitAvailableHeight`
- * is useTableauMaxHeight's budget, a second-order approximation of the same question); the wide layout
- * solves the real board model against the layout's available height instead. */
+/** Pyramid's final card width. Portrait keeps its original derivation (`portraitAvailableHeight` is
+ * useTableauMaxHeight's budget, a second-order approximation of the same question), capped by the real board
+ * model: that budget counts 36pt of margins where the board has 40, so where the clamp just binds (near-square
+ * portrait windows) the board ran up to 4pt past the screen, and GameChrome's board now scrolls for anything
+ * over a point. Wherever the old size fit, the cap is no tighter, so it is unchanged. The wide layout solves the
+ * real board model against the layout's available height. */
 export function pyramidCardWidth(widthCardWidth: number, isWide: boolean, layoutAvailableHeight: number, portraitAvailableHeight: number): number {
-  if (isWide) return fitCardWidthToHeight(widthCardWidth, layoutAvailableHeight, PYRAMID_BOARD_MODEL)
-  return clampCardWidthForHeight(widthCardWidth, portraitAvailableHeight, ROWS - 1, FACE_UP_OFFSET_RATIO, CARD_ASPECT)
+  const fitted = fitCardWidthToHeight(widthCardWidth, layoutAvailableHeight, PYRAMID_BOARD_MODEL)
+  if (isWide) return fitted
+  return Math.min(clampCardWidthForHeight(widthCardWidth, portraitAvailableHeight, ROWS - 1, FACE_UP_OFFSET_RATIO, CARD_ASPECT), fitted)
 }

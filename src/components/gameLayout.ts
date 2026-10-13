@@ -3,6 +3,7 @@ import { rotateInsets, useRotatedWindowDimensions, useRotation } from '@tastic/c
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { CARD_GAP_MAX, CARD_GAP_MIN } from './cardLayout'
+import { MIN_FAN_SCALE } from './columnTops'
 
 /* ---------------------------------------------------------------------------------------------
  * The one place a game screen's board geometry comes from - both orientations.
@@ -121,6 +122,9 @@ export const DEFAULT_HEADROOM_FACE_UP = 3
 export interface BoardHeightModel {
   perWidth: number
   fixed: number
+  /** The board with its long column (see ColumnBoardOptions' `longColumn`) in place of the deal's: its height per card
+   * width (the same `fixed`), and the smallest card it may shrink the board to. */
+  long?: { perWidth: number; minCardWidth: number }
 }
 
 export interface ColumnBoardOptions {
@@ -135,10 +139,21 @@ export interface ColumnBoardOptions {
   faceUp: number
   /** Extra face-up cards to budget beyond the deal. Default DEFAULT_HEADROOM_FACE_UP. */
   headroomFaceUp?: number
+  /** A long column, of the length real games reach (see each boardModel.ts), that should still fit fanned at PileView's
+   * MIN_FAN_SCALE - the tightest a column is ever compressed, past which the board scrolls. It may shrink the cards
+   * below what the deal needs, but never below LONG_COLUMN_MIN_CARD_WIDTH: past that a longer column scrolls instead.
+   * Default: none. */
+  longColumn?: { faceDown: number; faceUp: number }
   /** Any additional fixed height (px) the board carries that isn't card-relative. */
   extraFixed?: number
   /** Any additional height in card widths (e.g. a second row of cards). */
   extraPerWidth?: number
+}
+
+/** How far a column's fan reaches below its first card's top, per unit of card width, uncompressed (PileView's
+ * columnTops: every card's step but the top one's). */
+export function columnFan(column: { faceDown: number; faceUp: number }): number {
+  return column.faceDown * FACE_DOWN_FAN_RATIO + Math.max(0, column.faceUp - 1) * FACE_UP_FAN_RATIO
 }
 
 /** Builds the height model for a "top row + fanned tableau columns" board - every column game in this
@@ -148,11 +163,13 @@ export interface ColumnBoardOptions {
 export function columnBoardModel(opts: ColumnBoardOptions): BoardHeightModel {
   const topRowCards = opts.topRowCards ?? 1
   const headroom = opts.headroomFaceUp ?? DEFAULT_HEADROOM_FACE_UP
-  const fanFaceUp = Math.max(0, opts.faceUp - 1 + headroom)
-  const tableau = opts.faceDown * FACE_DOWN_FAN_RATIO + fanFaceUp * FACE_UP_FAN_RATIO + CARD_HEIGHT_RATIO
+  const rest = topRowCards * CARD_HEIGHT_RATIO + CARD_HEIGHT_RATIO + (opts.extraPerWidth ?? 0)
+  const perWidth = rest + columnFan({ faceDown: opts.faceDown, faceUp: opts.faceUp + headroom })
+  const longPerWidth = opts.longColumn ? rest + columnFan(opts.longColumn) * MIN_FAN_SCALE : 0
   return {
-    perWidth: topRowCards * CARD_HEIGHT_RATIO + tableau + (opts.extraPerWidth ?? 0),
-    fixed: (topRowCards > 0 ? (opts.topRowMargin ?? TOP_ROW_MARGIN_BOTTOM) : 0) + (opts.tableauPaddingBottom ?? TABLEAU_ROW_PADDING_BOTTOM) + (opts.extraFixed ?? 0)
+    perWidth,
+    fixed: (topRowCards > 0 ? (opts.topRowMargin ?? TOP_ROW_MARGIN_BOTTOM) : 0) + (opts.tableauPaddingBottom ?? TABLEAU_ROW_PADDING_BOTTOM) + (opts.extraFixed ?? 0),
+    ...(longPerWidth > perWidth ? { long: { perWidth: longPerWidth, minCardWidth: LONG_COLUMN_MIN_CARD_WIDTH } } : {})
   }
 }
 
@@ -160,11 +177,19 @@ export function columnBoardModel(opts: ColumnBoardOptions): BoardHeightModel {
  * window with almost no height still renders tappable cards rather than shrinking toward zero. */
 export const MIN_CARD_WIDTH = 28
 
+/** The smallest card a board's long column (ColumnBoardOptions' `longColumn`) may shrink it to: the smallest card the
+ * board models already count as playable in landscape (each boardModel.test.ts), about the size the 10-column games
+ * already draw in portrait. Yukon, Scorpion and Spider columns grow too long to fit a phone held sideways at any
+ * readable size, so there they shrink the cards to this and a longer column scrolls. */
+export const LONG_COLUMN_MIN_CARD_WIDTH = 40
+
 /** The largest card width - capped at the width-derived one - at which `model`'s board still fits in
- * `availableHeight`. */
+ * `availableHeight`: its deal (with headroom) uncompressed, and its long column, if any, at PileView's minimum fan
+ * spacing (that one only down to its `minCardWidth`). */
 export function fitCardWidthToHeight(widthCardWidth: number, availableHeight: number, model: BoardHeightModel): number {
   const heightCardWidth = (availableHeight - model.fixed) / model.perWidth
-  return Math.max(MIN_CARD_WIDTH, Math.min(widthCardWidth, heightCardWidth))
+  const longCardWidth = model.long ? Math.max(model.long.minCardWidth, (availableHeight - model.fixed) / model.long.perWidth) : Infinity
+  return Math.max(MIN_CARD_WIDTH, Math.min(widthCardWidth, heightCardWidth, longCardWidth))
 }
 
 /** A screen's final card width: the width-derived one in portrait (unchanged), fitted to the height in

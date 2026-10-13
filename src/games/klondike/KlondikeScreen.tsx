@@ -37,6 +37,7 @@ import { Card, SUITS } from '@/engine/types'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
+import { useAutoFinish } from '@/games/shared/useAutoFinish'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
@@ -54,11 +55,7 @@ import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/game
 import { BOARD_MODEL } from './boardModel'
 import { buildKlondikeDealSequence } from './dealSequence'
 import { KlondikeSettingsSection } from './KlondikeSettingsSection'
-import { createKlondikeController, KlondikeState } from './rules'
-
-// Floor for useTableauMaxHeight below, not a fixed height anymore - a short screen never fans out
-// less generously than this, but a screen with real headroom to spare now gets more of it.
-const TABLEAU_MIN_HEIGHT = 420
+import { canAutoFinish, createKlondikeController, KlondikeState, nextFinishMove } from './rules'
 const TABLEAU_COLUMNS = 7
 const WASTE: PileRef = { zone: 'waste', index: 0 }
 
@@ -148,7 +145,7 @@ function KlondikeScreenInner() {
   // cards shrink until the deal's tallest column fits (see boardModel.ts).
   const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
   const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
-  const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
+  const tableauMaxHeight = useTableauMaxHeight(cardWidth)
   const ghost = useDragGhost()
   const rotation = useRotation()
   const deal = useDealAnimator()
@@ -247,7 +244,9 @@ function KlondikeScreenInner() {
 
   function startNewGame() {
     const myToken = ++dealTokenRef.current
-    // A cascade still running from the old deal must not carry on into this one (see useAutoFoundationCascade's disarm).
+    // A cascade or finish still running from the old deal must not carry on into this one, and a new deal that happens to be
+    // solved is not filed away until the player's own first move (see useAutoFoundationCascade's disarm, useAutoFinish's suppress).
+    finish.suppress()
     cascade.disarm()
     controllerRef.current = createKlondikeController(settings.klondikeDraw)
     setKlondikeDraw(settings.klondikeDraw)
@@ -282,7 +281,9 @@ function KlondikeScreenInner() {
   // value is somehow missing/invalid.
   function restoreGame(saved: SavedGame<KlondikeState, KlondikeUndoEntry | LegacyKlondikeUndoEntry>) {
     ++dealTokenRef.current
-    // Nothing auto-plays on a resumed board until the player's own next foundation play.
+    // Nothing auto-plays on a resumed board until the player's own next move: a foundation play for the cascade, any move that
+    // leaves the board solved for the finish.
+    finish.suppress()
     cascade.disarm()
     const draw = saved.config === 1 || saved.config === 3 ? saved.config : settings.klondikeDraw
     controllerRef.current = createKlondikeController(draw)
@@ -610,12 +611,12 @@ function KlondikeScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // Auto-play-to-foundation: only ever follows the player's own play of a card to a foundation - see
-  // useAutoFoundationCascade for the trigger model (afterPlayerMove, called from applyMove below; any
-  // other move of theirs and a stock draw stop it), and engine/autoFoundation.ts for the two mechanisms
-  // computeNextStep composes. Its cards follow the player's own one on a short stagger, overlapping
-  // each other's flights (see the hook for the one thing a card still waits for: its own pile to
-  // stop landing).
+  // Auto-play-to-foundation: the cascade only ever follows the player's own play of a card to a
+  // foundation - see useAutoFoundationCascade for the trigger model (afterPlayerMove, called from
+  // applyMove below; any other move of theirs and a stock draw stop it), and engine/autoFoundation.ts
+  // for the two mechanisms computeNextStep composes. Its cards follow the player's own one on a short
+  // stagger, overlapping each other's flights (see the hook for the one thing a card still waits for:
+  // its own pile to stop landing).
   const cascade = useAutoFoundationCascade<KlondikeState>({
     state,
     isLanding,
@@ -626,6 +627,20 @@ function KlondikeScreenInner() {
     firePlay,
     fireDraw: handleDrawStock,
     fireDrawAndPlay
+  })
+  // The finish: once the board is solved (nothing face-down, the stock and waste empty, every card able
+  // to go up), the rest files away on its own at the finish's quicker pace - after ANY move of the
+  // player's that leaves the board that way, or the cascade a foundation play set off (see useAutoFinish
+  // and rules.ts's canAutoFinish). Both read the live controller: New Game and restore replace it.
+  const finish = useAutoFinish<KlondikeState>({
+    state,
+    enabled: () => settings.autoMoveToFoundation,
+    isBusy: () => undoBusyRef.current,
+    getState: () => stateRef.current,
+    canFinish: (s) => canAutoFinish(controllerRef.current, s),
+    nextMove: (s) => nextFinishMove(controllerRef.current, s),
+    isLanding,
+    firePlay
   })
 
   // Resumes a saved board if one exists, otherwise deals fresh - either way, this screen becomes
@@ -760,8 +775,9 @@ function KlondikeScreenInner() {
     const current = stateRef.current
     const entry = undoStackRef.current[undoStackRef.current.length - 1]
     if (!current || !entry) return
-    // An undo is not the player's own foundation move, so it must never set auto-play off again: an
-    // undone auto-play would otherwise fly straight back up the moment the reverted board settles.
+    // An undo is not the player's own move, so it must never set auto-play off again: an undone auto-play would otherwise fly
+    // straight back up the moment the reverted board settles (undoing a card off a solved board leaves it solved).
+    finish.suppress()
     cascade.disarm()
     // Undo only ever moves backward into an earlier, necessarily-not-won state (won is a terminal
     // condition - the only move available once it's true is New Game), so any undo reachable while
@@ -939,9 +955,9 @@ function KlondikeScreenInner() {
     }
   }
 
-  // `silent` is for the auto-play-to-foundation feature (see maybeAutoPlay/fireAutoMove below): an
-  // auto-played card isn't a player decision, so it doesn't count toward the moves/score the player
-  // is judged on. It is still its own undo step, like any other move (see pushUndo).
+  // `silent` is for the auto-play-to-foundation feature (the cascade's and the finish's cards, see
+  // firePlay below): an auto-played card isn't a player decision, so it doesn't count toward the
+  // moves/score the player is judged on. It is still its own undo step, like any other move (see pushUndo).
   function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean }) {
     // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
     // closure's `state` - two actions can now be triggered back-to-back before React re-renders
@@ -960,9 +976,14 @@ function KlondikeScreenInner() {
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
-      // Only the player's own play of a card to a foundation starts auto-play; any other move of theirs
+      // Only the player's own play of a card to a foundation starts the cascade; any other move of theirs
       // stops it, so a card it uncovers (an ace flipped up on the tableau, say) is theirs to find and play.
-      if (!opts?.silent) cascade.afterPlayerMove(to)
+      // The finish follows ANY move of theirs that leaves the board solved - but not one that takes a card
+      // back off a foundation (see useAutoFinish).
+      if (!opts?.silent) {
+        cascade.afterPlayerMove(to)
+        finish.afterPlayerMove(from)
+      }
       return true
     }
     return false
@@ -982,10 +1003,12 @@ function KlondikeScreenInner() {
   // Composes engine/autoFoundation.ts's two mechanisms into the shared cascade hook's step shape -
   // mechanism B (a guaranteed full clear, draws-aware so it can also reach through the stock) takes
   // priority and, once true, ignores mechanism A's caution entirely since there's no longer any
-  // player decision left to protect.
+  // player decision left to protect. Once the board is solved (nothing hidden, nothing left to draw)
+  // the cascade steps aside and the finish takes over at its own quicker pace - otherwise the two
+  // would stream the same cards, racing each other for every one.
   function computeNextStep(s: KlondikeState): AutoCompleteStep | null {
     const controller = controllerRef.current
-    if (!controller.accessibleCards) return null
+    if (!controller.accessibleCards || canAutoFinish(controller, s)) return null
     if (isFullyAutoCompletableWithDraws(controller, s)) return nextAutoCompleteMoveWithDraws(controller, s)
     const entry = findSafeAutoPlay(controller.accessibleCards(s), s.foundation)
     return entry ? { kind: 'play', entry, to: { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) } } : null
@@ -996,14 +1019,17 @@ function KlondikeScreenInner() {
   // before applying its move (every other mutator here either has no await at all, or - like
   // handleUndo - captures everything it needs from the pre-move state synchronously first). Guard
   // against something else changing state during that gap by snapshotting stateRef before the
-  // await and bailing if it no longer matches after.
+  // await and bailing if it no longer matches after. `stillWanted` is re-checked there too: whichever
+  // automation sent this card - the cascade (its isArmed, the default) or the finish (its isAllowed,
+  // which useAutoFinish passes) - may have been ended meanwhile by the player's move elsewhere, an
+  // undo or a new deal.
   // Resolves once the move is COMMITTED (true) or refused (false), not when it lands - which is what
   // lets the cascade send the next card while this one is still flying.
-  async function firePlay(entry: AccessibleCard, to: PileRef): Promise<boolean> {
+  async function firePlay(entry: AccessibleCard, to: PileRef, stillWanted: () => boolean = () => cascade.isArmed()): Promise<boolean> {
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
-    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current || !cascade.isArmed()) {
+    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current || !stillWanted()) {
       settleFlight()
       return false
     }
@@ -1306,8 +1332,8 @@ function KlondikeScreenInner() {
                       foundationSlotRefs.current[i] = el
                     }}
                     // A foundation card may come back down to the tableau (rules.ts's tryMove) - by drag only, and never
-                    // once the deal is won. Any move to a column stops a running auto-play (applyMove), so it isn't sent
-                    // straight back up.
+                    // once the deal is won. A move off a foundation stops a running cascade or finish, and starts neither
+                    // (applyMove), so it isn't sent straight back up: the player chose to take it back.
                     under={pile[pile.length - 2] ?? null}
                     onDrop={won ? undefined : (x, y, flight, dragged) => attemptDrop({ zone: 'foundation', index: i }, 1, x, y, dragged.id, flight)}
                   />

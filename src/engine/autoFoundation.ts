@@ -103,6 +103,12 @@ export function nextAutoCompleteMove<TState>(controller: GameController<TState>,
   return findNextFoundationMove(controller, state)
 }
 
+/** One card of a finish (games/shared/useAutoFinish): the card, and the foundation it goes to. */
+export interface FinishMove {
+  entry: AccessibleCard
+  to: PileRef
+}
+
 /** One step of a draws-aware auto-complete cascade (see isFullyAutoCompletableWithDraws below):
  * either an ordinary foundation play, a plain stock draw/recycle with nothing new immediately
  * playable, or a draw that itself exposes a card ready to go straight to its foundation. Never

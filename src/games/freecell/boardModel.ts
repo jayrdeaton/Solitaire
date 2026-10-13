@@ -4,6 +4,11 @@ import { columnBoardModel } from '@/components/gameLayout'
  * cards and the last four 6, and FreeCell deals every card face up - so nothing is face-down. */
 export const TALLEST_COLUMN = { faceDown: 0, faceUp: 7 }
 
+/** The longest column real play builds, which still fits at PileView's minimum fan spacing (see columnBoardModel): 13
+ * face-up cards - between the 90th percentile of each game's tallest column for a solver (11 cards) and for play that
+ * follows the app's Hint (15), over 1,000 simulated deals each (2026-10-13). */
+export const LONG_COLUMN = { faceDown: 0, faceUp: 13 }
+
 /** FreeCell's board height as a function of card width, for fitting the cards to a short (landscape)
  * window - see gameLayout.ts's fitCardWidthToHeight. */
 export const BOARD_MODEL = columnBoardModel({
@@ -14,5 +19,6 @@ export const BOARD_MODEL = columnBoardModel({
   // depth as runs are built, but PileView compresses a long fan gracefully, so the default is enough to
   // keep the first few moves from squeezing anything. topRow marginBottom is 16 and tableauRow
   // paddingBottom 20 (FreeCellScreen's makeStyles) - the same numbers the defaults assume.
-  ...TALLEST_COLUMN
+  ...TALLEST_COLUMN,
+  longColumn: LONG_COLUMN
 })

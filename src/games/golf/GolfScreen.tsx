@@ -55,16 +55,6 @@ import { GolfSettingsSection } from './GolfSettingsSection'
 import { createGolfController, GolfState } from './rules'
 
 const TABLEAU_COLUMNS = 7
-// Every column starts at (and never exceeds) 5 cards, all dealt face up - Golf's tableau only ever
-// shrinks as cards leave for the waste pile, unlike Klondike/FreeCell/Spider, whose columns can grow
-// well past their dealt depth during play. At cardWidthForRow's own max (96px), 5 face-up cards
-// fanned at faceUpFanOffset (0.45 of card WIDTH = 43.2px; the card is ~139.5px tall at that width)
-// total 4*43.2 + 139.5 ≈ 312px. That is a touch over this 300 floor, but a 96px card only occurs
-// on a window big enough that useTableauMaxHeight's own budget already exceeds it (the wide layout
-// has no floor and sizes the card to fit), so PileView's compression never kicks in at any real
-// card size. Now a floor for useTableauMaxHeight below rather than a fixed height -
-// compression already never fired at this size, so this floor is mostly moot in practice.
-const TABLEAU_MIN_HEIGHT = 300
 const WASTE: PileRef = { zone: 'waste', index: 0 }
 
 export default withGameProviders(GolfScreenInner)
@@ -91,7 +81,7 @@ function GolfScreenInner() {
   // (top row + the tallest starting column) fits the window's short axis - see boardModel.ts.
   const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
   const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
-  const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
+  const tableauMaxHeight = useTableauMaxHeight(cardWidth)
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
   // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
   // exclusion with everything else; tap/drag/stock-draw can all run concurrently with each other -

@@ -13,4 +13,9 @@ export const TALLEST_COLUMN = { faceDown: 6, faceUp: 1 }
  * which are the model's defaults, and the default face-up headroom is enough for a few cards to be
  * played onto the seventh column before it starts compressing - Klondike's columns grow by a run or
  * two at a time, not by the deep builds Canfield's or Forty Thieves' do. */
-export const BOARD_MODEL = columnBoardModel({ ...TALLEST_COLUMN })
+/** The longest column real play builds, which still fits at PileView's minimum fan spacing (see columnBoardModel): a King
+ * run down to the 2 in a cleared column (the Ace goes up), 12 face-up cards - the 90th percentile of each game's tallest
+ * column over 5,000 simulated deals with a greedy player (2026-10-13). */
+export const LONG_COLUMN = { faceDown: 0, faceUp: 12 }
+
+export const BOARD_MODEL = columnBoardModel({ ...TALLEST_COLUMN, longColumn: LONG_COLUMN })

@@ -13,8 +13,11 @@ export const BOARD_MODEL = columnBoardModel({
   ...TALLEST_COLUMN,
   // More headroom than the default 3: columns build down by suit one card at a time and routinely grow
   // well past the 4 they're dealt, so budgeting 5 extra face-up cards (a 9-card column stays
-  // uncompressed) keeps the fan readable through the middle game. Anything longer still compresses
-  // gracefully via PileView's maxHeight. The margins are the defaults - topRow marginBottom 16,
-  // tableauRow paddingBottom 20 (FortyThievesScreen's makeStyles).
-  headroomFaceUp: 5
+  // uncompressed) keeps the fan readable through the middle game. The margins are the defaults - topRow
+  // marginBottom 16, tableauRow paddingBottom 20 (FortyThievesScreen's makeStyles).
+  headroomFaceUp: 5,
+  // The longest column real play builds: 10 cards, the 90th percentile of each game's tallest column over 1,000
+  // simulated deals with a greedy player (2026-10-13). The headroom above already fits it at PileView's minimum fan
+  // spacing, so it changes nothing today; it is here so a smaller headroom can't quietly make it scroll.
+  longColumn: { faceDown: 0, faceUp: 10 }
 })

@@ -15,4 +15,10 @@ export const TALLEST_COLUMN = { faceDown: 0, faceUp: 8 }
  *
  * Default headroom: columns grow toward a 13-card King-to-Ace run as the player stacks suits, and
  * 8 + 3 = 11 cards fit before PileView starts compressing the fan. */
-export const BOARD_MODEL = columnBoardModel({ ...TALLEST_COLUMN, topRowCards: 0 })
+/** The longest column real play builds: 30 face-up cards - the 90th percentile of each game's tallest column over 4,000
+ * simulated deals (default assisted stock) with a greedy player (2026-10-13); half the games reach 21. Like Yukon's, far
+ * longer than a phone held sideways can fit at a readable size: this shrinks the cards there only down to
+ * LONG_COLUMN_MIN_CARD_WIDTH, and a longer column scrolls (see columnBoardModel). */
+export const LONG_COLUMN = { faceDown: 0, faceUp: 30 }
+
+export const BOARD_MODEL = columnBoardModel({ ...TALLEST_COLUMN, topRowCards: 0, longColumn: LONG_COLUMN })

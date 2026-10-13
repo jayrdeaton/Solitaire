@@ -49,6 +49,7 @@ import { Card, SUITS } from '@/engine/types'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
+import { useAutoFinish } from '@/games/shared/useAutoFinish'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
@@ -66,11 +67,7 @@ import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/game
 import { BOARD_MODEL } from './boardModel'
 import { CanfieldSettingsSection } from './CanfieldSettingsSection'
 import { buildCanfieldDealSequence } from './dealSequence'
-import { CanfieldState, createCanfieldController, findSafeAutoPlay, isDescendingAltColorCyclic } from './rules'
-
-// Floor for useTableauMaxHeight below, not a fixed height anymore - a short screen never fans out
-// less generously than this, but a screen with real headroom to spare now gets more of it.
-const TABLEAU_MIN_HEIGHT = 460
+import { canAutoFinish, CanfieldState, createCanfieldController, findSafeAutoPlay, isDescendingAltColorCyclic, nextFinishMove } from './rules'
 // LAYOUT DECISION: the board is a grid of 7 card slots - Klondike's. The top row IS Klondike's: the 4
 // foundations at the left, an open slot, then the waste and the stock, with the draw-3 waste fan spreading
 // left into the open slot. The row under it puts the 4 tableau columns under the foundations, leaves the
@@ -182,7 +179,7 @@ function CanfieldScreenInner() {
   const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TOP_ROW_UNITS)
   // Both rows' width: the 7 slots and the 6 gaps between them.
   const rowWidth = cardWidth * TOP_ROW_UNITS + gap * (TOP_ROW_UNITS - 1)
-  const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT)
+  const tableauMaxHeight = useTableauMaxHeight(cardWidth)
   const ghost = useDragGhost()
   const rotation = useRotation()
   const deal = useDealAnimator()
@@ -255,8 +252,10 @@ function CanfieldScreenInner() {
     controllerRef.current = createCanfieldController(settings.canfieldDraw)
     setCanfieldDraw(settings.canfieldDraw)
     const s = controllerRef.current.newGame(randomSeed())
-    // A still-armed cascade must not fire on the new deal (see useAutoFoundationCascade's disarm).
+    // A still-armed cascade must not fire on the new deal (see useAutoFoundationCascade's disarm), nor a finish start on one
+    // that happens to be solved: only the player's own move does that (see useAutoFinish's suppress).
     cascade.disarm()
+    finish.suppress()
     setUndoStack([])
     setHint(null)
     hintsUsedRef.current = false
@@ -284,7 +283,9 @@ function CanfieldScreenInner() {
     const draw = saved.config === 1 || saved.config === 3 ? saved.config : settings.canfieldDraw
     controllerRef.current = createCanfieldController(draw)
     setCanfieldDraw(draw)
+    // A resumed board sits until the player moves, even a solved one.
     cascade.disarm()
+    finish.suppress()
     setUndoStack(saved.undoStack ?? [])
     setHint(null)
     hintsUsedRef.current = false
@@ -498,10 +499,10 @@ function CanfieldScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
 
-  // Auto-play-to-foundation: only ever follows the player's own play of a card to a foundation - see
-  // useAutoFoundationCascade for the trigger model (afterPlayerMove, called from applyMove below; any
-  // other move of theirs and a stock draw stop it), and engine/autoFoundation.ts for the two mechanisms
-  // computeNextStep composes.
+  // Auto-play-to-foundation has two independent halves (applyMove's afterPlayerMove calls). This one, the cascade, only
+  // ever follows the player's own play of a card to a foundation - see useAutoFoundationCascade for the trigger model (any
+  // other move of theirs and a stock draw stop it), and engine/autoFoundation.ts for the two mechanisms computeNextStep
+  // composes.
   const cascade = useAutoFoundationCascade<CanfieldState>({
     state,
     isLanding,
@@ -512,6 +513,20 @@ function CanfieldScreenInner() {
     firePlay,
     fireDraw: handleDrawStock,
     fireDrawAndPlay
+  })
+  // The finish: once the board is solved (rules.ts's canAutoFinish - reserve, stock and waste empty, nothing hidden, no
+  // choice left), every remaining card files away on its own at the finish's quicker pace - after ANY move of the
+  // player's that leaves it so, or the cascade a foundation play set off (see useAutoFinish). Both read the live
+  // controller: it is replaced on every New Game/restore.
+  const finish = useAutoFinish<CanfieldState>({
+    state,
+    enabled: () => settings.autoMoveToFoundation,
+    isBusy: () => undoBusyRef.current,
+    getState: () => stateRef.current,
+    canFinish: (s) => canAutoFinish(controllerRef.current, s),
+    nextMove: (s) => nextFinishMove(controllerRef.current, s),
+    isLanding,
+    firePlay
   })
 
   // Resumes a saved board if one exists, otherwise deals fresh - either way, this screen becomes
@@ -595,8 +610,11 @@ function CanfieldScreenInner() {
     if (!current || !entry) return
     // Every auto-played step is its own undo entry, so an undo can land on a board with a safe card
     // (or a whole sweep) waiting - a still-armed cascade must not play straight back what the player
-    // just took back. Nothing re-arms it until the player's next foundation move or starter reveal.
+    // just took back, and undoing a card off a solved board leaves it solved, so the finish must not
+    // send it straight back up either. Nothing re-arms the cascade until the player's next foundation
+    // play, nor starts the finish until their next move.
     cascade.disarm()
+    finish.suppress()
     if (won) {
       setWon(false)
       winCascade.clear()
@@ -688,11 +706,11 @@ function CanfieldScreenInner() {
   }
 
   // `silent` is for the auto-play-to-foundation feature (see firePlay below): an auto-played card
-  // isn't a player decision, so it doesn't count toward the moves/score the player is judged on or
-  // arm the cascade itself. It still pushes its OWN undo entry (the board right before it), like
-  // every other automatic step here (handleDrawStock's sweep draws/recycles, fireDrawAndPlay), so
-  // one Undo takes back exactly one step, with that step's own flight, and the player can stop
-  // anywhere between the move that set a cascade off and its last auto-played card.
+  // isn't a player decision, so it doesn't count toward the moves/score the player is judged on, arm
+  // the cascade or start the finish itself. It still pushes its OWN undo entry (the board right
+  // before it), like every other automatic step here (handleDrawStock's sweep draws/recycles,
+  // fireDrawAndPlay), so one Undo takes back exactly one step, with that step's own flight, and the
+  // player can stop anywhere between the move that set a cascade off and its last auto-played card.
   function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean }) {
     // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
     // closure's `state` - two actions can now be triggered back-to-back before React re-renders
@@ -712,9 +730,14 @@ function CanfieldScreenInner() {
       commitState(result)
       const movesSoFar = opts?.silent ? session.moves : session.registerMove()
       checkWin(result, movesSoFar)
-      // Only the player's own play of a card to a foundation starts auto-play; any other move of theirs
-      // stops it, so a card it uncovers (the reserve's next card, say) is theirs to find and play.
-      if (!opts?.silent) cascade.afterPlayerMove(to)
+      // Only the player's own play of a card to a foundation starts the cascade; any other move of theirs
+      // stops it, so a card it uncovers (the reserve's next card, say) is theirs to find and play. The
+      // finish follows ANY move of theirs that leaves the board solved, except one that takes a card back
+      // off a foundation, which stops it (see useAutoFinish).
+      if (!opts?.silent) {
+        cascade.afterPlayerMove(to)
+        finish.afterPlayerMove(from)
+      }
       return true
     }
     return false
@@ -746,8 +769,13 @@ function CanfieldScreenInner() {
   // the identical idea, scoped to this game only (see its own doc comment there). Note the
   // argument order is reversed from the shared version: rules.ts's findSafeAutoPlay takes
   // (state, accessible), not engine/autoFoundation.ts's (accessible, foundation).
+  //
+  // Nothing at all once the board is solved (rules.ts's canAutoFinish): the finish takes over there,
+  // at its own pace - otherwise the cascade and the finish fight over the same cards. A sweep through
+  // the stock that empties the stock and waste before the win hands its last cards over the same way.
   function computeNextStep(s: CanfieldState): AutoCompleteStep | null {
     if (!controllerRef.current.accessibleCards) return null
+    if (canAutoFinish(controllerRef.current, s)) return null
     if (isFullyAutoCompletableWithDraws(controllerRef.current, s)) return nextAutoCompleteMoveWithDraws(controllerRef.current, s)
     const entry = findSafeAutoPlay(s, controllerRef.current.accessibleCards(s))
     return entry ? { kind: 'play', entry, to: { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) } } : null
@@ -756,14 +784,17 @@ function CanfieldScreenInner() {
   // Mirrors handleCardTap's tail, but there's no tap event to supply an origin - it has to measure
   // the card's current position itself, which is the one place this feature has an await gap
   // before applying its move. Guard against something else changing state during that gap by
-  // snapshotting stateRef before the await and bailing if it no longer matches after.
+  // snapshotting stateRef before the await and bailing if it no longer matches after. `stillWanted`
+  // is re-checked there too: whichever automation sent this card - the cascade (its isArmed, the
+  // default) or the finish (its isAllowed, which useAutoFinish passes) - may have been ended meanwhile
+  // by the player's move elsewhere, an undo or a new deal.
   // Resolves once the move is COMMITTED (true) or refused (false), not when it lands - which is what
-  // lets the cascade send the next card while this one is still flying.
-  async function firePlay(entry: AccessibleCard, to: PileRef): Promise<boolean> {
+  // lets the cascade and the finish send the next card while this one is still flying.
+  async function firePlay(entry: AccessibleCard, to: PileRef, stillWanted: () => boolean = () => cascade.isArmed()): Promise<boolean> {
     startFlights(1)
     const stateAtStart = stateRef.current
     const origin = await ghost.cardRegistry.measure(entry.card.id)
-    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current || !cascade.isArmed()) {
+    if (!origin || stateRef.current !== stateAtStart || undoBusyRef.current || !stillWanted()) {
       settleFlight()
       return false
     }
@@ -853,7 +884,9 @@ function CanfieldScreenInner() {
     if (!result) return
     startFlights(1)
     // A draw is the player's, but it is not a play: it never sets auto-play off, and it stops a cascade
-    // still running from their last play, so a card they just drew is theirs to find and play.
+    // still running from their last play, so a card they just drew is theirs to find and play. The
+    // finish needs nothing here: a draw or a recycle never leaves the board solved (the waste or the
+    // stock still holds a card).
     if (!opts?.sweep) {
       session.registerMove()
       cascade.disarm()
@@ -1021,8 +1054,8 @@ function CanfieldScreenInner() {
                       foundationSlotRefs.current[i] = el
                     }}
                     // A foundation card may come back down to the tableau (rules.ts's tryMove) - by drag only, and never
-                    // once the deal is won. Any move to a column stops a running auto-play (applyMove), so it isn't sent
-                    // straight back up.
+                    // once the deal is won. A move off a foundation stops a running cascade and finish alike (applyMove), so
+                    // it isn't sent straight back up, even on a solved board.
                     under={pile[pile.length - 2] ?? null}
                     onDrop={won ? undefined : (x, y, flight, dragged) => attemptDrop({ zone: 'foundation', index: i }, 1, x, y, dragged.id, flight)}
                   />

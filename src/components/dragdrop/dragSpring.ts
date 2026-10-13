@@ -130,3 +130,11 @@ export function dropSpringFor(distance: number): WithSpringConfig {
  * stream reads; ~5 cards are in the air at once. Scale-1 60ms: 96ms at the default. Above useCascadeFeedback's 45ms floor, so every card keeps its
  * own sound/haptic tick. */
 export const AUTO_PLAY_STAGGER_MS = scaledMs(60)
+
+/** Gap between one card of the FINISH leaving and the next (useAutoFinish: the board is solved, nothing hidden and no choice left, so every
+ * remaining card files away on its own): half the auto-play gap, so a solved board clears about twice as fast as ordinary auto-play (Jay,
+ * 2026-10-12). The flights still take FLIGHT_SPRING's one time, so the cards still land in the order they left; ~8 are in the air at once.
+ * Scale-1 30ms: 48ms at the default. Just above useCascadeFeedback's 45ms floor, so every card normally keeps its tick (the gap is kept on a
+ * fixed clock from one take-off to the next, and a step whose measurement comes back quicker than the one before can land inside the floor
+ * and lose its tick: inaudible in a stream). */
+export const FINISH_STAGGER_MS = scaledMs(30)

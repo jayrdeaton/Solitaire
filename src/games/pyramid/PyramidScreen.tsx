@@ -453,7 +453,7 @@ function PyramidScreenInner() {
   // keeps its original clamp against useTableauMaxHeight's budget (a second-order approximation, fed
   // the width-derived cardWidth); the wide layout instead solves Pyramid's real board height (control
   // row + triangle + margins - see geometry.ts's PYRAMID_BOARD_MODEL) against the layout's height.
-  const portraitAvailableHeight = useTableauMaxHeight(widthCardWidth, 0)
+  const portraitAvailableHeight = useTableauMaxHeight(widthCardWidth)
   const cardWidth = pyramidCardWidth(widthCardWidth, isWide, layoutAvailableHeight, portraitAvailableHeight)
   const cardHeight = cardWidth / CARD_ASPECT
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see

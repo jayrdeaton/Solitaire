@@ -162,7 +162,7 @@ function TriPeaksScreenInner() {
   // Portrait: the same two-axis clamp as Pyramid's own (see clampCardWidthForHeight's doc comment) fed
   // by the column-game height budget, exactly as before. Wide: the real board (stock row + peaks) fitted
   // to the layout's height - see geometry.ts's tripeaksCardWidth.
-  const tableauMaxHeight = useTableauMaxHeight(widthCardWidth, 0)
+  const tableauMaxHeight = useTableauMaxHeight(widthCardWidth)
   const cardWidth = tripeaksCardWidth(widthCardWidth, isWide, layoutAvailableHeight, tableauMaxHeight)
   const cardHeight = cardWidth / CARD_ASPECT
   // Owns state/stateRef/commitState, the `flying` array, and undoBusyRef - see

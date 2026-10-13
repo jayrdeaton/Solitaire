@@ -1,7 +1,10 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
+import { AUTO_PLAY_STAGGER_MS, FINISH_STAGGER_MS } from '@/components/dragdrop/dragSpring'
+import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
 import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
+import * as yukonRules from '@/games/yukon/rules'
 import { YukonState } from '@/games/yukon/rules'
 import YukonScreen from '@/games/yukon/YukonScreen'
 
@@ -28,7 +31,12 @@ const mockRecordWon = jest.fn()
 const mockSettings = { autoMove: false }
 /** How long a flight stays in the air - a test can stretch it past the celebration's own hold. */
 let mockFlightMs = FLIGHT_MS
-const mockPiles = new Map<number, { cards: Card[] }>()
+/** What a column's drag hands the screen when a drag of its cards ends over a pile (PileView's drag.onDrop). */
+type MockDrop = (to: PileRef, count: number, anchorCardId: string, flight: unknown) => Promise<boolean> | boolean
+const mockPiles = new Map<number, { cards: Card[]; drag?: { onDrop: MockDrop } }>()
+/** Each foundation cell's onDrop (a card dragged back down to the tableau), by suit - unset while the screen gives none
+ * (won) or a card is flying in to that pile, like the real cell. */
+const mockFoundationDrops = new Map<string, ((x: number, y: number, flight: unknown, dragged: Card) => Promise<boolean> | boolean) | undefined>()
 let mockPileInstance = 0
 /** Card ids currently rendered by a stand-in - what the fake CardRegistry can measure. */
 const mockRegistered = new Set<string>()
@@ -45,8 +53,10 @@ const mockPilesShown = new Map<string, boolean>()
 let mockMeasureGate: { id: string; promise: Promise<void> } | null = null
 
 interface MockFlightLog {
-  /** Every ghost.show() - one per card flight the screen started (tap, drop, cascade step, undo). */
+  /** Every ghost.show() - one per card flight the screen started (tap, drop, cascade step, finish step, undo). */
   shown: string[]
+  /** When (fake time) each of those took off - same order as `shown`. */
+  shownAt: number[]
   /** flyTo() calls still waiting to land. */
   inAir: number
   /** Ghosts the screen gave up on (a flight that could not be measured simply vanishes - the card appears at its destination). */
@@ -61,7 +71,7 @@ interface MockFlightLog {
   /** DealLayer batches started (a cascade undo's return flights). */
   dealStarts: number
 }
-const mockLog: MockFlightLog = { shown: [], inAir: 0, hidden: 0, flown: 0, airAtWinCascade: -1, cascadeChains: -1, pilesShownAtCascade: -1, dealStarts: 0 }
+const mockLog: MockFlightLog = { shown: [], shownAt: [], inAir: 0, hidden: 0, flown: 0, airAtWinCascade: -1, cascadeChains: -1, pilesShownAtCascade: -1, dealStarts: 0 }
 /** One entry per React COMMIT that re-rendered the win cascade's ghost layer: whether ghosts were mounted, whether they were on
  * screen (mounted ghosts stay invisible until their faces have painted), and how many foundation piles were drawn bare (their real
  * cards blanked) in that same commit. */
@@ -94,6 +104,7 @@ const mockGhost = {
   },
   show: (spec: { cards: { id: string }[] }) => {
     mockLog.shown.push(spec.cards.map((c) => c.id).join('+'))
+    mockLog.shownAt.push(Date.now())
     return mockMakeFlight()
   }
 }
@@ -210,10 +221,12 @@ jest.mock('@/games/shared/FoundationCell', () => {
   const { useEffect, useLayoutEffect } = require('react')
   const { useFrozenWhileHidden } = jest.requireActual('@/components/useFrozenWhileHidden')
   return {
-    FoundationCell: ({ card, suit, isFlyingHere, settledCard, slotRef }: { card?: { id: string }; suit: string; isFlyingHere: boolean; settledCard?: { id: string } | null; slotRef?: (el: unknown) => void }) => {
+    FoundationCell: ({ card, suit, isFlyingHere, settledCard, slotRef, onDrop }: { card?: { id: string }; suit: string; isFlyingHere: boolean; settledCard?: { id: string } | null; slotRef?: (el: unknown) => void; onDrop?: (x: number, y: number, flight: unknown, dragged: Card) => Promise<boolean> | boolean }) => {
       useLayoutEffect(() => {
         mockPilesShown.set(suit, card !== undefined)
       })
+      // The real cell takes no drop while a card is flying in to it.
+      mockFoundationDrops.set(suit, isFlyingHere ? undefined : onDrop)
       useEffect(() => {
         if (!mockNoSlot.has(suit)) slotRef?.(mockSlotView)
         return () => slotRef?.(null)
@@ -239,9 +252,9 @@ jest.mock('@/components/PileView', () => {
   const { Pressable: MockPressable, View: MockView } = require('react-native')
   const { useEffect, useRef } = require('react')
   return {
-    PileView: (props: { cards: Card[]; onPressCard: (card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) => void }) => {
+    PileView: (props: { cards: Card[]; onPressCard: (card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) => void; drag?: { onDrop: MockDrop } }) => {
       const id = useRef(mockPileInstance++).current
-      mockPiles.set(id, { cards: props.cards })
+      mockPiles.set(id, { cards: props.cards, drag: props.drag })
       const key = props.cards.map((c) => c.id).join(',')
       useEffect(() => {
         const ids = key === '' ? [] : key.split(',')
@@ -354,6 +367,7 @@ beforeEach(() => {
   mockRegistered.clear()
   mockUnmeasurable.clear()
   mockLog.shown = []
+  mockLog.shownAt = []
   mockLog.inAir = 0
   mockLog.hidden = 0
   mockLog.flown = 0
@@ -365,6 +379,7 @@ beforeEach(() => {
   mockHoldDeal = false
   mockCommits.length = 0
   mockPilesShown.clear()
+  mockFoundationDrops.clear()
   mockNoSlot.clear()
   mockMeasureGate = null
   mockRecordWon.mockClear()
@@ -656,6 +671,259 @@ describe("Yukon screen - auto-play only ever follows the player's own play of a 
     expect(mockLog.shown).toEqual([id('hearts', 9)]) // the move's own flight, and nothing after it
     expect(foundationTop('clubs')).toBe('empty')
     expect(screen.queryByTestId(`card-${id('clubs', 1)}`)).not.toBeNull()
+  })
+})
+
+describe("Yukon screen - once the board is solved, any move of the player's finishes the rest, at the finish's quicker pace", () => {
+  /** Clubs and diamonds home up to the 9, hearts up to the 10, spades complete: the other 11 cards are on the tableau. */
+  const FOUNDATIONS = () => [pile('clubs', 9), pile('diamonds', 9), pile('hearts', 10), pile('spades', 13)]
+  /** A column `high` at the bottom down to `low` on top, each card free to go up once the one below it in rank has. */
+  const run = (suit: Suit, high: number, low: number): Card[] => Array.from({ length: high - low + 1 }, (_, i) => card(suit, high - i))
+  const faceDown = (c: Card): Card => ({ ...c, faceUp: false })
+  /** Solved: the 11 cards left are all face up and clear by foundation moves alone - nothing hidden, nothing left to decide. */
+  const SOLVED = () => board([run('clubs', 13, 10), run('diamonds', 13, 10), run('hearts', 13, 11)], FOUNDATIONS())
+  /** One move from solved: the King of hearts sits on the last face-down card, the 10 of diamonds. It has nowhere to go but an
+   * empty column, and moving it there turns the 10 over. */
+  const ONE_MOVE_FROM_SOLVED = () => board([run('clubs', 13, 10), [...run('diamonds', 13, 11), faceDown(card('diamonds', 10)), card('hearts', 13)], run('hearts', 12, 11)], FOUNDATIONS())
+  /** The same with the Jack of diamonds face down too: moving the King turns over only the 10. Foundation moves alone would still
+   * clear the rest (and turn the Jack over on the way), but a card is hidden, so the board is not solved. */
+  const TWO_HIDDEN = () => board([run('clubs', 13, 10), [card('diamonds', 13), card('diamonds', 12), faceDown(card('diamonds', 11)), faceDown(card('diamonds', 10)), card('hearts', 13)], run('hearts', 12, 11)], FOUNDATIONS())
+  const EMPTY_COLUMN: PileRef = { zone: 'tableau', index: 5 }
+
+  /** Cards still on the tableau - 52 minus this many are home. */
+  const cardsOnBoard = () => screen.queryAllByTestId(/^card-/).length
+  /** The gaps between consecutive take-offs, from flight `from` on. */
+  const gapsFrom = (from: number) => mockLog.shownAt.slice(from + 1).map((t, i) => t - mockLog.shownAt[from + i])
+  /** Every gap a finish gap, to within the harness's resolution (STEP_MS). */
+  const expectFinishPace = (gaps: number[]) =>
+    gaps.forEach((gap) => {
+      expect(gap).toBeGreaterThanOrEqual(FINISH_STAGGER_MS - STEP_MS)
+      expect(gap).toBeLessThan(FINISH_STAGGER_MS + 2 * STEP_MS)
+    })
+
+  /** What PileView does when a drag of `cardId` (with everything above it) ends over `to`. */
+  async function dragTo(cardId: string, to: PileRef) {
+    const column = [...mockPiles.values()].find((p) => p.cards.some((c) => c.id === cardId))!
+    const count = column.cards.length - column.cards.findIndex((c) => c.id === cardId)
+    await act(async () => {
+      // The drag's own ghost comes from PileView, not from the screen - it isn't counted in mockLog.shown.
+      await column.drag!.onDrop(to, count, cardId, mockMakeFlight())
+    })
+  }
+
+  /** Drags `dragged` off its foundation and drops it on tableau column `column` (the hit test's answer). */
+  async function dropFromFoundation(suit: Suit, dragged: Card, column: number) {
+    jest.spyOn(DropZoneRegistry.prototype, 'hitTest').mockResolvedValue({ zone: 'tableau', index: column })
+    const onDrop = mockFoundationDrops.get(suit)
+    expect(onDrop).toBeDefined()
+    let applied = false
+    await act(async () => {
+      applied = await onDrop!(0, 0, mockMakeFlight(), dragged)
+    })
+    return applied
+  }
+
+  beforeEach(() => {
+    mockSettings.autoMove = true
+  })
+
+  it('a tap that moves a card to a column and leaves the board solved starts it at once - no foundation play needed', async () => {
+    await mount(ONE_MOVE_FROM_SOLVED(), [], 11)
+
+    await tap(id('hearts', 13)) // nowhere to go but an empty column, and it turns over the last face-down card
+    await flush(3000)
+
+    expect(cardsOnBoard()).toBe(0)
+    expect(screen.getByTestId('win-banner')).toBeTruthy()
+    expect(mockRecordWon).toHaveBeenCalledTimes(1)
+    expect(mockLog.shown).toHaveLength(1 + 11) // the tap, then every card left...
+    expect(new Set(mockLog.shown.slice(1)).size).toBe(11) // ...each one once
+    // The first a finish gap after the tap, then a finish gap apart - half the cascade's.
+    expectFinishPace(gapsFrom(0))
+    expect(FINISH_STAGGER_MS).toBeLessThan(AUTO_PLAY_STAGGER_MS)
+  })
+
+  it('a DRAG to a column that leaves the board solved starts it too', async () => {
+    await mount(ONE_MOVE_FROM_SOLVED(), [], 11)
+
+    await dragTo(id('hearts', 13), EMPTY_COLUMN)
+    await flush(3000)
+
+    expect(cardsOnBoard()).toBe(0)
+    expect(screen.getByTestId('win-banner')).toBeTruthy()
+    expect(mockLog.shown).toHaveLength(11) // every card left, each once
+    expect(new Set(mockLog.shown).size).toBe(11)
+    expectFinishPace(gapsFrom(0))
+  })
+
+  it("a card the player's own move is still flying in to waits for it to land before going up (taken mid-air it would show twice)", async () => {
+    mockFlightMs = 1000 // the King's flight to its new column outlasts the ten finish cards in front of it
+    await mount(ONE_MOVE_FROM_SOLVED(), [], 11)
+
+    await tap(id('hearts', 13))
+    await flush(4000)
+
+    expect(cardsOnBoard()).toBe(0)
+    const kingUp = mockLog.shown.lastIndexOf(id('hearts', 13))
+    expect(kingUp).toBe(11) // the last card to go up...
+    expect(mockLog.shownAt[kingUp]).toBeGreaterThanOrEqual(mockLog.shownAt[0] + 1000) // ...once its own flight had landed
+    expectFinishPace(gapsFrom(0).slice(0, 10)) // the ten in front of it kept the finish's pace
+  })
+
+  it('a tap to a foundation on a solved board sends the rest up at the finish pace, each card once - the cascade steps aside', async () => {
+    await mount(SOLVED(), [], 11)
+    await flush(3000)
+    expect(mockLog.shown).toEqual([]) // a solved board alone (a resumed one, here) starts nothing
+
+    await tap(id('clubs', 10))
+    await flush(3000)
+
+    expect(cardsOnBoard()).toBe(0)
+    expect(mockRecordWon).toHaveBeenCalledTimes(1)
+    expect(mockLog.shown).toHaveLength(11) // the tap, then the other ten...
+    expect(new Set(mockLog.shown).size).toBe(11) // ...each one once
+    // Never two at once and never at the cascade's slower pace: only the finish sent them.
+    expectFinishPace(gapsFrom(0))
+  })
+
+  it("a foundation play's cascade that turns the last hidden card over hands the rest to the finish, at its quicker pace, each card once", async () => {
+    await mount(TWO_HIDDEN(), [], 11)
+    await tap(id('hearts', 13)) // turns over the 10 of diamonds only - the Jack stays hidden
+    await flush(500)
+    await tap(id('clubs', 10)) // a foundation play: the cascade follows it, and foundation moves alone clear the rest
+    await flush(3000)
+
+    expect(cardsOnBoard()).toBe(0)
+    expect(mockRecordWon).toHaveBeenCalledTimes(1)
+    const auto = mockLog.shown.slice(2)
+    expect(auto).toHaveLength(10)
+    expect(new Set(auto).size).toBe(10)
+    // The cascade's own cards - the clubs, then the 10 of diamonds that turns the Jack over - an auto-play gap apart...
+    expect(auto.slice(0, 4)).toEqual([id('clubs', 11), id('clubs', 12), id('clubs', 13), id('diamonds', 10)])
+    gapsFrom(1)
+      .slice(0, 4)
+      .forEach((gap) => expect(gap).toBeGreaterThanOrEqual(AUTO_PLAY_STAGGER_MS - STEP_MS))
+    // ...then, with nothing hidden any more, the finish's, a finish gap apart.
+    expectFinishPace(gapsFrom(5))
+  })
+
+  it('a move that leaves a card face down starts nothing, even though foundation moves alone would clear the rest', async () => {
+    await mount(TWO_HIDDEN(), [], 11)
+
+    await tap(id('hearts', 13)) // turns over the 10 of diamonds; the Jack under it stays face down
+    await flush(3000)
+
+    expect(mockLog.shown).toEqual([id('hearts', 13)]) // the move's own flight, and nothing after it
+    expect(cardsOnBoard()).toBe(11)
+  })
+
+  it('a resumed solved board is left alone until the player moves - then any move of theirs starts it', async () => {
+    await mount(SOLVED(), [], 11)
+    await flush(3000)
+    expect(mockLog.shown).toEqual([])
+
+    await tap(id('hearts', 13)) // the whole hearts column onto an empty one: still solved
+    await flush(3000)
+
+    expect(mockLog.shown[0]).toBe([id('hearts', 13), id('hearts', 12), id('hearts', 11)].join('+'))
+    expect(mockLog.shown).toHaveLength(1 + 11)
+    expect(cardsOnBoard()).toBe(0)
+  })
+
+  it('undoing back onto a solved board does not send its cards up again', async () => {
+    await mount(SOLVED(), [], 11)
+    await tap(id('clubs', 10))
+    await flush(3000)
+    expect(cardsOnBoard()).toBe(0)
+    const before = mockLog.shown.length
+
+    await undo()
+    await flush(3000)
+    await undo()
+    await flush(3000)
+
+    expect(cardsOnBoard()).toBe(2) // the last two cards the finish played are back...
+    expect(mockLog.shown.length).toBe(before + 2) // ...through the undos' own flights only - nothing went up again
+    expect(screen.queryByTestId('win-banner')).toBeNull()
+  })
+
+  it('an undo pressed mid-finish stops it, and nothing sends the rest up afterwards', async () => {
+    await mount(SOLVED(), [], 11)
+    await tap(id('clubs', 10))
+    await flush(60) // the first finish card has left
+    await undo()
+    await flush(3000)
+
+    const sent = mockLog.shown.length
+    const left = cardsOnBoard()
+    expect(mockLog.shown.at(-1)).toBe(mockLog.shown.at(-2)) // the last flight is the undo's, taking back the card that went up just before it
+    expect(left).toBe(11 - (sent - 1) + 1)
+    expect(left).toBeGreaterThan(5) // stopped well short of the end
+    await flush(3000)
+    expect(mockLog.shown.length).toBe(sent)
+    expect(cardsOnBoard()).toBe(left)
+  })
+
+  it("a new deal that happens to be solved is not finished either, even right after a move of the player's", async () => {
+    const realCreate = yukonRules.createYukonController
+    jest.spyOn(yukonRules, 'createYukonController').mockImplementation(() => ({ ...realCreate(), newGame: () => SOLVED() }))
+    await mount(TWO_HIDDEN(), [], 11)
+    await tap(id('hearts', 13)) // a move of the player's that leaves the board short of solved
+    await flush(500)
+    const before = mockLog.shown.length
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('new-game'))
+    })
+    await flush(3000)
+
+    expect(cardsOnBoard()).toBe(11) // the new deal, every card where it was dealt
+    expect(mockLog.shown.length).toBe(before) // none of it auto-played
+  })
+
+  it("a card dragged back off a foundation onto a solved board is not sent straight back up - the player's next move sends it with the rest", async () => {
+    await mount(SOLVED(), [], 11)
+
+    expect(await dropFromFoundation('clubs', card('clubs', 9), 5)).toBe(true)
+    await flush(3000)
+    expect(foundationTop('clubs')).toBe(id('clubs', 8))
+    expect(screen.queryByTestId(`card-${id('clubs', 9)}`)).not.toBeNull()
+    expect(mockLog.shown).toEqual([]) // nothing went up (the drag's own ghost is the cell's, not the screen's)
+
+    await tap(id('diamonds', 10)) // the player's next move
+    await flush(3000)
+    expect(cardsOnBoard()).toBe(0)
+    expect(mockRecordWon).toHaveBeenCalledTimes(1)
+  })
+
+  it('dragging a card back off a foundation mid-finish stops it there', async () => {
+    await mount(SOLVED(), [], 11)
+    await tap(id('clubs', 10))
+    await flush(60) // the first finish card has left
+
+    expect(await dropFromFoundation('hearts', card('hearts', 10), 5)).toBe(true)
+    const sent = mockLog.shown.length
+    await flush(3000)
+
+    expect(mockLog.shown.length).toBe(sent) // nothing more went up
+    expect(screen.queryByTestId(`card-${id('hearts', 10)}`)).not.toBeNull()
+    expect(cardsOnBoard()).toBe(11 - sent + 1)
+    expect(screen.queryByTestId('win-banner')).toBeNull()
+  })
+
+  it('does not run when Auto-Move to Foundation is off', async () => {
+    mockSettings.autoMove = false
+    await mount(ONE_MOVE_FROM_SOLVED(), [], 11)
+
+    await tap(id('hearts', 13))
+    await flush(3000)
+    expect(mockLog.shown).toEqual([id('hearts', 13)])
+    expect(cardsOnBoard()).toBe(11)
+
+    await tap(id('clubs', 10)) // nor after a foundation play
+    await flush(3000)
+    expect(mockLog.shown).toEqual([id('hearts', 13), id('clubs', 10)])
+    expect(cardsOnBoard()).toBe(10)
   })
 })
 

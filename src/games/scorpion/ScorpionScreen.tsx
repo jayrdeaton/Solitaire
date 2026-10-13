@@ -63,9 +63,6 @@ import { ScorpionSettingsSection } from './ScorpionSettingsSection'
 
 const TABLEAU_COLUMNS = 7
 const FRONT_COLUMNS = 4
-// Deepest column at deal is 8 cards (classic variant's columns 4-6); a completed run stacks a full
-// 13 - matching Klondike/FreeCell's own generous floor for a similarly deep tableau.
-const TABLEAU_MIN_HEIGHT = 420
 
 const STOCK_PACKET_ID = 'scorpion-stock-packet'
 // A placeholder face-down card for the one-shot stock packet - id/suit/rank are never shown
@@ -125,7 +122,7 @@ function ScorpionScreenInner() {
   // starting column still fits the ~400pt of height - see boardModel.ts.
   const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
   const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, widthColumns)
-  const tableauMaxHeight = useTableauMaxHeight(cardWidth, TABLEAU_MIN_HEIGHT, { topRowCards: isWide ? 0 : 1 })
+  const tableauMaxHeight = useTableauMaxHeight(cardWidth, { topRowCards: isWide ? 0 : 1 })
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCountRef, and undoBusyRef - see
   // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
   // exclusion with everything else; tap/drag/stock-draw can all run concurrently with each other -

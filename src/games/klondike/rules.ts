@@ -1,5 +1,6 @@
 // Klondike solitaire game rules & controller.
 
+import { FinishMove, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
 import { pickBestTableauTarget } from '@/engine/autoMove'
 import { shuffledDeck } from '@/engine/deck'
 import { canPlaceOnFoundation, suitIndex } from '@/engine/foundation'
@@ -389,4 +390,24 @@ export function createKlondikeController(drawCount: 1 | 3): GameController<Klond
     accessibleCards,
     scoreHintMove
   }
+}
+
+/** True once the board is SOLVED, so the finish (games/shared/useAutoFinish) may file the rest away on its own: not won yet,
+ * nothing hidden (no face-down tableau card, an empty stock and waste) and every remaining card able to go up by foundation
+ * moves alone. The hidden-card checks are not redundant: isFullyAutoCompletable is also true with face-down cards under the
+ * cards that go up (they turn over on the way), and the draws-aware version with cards still in the stock - the finish must
+ * never start on a card the player hasn't seen. A won board is false too (isFullyAutoCompletable is true there), so the
+ * finish ends after its last card. `controller` is the screen's live one (it is recreated on New Game and restore), though
+ * nothing read here depends on its draw count. */
+export function canAutoFinish(controller: GameController<KlondikeState>, state: KlondikeState): boolean {
+  if (state.stock.length > 0 || state.waste.length > 0) return false
+  if (state.tableau.some((column) => column.some((c) => !c.faceUp))) return false
+  return !controller.isWon(state) && isFullyAutoCompletable(controller, state)
+}
+
+/** The next card the finish should send up, and its own suit's foundation - null unless canAutoFinish. */
+export function nextFinishMove(controller: GameController<KlondikeState>, state: KlondikeState): FinishMove | null {
+  if (!canAutoFinish(controller, state)) return null
+  const entry = nextAutoCompleteMove(controller, state)
+  return entry ? { entry, to: { zone: 'foundation', index: suitIndex(entry.card.suit) } } : null
 }

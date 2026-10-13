@@ -24,8 +24,9 @@ export interface Settings {
   // Forty Thieves' tableau moves: false (default) is the strict classic rule, one card at a time
   // only; true allows a valid same-suit descending run to move together as a shortcut.
   fortyThievesRunMoves: boolean
-  // Global, not per-game (unlike every setting above): whether a safe card is automatically sent to
-  // its foundation the instant no other move intervenes (see engine/autoFoundation.ts). Applies
+  // Global, not per-game (unlike every setting above): whether auto-play runs at all - the safe cards
+  // that follow the player's own play of a card to a foundation (useAutoFoundationCascade), and the
+  // finish that files a solved board away on its own (useAutoFinish; see engine/autoFoundation.ts). Applies
   // identically across every foundation-building game (Klondike/FreeCell/Yukon/Canfield/Forty
   // Thieves) as one play-style preference, not a rule variant any single game owns. Defaults true,
   // matching today's always-on behavior.

@@ -1,7 +1,7 @@
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { columnBoardModel, computeGameLayout, FACE_DOWN_FAN_RATIO, FACE_UP_FAN_RATIO, fitCardWidthToHeight, GAME_CONTENT_PADDING } from '@/components/gameLayout'
 import { Card } from '@/engine/types'
-import { BOARD_MODEL, TALLEST_COLUMN } from '@/games/klondike/boardModel'
+import { BOARD_MODEL, LONG_COLUMN, TALLEST_COLUMN } from '@/games/klondike/boardModel'
 import { createKlondikeController } from '@/games/klondike/rules'
 
 const TABLEAU_COLUMNS = 7
@@ -35,8 +35,9 @@ describe('Klondike boardModel', () => {
     expect(shapes(3)).toEqual(shapes(1))
   })
 
-  it('models a one-card-tall top row over the tallest column with the default headroom', () => {
-    expect(BOARD_MODEL).toEqual(columnBoardModel({ faceDown: 6, faceUp: 1 }))
+  it('models a one-card-tall top row over the tallest column with the default headroom, and a 12-card King run at the minimum fan spacing', () => {
+    expect(BOARD_MODEL).toEqual(columnBoardModel({ faceDown: 6, faceUp: 1, longColumn: LONG_COLUMN }))
+    expect(LONG_COLUMN).toEqual({ faceDown: 0, faceUp: 12 })
   })
 
   describe('in the wide layout (874x402 phone, rotated)', () => {

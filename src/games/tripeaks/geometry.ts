@@ -84,7 +84,7 @@ export const TRIPEAKS_BOARD_MODEL: BoardHeightModel = {
 /**
  * The card width TriPeaks renders with.
  *  - Portrait keeps the original two-axis clamp exactly as it was: `tableauMaxHeight` is
- *    useTableauMaxHeight(widthCardWidth, 0) (the column-game budget, which subtracts a top row plus
+ *    useTableauMaxHeight(widthCardWidth) (the column-game budget, which subtracts a top row plus
  *    the tableau's own paddings) fed through clampCardWidthForHeight - untouched, so portrait numbers
  *    are unchanged.
  *  - The wide layout fits the REAL board (TRIPEAKS_BOARD_MODEL) to the layout's available height.

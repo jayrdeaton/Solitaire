@@ -6,12 +6,13 @@ import { TABLEAU_ROW_PADDING_BOTTOM, TOP_ROW_MARGIN_BOTTOM, useGameLayout } from
  * Computes how tall a tableau column's card fan is allowed to grow before PileView starts
  * compressing it (see PileView's own `maxHeight` prop), from the real window height - the same
  * "derive from useWindowDimensions() instead of a fixed pixel constant" idiom card WIDTH already
- * uses (see cardWidthForRow()/computeContentBounds()), rather than a fixed per-game constant that
- * compresses a fan on a tall screen with plenty of room to spare.
+ * uses (see cardWidthForRow()/computeContentBounds()).
  *
- * `floor` is each game's own previous fixed TABLEAU_MAX_HEIGHT value, kept as a lower bound so a
- * short/cramped screen never gets less generous than it did before - only a screen with real
- * headroom to spare gets more of it.
+ * No floor, in either layout: the board fits the screen exactly, and a column that would have to
+ * compress past PileView's MIN_FAN_SCALE runs past this instead, with GameChrome's board scrolling to
+ * it. The per-game floors this used to take (each game's old fixed TABLEAU_MAX_HEIGHT, 300-460pt) made
+ * every column box taller than a short phone's screen (an iPhone SE, a 640pt Android), so the board
+ * scrolled there from the first deal, with every column short.
  *
  * topRow is exactly one card tall on every screen that calls this (confirmed across Klondike,
  * Yukon, FreeCell, Canfield, Golf), so its height is derived from `cardWidth` via CARD_ASPECT
@@ -32,12 +33,7 @@ export function tableauMaxHeightFor(availableHeight: number, cardWidth: number, 
 
 /** `opts.topRowCards` (default 1 = every existing caller, unchanged): how many card-heights tall the
  * row above the tableau is - 0 for a board that draws none (Scorpion's wide layout). */
-export function useTableauMaxHeight(cardWidth: number, floor: number, opts?: { topRowCards?: number }): number {
-  const { isWide, availableHeight } = useGameLayout()
-  const available = tableauMaxHeightFor(availableHeight, cardWidth, opts?.topRowCards ?? 1)
-  // The wide (landscape) layout has no floor: `floor` is each game's portrait-tuned lower bound
-  // (~300-460pt), and a landscape window is only ~402pt tall in total - honouring it there is exactly
-  // what pushed the playable bottom cards off the edge of the screen. There the cards are sized to fit
-  // (see fitCardWidthToHeight), and a column that still runs long compresses like any other.
-  return isWide ? Math.max(0, available) : Math.max(floor, available)
+export function useTableauMaxHeight(cardWidth: number, opts?: { topRowCards?: number }): number {
+  const { availableHeight } = useGameLayout()
+  return Math.max(0, tableauMaxHeightFor(availableHeight, cardWidth, opts?.topRowCards ?? 1))
 }

@@ -1,7 +1,8 @@
 import { CARD_ASPECT } from '@tastic/cards'
 
 import { CARD_GAP_MIN, SPLIT_TOP_ROW_MIN_GAP } from '@/components/cardLayout'
-import { columnBoardModel, computeGameLayout, FACE_DOWN_FAN_RATIO, FACE_UP_FAN_RATIO, fitCardWidthToHeight, fittedGap, GAME_CONTENT_BOTTOM_PADDING, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_TOP_PADDING, MIN_CARD_WIDTH } from '@/components/gameLayout'
+import { MIN_FAN_SCALE } from '@/components/columnTops'
+import { columnBoardModel, columnFan, computeGameLayout, FACE_DOWN_FAN_RATIO, FACE_UP_FAN_RATIO, fitCardWidthToHeight, fittedGap, GAME_CONTENT_BOTTOM_PADDING, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_TOP_PADDING, LONG_COLUMN_MIN_CARD_WIDTH, MIN_CARD_WIDTH } from '@/components/gameLayout'
 
 const NO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 }
 
@@ -83,6 +84,45 @@ describe('columnBoardModel / fitCardWidthToHeight', () => {
 
   it('never shrinks below the minimum', () => {
     expect(fitCardWidthToHeight(96, 30, columnBoardModel({ faceDown: 6, faceUp: 1 }))).toBe(MIN_CARD_WIDTH)
+  })
+})
+
+describe('columnBoardModel longColumn', () => {
+  const H = 1 / CARD_ASPECT
+  const deal = { faceDown: 6, faceUp: 1 }
+  const longColumn = { faceDown: 0, faceUp: 12 }
+
+  it('models the board with the long column fanned at the minimum spacing in place of the deal, and leaves the deal model as it was', () => {
+    const model = columnBoardModel({ ...deal, longColumn })
+    expect(model.perWidth).toBe(columnBoardModel(deal).perWidth)
+    expect(model.fixed).toBe(columnBoardModel(deal).fixed)
+    expect(model.long).toEqual({ perWidth: H + columnFan(longColumn) * MIN_FAN_SCALE + H, minCardWidth: LONG_COLUMN_MIN_CARD_WIDTH })
+    expect(columnFan(longColumn)).toBeCloseTo(11 * FACE_UP_FAN_RATIO, 9)
+  })
+
+  it('has no long model when the deal and its headroom already need more room than the long column at the minimum', () => {
+    expect(columnBoardModel({ faceDown: 0, faceUp: 4, headroomFaceUp: 5, longColumn: { faceDown: 0, faceUp: 10 } }).long).toBeUndefined()
+  })
+
+  it('sizes the cards so the long column fills the height at the minimum spacing, where that leaves them above the floor', () => {
+    const model = columnBoardModel({ ...deal, longColumn })
+    const available = 500
+    const w = fitCardWidthToHeight(500, available, model)
+    expect(w).toBeGreaterThan(LONG_COLUMN_MIN_CARD_WIDTH)
+    expect(w * model.long!.perWidth + model.fixed).toBeCloseTo(available, 6)
+  })
+
+  it('shrinks the cards for the long column only down to LONG_COLUMN_MIN_CARD_WIDTH (a longer column then scrolls)', () => {
+    const model = columnBoardModel({ ...deal, longColumn: { faceDown: 0, faceUp: 40 } })
+    expect(fitCardWidthToHeight(96, 386, model)).toBe(LONG_COLUMN_MIN_CARD_WIDTH)
+  })
+
+  it('still shrinks below that floor for the deal itself, on a window too short for even the deal at the floor', () => {
+    const model = columnBoardModel({ ...deal, longColumn })
+    const available = 200
+    const w = fitCardWidthToHeight(96, available, model)
+    expect(w).toBeLessThan(LONG_COLUMN_MIN_CARD_WIDTH)
+    expect(w * model.perWidth + model.fixed).toBeCloseTo(available, 6)
   })
 })
 

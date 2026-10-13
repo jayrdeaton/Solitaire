@@ -3,7 +3,7 @@ import { CARD_ASPECT } from '@tastic/cards'
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { columnBoardModel, computeGameLayout, FACE_DOWN_FAN_RATIO, FACE_UP_FAN_RATIO, fitCardWidthToHeight, GAME_CONTENT_PADDING } from '@/components/gameLayout'
 import { Card } from '@/engine/types'
-import { BOARD_MODEL as CANFIELD_BOARD_MODEL, HEADROOM_FACE_UP, TALLEST_COLUMN } from '@/games/canfield/boardModel'
+import { BOARD_MODEL as CANFIELD_BOARD_MODEL, HEADROOM_FACE_UP, LONG_COLUMN, TALLEST_COLUMN } from '@/games/canfield/boardModel'
 import { createCanfieldController } from '@/games/canfield/rules'
 import { BOARD_MODEL as KLONDIKE_BOARD_MODEL } from '@/games/klondike/boardModel'
 
@@ -43,7 +43,8 @@ describe('Canfield boardModel', () => {
   })
 
   it('models a one-card-tall top row over a starting column with extra headroom for its deep builds', () => {
-    expect(CANFIELD_BOARD_MODEL).toEqual(columnBoardModel({ faceDown: 0, faceUp: 1, headroomFaceUp: 6 }))
+    expect(CANFIELD_BOARD_MODEL).toEqual(columnBoardModel({ faceDown: 0, faceUp: 1, headroomFaceUp: 6, longColumn: LONG_COLUMN }))
+    expect(LONG_COLUMN).toEqual({ faceDown: 0, faceUp: 11 })
   })
 
   it("budgets a tableau column about as tall as Klondike's tallest one, so the two games' cards come out a similar size", () => {
@@ -52,6 +53,13 @@ describe('Canfield boardModel', () => {
     const klondikeTableau = KLONDIKE_BOARD_MODEL.perWidth - topRow
     expect(Math.abs(canfieldTableau - klondikeTableau)).toBeLessThan(0.25)
     expect(CANFIELD_BOARD_MODEL.fixed).toBe(KLONDIKE_BOARD_MODEL.fixed)
+  })
+
+  it("comes out within a few points of Klondike's card on a phone held sideways, long columns included", () => {
+    const widthCardWidth = widthDerivedCardWidth(PHONE_LANDSCAPE.contentWidth)
+    const canfield = fitCardWidthToHeight(widthCardWidth, PHONE_LANDSCAPE.availableHeight, CANFIELD_BOARD_MODEL)
+    const klondike = fitCardWidthToHeight(widthCardWidth, PHONE_LANDSCAPE.availableHeight, KLONDIKE_BOARD_MODEL)
+    expect(Math.abs(canfield - klondike)).toBeLessThan(4)
   })
 
   describe('in the wide layout (874x402 phone, rotated)', () => {

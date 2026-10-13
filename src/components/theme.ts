@@ -1,4 +1,4 @@
-import { getBlendedColor } from '@rific/auto-paper'
+import { getBlendedColor, getTonalColor, getTriadicPalette } from '@rific/auto-paper'
 import type { TableColors } from '@tastic/cards'
 import { useMemo } from 'react'
 import { useTheme } from 'react-native-paper'
@@ -8,7 +8,8 @@ import { useProfiles } from '@/stores/profiles'
 
 import { darkColors, lightColors } from './palettes'
 
-// Both felt palettes (palettes.ts) are dark-toned green in every appearance mode (unlike the flat
+// The felt (derivePlayerTableColors below) is dark-toned in every appearance mode and for every
+// profile color (unlike the flat
 // literal-white/black backgrounds some other @tastic apps flip between), so the chrome buttons
 // (achievements/settings/back) always want the same fixed foreground rather than one derived from
 // `dark` - this is what the old native header already used unconditionally.
@@ -42,18 +43,18 @@ export const CARD_RADIUS = cardRadiusForWidth(CARD_WIDTH)
 
 export { darkColors, lightColors }
 
-// How strongly a profile's own bright/saturated color tints the base cardBack/cardBackPattern -
-// low enough to read as "muted," not as the profile's own vivid swatch, but high enough that 20
-// different seed hues still read as 20 different colors rather than collapsing toward base's own
-// blue (too low a value pulls every result toward the same hue, not just toward "less vivid").
+// How strongly a profile's own bright/saturated color tints the base cardBack/cardBackPattern (neutral
+// greys, so the blend keeps the profile's hue) - low enough to read as "muted," not as the profile's own
+// vivid swatch, but high enough that 20 different seed hues still read as 20 different colors rather
+// than washing out toward the same grey.
 const PROFILE_TINT_ALPHA = 0.55
 
 // How much further cardBackPattern gets pushed toward white on top of its own PROFILE_TINT_ALPHA
-// blend above - blending cardBack/cardBackPattern at the same alpha toward two merely-different-
-// hued anchors doesn't reliably separate the two by much once a bright enough seed dominates both
+// blend above - blending cardBack/cardBackPattern at the same alpha toward two anchors that differ
+// only a little doesn't reliably separate the two by much once a bright enough seed dominates both
 // (CardBack.tsx's border frame/medallion render cardBackPattern at full opacity and still read as
 // barely-there against cardBack for a seed like pure orange), so the accent gets its own explicit
-// lighten instead of relying on anchor-hue difference alone.
+// lighten instead of relying on the anchors' difference alone.
 const ACCENT_LIGHTEN_ALPHA = 0.25
 
 // How far cardBackPatternInverted gets pushed toward black instead - "invert dark mode colors"'s
@@ -66,6 +67,15 @@ const ACCENT_LIGHTEN_ALPHA = 0.25
 // exactly that wall (confirmed unreadable); this is a smaller, safer step up from the original.
 const ACCENT_DARKEN_ALPHA = 0.3
 
+// getTonalColor targets (0-1 lightness), per appearance mode, for the felt/chrome pair.
+// tableFeltDark is the darker accent already used for the Toaster and the felt's vignette in both
+// palettes - reused here as "chrome" rather than inventing a third TableColors field. Both modes keep
+// the same felt-stays-darker-than-chrome-is-light relationship - dark mode's felt is darker than light
+// mode's own (not lighter, which read as too bright/washed out for an actual dark theme), while
+// staying a bit above chrome's own tone so the play surface still reads distinctly against it.
+const FELT_TONE = { light: 0.24, dark: 0.16 }
+const CHROME_TONE = { light: 0.15, dark: 0.08 }
+
 /** The card-back color a given seed hex actually resolves to once blended toward the base palette
  * - the same blend derivePlayerTableColors applies to `cardBack`, exported so a color picker can
  * preview this result per-swatch instead of the raw, too-vibrant seed hue. */
@@ -76,10 +86,10 @@ export function previewCardBack(seedHex: string, dark: boolean): string {
 
 /** Derives a full TableColors palette tinted toward a seed color (an active player profile's
  * color, or DEFAULT_SEED_COLOR when nothing's been picked - see useTableColors below). Only
- * cardBack/cardBackPattern/cardBackPatternInverted are overridden - every other token is spread from
- * `base` untouched, so legibility-critical tokens (text/borders/glow) never shift with a profile's
- * color, and neither does the felt (tableFelt/tableFeltDark): it is always `base`'s own green, the
- * one the native splash screen is painted in (see the anchors' comment above). */
+ * cardBack/cardBackPattern/cardBackPatternInverted/tableFelt/tableFeltDark are overridden - every
+ * other token is spread from `base` untouched, so legibility-critical tokens (text/borders/glow)
+ * never shift with a profile's color. The felt is the card back's opposite hue, darkened, so each
+ * profile plays on its own complementary table (the default pink's is green). */
 function derivePlayerTableColors(profileColor: string, dark: boolean, base: TableColors): TableColors {
   const cardBack = previewCardBack(profileColor, dark)
   const cardBackPattern = getBlendedColor('#FFFFFF', getBlendedColor(profileColor, base.cardBackPattern, PROFILE_TINT_ALPHA), ACCENT_LIGHTEN_ALPHA)
@@ -88,11 +98,17 @@ function derivePlayerTableColors(profileColor: string, dark: boolean, base: Tabl
   // via `dark` here instead of a light/dark anchor difference (see the interface doc for why).
   const cardBackPatternInverted = dark ? getBlendedColor('#000000', cardBackPattern, ACCENT_DARKEN_ALPHA) : cardBackPattern
 
+  // 'complementary' harmony's own `tertiary` output is the true 180°-opposite hue of cardBack, so
+  // this generalizes to whatever hue cardBack ends up as, not just today's blue.
+  const complementaryHue = getTriadicPalette(cardBack, 'complementary').tertiary
+
   return {
     ...base,
     cardBack,
     cardBackPattern,
-    cardBackPatternInverted
+    cardBackPatternInverted,
+    tableFelt: getTonalColor(complementaryHue, dark ? FELT_TONE.dark : FELT_TONE.light),
+    tableFeltDark: getTonalColor(complementaryHue, dark ? CHROME_TONE.dark : CHROME_TONE.light)
   }
 }
 

@@ -1,5 +1,6 @@
-import { Card, SUITS } from '@/engine/types'
-import { createYukonController, YukonState } from '@/games/yukon/rules'
+import { isFullyAutoCompletable } from '@/engine/autoFoundation'
+import { Card, Suit, SUITS } from '@/engine/types'
+import { canAutoFinish, createYukonController, nextFinishMove, YukonState } from '@/games/yukon/rules'
 
 function card(suit: Card['suit'], rank: Card['rank'], faceUp = true, deckIndex = 0): Card {
   return { id: `${suit}-${rank}-${deckIndex}`, suit, rank, faceUp }
@@ -365,5 +366,78 @@ describe('yukon scoreHintMove', () => {
 
     expect(extendsRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
     expect(lateralIntoEmptyColumn).toBeGreaterThan(fragmentIntoEmptyColumn)
+  })
+})
+
+describe('Yukon canAutoFinish / nextFinishMove - the finish only takes a SOLVED board', () => {
+  const controller = createYukonController()
+  /** A foundation pile built Ace-first up to `high`. */
+  const foundationUpTo = (suit: Suit, high: number): Card[] => Array.from({ length: high }, (_, i) => card(suit, (i + 1) as Card['rank']))
+  /** A column `high` at the bottom down to `low` on top - each card free to go up the moment the one below it in rank has. */
+  function run(suit: Suit, high: number, low: number): Card[] {
+    const cards: Card[] = []
+    for (let rank = high; rank >= low; rank--) cards.push(card(suit, rank as Card['rank']))
+    return cards
+  }
+  const board = (tableau: Card[][], foundation: Card[][]): YukonState => ({ tableau: Array.from({ length: 7 }, (_, i) => tableau[i] ?? []), foundation })
+  /** A whole deck: 41 cards home, the other 11 face up in three columns that clear by foundation moves alone. */
+  const SOLVED = () => board([run('clubs', 13, 10), run('diamonds', 13, 10), run('hearts', 13, 11)], [foundationUpTo('clubs', 9), foundationUpTo('diamonds', 9), foundationUpTo('hearts', 10), foundationUpTo('spades', 13)])
+
+  it('is true once every card is face up and the rest can go up by foundation moves alone', () => {
+    expect(canAutoFinish(controller, SOLVED())).toBe(true)
+    const step = nextFinishMove(controller, SOLVED())!
+    expect(step.entry.card).toMatchObject({ suit: 'clubs', rank: 10 })
+    expect(step.entry.ref).toEqual({ zone: 'tableau', index: 0 })
+    expect(step.to).toEqual({ zone: 'foundation', index: SUITS.indexOf('clubs') })
+  })
+
+  it('is false while a card is still face down, even one the foundation moves would turn over (that would give away what is under it)', () => {
+    const state = SOLVED()
+    state.tableau[1] = [{ ...card('diamonds', 13), faceUp: false }, card('diamonds', 12), card('diamonds', 11), card('diamonds', 10)]
+    expect(isFullyAutoCompletable(controller, state)).toBe(true) // the engine's check alone peeks under it and says yes
+    expect(canAutoFinish(controller, state)).toBe(false)
+    expect(nextFinishMove(controller, state)).toBeNull()
+  })
+
+  it('is false when a card is stuck under a higher one of its own suit', () => {
+    const state = SOLVED()
+    state.tableau[0] = [card('clubs', 10), card('clubs', 11), card('clubs', 12), card('clubs', 13)] // the 10 the clubs need next is at the bottom
+    expect(canAutoFinish(controller, state)).toBe(false)
+    expect(nextFinishMove(controller, state)).toBeNull()
+  })
+
+  it('is false on a won board (nothing left to finish)', () => {
+    const won = board(
+      [],
+      SUITS.map((suit) => foundationUpTo(suit, 13))
+    )
+    expect(controller.isWon(won)).toBe(true)
+    expect(canAutoFinish(controller, won)).toBe(false)
+    expect(nextFinishMove(controller, won)).toBeNull()
+  })
+
+  it("following it from a solved board wins the game, every card to its own suit's foundation, through moves the rules accept", () => {
+    let state = SOLVED()
+    let played = 0
+    for (let step = nextFinishMove(controller, state); step; step = nextFinishMove(controller, state)) {
+      expect(step.to).toEqual({ zone: 'foundation', index: SUITS.indexOf(step.entry.card.suit) })
+      const next = controller.tryMove(state, { from: step.entry.ref, to: step.to, count: 1 })
+      expect(next).not.toBeNull()
+      state = next!
+      played += 1
+    }
+    expect(played).toBe(11)
+    expect(controller.isWon(state)).toBe(true)
+  })
+
+  it.each(SUITS)("sends a %s card to that suit's foundation", (suit) => {
+    const state = board(
+      [run(suit, 13, 1)],
+      SUITS.map((other) => (other === suit ? [] : foundationUpTo(other, 13)))
+    )
+    expect(canAutoFinish(controller, state)).toBe(true)
+    const step = nextFinishMove(controller, state)!
+    expect(step.entry.card).toMatchObject({ suit, rank: 1 })
+    expect(step.to).toEqual({ zone: 'foundation', index: SUITS.indexOf(suit) })
   })
 })

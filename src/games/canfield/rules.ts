@@ -12,6 +12,7 @@
 // card may fill an empty column, same relaxed rule Yukon has from the start. Stock/waste is
 // draw-3 with unlimited recycling, same convention as every other stock-pile game here.
 
+import { FinishMove, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
 import { shuffledDeck } from '@/engine/deck'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { top } from '@/engine/pile'
@@ -459,6 +460,36 @@ export function findSafeAutoPlay(state: CanfieldState, accessible: AccessibleCar
     }
   }
   return null
+}
+
+/** Whether the board is SOLVED, so the finish (games/shared/useAutoFinish) may file every remaining card away on its own,
+ * after any move of the player's: not won yet, nothing hidden and nothing left to draw - the reserve (face-down under its
+ * top), the stock (face-down) and the waste all empty, and no face-down card in the tableau (it never holds one, see
+ * newGame/tryMove; checked anyway) - and every remaining card able to go up by foundation moves alone. The last part is
+ * engine/autoFoundation.ts's plain isFullyAutoCompletable, which suits these wrapping foundations because it only ever moves
+ * a card through this game's own cyclic tryMove. Deliberately NOT the draws-aware isFullyAutoCompletableWithDraws (the
+ * screen's cascade uses that one, after a foundation play): it reads the face-down stock to decide, and the finish must
+ * never give away a card the player can't see. isWon comes first because isFullyAutoCompletable is true on a won board.
+ * The reserve and waste checks are load-bearing: the plain check plays their tops one after another, down to the cards
+ * under them (tryMove turns each reserve card over as the one above it goes, so it would count on a card nobody has
+ * seen). The stock and tableau face-down checks are belt-and-braces: the plain check can't reach isWon past either
+ * (accessibleCards never offers a stock card or a face-down column top, and tryMove never moves a stock card or turns a
+ * column card over), so they change no answer today and no test can show them doing anything. They keep the rule from
+ * resting on those two facts.
+ * `controller` is the screen's per-deal one; its draw count plays no part here. */
+export function canAutoFinish(controller: GameController<CanfieldState>, state: CanfieldState): boolean {
+  if (controller.isWon(state)) return false
+  if (state.reserve.length > 0 || state.stock.length > 0 || state.waste.length > 0) return false
+  if (state.tableau.some((column) => column.some((c) => !c.faceUp))) return false
+  return isFullyAutoCompletable(controller, state)
+}
+
+/** The next card the finish sends up and the foundation it goes to (its own suit's - see tryMove), or null unless the
+ * board is solved (canAutoFinish). */
+export function nextFinishMove(controller: GameController<CanfieldState>, state: CanfieldState): FinishMove | null {
+  if (!canAutoFinish(controller, state)) return null
+  const entry = nextAutoCompleteMove(controller, state)
+  return entry ? { entry, to: { zone: 'foundation', index: suitIndex(entry.card.suit) } } : null
 }
 
 export function createCanfieldController(drawCount: 1 | 3): GameController<CanfieldState> {

@@ -8,6 +8,7 @@ import { PileRef } from '@/engine/gameTypes'
 import { Card } from '@/engine/types'
 
 import { isGhostPending, useGhostPendingAmong } from './cardFacePaint'
+import { columnTops, DepartingCard } from './columnTops'
 import { DragFlightHandle, useDragGhost } from './dragdrop/DragGhostLayer'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
 import { EmptySlot, PlayingCard } from './PlayingCard'
@@ -44,7 +45,8 @@ interface PileViewProps {
   onPressEmpty?: () => void
   faceDownOffset?: number
   faceUpOffset?: number
-  /** Cap the visible fan height so long columns don't run off screen. */
+  /** The height the fan is compressed to fit, and the column's box is at least this tall. Never compressed below
+   * MIN_FAN_SCALE: a column that needs more runs past it, and GameChrome's board scrolls to its bottom. */
   maxHeight?: number
   style?: StyleProp<ViewStyle>
   drag?: PileDragConfig
@@ -289,55 +291,7 @@ const FlyingCardSlot = memo(function FlyingCardSlot({ cardId, top, width, height
   return <View ref={ref} collapsable={false} pointerEvents='none' style={style} />
 })
 
-/** A card that has just left this column while its ghost is not on screen yet, drawn where it was (see PileViewImpl). */
-interface DepartingCard {
-  card: Card
-  /** Where it was drawn when it left, kept as it is for as long as it is held (it never moves while it is on screen). */
-  top: number
-  /** Its slot in the column when it left (its index there) - also its paint order, as every card's index is. */
-  zIndex: number
-  /** How many slots the fan it was drawn in had (columnTops' `slots` for that layout): `top` is its place in THAT fan, so the
-   * column keeps that fan under it for as long as it is held (see columnTops). */
-  slots: number
-}
 const NO_DEPARTING: readonly DepartingCard[] = []
-
-/**
- * Each card's top (already compressed) in a column of `cards`: the fan, scaled down to fit `maxHeight` if it must be, and
- * how many slots that fan has (`slots`).
- *
- * `held` are the cards that have left the column but are still drawn over it (PileViewImpl's `departing`), each in the
- * slot it left, frozen at its top in the fan it was drawn in (its own `slots`). While any is held, the column is laid out
- * in the largest of those fans - so a compressed column doesn't re-spread under a card still drawn there - and no larger:
- *   - A card ARRIVING while one is held takes the slot that card left (the slot is the newcomer's now; the held card is
- *     only drawn over it until its ghost shows). Counting the held card on top of the newcomer squeezed every card under
- *     them one card tighter for a frame or two, then spread them back out when the hold ended - and a flight into the
- *     column that measured its slot in between aimed a few points off.
- *   - It is the fan each held card was DRAWN in, not one only as tall as the highest slot still held. Two cards leaving
- *     one after the other (the next card of an auto-play stream going while the first's ghost still waits for its face)
- *     are both drawn in the fan from before either left, and the first one's ghost shows first; sized by the highest slot
- *     left, the column then re-spread to one card fewer under the second card, still frozen in the old fan - the card
- *     under it slid ~12pt up beneath it, its corner index mostly covered, until the second ghost showed too.
- * The cost of the second: a card arriving after the first of two such holds ends but before the second does lands in the
- * older, tighter fan and moves once the second ends. That needs an arrival inside what is left of the second card's hold
- * (a frame or two: its ghost shows once its face paints, GHOST_PAINT_MAX_MS after it mounts at most), where the case it
- * fixes follows every overlap of two holds. A slot above the top that no held card is in counts as face-up, as whatever is
- * above a column's top is: it is a held card's that has gone (only a face-up card's ghost waits for its face, so that card
- * was face-up too), or - practically unreachable - one that left without a hold from under one that has one.
- */
-function columnTops(cards: readonly Card[], held: readonly DepartingCard[], faceUpOffset: number, faceDownOffset: number, cardHeight: number, maxHeight: number | undefined) {
-  const offsets: number[] = []
-  let y = 0
-  for (const card of cards) {
-    offsets.push(y)
-    y += card.faceUp ? faceUpOffset : faceDownOffset
-  }
-  const slots = held.reduce((most, d) => Math.max(most, d.slots), cards.length)
-  for (let slot = cards.length; slot < slots; slot++) y += held.find((d) => d.zIndex === slot)?.card.faceUp === false ? faceDownOffset : faceUpOffset
-  const totalHeight = y + cardHeight
-  const scale = maxHeight && totalHeight > maxHeight ? (maxHeight - cardHeight) / (y || 1) : 1
-  return { tops: offsets.map((offset) => offset * scale), totalHeight, slots }
-}
 
 /** A vertical fanned stack, used for tableau/reserve columns across every game. */
 function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, onPressEmpty, faceDownOffset, faceUpOffset, maxHeight, style, drag, hiddenCount = 0, hiddenCardIds, dimUnplayable = false, shakeCardId, shakeCount = 1, shakeToken }: PileViewProps) {
@@ -476,7 +430,7 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
     )
   }
 
-  // Each card's top, compressing the fan if the column would exceed maxHeight - laid out as tall as it was drawn while any
+  // Each card's top, compressing the fan (no further than MIN_FAN_SCALE) if the column would exceed maxHeight - laid out as tall as it was drawn while any
   // card is still taking off from the top of it, so a compressed column doesn't re-spread under that card while it is
   // still drawn here (see columnTops).
   const { tops, totalHeight } = columnTops(cards, held, resolvedFaceUpOffset, resolvedFaceDownOffset, cardHeight, maxHeight)
@@ -530,7 +484,7 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
   const wasAlreadyMounted = mountedRef.current
 
   return (
-    <View style={[styles.container, { width: cardWidth, height: maxHeight ?? totalHeight }, style]}>
+    <View style={[styles.container, { width: cardWidth, height: maxHeight === undefined ? totalHeight : Math.max(maxHeight, totalHeight) }, style]}>
       {/* The column's own empty slot under a card that is still taking off from it (the last one out). */}
       {cards.length === 0 && <EmptySlot onPress={onPressEmpty} hinted={hintCount > 0} />}
       {[...cards, ...held.map((d) => d.card)].map((card, i) => {

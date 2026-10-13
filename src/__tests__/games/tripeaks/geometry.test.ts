@@ -64,7 +64,7 @@ describe('tripeaksCardWidth', () => {
       const layout = computeGameLayout(w, h, { top, right: 0, bottom, left: 0 })
       expect(layout.isWide).toBe(false)
       const widthCardWidth = Math.min(96, (layout.contentWidth - 12) / 10)
-      // The old TriPeaksScreen computation, inlined: useTableauMaxHeight(widthCardWidth, 0) then clamp.
+      // The old TriPeaksScreen computation, inlined: useTableauMaxHeight(widthCardWidth) then clamp.
       const oldAvailable = Math.max(0, layout.availableHeight - widthCardWidth / CARD_ASPECT - 16 - 20)
       const old = clampCardWidthForHeight(widthCardWidth, oldAvailable, 3, FACE_UP_OFFSET_RATIO, CARD_ASPECT)
       expect(tripeaksCardWidth(widthCardWidth, layout.isWide, layout.availableHeight, oldAvailable)).toBe(old)

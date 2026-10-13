@@ -24,4 +24,9 @@ export const HEADROOM_FACE_UP = 6
  * the model's defaults. cardWidth is derived from the board's 7 slots (see TOP_ROW_UNITS in
  * CanfieldScreen), not the 4-column tableau, so in a wide window the width-derived size is large and
  * the height fit is what actually binds. */
-export const BOARD_MODEL = columnBoardModel({ ...TALLEST_COLUMN, headroomFaceUp: HEADROOM_FACE_UP })
+/** The longest column real play builds, which still fits at PileView's minimum fan spacing (see columnBoardModel): 11
+ * face-up cards - the 90th percentile of each game's tallest column over 5,000 simulated deals with a greedy player
+ * (2026-10-13). 12 was the most any reached: the foundation-rank card always goes up first. */
+export const LONG_COLUMN = { faceDown: 0, faceUp: 11 }
+
+export const BOARD_MODEL = columnBoardModel({ ...TALLEST_COLUMN, headroomFaceUp: HEADROOM_FACE_UP, longColumn: LONG_COLUMN })

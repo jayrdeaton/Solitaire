@@ -331,16 +331,15 @@ function SpiderScreenInner() {
 
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
-  const { contentWidth, isWide } = useGameLayout()
+  const { contentWidth } = useGameLayout()
   const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   // The width-derived size in portrait (unchanged); in the wide layout also capped so the tallest
   // starting column still fits the ~400pt of height - see boardModel.ts.
   const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
   const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
-  // Was a fixed 420 literal - now adapts to real window height the same way every other
-  // PileView-using game already does (see useTableauMaxHeight's own doc comment), 420 kept as the
-  // floor so a short/cramped screen never gets less generous than it did before.
-  const tableauMaxHeight = useTableauMaxHeight(cardWidth, 420)
+  // Adapts to the real window height the same way every other PileView-using game does (see
+  // useTableauMaxHeight's own doc comment).
+  const tableauMaxHeight = useTableauMaxHeight(cardWidth)
   const ghost = useDragGhost()
   const deal = useDealAnimator()
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
@@ -1840,7 +1839,7 @@ function SpiderScreenInner() {
           <StockFan count={state.stock.length} onPress={handleDrawStock} hinted={activeHint?.kind === 'drawStock'} />
         </View>
 
-        <View style={[styles.tableauRow, isWide && styles.tableauRowWide, { gap }]}>
+        <View style={[styles.tableauRow, { gap }]}>
           {state.tableau.map((col, colIndex) => {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
@@ -1967,14 +1966,10 @@ function makeStyles() {
     completedGroup: {
       flexDirection: 'row'
     },
+    // The padding useTableauMaxHeight budgets (every column game's). Spider's portrait row used to pad 24, which made
+    // its board 4pt taller than the screen on every phone, so it scrolled 4pt.
     tableauRow: {
       flexDirection: 'row',
-      paddingBottom: 24
-    },
-    // useTableauMaxHeight budgets the shared 20 for this padding (every other column game's own
-    // value), not Spider's 24 - in portrait the 4pt difference disappears into that hook's generous
-    // floor, but the wide layout has no floor and no slack, so it uses the budgeted value there.
-    tableauRowWide: {
       paddingBottom: TABLEAU_ROW_PADDING_BOTTOM
     },
     // width is set inline (cardWidth * TABLEAU_COLUMNS + gaps) rather than left to stretch - on a
