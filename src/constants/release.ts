@@ -1,3 +1,3 @@
 export const release = {
-  otaVersion: 8
+  otaVersion: 9
 }
