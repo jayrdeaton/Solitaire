@@ -23,7 +23,7 @@ npm run client          # Expo dev server (dev client build)
 
 Always run `npm run lint` before finishing any task. This is an app (`"private": true`, no publish scripts) - `verify` doesn't include a build step.
 
-**No `build:*`/`update` scripts exist in this app at all**, unlike every other app migrated onto this tooling so far (Swirlio, LightCycles, BoxHockey, Utility, Pong, AirHockey, Snake all have EAS `build:development`/`build:preview`/`build:production` and `update` scripts gated behind `verify`). Solitaire's `package.json` never had EAS build/update scripts to begin with - nothing here to gate. If EAS scripts are added later, gate them the same way (`"npm run verify && " + <script>`, inline-chained onto the script's own definition, not a separate `pre<script>` hook) - see Swirlio's CLAUDE.md for the full reasoning.
+**Builds and OTA updates go through `@rific/updater`:** `npm run build <profile>` (`rific-updater-build`) and `npm run update` (`rific-updater-update`), both of which run `verify` first. `development` builds LOCALLY (`expo prebuild --clean` + `eas build --local`, so it links against whatever Xcode is selected on this Mac) and copies the artifact to `~/Downloads/Builds/`; every other profile (`preview`, `production`) builds in the EAS cloud. Profiles are in `eas.json`. **iOS 27:** an app LINKED against the iOS 27 SDK aborts at launch without UIScene adoption, which SDK 57's template doesn't wire (SDK 58's does); one built with Xcode 26 runs fine on iOS 27. So a store build must come from an Xcode 26 image (pin `production.ios.image` in `eas.json`) until the app is on SDK 58.
 
 ## Tooling
 
