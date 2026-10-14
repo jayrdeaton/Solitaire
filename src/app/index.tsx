@@ -235,7 +235,7 @@ function HomeContent() {
                 Solitaire Suite
               </Text>
               <Text style={[styles.subheading, styles.wideSubheading]} maxFontSizeMultiplier={HOME_WIDE_MAX_FONT_SCALE}>
-                No ads. No accounts. No network. Just cards.
+                No ads. No accounts. Plays offline. Just cards.
               </Text>
             </View>
             <View style={styles.wideProfileWrap}>
@@ -248,7 +248,7 @@ function HomeContent() {
           {pressAway}
           <HeroCards />
           <Text style={styles.heading}>Solitaire Suite</Text>
-          <Text style={styles.subheading}>No ads. No accounts. No network. Just cards.</Text>
+          <Text style={styles.subheading}>No ads. No accounts. Plays offline. Just cards.</Text>
 
           <View style={styles.profilePanelWrap}>
             <ProfilePanel host={profileHost} />

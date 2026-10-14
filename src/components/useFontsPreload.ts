@@ -18,7 +18,7 @@ export { CARD_FONT_FAMILY }
 // flash in whatever fallback serif the platform substitutes before swapping to the real face.
 //
 // Only the Bold weight is loaded - every generated decorated-mode text shape hard-codes
-// fontWeight: "bold" (see generate-card-artwork.mjs), and there's no bundled regular weight for the
+// fontWeight: "bold" (see @tastic/cards' src/artwork/decoratedCustom/*.ts), and there's no bundled regular weight for the
 // theme-wide use to fall back to either, so every react-native-paper Text renders in this same bold
 // face regardless of its own fontWeight - a deliberate one-weight-everywhere look, the same way the
 // fleet's other apps apply a single MONO_FONT string with no separate regular file (see

@@ -47,7 +47,6 @@ Solitaire (Solitaire Suite on the home screen) is a single-player card game coll
 | [`@tastic/achievements`](https://www.npmjs.com/package/@tastic/achievements) | Tiered achievement catalog, win and day streaks, Redux-backed persistence |
 | [`@tastic/animations`](https://www.npmjs.com/package/@tastic/animations) | Fireworks on a win |
 | [`@tastic/split-screen`](https://www.npmjs.com/package/@tastic/split-screen) | Peer dependency of `@tastic/hud` |
-| [`@tastic/edge-guard`](https://www.npmjs.com/package/@tastic/edge-guard) | Installed, not currently used by the app |
 | [`@rific/core`](https://www.npmjs.com/package/@rific/core) | Redux settings slice factory, safe back navigation |
 | [`@rific/auto-paper`](https://www.npmjs.com/package/@rific/auto-paper) | React Native Paper theming from the profile color, light/dark appearance |
 | [`@rific/feedback-press`](https://www.npmjs.com/package/@rific/feedback-press) | Buttons with haptic and sound feedback, pooled card sounds |
