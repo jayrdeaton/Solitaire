@@ -140,7 +140,7 @@ export function useTableColors(): TableColors {
   }, [dark, tableColorOverride])
 }
 
-/** A representative slice of the active palette for @tastic/animations' Fireworks background -
+/** A representative slice of the active palette for @tastic/sprites' Fireworks background -
  * pulled from theme tokens rather than hardcoded so the show matches the active profile's tint. */
 export function fireworksColors(colors: TableColors): string[] {
   return [colors.selectedGlow, colors.hintGreen, colors.cardBackPattern, colors.textRed]

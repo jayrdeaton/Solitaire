@@ -150,7 +150,7 @@ jest.mock('@tastic/core', () => ({ ...jest.requireActual('@tastic/core'), Rotati
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => mockInvalid.count++, hapticCard: () => {}, hapticInvalid: () => {} }) }))
 jest.mock('@rific/feedback-press', () => ({ useVibration: () => ({ short: () => {}, selection: () => {} }) }))
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))
-jest.mock('@tastic/animations/fireworks', () => ({ Fireworks: () => null }))
+jest.mock('@tastic/sprites/fireworks', () => ({ Fireworks: () => null }))
 jest.mock('@/games/shared/WinBanner', () => {
   const { Text: MockText } = require('react-native')
   return { WinBanner: () => <MockText testID='win-banner'>won</MockText> }

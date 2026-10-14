@@ -84,7 +84,7 @@ jest.mock('@/components/theme', () => {
   return { ...actual, useTableColors: () => actual.lightColors }
 })
 // Only imported because FreecellCell / ReserveCell live in their screens' modules.
-jest.mock('@tastic/animations/fireworks', () => ({ Fireworks: () => null }))
+jest.mock('@tastic/sprites/fireworks', () => ({ Fireworks: () => null }))
 
 const card = (rank: number, suit = 'hearts', faceUp = true): Card => ({ id: `${suit}-${rank}-0`, suit, rank, faceUp }) as Card
 const X = card(9) // the card that takes off

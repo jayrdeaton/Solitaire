@@ -150,7 +150,7 @@ jest.mock('@rific/feedback-press', () => {
   return { Pressable: MockPressable, useVibration: () => ({ short: () => {}, selection: () => {} }) }
 })
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))
-jest.mock('@tastic/animations/fireworks', () => {
+jest.mock('@tastic/sprites/fireworks', () => {
   const { View: MockView } = require('react-native')
   return { Fireworks: () => <MockView testID='fireworks' /> }
 })

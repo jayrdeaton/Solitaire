@@ -94,7 +94,7 @@ jest.mock('@tastic/core', () => ({ ...jest.requireActual('@tastic/core'), Rotati
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => {}, hapticCard: () => {}, hapticInvalid: () => {} }) }))
 jest.mock('@rific/feedback-press', () => ({ useVibration: () => ({ short: () => {}, selection: () => {} }) }))
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))
-jest.mock('@tastic/animations/fireworks', () => ({ Fireworks: () => null }))
+jest.mock('@tastic/sprites/fireworks', () => ({ Fireworks: () => null }))
 jest.mock('@/games/shared/WinBanner', () => ({ WinBanner: () => null }))
 jest.mock('@/stores/gameStats', () => ({ useGameStats: () => ({ recordDealWon: () => {}, recordDealAbandoned: () => {}, recordHintUsed: () => {} }) }))
 jest.mock('@/stores/lastActiveGame', () => ({ useLastActiveGame: () => ({ setLastActiveGame: () => {}, clearLastActiveGame: () => {} }) }))

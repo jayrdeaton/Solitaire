@@ -1,7 +1,7 @@
 import { Pressable, useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
-import { Fireworks } from '@tastic/animations/fireworks'
 import { CARD_ASPECT, CardSizeProvider, faceUpFanOffset, useCardSize } from '@tastic/cards'
+import { Fireworks } from '@tastic/sprites/fireworks'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import Animated, { useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'

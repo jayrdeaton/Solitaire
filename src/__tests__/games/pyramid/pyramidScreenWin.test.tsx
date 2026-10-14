@@ -256,7 +256,7 @@ jest.mock('@tastic/core', () => ({ ...jest.requireActual('@tastic/core'), Rotati
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => {}, hapticCard: () => {}, hapticInvalid: () => {} }) }))
 jest.mock('@rific/feedback-press', () => ({ useVibration: () => ({ short: () => {}, selection: () => {} }) }))
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))
-jest.mock('@tastic/animations/fireworks', () => {
+jest.mock('@tastic/sprites/fireworks', () => {
   const { View: MockView } = require('react-native')
   return { Fireworks: () => <MockView testID='fireworks' /> }
 })

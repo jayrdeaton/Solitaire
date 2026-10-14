@@ -45,7 +45,7 @@ Solitaire (SolitaireTastic on the App Store) is a single-player card game collec
 | [`@tastic/hud`](https://www.npmjs.com/package/@tastic/hud) | Rotated frame, settings and update dialogs, stats screen rows, popovers and color picker, how-to-play guide |
 | [`@tastic/profile`](https://www.npmjs.com/package/@tastic/profile) | Player profiles, picker, roster screen, shared App Group sync |
 | [`@tastic/achievements`](https://www.npmjs.com/package/@tastic/achievements) | Tiered achievement catalog, win and day streaks, Redux-backed persistence |
-| [`@tastic/animations`](https://www.npmjs.com/package/@tastic/animations) | Fireworks on a win |
+| [`@tastic/sprites`](https://www.npmjs.com/package/@tastic/sprites) | Fireworks on a win |
 | [`@tastic/split-screen`](https://www.npmjs.com/package/@tastic/split-screen) | Peer dependency of `@tastic/hud` |
 | [`@rific/core`](https://www.npmjs.com/package/@rific/core) | Redux settings slice factory, safe back navigation |
 | [`@rific/auto-paper`](https://www.npmjs.com/package/@rific/auto-paper) | React Native Paper theming from the profile color, light/dark appearance |

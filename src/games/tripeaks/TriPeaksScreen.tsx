@@ -8,9 +8,9 @@
 
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
-import { Fireworks } from '@tastic/animations/fireworks'
 import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
+import { Fireworks } from '@tastic/sprites/fireworks'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
