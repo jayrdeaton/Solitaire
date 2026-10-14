@@ -15,6 +15,7 @@
     "postinstall": "setup-skia-web",
     "ios": "expo run:ios",
     "lint": "expo lint .",
+    "par": "node scripts/simulate-par.mjs",
     "reset": "expo start -c",
     "run": "eas build:run",
     "start": "expo start",

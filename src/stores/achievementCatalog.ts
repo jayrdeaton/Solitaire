@@ -1,6 +1,6 @@
 import { tieredFamily } from '@tastic/achievements'
 
-import { getBestMoves, getBestScore, getBestStreak, getBestTimeSeconds, getTotalPlayed, getTotalWins, getTotalWinsWithoutHint, getVariantsWon } from './statsEngine'
+import { getBestParRatio, getBestStreak, getGamesWon, getGameWins, getTotalPlayed, getTotalWins, getTotalWinsWithoutHint } from './statsEngine'
 import { AchievementDefinition, SOLITAIRE_GAME_IDS, SolitaireGameId, StatsState } from './statsTypes'
 
 export { ACHIEVEMENT_TIER_COLORS } from '@tastic/achievements'
@@ -29,8 +29,19 @@ function winEachGameFamily(): AchievementDefinition[] {
     description: `Win a game of ${GAME_TITLES[id]}.`,
     tier: 'silver' as const,
     icon: 'cards-playing-outline',
-    isUnlocked: (stats: StatsState) => stats.variants[id].record.wins >= 1
+    isUnlocked: (stats: StatsState) => getGameWins(stats, id) >= 1
   }))
+}
+
+// A par ratio (best / par) as the negated percent the par families compare against.
+function parValue(ratio: number | null): number {
+  return ratio === null ? -Infinity : -ratio * 100
+}
+
+// A negated par percent threshold as copy: -100 is "at or under par", -80 is "20% or more under par".
+function parPhrase(threshold: number): string {
+  const under = 100 + threshold
+  return under === 0 ? 'at or under par' : `${under}% or more under par`
 }
 
 export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
@@ -80,7 +91,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
   ...tieredFamily<StatsState>({
     id: 'win_streak',
     titles: { bronze: 'On a Roll', silver: 'Hot Hand', gold: 'Untouchable' },
-    description: (n) => `Win ${n} games of one variant in a row.`,
+    description: (n) => `Win ${n} games in a row with the same game and rules.`,
     icon: 'fire',
     thresholds: { bronze: 3, silver: 5, gold: 10 },
     value: getBestStreak
@@ -92,23 +103,20 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
     description: (n) => (n === SOLITAIRE_GAME_IDS.length ? 'Win every game in the app.' : `Win ${n} different games.`),
     icon: 'view-grid',
     thresholds: { bronze: 2, silver: 3, gold: SOLITAIRE_GAME_IDS.length },
-    value: getVariantsWon
+    value: getGamesWon
   }),
+  // The speed, moves and score families are measured against PAR (engine/par.ts): a win's time, moves or score over
+  // its own variant's par, so a Golf win and a 4-suit Spider win are judged by the same yardstick. Thresholds are
+  // that ratio as a percent, negated so the engine's `>=` reads lower-is-better (see @tastic/achievements' tieredFamily
+  // docs): -100 is at par, -80 is 20% under. -Infinity until something is won, so an unplayed profile clears nothing.
+  // The ids (and so every tier already unlocked) predate par, when these were flat numbers across every game.
   ...tieredFamily<StatsState>({
     id: 'speed',
     titles: { bronze: 'Brisk', silver: 'Quick Hands', gold: 'Lightning' },
-    // `>=` on negated values unlocks AT the threshold too (a 3:00 win clears 3 minutes), so the copy says "or less", like
-    // the moves and score families' "or fewer"/"or lower".
-    description: (n) => `Win a game in ${-n / 60} minutes or less.`,
+    description: (n) => `Win a game ${parPhrase(n)} on time.`,
     icon: 'timer',
-    // Lower-is-better: both the value and the thresholds are negated so the engine's `>=` still
-    // reads correctly (see @tastic/achievements' own tieredFamily docs). -Infinity until something
-    // has actually been won, so an unplayed profile never clears a speed tier by default.
-    thresholds: { bronze: -600, silver: -300, gold: -180 },
-    value: (stats) => {
-      const best = getBestTimeSeconds(stats)
-      return best === null ? -Infinity : -best
-    },
+    thresholds: { bronze: -100, silver: -80, gold: -60 },
+    value: (stats) => parValue(getBestParRatio(stats, 'seconds')),
     // Required for a negated family: the automatic value/threshold fraction is inverted here and
     // would show a full bar for a player who is far too slow.
     progress: false
@@ -116,27 +124,20 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
   ...tieredFamily<StatsState>({
     id: 'fewest_moves',
     titles: { bronze: 'Economical', silver: 'Efficient', gold: 'Minimalist' },
-    description: (n) => `Win a game in ${-n} moves or fewer.`,
+    description: (n) => `Win a game ${parPhrase(n)} on moves.`,
     icon: 'gesture-tap',
-    // Lower-is-better: see the 'speed' family above for why value/thresholds are negated.
-    thresholds: { bronze: -120, silver: -80, gold: -50 },
-    value: (stats) => {
-      const best = getBestMoves(stats)
-      return best === null ? -Infinity : -best
-    },
+    // Tighter than time and score: par moves is already close to what a win takes.
+    thresholds: { bronze: -100, silver: -95, gold: -90 },
+    value: (stats) => parValue(getBestParRatio(stats, 'moves')),
     progress: false
   }),
   ...tieredFamily<StatsState>({
     id: 'low_score',
     titles: { bronze: 'Sharp Play', silver: 'Precision', gold: 'Perfectionist' },
-    description: (n) => `Win a game with a score of ${-n} or lower.`,
+    description: (n) => `Win a game with a score ${parPhrase(n)}.`,
     icon: 'target',
-    // Lower-is-better: see the 'speed' family above for why value/thresholds are negated.
-    thresholds: { bronze: -250, silver: -150, gold: -90 },
-    value: (stats) => {
-      const best = getBestScore(stats)
-      return best === null ? -Infinity : -best
-    },
+    thresholds: { bronze: -100, silver: -80, gold: -65 },
+    value: (stats) => parValue(getBestParRatio(stats, 'score')),
     progress: false
   }),
   ...tieredFamily<StatsState>({

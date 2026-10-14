@@ -1,4 +1,5 @@
-import { applyDealAbandoned, applyDealWon, applyHintUsed, getBestMoves, getBestScore, getBestTimeSeconds, getTotalHintsUsed, getTotalWinsWithoutHint } from '@/stores/statsEngine'
+import { parFor } from '@/engine/par'
+import { applyDealAbandoned, applyDealWon, applyHintUsed, getBestParRatio, getBestStreak, getGamesWon, getGameWins, getTotalHintsUsed, getTotalWins, getTotalWinsWithoutHint } from '@/stores/statsEngine'
 import { DEFAULT_STATS } from '@/stores/statsValidation'
 
 describe('applyDealWon', () => {
@@ -57,19 +58,36 @@ describe('applyDealAbandoned', () => {
   })
 })
 
-describe('getBestMoves / getBestScore / getBestTimeSeconds', () => {
+describe('getBestParRatio', () => {
   it('is null until something has been won', () => {
-    expect(getBestMoves(DEFAULT_STATS)).toBeNull()
-    expect(getBestScore(DEFAULT_STATS)).toBeNull()
-    expect(getBestTimeSeconds(DEFAULT_STATS)).toBeNull()
+    expect(getBestParRatio(DEFAULT_STATS, 'score')).toBeNull()
   })
 
-  it('is the minimum across variants', () => {
-    const afterKlondike = applyDealWon(DEFAULT_STATS, 'klondike', { seconds: 120, moves: 80, score: 200, usedHint: false }, null)
-    const afterSpider = applyDealWon(afterKlondike, 'spider', { seconds: 90, moves: 50, score: 140, usedHint: false }, null)
-    expect(getBestMoves(afterSpider)).toBe(50)
-    expect(getBestScore(afterSpider)).toBe(140)
-    expect(getBestTimeSeconds(afterSpider)).toBe(90)
+  // A raw best across games would just name the quickest game; against each variant's own par, the better PLAY wins.
+  it('is the best win measured against its own variant par, across every variant', () => {
+    const golf = parFor('golf')
+    const spider4 = parFor('spider-4suit')
+    const afterGolf = applyDealWon(DEFAULT_STATS, 'golf', { seconds: golf.seconds, moves: golf.moves, score: golf.score, usedHint: false }, null)
+    const afterSpider = applyDealWon(afterGolf, 'spider-4suit', { seconds: spider4.seconds / 2, moves: spider4.moves, score: spider4.score * 0.8, usedHint: false }, null)
+    expect(getBestParRatio(afterSpider, 'score')).toBeCloseTo(0.8)
+    expect(getBestParRatio(afterSpider, 'seconds')).toBeCloseTo(0.5)
+    expect(getBestParRatio(afterSpider, 'moves')).toBeCloseTo(1)
+  })
+})
+
+describe('variants', () => {
+  it('keeps each rule set apart, and sums them for a game', () => {
+    const win = { seconds: 100, moves: 100, score: 200, usedHint: false }
+    const s1 = applyDealWon(DEFAULT_STATS, 'spider', win, null)
+    const s2 = applyDealWon(s1, 'spider-4suit', { ...win, score: 900 }, null)
+    const s3 = applyDealWon(s2, 'spider-4suit', { ...win, score: 900 }, null)
+    expect(s3.variants.spider.bestScore).toBe(200)
+    expect(s3.variants['spider-4suit'].bestScore).toBe(900)
+    expect(s3.variants['spider-2suit'].record.played).toBe(0)
+    expect(getGameWins(s3, 'spider')).toBe(3)
+    expect(getTotalWins(s3)).toBe(3)
+    expect(getGamesWon(s3)).toBe(1)
+    expect(getBestStreak(s3)).toBe(2) // streaks are per rule set
   })
 })
 

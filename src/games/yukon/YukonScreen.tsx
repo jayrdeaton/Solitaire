@@ -27,6 +27,7 @@ import { YUKON_RULES } from '@/constants/gameRules'
 import { AutoCompleteStep, findSafeAutoPlay, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
+import { parFor } from '@/engine/par'
 import { alwaysValidRun, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
@@ -259,8 +260,8 @@ function YukonScreenInner() {
   // existed - see SavedGame's own doc comment).
   function restoreGame(saved: SavedGame<YukonState, UndoEntry<YukonState, YukonUndoMove>>) {
     ++dealTokenRef.current
-    // Nothing auto-plays on a resumed board until the player's own next move: a foundation play arms the cascade, and
-    // any move that leaves the board solved starts the finish.
+    // Nothing auto-plays on a resumed board until the player's own next foundation play: it arms the cascade, and starts
+    // the finish if it leaves the board solved.
     finish.suppress()
     cascade.disarm()
     setUndoStack(saved.undoStack ?? [])
@@ -619,9 +620,9 @@ function YukonScreenInner() {
     firePlay
   })
   // The finish: once the board is solved (every card face up and able to go up by foundation moves alone), every
-  // remaining card files away on its own at the finish's quicker pace - after ANY move of the player's that leaves the
-  // board that way (except one taking a card back off a foundation), or once the cascade a foundation play set off
-  // turns the last hidden card over (see useAutoFinish).
+  // remaining card files away on its own, at a pace that ramps up - after the player's play of a card to a foundation
+  // that leaves the board that way, or once the cascade that play set off turns the last hidden card over (see
+  // useAutoFinish).
   const finish = useAutoFinish<YukonState>({
     state,
     enabled: () => settings.autoMoveToFoundation,
@@ -805,8 +806,8 @@ function YukonScreenInner() {
   }
 
   // `silent` is for the auto-play-to-foundation feature (see firePlay above): an auto-played card
-  // isn't a player decision, so it doesn't count toward the moves/score the player is judged on. It
-  // is still its own undo step, like any other move.
+  // isn't a player decision, so it doesn't arm the cascade or start the finish, but it counts as a move
+  // like any other (so Auto-Move only saves taps) and is its own undo step.
   function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean }) {
     // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
     // closure's `state` - two actions can now be triggered back-to-back before React re-renders
@@ -828,14 +829,15 @@ function YukonScreenInner() {
       // set it off, see YukonUndoMove).
       pushUndo(current, { primary: moveInfo, cascaded: [] })
       commitState(result)
-      if (!opts?.silent) session.registerMove()
+      // Every move counts, the player\'s or an auto-play\'s: Auto-Move only saves taps, never score.
+      session.registerMove()
       checkWin(result)
       // Only the player's own play of a card to a foundation starts the cascade; any other move of theirs
       // stops it, so a card it uncovers (an ace flipped up on the tableau, say) is theirs to find and play.
-      // The finish follows ANY move of theirs that leaves the board solved - but not one off a foundation.
+      // The finish follows the same foundation play, once the board is solved.
       if (!opts?.silent) {
         cascade.afterPlayerMove(to)
-        finish.afterPlayerMove(from)
+        finish.afterPlayerMove(to)
       }
       return true
     }
@@ -945,7 +947,7 @@ function YukonScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Yukon' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won} movesCount={session.moves} rules={YUKON_RULES}>
+      <GameChrome title='Yukon' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor('yukon')} clockRunning={session.started && !won} movesCount={session.moves} rules={YUKON_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
@@ -1031,7 +1033,7 @@ function YukonScreenInner() {
     not buried under it. */}
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor('yukon')} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }

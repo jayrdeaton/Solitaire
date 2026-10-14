@@ -30,9 +30,11 @@ import { useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascade
 import { GOLF_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
+import { parFor } from '@/engine/par'
 import { top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
+import { golfVariant } from '@/engine/variants'
 import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
@@ -74,6 +76,8 @@ function GolfScreenInner() {
   // positive) but not for a memoized one, same as Spider's own identical setup already proves
   // lint-clean.
   const [golfRankWrap, setGolfRankWrap] = useState(settings.golfRankWrap)
+  // The deal's game under the rule it was dealt with: what its stats and par are kept for (engine/variants.ts).
+  const variant = golfVariant(golfRankWrap)
   const controller = useMemo(() => createGolfController(golfRankWrap), [golfRankWrap])
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
@@ -131,11 +135,11 @@ function GolfScreenInner() {
   const winCascade = useWinCascade()
   // A dead board - no move left and no stock to deal - is a loss here, as in Aces Up, recorded when the player leaves it (see useStuckLossCheck):
   // it used to just sit there with the clock running.
-  const { stuck } = useStuckLossCheck(controller, state, 'golf', recordDealAbandoned)
+  const { stuck } = useStuckLossCheck(controller, state, variant, recordDealAbandoned)
   // Derived from `state` every render (see useDerivedWinCheck) rather than mirrored into its own
   // useState, same as Pyramid/Spider (not Klondike/FreeCell's useFoundationWinCheck) - Golf has no
   // suit-based foundation for a "won" flag to hang off, just "every tableau column is empty".
-  const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, 'golf', session, dealTokenRef, recordDealWon, hintsUsedRef)
+  const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, variant, session, dealTokenRef, recordDealWon, hintsUsedRef)
   // Nothing animating and the initial deal finished - what the win celebration waits for (see
   // useWinReveal). activeFlightCount covers every ghost flight (tap, drag, stock draw, undo all
   // claim one via startFlights before their first await), dealHiddenIds the initial deal.
@@ -233,7 +237,7 @@ function GolfScreenInner() {
   // ever calls this after the player has confirmed that, or immediately when there's nothing to lose
   // (see components/GameChrome.tsx's warning dialog).
   function handleNewGame() {
-    if (session.moves > 0 && !won) recordDealAbandoned('golf')
+    if (session.moves > 0 && !won) recordDealAbandoned(variant)
     setGolfRankWrap(settings.golfRankWrap)
     startNewGame(createGolfController(settings.golfRankWrap))
   }
@@ -427,7 +431,7 @@ function GolfScreenInner() {
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
-    recordHintUsed('golf')
+    recordHintUsed(variant)
     if (result.kind === 'move') {
       const source = state.tableau[result.move.from.index]
       void playHintGlide({ moving: source.slice(-1), dest: state.waste, destFanned: false, cardWidth })
@@ -610,7 +614,7 @@ function GolfScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Golf' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<GolfSettingsSection />} rules={GOLF_RULES}>
+      <GameChrome title='Golf' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<GolfSettingsSection />} rules={GOLF_RULES}>
         {/* No foundation row at all (unlike Klondike/FreeCell/Yukon) - Golf has no suit-based
         foundation, just the stock/waste pair. Narrower than the tableau below, so it's centered
         above it by GameChrome's own content styling rather than stretched/pinned to an edge. */}
@@ -693,7 +697,7 @@ function GolfScreenInner() {
       not buried under it. */}
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor(variant)} onNewGame={handleNewGame} />}
       {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )

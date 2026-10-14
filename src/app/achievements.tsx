@@ -9,10 +9,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { RotatedScreen } from '@/components/RotatedScreen'
 import { CHROME_FG, CHROME_FG_MUTED, CHROME_SECTION_BG } from '@/components/theme'
 import { useProfilePickerAlign } from '@/components/useProfilePickerAlign'
+import { describeVsPar, parFor } from '@/engine/par'
+import { VARIANTS } from '@/engine/variants'
 import { ACHIEVEMENT_CATALOG } from '@/stores/achievementCatalog'
 import { useGameStats } from '@/stores/gameStats'
 import { useProfiles } from '@/stores/profiles'
-import { getBestMoves, getBestScore, getBestStreak, getBestTimeSeconds, getProfileStatsView, getTotalHintsUsed, getTotalPlayed, getTotalWins, getVariantsWon } from '@/stores/statsEngine'
+import { getBestParRatio, getBestStreak, getGamesWon, getProfileStatsView, getTotalHintsUsed, getTotalPlayed, getTotalWins } from '@/stores/statsEngine'
 import { SOLITAIRE_GAME_IDS, SolitaireGameId } from '@/stores/statsTypes'
 import { DEFAULT_PROFILE_STATS } from '@/stores/statsValidation'
 import { safeBack } from '@/utils/navigation'
@@ -77,9 +79,7 @@ function AchievementsContent() {
 
   const played = getTotalPlayed(statsView)
   const wins = getTotalWins(statsView)
-  const bestTime = getBestTimeSeconds(statsView)
-  const bestMoves = getBestMoves(statsView)
-  const bestScore = getBestScore(statsView)
+  const bestScoreVsPar = getBestParRatio(statsView, 'score')
 
   return (
     // A transparent BaseStatsScreen over the app-wide felt (TableBackground, mounted once in
@@ -103,26 +103,30 @@ function AchievementsContent() {
           <StatRow label='Wins' value={String(wins)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
           <StatRow label='Win Rate' value={played > 0 ? `${Math.round((wins / played) * 100)}%` : '-'} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
           <StatRow label='Best Streak' value={String(getBestStreak(statsView))} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Games Solved' value={`${getVariantsWon(statsView)} / ${SOLITAIRE_GAME_IDS.length}`} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Fastest Win' value={bestTime === null ? '-' : formatTime(bestTime)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Fewest Moves' value={bestMoves === null ? '-' : String(bestMoves)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Lowest Score' value={bestScore === null ? '-' : String(bestScore)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Games Solved' value={`${getGamesWon(statsView)} / ${SOLITAIRE_GAME_IDS.length}`} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          {/* Overall bests are measured against par: a raw lowest score or fastest time across all 11 games would just
+          name the quickest game (Golf, Aces Up), not the best play. */}
+          <StatRow label='Best Score' value={bestScoreVsPar === null ? '-' : describeVsPar(bestScoreVsPar, 1)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
           <StatRow label='Hints Used' value={String(getTotalHintsUsed(statsView))} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
         </StatSection>
 
-        {/* Per game. "Lost" counts both ways a deal ends without a win: dealt over mid-game, and the No Moves Left
-        dead board of Aces Up, Golf, TriPeaks, Forty Thieves and Scorpion - see stores/statsTypes.ts. */}
-        {SOLITAIRE_GAME_IDS.map((id) => {
-          const v = statsView.variants[id]
+        {/* Per variant: one game under one rule set (engine/variants.ts), since a 1-suit and a 4-suit Spider win aren't the
+        same. A game's default rules always show; its other rules once a deal under them has been played. Each best is shown
+        next to its par. "Lost" counts both ways a deal ends without a win: dealt over mid-game, and the No Moves Left dead
+        board of Aces Up, Golf, TriPeaks, Forty Thieves and Scorpion - see stores/statsTypes.ts. */}
+        {VARIANTS.filter((info, i) => i === 0 || VARIANTS[i - 1].game !== info.game || statsView.variants[info.id].record.played > 0).map((info) => {
+          const v = statsView.variants[info.id]
+          const par = parFor(info.id)
+          const vsPar = (best: number | null, parValue: string, show: (n: number) => string) => (best === null ? `- · par ${parValue}` : `${show(best)} · par ${parValue}`)
           return (
-            <StatSection key={id} label={GAME_TITLES[id].toUpperCase()} fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
+            <StatSection key={info.id} label={`${GAME_TITLES[info.game]}${info.label ? ` · ${info.label}` : ''}`.toUpperCase()} fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
               <StatRow label='Played' value={String(v.record.played)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
               <StatRow label='Won' value={String(v.record.wins)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
               <StatRow label='Lost' value={String(v.record.losses)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
               <StatRow label='Streak' value={`${v.streak.currentWinStreak} (best ${v.streak.bestWinStreak})`} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Fastest' value={v.bestTimeSeconds === null ? '-' : formatTime(v.bestTimeSeconds)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Fewest Moves' value={v.bestMoves === null ? '-' : String(v.bestMoves)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Lowest Score' value={v.bestScore === null ? '-' : String(v.bestScore)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+              <StatRow label='Fastest' value={vsPar(v.bestTimeSeconds, formatTime(par.seconds), formatTime)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+              <StatRow label='Fewest Moves' value={vsPar(v.bestMoves, String(par.moves), String)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+              <StatRow label='Lowest Score' value={vsPar(v.bestScore, String(par.score), String)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
             </StatSection>
           )
         })}

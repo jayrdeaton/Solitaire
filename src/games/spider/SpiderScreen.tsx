@@ -31,10 +31,12 @@ import { CHAIN_ENTRANCE_STAGGER_MS, CHAIN_SEGMENT_DELAY_MS } from '@/components/
 import { SPIDER_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
+import { parFor } from '@/engine/par'
 import { isDescendingSameSuit, runCountFrom } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
+import { spiderVariant } from '@/engine/variants'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
@@ -307,6 +309,8 @@ function SpiderScreenInner() {
   // the in-progress game's own controller/rules must stay fixed to whatever suit count it was
   // dealt with, even if the player changes the setting mid-game without starting a new deal.
   const [numSuits, setNumSuits] = useState<1 | 2 | 4>(settings.spiderSuits)
+  // The deal's game under the rule it was dealt with: what its stats and par are kept for (engine/variants.ts).
+  const variant = spiderVariant(numSuits)
   const controller = useMemo(() => createSpiderController(numSuits), [numSuits])
 
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
@@ -454,7 +458,7 @@ function SpiderScreenInner() {
   // Derived from `state` every render (see useDerivedWinCheck) rather than mirrored into its own
   // useState: it's a pure function of state, so Undo-ing out of a won position correctly drops the
   // win banner immediately, rather than leaving it stuck showing.
-  const { won, recordedRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, 'spider', session, dealTokenRef, recordDealWon, hintsUsedRef)
+  const { won, recordedRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, variant, session, dealTokenRef, recordDealWon, hintsUsedRef)
   /** One ref per completed-sequence slot below - unlike a foundation pile's own card, these slots
    * have no per-card CardRegistry registration (there's no single occupant identity to track, just
    * "is this run done or not") - measured the same plain-view way Pyramid's discard pile is. */
@@ -1343,7 +1347,7 @@ function SpiderScreenInner() {
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
-    recordHintUsed('spider')
+    recordHintUsed(variant)
     if (result.kind === 'move') {
       const { from, to, count } = result.move
       const source = state.tableau[from.index]
@@ -1808,14 +1812,14 @@ function SpiderScreenInner() {
     // session.moves, not history.length: a resumed deal always restores with an empty history
     // (see restoreGame above) even when it has real progress, so history alone would miss
     // recording the abandon for any resumed, in-progress game.
-    if (session.moves > 0 && !won) recordDealAbandoned('spider')
+    if (session.moves > 0 && !won) recordDealAbandoned(variant)
     setNumSuits(settings.spiderSuits)
     startNewGame(createSpiderController(settings.spiderSuits))
   }
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Spider' subtitle={`${numSuits} Suit${numSuits > 1 ? 's' : ''}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={history.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<SpiderSettingsSection />} rules={SPIDER_RULES}>
+      <GameChrome title='Spider' subtitle={`${numSuits} Suit${numSuits > 1 ? 's' : ''}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={history.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<SpiderSettingsSection />} rules={SPIDER_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.completedGroup, { gap }]}>
             {Array.from({ length: 8 }).map((_, i) => {
@@ -1891,7 +1895,7 @@ function SpiderScreenInner() {
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <SequenceFlightGhosts flights={sequenceFlights} onCardLanded={handleSequenceFlightLanded} onRetire={retireSequenceFlight} />
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor(variant)} onNewGame={handleNewGame} />}
     </CardSizeProvider>
   )
 }

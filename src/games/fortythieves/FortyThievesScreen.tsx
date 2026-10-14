@@ -34,10 +34,12 @@ import { FORTYTHIEVES_RULES } from '@/constants/gameRules'
 import { AutoCompleteStep } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
+import { parFor } from '@/engine/par'
 import { isDescendingSameSuit, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card, SUITS } from '@/engine/types'
+import { fortyThievesVariant } from '@/engine/variants'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { LossBanner } from '@/games/shared/LossBanner'
@@ -100,6 +102,8 @@ function FortyThievesScreenInner() {
   // state has: a mid-game settings change must never mutate the current deal's own rules.
   const controllerRef = useRef(createFortyThievesController(settings.fortyThievesRunMoves))
   const [runMoves, setRunMoves] = useState(settings.fortyThievesRunMoves)
+  // The deal's game under the rule it was dealt with: what its stats and par are kept for (engine/variants.ts).
+  const variant = fortyThievesVariant(runMoves)
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
   // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
   // exclusion with everything else; tap/drag/auto-play/stock-draw can all run concurrently with
@@ -148,13 +152,13 @@ function FortyThievesScreenInner() {
   const stuckController = useMemo(() => createFortyThievesController(runMoves), [runMoves])
   // A dead board - no move left and no stock to deal - is a loss here, as in Aces Up, recorded when the player leaves it (see useStuckLossCheck):
   // it used to just sit there with the clock running.
-  const { stuck } = useStuckLossCheck(stuckController, state, 'fortythieves', recordDealAbandoned)
+  const { stuck } = useStuckLossCheck(stuckController, state, variant, recordDealAbandoned)
   // Reads controllerRef.current live inside isWon (rather than passing controllerRef.current
   // directly, which would freeze this render's controller into checkWin's closure) - matches
   // KlondikeScreen's identical fix, so a straggling call from a stale render's closure chain still
   // checks against the CURRENT controller, same as every other controllerRef.current read in this
   // file.
-  const { won, setWon, recordedWinRef, pendingWinCascadeRef, checkWin } = useFoundationWinCheck({ isWon: (s: FortyThievesState) => controllerRef.current.isWon(s) }, 'fortythieves', session, dealTokenRef, recordDealWon, hintsUsedRef)
+  const { won, setWon, recordedWinRef, pendingWinCascadeRef, checkWin } = useFoundationWinCheck({ isWon: (s: FortyThievesState) => controllerRef.current.isWon(s) }, variant, session, dealTokenRef, recordDealWon, hintsUsedRef)
   // Nothing animating and the initial deal finished - what the auto-play hook below waits for, and
   // what the win celebration waits for too (see useWinReveal).
   const settled = activeFlightCount === 0 && dealHiddenIds.size === 0
@@ -229,8 +233,8 @@ function FortyThievesScreenInner() {
   // written before undo persistence existed - see SavedGame's own doc comment).
   function restoreGame(saved: SavedGame<FortyThievesState>) {
     ++dealTokenRef.current
-    // Nothing auto-plays on a resumed board until the player's own next move: a foundation play for the cascade, any move
-    // for the finish of a solved board.
+    // Nothing auto-plays on a resumed board until the player's own next play of a card to a foundation (the cascade, and the
+    // finish if the board is solved).
     finish.suppress()
     cascade.disarm()
     // config is persisted as 0/1 (see the save effect below) since SavedGame.config is a plain
@@ -252,7 +256,7 @@ function FortyThievesScreenInner() {
   }
 
   function handleNewGame() {
-    if (session.moves > 0 && !won) recordDealAbandoned('fortythieves')
+    if (session.moves > 0 && !won) recordDealAbandoned(variant)
     startNewGame()
   }
 
@@ -386,8 +390,8 @@ function FortyThievesScreenInner() {
     fireDrawAndPlay
   })
   // The finish: once the board is solved (the stock and waste empty, every card able to go up - rules.ts's canAutoFinish),
-  // the rest files away on its own at the finish's quicker pace - after ANY move of the player's that leaves it that way, or
-  // the cascade a foundation play set off (see useAutoFinish). Both read the live controller (it is replaced every deal).
+  // the rest files away on its own, at a pace that ramps up - after the player's play of a card to a foundation that leaves it
+  // that way, or the cascade that play set off (see useAutoFinish). Both read the live controller (it is replaced every deal).
   const finish = useAutoFinish<FortyThievesState>({
     state,
     enabled: () => settings.autoMoveToFoundation,
@@ -434,7 +438,7 @@ function FortyThievesScreenInner() {
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
-    recordHintUsed('fortythieves')
+    recordHintUsed(variant)
     if (result.kind === 'move') {
       const { from, to, count } = result.move
       const source = resolvePile(from) ?? []
@@ -534,14 +538,15 @@ function FortyThievesScreenInner() {
       // counts as a move (below) or arms the cascade again.
       pushUndo(current, { from, to, count, anchorCardId })
       commitState(result)
-      if (!opts?.silent) session.registerMove()
+      // Every move counts, the player\'s or an auto-play\'s: Auto-Move only saves taps, never score.
+      session.registerMove()
       checkWin(result)
       // Only the player's own play of a card to a foundation starts the cascade; any other move of theirs
       // stops it, so a card it uncovers (the waste's next card, say) is theirs to find and play. The
-      // finish follows ANY move of theirs that leaves the board solved (see useAutoFinish).
+      // finish follows the same foundation play, once the board is solved (see useAutoFinish).
       if (!opts?.silent) {
         cascade.afterPlayerMove(to)
-        finish.afterPlayerMove(from)
+        finish.afterPlayerMove(to)
       }
       return true
     }
@@ -597,9 +602,8 @@ function FortyThievesScreenInner() {
   // Only ever called by the win-completing sweep once a stock card is provably about to go straight
   // to its foundation (see engine/autoFoundation.ts's 'drawAndPlay' step) - draws AND plays it in
   // one committed state change, animated as one continuous flight straight from the stock pile,
-  // skipping the ordinary "land on waste first" stop entirely (the confirmed sweep visual). Not a
-  // player decision, so it never counts as a move - but, like every auto-play (see applyMove), each
-  // half is its own undo step: the draw (the board before it) and then the waste-to-foundation play
+  // skipping the ordinary "land on waste first" stop entirely (the confirmed sweep visual). It counts
+  // as two moves, like every auto-play (see applyMove), and each half is its own undo step: the draw (the board before it) and then the waste-to-foundation play
   // (the board after the draw). Both are kinds handleUndo already flies, so the first Undo sends the
   // card back to the waste and the next one back into the stock.
   async function fireDrawAndPlay(entry: AccessibleCard, to: PileRef) {
@@ -623,6 +627,9 @@ function FortyThievesScreenInner() {
     pushUndo(current, { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: 1, anchorCardId: entry.card.id })
     pushUndo(afterDraw, { from: entry.ref, to, count: 1, anchorCardId: entry.card.id })
     commitState(result)
+    // Two moves, the draw and the play, as the player would make them with Auto-Move off.
+    session.registerMove()
+    session.registerMove()
     checkWin(result)
     pendingFlightRef.current.push({ cardId: entry.card.id, to, gen: dealTokenRef.current, flyingId, flight })
   }
@@ -649,9 +656,8 @@ function FortyThievesScreenInner() {
   }
 
   // `opts.sweep` marks this as an automatic step of the win-completing sweep (see the shared
-  // cascade hook's own fireDraw callback above) rather than a genuine player tap - not a player
-  // decision, so it doesn't count toward moves/score, but (like every auto-play, see applyMove) it
-  // is still its own undo step.
+  // cascade hook's own fireDraw callback above) rather than a genuine player tap. Like every auto-play (see applyMove)
+  // it counts as a move and is its own undo step.
   async function handleDrawStock(opts?: { sweep?: boolean }) {
     // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
     const current = stateRef.current
@@ -687,7 +693,7 @@ function FortyThievesScreenInner() {
       return
     }
     // Counted here, with the draw that really happens - not at the tap, whose draw may have been dropped.
-    if (!opts?.sweep) session.registerMove()
+    session.registerMove() // a sweep\'s own draw counts too, as the player\'s would with Auto-Move off
 
     const drawnCard = top(result.waste)!
     const move: MoveInfo = { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: 1, anchorCardId: drawnCard.id }
@@ -766,7 +772,7 @@ function FortyThievesScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
+      <GameChrome title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
         {/* As wide as the tableau, the foundations at its left edge and the waste/stock pair at its right. It used to
         put a fixed 18pt between the two in portrait, which made it 16pt wider than the tableau: it ran off both
         edges of a phone. */}
@@ -836,7 +842,7 @@ function FortyThievesScreenInner() {
       </GameChrome>
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor(variant)} onNewGame={startNewGame} />}
       {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )

@@ -725,7 +725,7 @@ describe('Klondike screen - every auto-played step is its own undo step', () => 
     await flush(2000) // the tap's flight, then auto-play sends 6 of hearts up on top of it
     expect(mockLog.shown).toEqual([id('hearts', 5), id('hearts', 6)])
     expect(foundationTop('hearts')).toBe(id('hearts', 6))
-    expect(movesCount()).toBe('1') // the auto-play is not a move of the player's
+    expect(movesCount()).toBe('2') // the tap and the auto-play: every move counts
     mockLog.shown = []
 
     await tap('undo') // takes back only the auto-played 6 of hearts...
@@ -754,7 +754,7 @@ describe('Klondike screen - every auto-played step is its own undo step', () => 
     await tapCard(id('clubs', 12))
     await flush(10000)
     expect(screen.getByTestId('chrome-won').props.children).toBe('true')
-    expect(movesCount()).toBe('1') // neither the draw nor the play counts
+    expect(movesCount()).toBe('3') // the tap, then the sweep's draw and its play
     mockLog.shown = []
 
     await tap('undo') // the King drops from its foundation onto the waste
@@ -1160,7 +1160,7 @@ describe("Klondike screen - once the board is solved, any move of the player's f
     expect(won()).toBe('true')
     expect(screen.getByTestId('win-banner')).toBeTruthy()
     expect(cardsOnBoard()).toBe(0)
-    expect(movesCount()).toBe('1') // the finish's cards are not moves of the player's
+    expect(movesCount()).toBe('7') // the player's move and each finished card
     expect(mockLog.hides).toBe(0)
   })
 

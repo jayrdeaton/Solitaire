@@ -1,8 +1,8 @@
 import { useEffect, useRef } from 'react'
 
 import { GameController } from '@/engine/gameTypes'
+import { gameOfVariant, VariantId } from '@/engine/variants'
 import { clearGameInProgress } from '@/stores/gameInProgress'
-import { SolitaireGameId } from '@/stores/statsTypes'
 
 export interface StuckLossCheck {
   stuck: boolean
@@ -22,20 +22,20 @@ export interface StuckLossCheck {
  * An Undo out of the dead board cancels it: nothing was recorded. The dead board itself is never saved (each screen's save
  * skips `stuck`), so a killed app resumes the board one move before it died, which is just that Undo.
  */
-export function useStuckLossCheck<TState>(controller: Pick<GameController<TState>, 'isStuck'>, state: TState | null, gameId: SolitaireGameId, recordDealAbandoned: (gameId: SolitaireGameId) => void): StuckLossCheck {
+export function useStuckLossCheck<TState>(controller: Pick<GameController<TState>, 'isStuck'>, state: TState | null, variant: VariantId, recordDealAbandoned: (variant: VariantId) => void): StuckLossCheck {
   const stuck = state && controller.isStuck ? controller.isStuck(state) : false
 
-  const latestRef = useRef({ stuck, gameId, recordDealAbandoned })
+  const latestRef = useRef({ stuck, variant, recordDealAbandoned })
   useEffect(() => {
-    latestRef.current = { stuck, gameId, recordDealAbandoned }
+    latestRef.current = { stuck, variant, recordDealAbandoned }
   })
 
   useEffect(
     () => () => {
-      const { stuck: leftStuck, gameId: id, recordDealAbandoned: record } = latestRef.current
+      const { stuck: leftStuck, variant: leftVariant, recordDealAbandoned: record } = latestRef.current
       if (!leftStuck) return
-      record(id)
-      clearGameInProgress(id)
+      record(leftVariant)
+      clearGameInProgress(gameOfVariant(leftVariant))
     },
     []
   )

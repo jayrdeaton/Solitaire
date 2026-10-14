@@ -631,7 +631,7 @@ describe('Forty Thieves screen - every auto-played step is its own undo step', (
     expect(mockRecordWon).toHaveBeenCalledTimes(1) // it finished itself (the celebration has taken the piles over by now)
     expect(screen.queryAllByTestId(/^card-|^waste-|^stock-/)).toEqual([])
     expect(mockLog.shown).toHaveLength(6) // the tap, then the five automatic steps
-    expect(moves()).toBe('1') // only the tap counts as a move - none of the auto-plays do
+    expect(moves()).toBe('7') // the tap and every automatic step after it
 
     const undo = async () => {
       const before = mockLog.shown.length
@@ -661,7 +661,7 @@ describe('Forty Thieves screen - every auto-played step is its own undo step', (
 
     expect(mockLog.shown.slice(-7)).toEqual([id('diamonds', 13, 1), id('diamonds', 12, 1), id('diamonds', 12, 1), id('diamonds', 13, 1), id('clubs', 13, 1), id('clubs', 12, 1), id('clubs', 11, 1)])
     expect(mockLog.hidden).toBe(0) // every one of them really flew
-    expect(moves()).toBe('1')
+    expect(moves()).toBe('7') // undoing never takes a move back off the count
   })
 })
 
@@ -738,7 +738,7 @@ describe("Forty Thieves screen - once the board is solved, any move of the playe
     expect(cardsOnBoard()).toBe(0)
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('win-banner')).toBeTruthy()
-    expect(moves()).toBe('1') // only the tap counts as a move
+    expect(moves()).toBe('11') // the tap and each finished card
     const [tapAt, ...finishAt] = mockLog.shownAt
     expect(finishAt[0] - tapAt).toBeLessThan(FINISH_STAGGER_MS + 2 * STEP_MS) // the first card a finish gap after the tap
     expectFinishPace(finishAt)

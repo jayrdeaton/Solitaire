@@ -473,7 +473,7 @@ export function findSafeAutoPlay(state: CanfieldState, accessible: AccessibleCar
 }
 
 /** Whether the board is SOLVED, so the finish (games/shared/useAutoFinish) may file every remaining card away on its own,
- * after any move of the player's: not won yet, nothing hidden and nothing left to draw - the reserve (face-down under its
+ * after the player's play of a card to a foundation: not won yet, nothing hidden and nothing left to draw - the reserve (face-down under its
  * top), the stock (face-down) and the waste all empty, and no face-down card in the tableau (it never holds one, see
  * newGame/tryMove; checked anyway) - and every remaining card able to go up by foundation moves alone. The last part is
  * engine/autoFoundation.ts's plain isFullyAutoCompletable, which suits these wrapping foundations because it only ever moves

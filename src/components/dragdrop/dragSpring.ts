@@ -131,10 +131,22 @@ export function dropSpringFor(distance: number): WithSpringConfig {
  * own sound/haptic tick. */
 export const AUTO_PLAY_STAGGER_MS = scaledMs(60)
 
-/** Gap between one card of the FINISH leaving and the next (useAutoFinish: the board is solved, nothing hidden and no choice left, so every
- * remaining card files away on its own): half the auto-play gap, so a solved board clears about twice as fast as ordinary auto-play (Jay,
- * 2026-10-12). The flights still take FLIGHT_SPRING's one time, so the cards still land in the order they left; ~8 are in the air at once.
- * Scale-1 30ms: 48ms at the default. Just above useCascadeFeedback's 45ms floor, so every card normally keeps its tick (the gap is kept on a
- * fixed clock from one take-off to the next, and a step whose measurement comes back quicker than the one before can land inside the floor
- * and lose its tick: inaudible in a stream). */
+/** The FINISH's pace (useAutoFinish: the board is solved, nothing hidden and no choice left, so every remaining card files away on its own)
+ * RAMPS UP (Jay, 2026-10-14: not "immediately flying in"): its first card follows the player's foundation play at ordinary auto-play's gap
+ * (FINISH_RAMP_START_MS = AUTO_PLAY_STAGGER_MS, so a cascade handing over to it doesn't slow down), and each later gap closes in on
+ * FINISH_STAGGER_MS, the top speed, by FINISH_RAMP_FACTOR of what is left: 96, 89, 83, 77, 73 ... ~59 by the 10th card, ~50 by the 20th.
+ * The flights still take FLIGHT_SPRING's one time, so the cards still land in the order they left. */
+export const FINISH_RAMP_START_MS = AUTO_PLAY_STAGGER_MS
+
+/** The finish's top speed: half the auto-play gap (scale-1 30ms: 48ms at the default). Just above useCascadeFeedback's 45ms floor, so every
+ * card normally keeps its tick (the gap is kept on a fixed clock from one take-off to the next, and a step whose measurement comes back
+ * quicker than the one before can land inside the floor and lose its tick: inaudible in a stream). */
 export const FINISH_STAGGER_MS = scaledMs(30)
+
+/** How much of the gap still above FINISH_STAGGER_MS each finish card keeps - see FINISH_RAMP_START_MS. */
+export const FINISH_RAMP_FACTOR = 0.85
+
+/** The gap in front of the finish's `index`th card (0 = the first, after the player's own foundation play). */
+export function finishGapMs(index: number): number {
+  return Math.round(FINISH_STAGGER_MS + (FINISH_RAMP_START_MS - FINISH_STAGGER_MS) * FINISH_RAMP_FACTOR ** index)
+}

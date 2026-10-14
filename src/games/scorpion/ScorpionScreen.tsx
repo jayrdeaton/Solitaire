@@ -37,10 +37,12 @@ import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion
 import { SCORPION_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
+import { parFor } from '@/engine/par'
 import { alwaysValidRun, runCountFrom } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
+import { scorpionVariant } from '@/engine/variants'
 import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
@@ -111,6 +113,8 @@ function ScorpionScreenInner() {
   // flags for a ref-sourced controller but not for a memoized one, same as Spider's own identical
   // setup already proves lint-clean.
   const [assistedStock, setAssistedStock] = useState(settings.scorpionAssistedStock)
+  // The deal's game under the rule it was dealt with: what its stats and par are kept for (engine/variants.ts).
+  const variant = scorpionVariant(assistedStock)
   const controller = useMemo(() => createScorpionController(assistedStock), [assistedStock])
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
@@ -160,11 +164,11 @@ function ScorpionScreenInner() {
   const winCascade = useWinCascade()
   // A dead board - no move left and no stock to deal - is a loss here, as in Aces Up, recorded when the player leaves it (see useStuckLossCheck):
   // it used to just sit there with the clock running.
-  const { stuck } = useStuckLossCheck(controller, state, 'scorpion', recordDealAbandoned)
+  const { stuck } = useStuckLossCheck(controller, state, variant, recordDealAbandoned)
   // Derived from `state` every render (see useDerivedWinCheck), same as Spider/Golf - Scorpion has
   // no suit-based foundation for a "won" flag to hang off; isWon (rules.ts) checks each column's
   // own shape directly instead.
-  const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, 'scorpion', session, dealTokenRef, recordDealWon, hintsUsedRef)
+  const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, variant, session, dealTokenRef, recordDealWon, hintsUsedRef)
   // Nothing animating and no deal still landing - every ghost flight (tap, drag, undo, the stock deal) holds an
   // activeFlightCount claim until it lands, and the initial deal holds dealHiddenIds until its last card does.
   const settled = activeFlightCount === 0 && dealHiddenIds.size === 0
@@ -294,7 +298,7 @@ function ScorpionScreenInner() {
   // only ever calls this after the player has confirmed that, or immediately when there's nothing
   // to lose (see components/GameChrome.tsx's warning dialog).
   function handleNewGame() {
-    if (session.moves > 0 && !won) recordDealAbandoned('scorpion')
+    if (session.moves > 0 && !won) recordDealAbandoned(variant)
     setAssistedStock(settings.scorpionAssistedStock)
     startNewGame(createScorpionController(settings.scorpionAssistedStock))
   }
@@ -573,7 +577,7 @@ function ScorpionScreenInner() {
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
-    recordHintUsed('scorpion')
+    recordHintUsed(variant)
     if (result.kind === 'move') {
       const { from, to, count } = result.move
       const source = state.tableau[from.index]
@@ -773,7 +777,7 @@ function ScorpionScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
+      <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
         {/* Portrait: the stock packet lives in a card-tall top row at the right, as always. Wide layout: no
         top row (zero height, no margin) - the packet is absolutely positioned beside the tableau below.
         Once the assisted stock has been dealt, an empty slot stays in its place: the packet was the top row's
@@ -837,7 +841,7 @@ function ScorpionScreenInner() {
       </GameChrome>
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={handleNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor(variant)} onNewGame={handleNewGame} />}
       {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )

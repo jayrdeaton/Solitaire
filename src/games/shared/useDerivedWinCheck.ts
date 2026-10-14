@@ -3,8 +3,9 @@ import { MutableRefObject, useEffect, useRef } from 'react'
 import { GameSession } from '@/components/useGameSession'
 import { GameController } from '@/engine/gameTypes'
 import { computeScore } from '@/engine/score'
+import { gameOfVariant, VariantId } from '@/engine/variants'
 import { clearGameInProgress } from '@/stores/gameInProgress'
-import { DealMetrics, SolitaireGameId } from '@/stores/statsTypes'
+import { DealMetrics } from '@/stores/statsTypes'
 
 export interface DerivedWinCheck {
   won: boolean
@@ -30,10 +31,11 @@ export interface DerivedWinCheck {
 export function useDerivedWinCheck<TState>(
   controller: Pick<GameController<TState>, 'isWon'>,
   state: TState | null,
-  gameId: SolitaireGameId,
+  // The deal's game under the rules it was dealt with (engine/variants.ts): stats are kept per variant.
+  variant: VariantId,
   session: GameSession,
   dealTokenRef: MutableRefObject<number>,
-  recordDealWon: (gameId: SolitaireGameId, metrics: DealMetrics) => unknown,
+  recordDealWon: (variant: VariantId, metrics: DealMetrics) => unknown,
   // Whether the Hint button was pressed (and actually produced a hint) at any point during this
   // deal - read at the exact instant a win is recorded, since a screen's own ref value can't be
   // passed as a snapshot (see each screen's hintUsedThisDealRef).
@@ -50,8 +52,8 @@ export function useDerivedWinCheck<TState>(
       session.stopClock()
       const moves = session.getMoves()
       const seconds = session.getElapsed()
-      recordDealWon(gameId, { seconds, moves, score: computeScore(moves, seconds), usedHint: hintsUsedRef.current })
-      clearGameInProgress(gameId)
+      recordDealWon(variant, { seconds, moves, score: computeScore(moves, seconds), usedHint: hintsUsedRef.current })
+      clearGameInProgress(gameOfVariant(variant))
       pendingWinCascadeRef.current = { gen: dealTokenRef.current }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

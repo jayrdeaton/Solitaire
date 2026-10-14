@@ -36,6 +36,7 @@ import { chainSegmentDelayMs } from '@/components/winning/winCascadeMotion'
 import { PYRAMID_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
+import { parFor } from '@/engine/par'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
@@ -1859,7 +1860,7 @@ function PyramidScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won} movesCount={session.moves} rules={PYRAMID_RULES}>
+      <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor('pyramid')} clockRunning={session.started && !won} movesCount={session.moves} rules={PYRAMID_RULES}>
         <View style={styles.board}>
           <View style={[styles.controlRow, { width }]}>
             <DiscardCell card={handoff ? undefined : discardCards[discardCards.length - 1]} isFlyingHere={discardFlying} settledCard={discardSettled} viewRef={discardViewRef} />
@@ -1884,7 +1885,7 @@ function PyramidScreenInner() {
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <PairFlightGhosts flights={pairFlights} onCardLanded={handlePairFlightLanded} onCardRetired={retirePairCard} />
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor('pyramid')} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }

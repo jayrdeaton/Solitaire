@@ -1,6 +1,7 @@
 import { useAchievements } from '@tastic/achievements'
 import { createContext, ReactNode, useCallback, useContext, useMemo } from 'react'
 
+import type { VariantId } from '@/engine/variants'
 import { achievementsActions } from '@/redux/achievementsSlice'
 import type { RootState } from '@/redux/store'
 
@@ -8,20 +9,20 @@ import { ACHIEVEMENT_CATALOG } from './achievementCatalog'
 import { clearGameInProgress } from './gameInProgress'
 import { useProfiles } from './profiles'
 import { applyDealAbandoned, applyDealWon, applyHintUsed, getProfileStatsView } from './statsEngine'
-import { AchievementDefinition, DealMetrics, SOLITAIRE_GAME_IDS, SolitaireGameId, StatsState, UnlockedAchievementsState } from './statsTypes'
+import { AchievementDefinition, DealMetrics, SOLITAIRE_GAME_IDS, StatsState, UnlockedAchievementsState } from './statsTypes'
 
 interface GameStatsContextValue {
   stats: StatsState
   unlockedAchievements: UnlockedAchievementsState
   // Called the instant a deal is won; `metrics` is the elapsed time/moves/score the screen
   // already shows.
-  recordDealWon: (variant: SolitaireGameId, metrics: DealMetrics) => AchievementDefinition[]
+  recordDealWon: (variant: VariantId, metrics: DealMetrics) => AchievementDefinition[]
   // Called the instant the player confirms the "start a new game" warning dialog over a deal that
   // was still in progress (see components/GameChrome.tsx).
-  recordDealAbandoned: (variant: SolitaireGameId) => void
+  recordDealAbandoned: (variant: VariantId) => void
   // Called the instant the Hint button actually produces a hint (not on a press that finds
   // nothing to suggest) - see engine/hint.ts's findHint.
-  recordHintUsed: (variant: SolitaireGameId) => void
+  recordHintUsed: (variant: VariantId) => void
   resetAll: () => void
   removeProfileStats: (profileId: string) => void
 }
@@ -42,7 +43,7 @@ export function GameStatsProvider({ children }: { children: ReactNode }) {
   })
 
   const recordDealWon = useCallback(
-    (variant: SolitaireGameId, metrics: DealMetrics) => {
+    (variant: VariantId, metrics: DealMetrics) => {
       const result = recordOutcome((prev) => applyDealWon(prev, variant, metrics, activeProfileId))
       // Solitaire is single-player: whatever the active profile unlocked is the same person the
       // device-wide unlocks belong to, so both lists are surfaced together rather than separately.
@@ -52,14 +53,14 @@ export function GameStatsProvider({ children }: { children: ReactNode }) {
   )
 
   const recordDealAbandoned = useCallback(
-    (variant: SolitaireGameId) => {
+    (variant: VariantId) => {
       recordOutcome((prev) => applyDealAbandoned(prev, variant, activeProfileId))
     },
     [recordOutcome, activeProfileId]
   )
 
   const recordHintUsed = useCallback(
-    (variant: SolitaireGameId) => {
+    (variant: VariantId) => {
       recordOutcome((prev) => applyHintUsed(prev, variant, activeProfileId))
     },
     [recordOutcome, activeProfileId]

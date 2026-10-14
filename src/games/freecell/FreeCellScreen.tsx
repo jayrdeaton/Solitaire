@@ -32,6 +32,7 @@ import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion
 import { FREECELL_RULES } from '@/constants/gameRules'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
+import { parFor } from '@/engine/par'
 import { isDescendingAltColor, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
@@ -529,8 +530,8 @@ function FreeCellScreenInner() {
     firePlay
   })
   // The finish: once every column is sorted (nothing hidden, no choice left), every remaining card
-  // files away on its own at the finish's quicker pace - after ANY move of the player's that leaves
-  // the board that way, or the cascade a foundation play set off (see useAutoFinish).
+  // files away on its own, at a pace that ramps up - after the player's play of a card to a foundation
+  // that leaves the board that way, or the cascade that play set off (see useAutoFinish).
   const finish = useAutoFinish<FreeCellState>({
     state,
     enabled: () => settings.autoMoveToFoundation,
@@ -727,8 +728,8 @@ function FreeCellScreenInner() {
   }
 
   // `silent` is for the auto-play-to-foundation feature (see maybeAutoPlay/fireAutoMove below): an
-  // auto-played card isn't a player decision, so it doesn't count toward the moves/score the player
-  // is judged on. It is still its own undo step, like any other move.
+  // auto-played card isn't a player decision, so it doesn't arm the cascade or start the finish, but it
+  // counts as a move like any other (so Auto-Move only saves taps) and is its own undo step.
   function applyMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, opts?: { silent?: boolean }) {
     // Reads/commits through stateRef.current (see commitState's own doc comment), not the render
     // closure's `state` - two actions can now be triggered back-to-back before React re-renders
@@ -749,14 +750,15 @@ function FreeCellScreenInner() {
       // off, see FreeCellUndoMove).
       pushUndo(current, moveInfo)
       commitState(result)
-      if (!opts?.silent) session.registerMove()
+      // Every move counts, the player\'s or an auto-play\'s: Auto-Move only saves taps, never score.
+      session.registerMove()
       checkWin(result)
       // Only the player's own play of a card to a foundation (a tap or a drag) starts the cascade; any other
-      // move of theirs stops it, so a card it uncovers is theirs to play. The finish follows ANY move of
-      // theirs that leaves the board solved (see autoPlay.ts).
+      // move of theirs stops it, so a card it uncovers is theirs to play. The finish follows the same
+      // foundation play, once the board is solved (see autoPlay.ts).
       if (!opts?.silent) {
         cascade.afterPlayerMove(to)
-        finish.afterPlayerMove(from)
+        finish.afterPlayerMove(to)
       }
       return true
     }
@@ -995,7 +997,7 @@ function FreeCellScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won} movesCount={session.moves} rules={FREECELL_RULES}>
+      <GameChrome title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor('freecell')} clockRunning={session.started && !won} movesCount={session.moves} rules={FREECELL_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.foundationsGroup, { gap: topRowGroupGap }]}>
             {state.foundation.map((pile, i) => {
@@ -1070,7 +1072,7 @@ function FreeCellScreenInner() {
     not buried under it. */}
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor('freecell')} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }

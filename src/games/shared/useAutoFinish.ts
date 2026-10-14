@@ -1,17 +1,17 @@
 import { useEffect, useRef } from 'react'
 
-import { FINISH_STAGGER_MS, FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
+import { finishGapMs, FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { FinishMove } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 
 export interface AutoFinish {
   /** Call right after every move the PLAYER made commits (a tap or a drag, to ANY pile; never an
-   * auto-played, silent one), with the pile it came `from`. If that move - or the safe-card cascade a
-   * foundation play sets off - leaves the board solved, the finish starts at once, its first card
-   * `staggerMs` after the move that made it so. A move that takes a card back OFF a foundation stops
-   * it instead (and one still running): the player chose to take that card back, so it isn't sent
-   * straight back up. Their next move starts it again. */
-  afterPlayerMove(from: PileRef): void
+   * auto-played, silent one), with the pile it went `to`. Only a play of a card TO a foundation allows
+   * the finish: if that play - or the safe-card cascade it sets off - leaves the board solved, the
+   * finish starts at once, its first card one gap (finishGapMs(0)) after the move that made it so. Any
+   * other move stops a finish still running (a card taken back off a foundation isn't sent straight
+   * back up), and the player's next foundation play starts it again. */
+  afterPlayerMove(to: PileRef): void
   /** Call when the board changed for a reason that isn't a player move - an undo, a resumed save,
    * a new deal - and stops a finish that's already running. Nothing starts again until the player's
    * next move, so undoing a card off a solved board can't fly it straight back up. */
@@ -39,22 +39,22 @@ function sleep(ms: number): Promise<void> {
 /**
  * The "the game is won, just finish it" sweep. Once `canFinish` says the board is SOLVED - nothing
  * hidden, nothing left to draw, every remaining card able to go up by foundation moves alone - there
- * is no decision left to protect, so the remaining cards file away on their own, `staggerMs` apart
- * (FINISH_STAGGER_MS by default: half ordinary auto-play's gap), WITHOUT waiting for each flight to
- * land first. Flights are purely cosmetic overlays on a board that already committed (see
+ * is no decision left to protect, so the remaining cards file away on their own, WITHOUT waiting for
+ * each flight to land first, at a pace that ramps up (finishGapMs: ordinary auto-play's gap for the
+ * first card, closing in on half that). Flights are purely cosmetic overlays on a board that already committed (see
  * useFlightConcurrency), and every flight takes the same time (FLIGHT_SPRING), so they overlap freely
  * and land in the order they left.
  *
- * The one exception to "auto-play only ever follows the player's own play of a card to a foundation"
- * (Jay, 2026-10-12): ANY player move that leaves the board solved starts it (afterPlayerMove), as does
- * the safe-card cascade a foundation play sets off, the moment it makes the board solved. An undo, a
- * resume or a new deal never does (suppress): undoing a card off a solved board leaves it solved, and
- * the card would fly straight back up. Nor does the player's own move of a card back off a foundation,
- * for the same reason. Their next move starts it again. A permission ends with the finish itself.
+ * Like every auto-play, it only ever follows the player's own play of a card to a foundation (Jay,
+ * 2026-10-14; from 2026-10-12 it started after ANY move that left the board solved): that play
+ * (afterPlayerMove), or the safe-card cascade it sets off, the moment either makes the board solved.
+ * An undo, a resume or a new deal never does (suppress): undoing a card off a solved board leaves it
+ * solved, and the card would fly straight back up. Nor does any other move of the player's, a card
+ * taken back off a foundation included. Their next foundation play starts it again. A permission ends
+ * with the finish itself.
  *
- * The pace is a fixed clock: each card leaves `staggerMs` after the card before it LEFT (the player's
- * own move, for the first), not after that card's measurement and commit, so the gap really is the
- * pace. The one thing a card waits for is its own pile to stop landing (`isLanding`, bounded by
+ * The pace is a fixed clock: each card leaves its gap after the card before it LEFT (the player's own
+ * move, for the first), not after that card's measurement and commit, so the gap really is the pace. The one thing a card waits for is its own pile to stop landing (`isLanding`, bounded by
  * FINISH_LANDING_WAIT_MS): picked up while its own ghost is still airborne, a card shows twice.
  *
  * Honors `enabled` (the Auto-Move to Foundation setting) and `isBusy` (an undo in progress) at every
@@ -80,7 +80,8 @@ export function useAutoFinish<TState>(config: {
    * couldn't (the measurement failed, the board changed underneath it, `stillWanted` turned false
    * while it measured). Resolves when the move is committed - NOT when the flight lands. */
   firePlay: (entry: AccessibleCard, to: PileRef, stillWanted: () => boolean) => Promise<boolean>
-  staggerMs?: number
+  /** The gap in front of the finish's `index`th card (0 = the first). finishGapMs by default. */
+  gapMs?: (index: number) => number
 }): AutoFinish {
   const allowedRef = useRef(false)
   const runningRef = useRef(false)
@@ -116,9 +117,11 @@ export function useAutoFinish<TState>(config: {
     // When the card before this one left: the player's own move for the first (this runs in the
     // effect of the commit that made the board solved).
     let lastLeftAt = Date.now()
+    // Cards sent so far: the ramp's position. A miss doesn't advance it.
+    let sent = 0
     try {
       while (allowedRef.current) {
-        const gap = lastLeftAt + (latestRef.current.staggerMs ?? FINISH_STAGGER_MS) - Date.now()
+        const gap = lastLeftAt + (latestRef.current.gapMs ?? finishGapMs)(sent) - Date.now()
         if (gap > 0) await sleep(gap) // a card already late (its predecessor was slow to measure) goes at once
         let step = nextStep()
         const deadline = Date.now() + FINISH_LANDING_WAIT_MS
@@ -132,6 +135,7 @@ export function useAutoFinish<TState>(config: {
         const fired = !latestRef.current.isLanding(step.entry.ref) && (await latestRef.current.firePlay(step.entry, step.to, isAllowed))
         if (fired) {
           misses = 0
+          sent += 1
         } else if (++misses >= MAX_CONSECUTIVE_MISSES) {
           return
         }
@@ -160,8 +164,8 @@ export function useAutoFinish<TState>(config: {
   }, [config.state])
 
   return {
-    afterPlayerMove(from) {
-      allowedRef.current = from.zone !== 'foundation'
+    afterPlayerMove(to) {
+      allowedRef.current = to.zone === 'foundation'
     },
     suppress() {
       allowedRef.current = false

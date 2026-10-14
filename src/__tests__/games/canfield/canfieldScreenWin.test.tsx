@@ -715,7 +715,7 @@ describe('Canfield screen - every auto-played step is its own undo step', () => 
     await press(`card-${id('clubs', 3)}`)
     await flush(1000)
     expect(mockLog.shown).toEqual([id('clubs', 3), id('diamonds', 2), id('hearts', 2)]) // the tap, then two auto-plays
-    expect(moves()).toBe(1) // the auto-plays do not count
+    expect(moves()).toBe(3) // the tap and both auto-plays: every move counts
     expect([foundationTop('diamonds'), foundationTop('hearts')]).toEqual([id('diamonds', 2), id('hearts', 2)])
 
     await undoOne() // the last card auto-played...
@@ -742,7 +742,7 @@ describe('Canfield screen - every auto-played step is its own undo step', () => 
     expect(mockLog.shown).toEqual([id('clubs', 10), id('clubs', 11), id('clubs', 12), id('clubs', 13)])
     expect(mockLog.dealt).toEqual([]) // the draw-and-play flew the J straight from the stock, no waste stop
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
-    expect(moves()).toBe(1)
+    expect(moves()).toBe(5) // every automatic step counts, the draw-and-play as two
 
     await undoOne() // the K, back to the waste
     expect(screen.queryByTestId('win-banner')).toBeNull()
@@ -813,7 +813,7 @@ describe("Canfield screen - once the board is solved, any move of the player's f
     expect(mockLog.hidden).toBe(0)
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('win-banner')).toBeTruthy()
-    expect(moves()).toBe(1) // the finish's cards are not the player's moves
+    expect(moves()).toBe(8) // the player's move and each finished card
     // The first card a finish gap after the tap (the club 10, while the tapped J is still in the air), then the same gap every time -
     // half the safe-card cascade's. The J itself waits for its own flight onto the column to land, which it has by its turn.
     const [tap, ...finish] = mockLog.shownAt
@@ -1046,7 +1046,7 @@ describe("Canfield screen - once the board is solved, any move of the player's f
     expect(foundationTop('clubs')).toBe(id('clubs', 10))
     expect(foundationTop('diamonds')).toBe(id('diamonds', 10))
     expect(cardsOnBoard()).toBe(6)
-    expect(moves()).toBe(2)
+    expect(moves()).toBe(4) // the tap, the finish's two cards and the drop
 
     await press(`card-${id('clubs', 11)}`) // up again, by the player this time: the rest follows
     await flush(3000)

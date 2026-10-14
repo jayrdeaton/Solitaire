@@ -4,6 +4,8 @@ import { ScrollView, StyleSheet, View } from 'react-native'
 import { Modal, Portal, Text, useTheme } from 'react-native-paper'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
+import type { Par } from '@/engine/par'
+
 import { CARD_FONT_FAMILY } from './useFontsPreload'
 
 interface RulesDialogProps {
@@ -11,6 +13,8 @@ interface RulesDialogProps {
   onDismiss: () => void
   title: string
   rules: string[]
+  /** In a game: its variant's par, told after the scoring rule. Home's sheet has no deal, so no par. */
+  par?: Par
   // The wide (landscape) layout: the sheet is only ~400pt tall there, so it trades some padding and
   // margin for reading room (the portrait sizing left a ~50pt scroll area, about two bullets). Both the game
   // screens and the menu pass it when their rotated footprint is landscape.
@@ -21,7 +25,7 @@ interface RulesDialogProps {
  * rules icon. Built directly on Paper's Modal/Portal (no existing @tastic/hud dialog fits:
  * BaseSettingsDialog is genuinely settings-specific, and ConfirmDialog's `message` is a single
  * string with no scroll area, not a bulleted list). */
-export function RulesDialog({ visible, onDismiss, title, rules, compact = false }: RulesDialogProps) {
+export function RulesDialog({ visible, onDismiss, title, rules, par, compact = false }: RulesDialogProps) {
   const { colors } = useTheme()
   // The sheet's cap is a number, never a percentage. On iOS Paper's Surface splits its style over two
   // views, and maxHeight lands on the INNER one, so '80%' resolved against the outer view's
@@ -48,7 +52,7 @@ export function RulesDialog({ visible, onDismiss, title, rules, compact = false 
           engine/score.ts) is identical across every game, so duplicating this sentence into all
           11 games' constants/gameRules.ts entries would just be 11 copies to keep in sync. */}
           <Text style={[styles.scoreHeading, { color: colors.onSurface }]}>Scoring</Text>
-          <Text style={[styles.scoreText, { color: colors.onSurfaceVariant }]}>Score is moves plus seconds, and lower is better. The clock starts with your first move and pauses while you&rsquo;re away from the game or in Settings or Rules. Every move you make counts, even one you undo. Cards the game plays for you are free.</Text>
+          <Text style={[styles.scoreText, { color: colors.onSurfaceVariant }]}>Score is moves plus seconds, and lower is better. The clock starts with your first move and pauses while you&rsquo;re away from the game or in Settings or Rules. Every move counts, even one you undo or one the game plays for you.{par ? ` Par, a good win under these rules, is ${par.score}: ${par.moves} moves in ${formatParTime(par.seconds)}.` : ''}</Text>
         </ScrollView>
         <Button mode='contained' onPress={onDismiss} style={[styles.closeButton, compact && styles.closeButtonCompact]}>
           Got it
@@ -60,6 +64,11 @@ export function RulesDialog({ visible, onDismiss, title, rules, compact = false 
 
 const MAX_HEIGHT_RATIO = 0.8
 const COMPACT_MAX_HEIGHT_RATIO = 0.94
+
+// m:ss, as the game's own readout shows time (GameChrome's formatTime, which this file can't import: GameChrome imports it).
+function formatParTime(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+}
 
 const styles = StyleSheet.create({
   bullet: {

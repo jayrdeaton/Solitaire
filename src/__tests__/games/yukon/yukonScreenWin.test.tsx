@@ -639,7 +639,7 @@ describe('Yukon screen - auto-play and undo', () => {
     await flush(3000)
     expect(SUITS.map((suit) => foundationTop(suit))).toEqual([id('clubs', 2), id('diamonds', 1), id('hearts', 2), id('spades', 2)])
     expect(mockLog.shown).toHaveLength(3) // the tap, then the two auto-plays
-    expect(savedMoves()).toBe(1) // only the tap counts toward the score
+    expect(savedMoves()).toBe(3) // the tap and both auto-plays: every move counts
 
     const undoOne = async () => {
       const before = mockLog.shown.length

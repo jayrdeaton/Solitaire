@@ -4,10 +4,11 @@ import { ConfirmDialog, CornerActionButtons } from '@tastic/hud'
 import { useRouter } from 'expo-router'
 import { ReactNode, useEffect, useState } from 'react'
 import { ScrollView, StyleSheet, Text, View } from 'react-native'
-import { Portal } from 'react-native-paper'
+import { Icon, Portal } from 'react-native-paper'
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
+import { Par } from '@/engine/par'
 import { computeScore } from '@/engine/score'
 import { useSettings } from '@/hooks/useSettings'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
@@ -119,6 +120,8 @@ const SCOREBOARD_WIDTH = 3 * FOOTER_BUTTON_WIDTH + 2 * FOOTER_GAP
 // The scoreboard's text lines: fixed, so SCOREBOARD_DROP below is exact.
 const STAT_LABEL_LINE = 14
 const STAT_VALUE_LINE = 22
+const STAT_LABEL_COLOR = 'rgba(255, 255, 255, 0.65)'
+const CHEVRON_SIZE = 18
 // How far the scoreboard drops when the footer is tucked away: its numbers (the bottom line of the row, which sits
 // MOVES_TIMER_BOTTOM up) land centred where the button icons were (FOOTER_BOTTOM plus half a button).
 const SCOREBOARD_DROP = MOVES_TIMER_BOTTOM + STAT_VALUE_LINE / 2 - (FOOTER_BOTTOM + FOOTER_BUTTON_HEIGHT / 2)
@@ -194,6 +197,8 @@ interface GameChromeProps {
    * below via RulesDialog. Owned by each screen, same as settingsContent, rather than GameChrome
    * looking a gameId up itself. */
   rules: string[]
+  /** The deal's variant's par (engine/par.ts), told in the Rules sheet's Scoring paragraph. */
+  par: Par
   /** The game board itself - foundations/tableau/stock, whatever shape a given game needs. Laid out to
    * fit the screen; scrolls only when a column too long to compress any further runs past the bottom
    * (see boardScroll.ts). */
@@ -243,7 +248,7 @@ function ElapsedClock({ getElapsedSeconds, clockRunning, children }: { getElapse
  * Previously each of the four game screens hand-rolled its own version of this row (and Pyramid's
  * had drifted to a bottom button row entirely) - unifying it here means a layout tweak (like this
  * one, and the header/footer regrouping that followed it) only has to happen once. */
-export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, autoHintKey, hintShowing, hintDisabled, won, hasProgress, getElapsedSeconds, pauseClock, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
+export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, autoHintKey, hintShowing, hintDisabled, won, hasProgress, getElapsedSeconds, pauseClock, par, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
   const router = useRouter()
   // The safe-area insets remapped onto the rotated frame's own edges (a no-op at rotation 0). The dialogs
   // below need no rotation of their own - see the Portal.Host in withGameProviders.
@@ -279,6 +284,10 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   // into the buttons' place, rather than swapping to a separate one-line "12 · 45 · 0:33" that regrouped them.
   const labelOpacity = useSharedValue(1)
   const labelAnimatedStyle = useAnimatedStyle(() => ({ opacity: labelOpacity.value }))
+  // The chevron over the scoreboard (Jay, 2026-10-14: nothing said the scoreboard hides the buttons): points down while
+  // they show, turns to point up as they tuck away, and comes down onto the numbers as the labels between fade. Driven
+  // by labelOpacity, so all three move as one.
+  const chevronAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ translateY: (1 - labelOpacity.value) * STAT_LABEL_LINE }, { rotate: `${(1 - labelOpacity.value) * 180}deg` }] }))
 
   function toggleFooter() {
     const next = !footerVisible
@@ -450,6 +459,9 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
             // While the footer is up the footer wins the 4pt where the two boxes meet.
             <Animated.View style={[styles.movesTimerWrap, { bottom: MOVES_TIMER_BOTTOM + insets.bottom }, !footerVisible && styles.movesTimerAboveFooter, movesTimerAnimatedStyle]} pointerEvents='box-none'>
               <Pressable onPress={toggleFooter} style={styles.scoreboardButton} accessibilityRole='button' accessibilityLabel={footerVisible ? 'Hide controls' : 'Show controls'}>
+                <Animated.View style={[styles.chevron, chevronAnimatedStyle]} accessibilityElementsHidden importantForAccessibility='no-hide-descendants'>
+                  <Icon source='chevron-down' size={CHEVRON_SIZE} color={STAT_LABEL_COLOR} />
+                </Animated.View>
                 <View style={styles.statsRow}>
                   <View style={styles.statBlock}>
                     <Animated.Text style={[styles.statCaption, labelAnimatedStyle]}>Moves</Animated.Text>
@@ -509,7 +521,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
         {settingsContent}
       </SettingsDialog>
 
-      <RulesDialog visible={rulesOpen} onDismiss={() => setRulesOpen(false)} title={title} rules={rules} compact={isWide} />
+      <RulesDialog visible={rulesOpen} onDismiss={() => setRulesOpen(false)} title={title} rules={rules} par={par} compact={isWide} />
 
       <ConfirmDialog
         visible={confirmNewGameVisible}
@@ -536,6 +548,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexGrow: 1,
     width: '100%'
+  },
+  // Centred over the scoreboard's middle column, in the labels' colour (see chevronAnimatedStyle).
+  chevron: {
+    alignSelf: 'center',
+    height: CHEVRON_SIZE
   },
   content: {
     // Centers any top-level child narrower than the available content width (e.g. a board once
@@ -626,7 +643,7 @@ const styles = StyleSheet.create({
     width: FOOTER_BUTTON_WIDTH
   },
   statCaption: {
-    color: 'rgba(255, 255, 255, 0.65)',
+    color: STAT_LABEL_COLOR,
     fontFamily: CARD_FONT_FAMILY,
     fontSize: 11,
     letterSpacing: 0.5,

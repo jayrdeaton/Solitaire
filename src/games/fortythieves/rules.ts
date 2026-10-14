@@ -36,8 +36,8 @@
 // further move to simulate.
 //
 // canAutoFinish/nextFinishMove narrow the plain (non-draws) check to a SOLVED board - nothing left
-// in the stock or on the waste - for the finish (games/shared/useAutoFinish), the one auto-play that
-// follows ANY move of the player's, not just a foundation play. It must never give hidden
+// in the stock or on the waste - for the finish (games/shared/useAutoFinish), which files a solved
+// board away faster than the cascade, with no further choice to protect. It must never give hidden
 // information away, so unlike the draws-aware check it never reads the stock's order.
 
 import { AutoCompleteStep, FinishMove } from '@/engine/autoFoundation'

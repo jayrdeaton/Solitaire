@@ -43,10 +43,12 @@ import { CANFIELD_RULES } from '@/constants/gameRules'
 import { AutoCompleteStep, isFullyAutoCompletableWithDraws, nextAutoCompleteMoveWithDraws } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
+import { parFor } from '@/engine/par'
 import { runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card, SUITS } from '@/engine/types'
+import { canfieldVariant } from '@/engine/variants'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
@@ -151,6 +153,8 @@ function CanfieldScreenInner() {
   // mid-game settings change must never mutate the current deal's own rules.
   const controllerRef = useRef(createCanfieldController(settings.canfieldDraw))
   const [canfieldDraw, setCanfieldDraw] = useState<1 | 3>(settings.canfieldDraw)
+  // The deal's game under the rule it was dealt with: what its stats and par are kept for (engine/variants.ts).
+  const variant = canfieldVariant(canfieldDraw)
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
   // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
   // exclusion with everything else; tap/drag/auto-play/stock-draw can all run concurrently with
@@ -199,7 +203,7 @@ function CanfieldScreenInner() {
   // checks against the CURRENT controller, same as every other controllerRef.current read in this
   // file. Canfield's draw count is a per-deal config (see controllerRef's own doc comment above),
   // the same reasoning KlondikeScreen's own controllerRef exists for.
-  const { won, setWon, recordedWinRef, pendingWinCascadeRef, checkWin } = useFoundationWinCheck({ isWon: (s: CanfieldState) => controllerRef.current.isWon(s) }, 'canfield', session, dealTokenRef, recordDealWon, hintsUsedRef)
+  const { won, setWon, recordedWinRef, pendingWinCascadeRef, checkWin } = useFoundationWinCheck({ isWon: (s: CanfieldState) => controllerRef.current.isWon(s) }, variant, session, dealTokenRef, recordDealWon, hintsUsedRef)
   // Nothing animating and the initial deal finished - what the auto-play hook below waits for, and
   // what the win celebration waits for too (see useWinReveal).
   const settled = activeFlightCount === 0 && dealHiddenIds.size === 0
@@ -306,7 +310,7 @@ function CanfieldScreenInner() {
   // only ever calls this after the player has confirmed that, or immediately when there's nothing
   // to lose (see components/GameChrome.tsx's warning dialog).
   function handleNewGame() {
-    if (session.moves > 0 && !won) recordDealAbandoned('canfield')
+    if (session.moves > 0 && !won) recordDealAbandoned(variant)
     startNewGame()
   }
 
@@ -518,8 +522,8 @@ function CanfieldScreenInner() {
     fireDrawAndPlay
   })
   // The finish: once the board is solved (rules.ts's canAutoFinish - reserve, stock and waste empty, nothing hidden, no
-  // choice left), every remaining card files away on its own at the finish's quicker pace - after ANY move of the
-  // player's that leaves it so, or the cascade a foundation play set off (see useAutoFinish). Both read the live
+  // choice left), every remaining card files away on its own, at a pace that ramps up - after the player's play of a
+  // card to a foundation that leaves it so, or the cascade that play set off (see useAutoFinish). Both read the live
   // controller: it is replaced on every New Game/restore.
   const finish = useAutoFinish<CanfieldState>({
     state,
@@ -574,7 +578,7 @@ function CanfieldScreenInner() {
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
-    recordHintUsed('canfield')
+    recordHintUsed(variant)
     if (result.kind === 'move') {
       const { from, to, count } = result.move
       const source = resolvePile(from) ?? []
@@ -713,8 +717,8 @@ function CanfieldScreenInner() {
   }
 
   // `silent` is for the auto-play-to-foundation feature (see firePlay below): an auto-played card
-  // isn't a player decision, so it doesn't count toward the moves/score the player is judged on, arm
-  // the cascade or start the finish itself. It still pushes its OWN undo entry (the board right
+  // isn't a player decision, so it doesn't arm the cascade or start the finish itself, but it does
+  // count as a move (every move does, so Auto-Move only saves taps, never score). It still pushes its OWN undo entry (the board right
   // before it), like every other automatic step here (handleDrawStock's sweep draws/recycles,
   // fireDrawAndPlay), so one Undo takes back exactly one step, with that step's own flight, and the
   // player can stop anywhere between the move that set a cascade off and its last auto-played card.
@@ -735,15 +739,15 @@ function CanfieldScreenInner() {
     if (result) {
       pushUndo(current, { from, to, count, anchorCardId })
       commitState(result)
-      if (!opts?.silent) session.registerMove()
+      // Every move counts, the player\'s or an auto-play\'s: Auto-Move only saves taps, never score.
+      session.registerMove()
       checkWin(result)
       // Only the player's own play of a card to a foundation starts the cascade; any other move of theirs
       // stops it, so a card it uncovers (the reserve's next card, say) is theirs to find and play. The
-      // finish follows ANY move of theirs that leaves the board solved, except one that takes a card back
-      // off a foundation, which stops it (see useAutoFinish).
+      // finish follows the same foundation play, once the board is solved (see useAutoFinish).
       if (!opts?.silent) {
         cascade.afterPlayerMove(to)
-        finish.afterPlayerMove(from)
+        finish.afterPlayerMove(to)
       }
       return true
     }
@@ -818,9 +822,9 @@ function CanfieldScreenInner() {
   // Only ever called by the win-completing sweep once a stock card is provably about to go straight
   // to its foundation (see engine/autoFoundation.ts's 'drawAndPlay' step) - draws AND plays it in
   // one committed state change, animated as one continuous flight straight from the stock pile,
-  // skipping the ordinary "land on waste first" stop entirely (the confirmed sweep visual). Not a
-  // player decision, so it doesn't count toward moves/score - but, like every automatic step (see
-  // applyMove's `silent`), it is undoable on its own. As TWO entries, the draw and then the play,
+  // skipping the ordinary "land on waste first" stop entirely (the confirmed sweep visual). It counts
+  // as two moves (the draw and the play), like any auto-play (see applyMove's `silent`), and is
+  // undoable on its own. As TWO entries, the draw and then the play,
   // each an ordinary kind handleUndo already flies: the first Undo sends the card from the
   // foundation back to the waste, the next flies the draw back into the stock. One entry for the
   // combined step would have no flight that fits it (stock -> foundation is no move kind).
@@ -847,6 +851,9 @@ function CanfieldScreenInner() {
     pushUndo(current, { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: afterDraw.waste.length - current.waste.length, anchorCardId: drawnTop.id })
     pushUndo(afterDraw, { from: entry.ref, to, count: 1, anchorCardId: entry.card.id })
     commitState(result)
+    // Two moves, the draw and the play, as the player would make them with Auto-Move off.
+    session.registerMove()
+    session.registerMove()
     checkWin(result)
     pendingFlightRef.current.push({ cardId: entry.card.id, to, gen: dealTokenRef.current, flyingId, flight })
   }
@@ -876,9 +883,8 @@ function CanfieldScreenInner() {
   // Canfield's own draw count is settings.canfieldDraw (see controllerRef above), the same
   // per-deal-config shape Klondike's own draw setting already has.
   // `opts.sweep` marks this as an automatic step of the win-completing sweep (see the shared
-  // cascade hook's own fireDraw callback above) rather than a genuine player tap - not a player
-  // decision, so it doesn't count toward moves/score, but (like applyMove's own silent branch) it
-  // still pushes its own undo entry, so the sweep can be taken back one draw/recycle at a time.
+  // cascade hook's own fireDraw callback above) rather than a genuine player tap. It counts as a
+  // move like the player's own draw (so Auto-Move never changes the score), and pushes its own undo entry, so the sweep can be taken back one draw/recycle at a time.
   async function handleDrawStock(opts?: { sweep?: boolean }) {
     // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
     // Without this, rapid-tapping the stock pile several times before React re-renders drew the
@@ -931,7 +937,7 @@ function CanfieldScreenInner() {
       result = redrawn
     }
     // Counted here, with the draw that really happens - not at the tap, whose draw may have been dropped.
-    if (!opts?.sweep) session.registerMove()
+    session.registerMove() // a sweep\'s own draw counts too, as the player\'s would with Auto-Move off
 
     const drawnCard = top(result.waste)
     if (!drawnCard) {
@@ -1057,7 +1063,7 @@ function CanfieldScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Canfield' subtitle={`Draw ${canfieldDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<CanfieldSettingsSection />} rules={CANFIELD_RULES}>
+      <GameChrome title='Canfield' subtitle={`Draw ${canfieldDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<CanfieldSettingsSection />} rules={CANFIELD_RULES}>
         <View style={[styles.topRow, { width: rowWidth }]}>
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
@@ -1150,7 +1156,7 @@ function CanfieldScreenInner() {
       animation, not buried under it. */}
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor(variant)} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }

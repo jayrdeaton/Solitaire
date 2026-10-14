@@ -46,6 +46,7 @@ import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning
 import { ACESUP_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
+import { parFor } from '@/engine/par'
 import { top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
@@ -705,7 +706,7 @@ function AcesUpScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won && !stuck} movesCount={session.moves} rules={ACESUP_RULES}>
+      <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor('acesup')} clockRunning={session.started && !won && !stuck} movesCount={session.moves} rules={ACESUP_RULES}>
         <View style={[styles.topRow, { width: pilesWidth }]}>
           <DiscardCell card={state.discard[state.discard.length - 1]} isFlyingHere={flying.some((f) => f.to.zone === 'discard')} viewRef={discardViewRef} />
           <View ref={stockViewRef} collapsable={false}>
@@ -743,7 +744,7 @@ function AcesUpScreenInner() {
       </GameChrome>
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor('acesup')} onNewGame={startNewGame} />}
       {stuck && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )

@@ -5,26 +5,30 @@ import { StyleSheet, View } from 'react-native'
 import { Icon, Text } from 'react-native-paper'
 
 import { formatTime, GAME_DIALOG_Z_INDEX } from '@/components/GameChrome'
+import { describeVsPar, Par } from '@/engine/par'
 
 export interface WinBannerProps {
   elapsedSeconds: number
   moves: number
   score: number
+  /** This deal's variant's par (engine/par.ts), shown under each number. */
+  par: Par
   onNewGame: () => void
 }
 
 /** The post-win overlay, shared by every game: the fleet's overlay card (@tastic/hud's
  * overlayStyles/getOverlayCardColors, the shape ConfirmDialog and every other game's game-over
- * dialog use) with the score summary and a New Game button. Home is GameChrome's own corner button,
+ * dialog use) with the score summary, each number over its par, and a New Game button. Home is GameChrome's own corner button,
  * which is portaled above this backdrop so it stays live. */
-export function WinBanner({ elapsedSeconds, moves, score, onNewGame }: WinBannerProps) {
+export function WinBanner({ elapsedSeconds, moves, score, par, onNewGame }: WinBannerProps) {
   const { colors, dark } = useAutoPaperTheme()
   const { fg, fgMuted, cardBg, cardBorder } = getOverlayCardColors(dark)
   const stats = [
-    { label: 'MOVES', value: String(moves) },
-    { label: 'SCORE', value: String(score) },
-    { label: 'TIME', value: formatTime(elapsedSeconds) }
+    { label: 'MOVES', value: String(moves), par: String(par.moves) },
+    { label: 'SCORE', value: String(score), par: String(par.score) },
+    { label: 'TIME', value: formatTime(elapsedSeconds), par: formatTime(par.seconds) }
   ]
+  const vsPar = describeVsPar(score, par.score)
   return (
     // The backdrop takes every touch, so nothing behind the dialog (the board, the footer) can be played.
     // GameChrome's Home and Settings stay live: they're portaled above this backdrop.
@@ -35,7 +39,7 @@ export function WinBanner({ elapsedSeconds, moves, score, onNewGame }: WinBanner
           You Won!
         </Text>
         <View style={styles.statRow}>
-          {stats.map(({ label, value }) => (
+          {stats.map(({ label, value, par: parValue }) => (
             <View key={label} style={styles.stat}>
               <Text variant='labelSmall' style={{ color: fgMuted }}>
                 {label}
@@ -43,11 +47,14 @@ export function WinBanner({ elapsedSeconds, moves, score, onNewGame }: WinBanner
               <Text variant='headlineSmall' style={{ color: fg }}>
                 {value}
               </Text>
+              <Text variant='labelSmall' style={{ color: fgMuted }}>
+                Par {parValue}
+              </Text>
             </View>
           ))}
         </View>
         <Text variant='bodySmall' style={[styles.caption, { color: fgMuted }]}>
-          Lower is better. Fewer moves, less time.
+          {vsPar.charAt(0).toUpperCase() + vsPar.slice(1)}. Lower is better.
         </Text>
         <View style={overlayActionStyles.actions}>
           <Button mode='contained' onPress={onNewGame} style={overlayActionStyles.actionButtonSingle} buttonColor={colors.primary} textColor={colors.onPrimary} testID='win-new-game'>

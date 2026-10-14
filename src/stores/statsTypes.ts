@@ -1,5 +1,7 @@
 import { AchievementDefinition as BaseAchievementDefinition, DayStreakState, OutcomeRecord, RoundResult, WinStreakState } from '@tastic/achievements'
 
+import type { VariantId } from '@/engine/variants'
+
 export type { AchievementTier, UnlockedAchievementsState } from '@tastic/achievements'
 export type AchievementDefinition = BaseAchievementDefinition<StatsState>
 
@@ -10,7 +12,8 @@ export type SolitaireGameId = 'klondike' | 'spider' | 'freecell' | 'pyramid' | '
 
 export const SOLITAIRE_GAME_IDS: SolitaireGameId[] = ['klondike', 'spider', 'freecell', 'pyramid', 'yukon', 'golf', 'tripeaks', 'canfield', 'scorpion', 'fortythieves', 'acesup']
 
-// One game variant's record.
+// One variant's record: a game under one rule set (engine/variants.ts), e.g. Spider 4 Suits. Per-game figures (wins
+// for "Win a game of Spider", Games Solved) are sums over a game's variants (see statsEngine.ts).
 //
 // `record.losses` counts every deal that ended without a win: the player dealt a new game over one
 // still in progress (after confirming a warning dialog), or reached a dead board in a game that
@@ -48,7 +51,9 @@ export interface DealMetrics {
 }
 
 export interface ProfileStats extends DayStreakState {
-  variants: Record<SolitaireGameId, VariantStats>
+  // Keyed by VariantId. A game's default variant keeps the bare game id, so stats from before variants existed carry
+  // straight over into it.
+  variants: Record<VariantId, VariantStats>
 }
 
 export interface StatsState extends ProfileStats {

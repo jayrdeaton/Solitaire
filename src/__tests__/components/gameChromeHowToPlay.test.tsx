@@ -20,7 +20,7 @@ describe('GameChrome: no How to Play row in a game', () => {
   it('renders its Settings dialog without showHowToPlay', async () => {
     await render(
       <PaperProvider>
-        <GameChrome title='Klondike' onNewGame={jest.fn()} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={jest.fn()} clockRunning={false} movesCount={0} rules={[]}>
+        <GameChrome title='Klondike' onNewGame={jest.fn()} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={jest.fn()} par={{ moves: 100, seconds: 200, score: 300 }} clockRunning={false} movesCount={0} rules={[]}>
           {null}
         </GameChrome>
       </PaperProvider>
@@ -38,7 +38,7 @@ describe('GameChrome: the clock is held while a dialog is open', () => {
     const pauseClock = jest.fn()
     await render(
       <PaperProvider>
-        <GameChrome title='Klondike' onNewGame={jest.fn()} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={pauseClock} clockRunning={false} movesCount={0} rules={[]}>
+        <GameChrome title='Klondike' onNewGame={jest.fn()} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={pauseClock} par={{ moves: 100, seconds: 200, score: 300 }} clockRunning={false} movesCount={0} rules={[]}>
           {null}
         </GameChrome>
       </PaperProvider>
