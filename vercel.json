@@ -1,4 +1,7 @@
 {
+  "git": {
+    "deploymentEnabled": false
+  },
   "buildCommand": "npx expo export -p web",
   "outputDirectory": "dist",
   "framework": null,
