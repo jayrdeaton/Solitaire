@@ -97,7 +97,9 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
   ...tieredFamily<StatsState>({
     id: 'speed',
     titles: { bronze: 'Brisk', silver: 'Quick Hands', gold: 'Lightning' },
-    description: (n) => `Win a game in under ${-n / 60} minutes.`,
+    // `>=` on negated values unlocks AT the threshold too (a 3:00 win clears 3 minutes), so the copy says "or less", like
+    // the moves and score families' "or fewer"/"or lower".
+    description: (n) => `Win a game in ${-n / 60} minutes or less.`,
     icon: 'timer',
     // Lower-is-better: both the value and the thresholds are negated so the engine's `>=` still
     // reads correctly (see @tastic/achievements' own tieredFamily docs). -Infinity until something

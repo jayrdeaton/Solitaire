@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react-native'
+import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { Provider as PaperProvider } from 'react-native-paper'
 
 import { GameChrome } from '@/components/GameChrome'
@@ -11,7 +11,8 @@ const mockSettingsDialog = jest.fn((_props: { visible: boolean; showHowToPlay?: 
 
 jest.mock('@/components/SettingsDialog', () => ({ SettingsDialog: (props: { visible: boolean; showHowToPlay?: boolean }) => mockSettingsDialog(props) }))
 jest.mock('@/hooks/useSettings', () => ({ useSettings: () => ({ settings: { ...jest.requireActual('@/redux/settingsSlice').DEFAULT_SETTINGS }, setSettings: jest.fn() }) }))
-jest.mock('@/components/RulesDialog', () => ({ RulesDialog: () => null }))
+const mockRulesDialog = jest.fn((_props: { visible: boolean; onDismiss: () => void }) => null)
+jest.mock('@/components/RulesDialog', () => ({ RulesDialog: (props: { visible: boolean; onDismiss: () => void }) => mockRulesDialog(props) }))
 jest.mock('@/components/useFontsPreload', () => ({ CARD_FONT_FAMILY: 'TestSerif' }))
 jest.mock('@/stores/lastActiveGame', () => ({ useLastActiveGame: () => ({ clearLastActiveGame: jest.fn(), setLastActiveGame: jest.fn(), consumeResumeGame: () => null }) }))
 
@@ -19,7 +20,7 @@ describe('GameChrome: no How to Play row in a game', () => {
   it('renders its Settings dialog without showHowToPlay', async () => {
     await render(
       <PaperProvider>
-        <GameChrome title='Klondike' onNewGame={jest.fn()} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} hasProgress={false} getElapsedSeconds={() => 0} clockRunning={false} movesCount={0} rules={[]}>
+        <GameChrome title='Klondike' onNewGame={jest.fn()} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={jest.fn()} clockRunning={false} movesCount={0} rules={[]}>
           {null}
         </GameChrome>
       </PaperProvider>
@@ -29,5 +30,23 @@ describe('GameChrome: no How to Play row in a game', () => {
     for (const [props] of mockSettingsDialog.mock.calls) {
       expect(props.showHowToPlay).toBeFalsy()
     }
+  })
+})
+
+describe('GameChrome: the clock is held while a dialog is open', () => {
+  it('pauses the clock while Rules is open and releases it on close', async () => {
+    const pauseClock = jest.fn()
+    await render(
+      <PaperProvider>
+        <GameChrome title='Klondike' onNewGame={jest.fn()} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={pauseClock} clockRunning={false} movesCount={0} rules={[]}>
+          {null}
+        </GameChrome>
+      </PaperProvider>
+    )
+    expect(pauseClock).toHaveBeenLastCalledWith('dialog', false)
+    await act(async () => fireEvent.press(screen.getByLabelText('Klondike rules')))
+    expect(pauseClock).toHaveBeenLastCalledWith('dialog', true)
+    await act(async () => mockRulesDialog.mock.calls.at(-1)![0].onDismiss())
+    expect(pauseClock).toHaveBeenLastCalledWith('dialog', false)
   })
 })

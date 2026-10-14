@@ -148,11 +148,9 @@ function AcesUpScreenInner() {
   // by identity (state is replaced wholesale on every change) so an undo or a New Game un-blanks the piles with no
   // reset to remember; per pile so a pile whose chain could not start stays up instead of vanishing.
   const [cascadeHandoff, setCascadeHandoff] = useState<{ state: AcesUpState; piles: ReadonlySet<number> } | null>(null)
-  // The one screen in this app with a genuine loss condition - see useStuckLossCheck's own doc
-  // comment for why this must be called (and therefore have its own internal effect fire) BEFORE
-  // useDerivedWinCheck's effect above ever could race it; AcesUpController.isStuck's own
-  // `!isWon(state)` guard is what actually keeps the two from double-firing on the same commit.
-  const { stuck, recordedRef: recordedLossRef } = useStuckLossCheck(AcesUpController, state, 'acesup', recordDealAbandoned)
+  // A dead board is a loss, recorded when the player leaves it (see useStuckLossCheck). AcesUpController.isStuck's own
+  // `!isWon(state)` guard keeps a won board from also reading as dead.
+  const { stuck } = useStuckLossCheck(AcesUpController, state, 'acesup', recordDealAbandoned)
   /** Flights (each carrying the DragFlightHandle already returned by the ghost.show() that started
    * it) awaiting their own post-commit measurement + flyTo, queued by tap-to-move-to-empty,
    * tap-to-discard, and undo of either - a list (not a single slot), since these can now genuinely
@@ -211,7 +209,6 @@ function AcesUpScreenInner() {
     undoRoundDealHoldsRef.current.forEach((release) => release())
     session.reset()
     recordedWinRef.current = false
-    recordedLossRef.current = false
     winCascade.clear()
     pendingWinCascadeRef.current = null
 
@@ -232,7 +229,6 @@ function AcesUpScreenInner() {
     undoRoundDealHoldsRef.current.forEach((release) => release()) // see startNewGame
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
-    recordedLossRef.current = false
     setDealHiddenIds(new Set())
     // Optional for backward compatibility: a save written before the discard pile existed has no
     // `discard` field at all - same reasoning as SavedGame's own optional undoStack.
@@ -241,13 +237,10 @@ function AcesUpScreenInner() {
 
   // Dealing a new game over one still in progress abandons it (counted as a loss, same as every
   // other game's own "left mid-game" path) - GameChrome only ever calls this after the player has
-  // confirmed that, or immediately when there's nothing to lose. A genuine stuck-loss already
-  // recorded itself the instant it was reached (see useStuckLossCheck above), so this only ever
-  // double-records if session.moves > 0 while NEITHER won NOR already-recorded-stuck, which is
-  // exactly "the player is walking away mid-game" - the same condition every other game already
-  // uses.
+  // confirmed that, or immediately when there's nothing to lose. The LossBanner's New Game comes
+  // here too: a dead board's loss is recorded when the player leaves it (see useStuckLossCheck).
   function handleNewGame() {
-    if (session.moves > 0 && !won && !stuck) recordDealAbandoned('acesup')
+    if (session.moves > 0 && !won) recordDealAbandoned('acesup')
     startNewGame()
   }
 
@@ -450,11 +443,11 @@ function AcesUpScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Deliberately not keyed on a ticking elapsed-seconds value the way an earlier version of this
-  // effect was: `session.getElapsed()` computes the true current elapsed from wall-clock time on
-  // demand (see useGameSession.ts), so a save made at the last real move is never stale even once
-  // the player just sits looking at the board afterward - resuming always recomputes the exact
-  // right value instead of depending on whenever this effect last happened to run.
+  // Deliberately not keyed on a ticking elapsed-seconds value the way an earlier version of this effect
+  // was: `session.getElapsed()` computes the true current elapsed from wall-clock time on demand (see
+  // useGameSession.ts), but a save still holds the elapsed time from when it was made, so
+  // useSaveInProgressBackstop saves again every 10s, when the screen is left, and when the app is
+  // backgrounded.
   useEffect(() => {
     if (state && !won && !stuck) saveGameInProgress('acesup', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -712,7 +705,7 @@ function AcesUpScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} rules={ACESUP_RULES}>
+      <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won && !stuck} movesCount={session.moves} rules={ACESUP_RULES}>
         <View style={[styles.topRow, { width: pilesWidth }]}>
           <DiscardCell card={state.discard[state.discard.length - 1]} isFlyingHere={flying.some((f) => f.to.zone === 'discard')} viewRef={discardViewRef} />
           <View ref={stockViewRef} collapsable={false}>
@@ -751,7 +744,7 @@ function AcesUpScreenInner() {
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
-      {stuck && !won && <LossBanner onNewGame={startNewGame} onUndo={handleUndo} />}
+      {stuck && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

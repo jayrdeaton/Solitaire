@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AppState } from 'react-native'
 
 export interface GameSession {
   moves: number
@@ -13,6 +14,12 @@ export interface GameSession {
    * across renders (no deps), so passing it straight through as a prop never invalidates a
    * memoized/effect-deps consumer. */
   getElapsed: () => number
+  /** The synchronously up-to-date move count (what `registerMove` returns), for code that runs after an await and so
+   * can't trust the `moves` its render closed over. Stable identity, like getElapsed. */
+  getMoves: () => number
+  /** Holds the clock (or releases it) for one reason; it runs only while no reason holds it. GameChrome passes
+   * 'dialog' while Rules or Settings is open. Stable identity. */
+  setPaused: (reason: string, paused: boolean) => void
 }
 
 /** Tracks a single deal's elapsed time and move count, and gates the clock so it only starts on
@@ -29,8 +36,8 @@ export interface GameSession {
  * feeling laggy/glitchy on-device, landing exactly while dragging cards around, since that's
  * exactly when a deal is "in progress." Wall-clock-based elapsed needs no ticking to stay accurate:
  * `getElapsed()` computes the true current value on demand from `Date.now()`, so nothing has to
- * re-render just to keep it fresh, and a save made at the last real move is never stale even if the
- * player just sits looking at the board afterward. The only remaining once-a-second tick lives
+ * re-render just to keep it fresh. A save stores the elapsed time AT THAT SAVE, so the screen also
+ * saves afresh the moment it is left or the app is backgrounded (see useSaveInProgressBackstop). The only remaining once-a-second tick lives
  * inside GameChrome's own small timer-text display (see GameChrome.tsx), which calls `getElapsed()`
  * on its own local interval instead of receiving an ever-changing prop.
  */
@@ -39,27 +46,69 @@ export function useGameSession(): GameSession {
   const [started, setStarted] = useState(false)
   const movesRef = useRef(0)
   const startedRef = useRef(false)
-  // Wall-clock timestamp the clock last (re)started at, or null while stopped/not yet started.
+  // Wall-clock timestamp the clock last (re)started at, or null while stopped, paused or not yet started.
   const startedAtRef = useRef<number | null>(null)
-  // Elapsed seconds banked from before the clock's current run - only changes via restore()
-  // (seeding a resumed deal) or stopClock() (freezing the final value once a deal is won).
-  const baseElapsedRef = useRef(0)
+  // Milliseconds banked from before the clock's current run: restore() seeds it, and stopClock() and
+  // every background pause add the run that just ended. Kept in ms, not whole seconds, so a pause
+  // never drops the part-second it lands in.
+  const baseMsRef = useRef(0)
+  // True while the clock would be running but something holds it (`holdsRef`).
+  const pausedRef = useRef(false)
+  // Why the clock is held: 'app' while the app isn't in the foreground, and whatever setPaused is given.
+  const holdsRef = useRef(new Set<string>())
 
   const getElapsed = useCallback(() => {
-    if (startedAtRef.current === null) return baseElapsedRef.current
-    return baseElapsedRef.current + Math.floor((Date.now() - startedAtRef.current) / 1000)
+    const runMs = startedAtRef.current === null ? 0 : Date.now() - startedAtRef.current
+    return Math.floor((baseMsRef.current + runMs) / 1000)
   }, [])
 
-  function stopClock() {
-    baseElapsedRef.current = getElapsed()
+  const getMoves = useCallback(() => movesRef.current, [])
+
+  function bankRun() {
+    if (startedAtRef.current !== null) baseMsRef.current += Date.now() - startedAtRef.current
     startedAtRef.current = null
+  }
+
+  // Starts (or restarts) a run, or parks it as paused if something holds the clock right now.
+  function startRun() {
+    if (holdsRef.current.size > 0) pausedRef.current = true
+    else startedAtRef.current = Date.now()
+  }
+
+  const setPaused = useCallback((reason: string, paused: boolean) => {
+    const holds = holdsRef.current
+    if (paused) {
+      holds.add(reason)
+      if (startedAtRef.current === null) return
+      baseMsRef.current += Date.now() - startedAtRef.current
+      startedAtRef.current = null
+      pausedRef.current = true
+    } else {
+      holds.delete(reason)
+      if (holds.size > 0 || !pausedRef.current) return
+      pausedRef.current = false
+      startedAtRef.current = Date.now()
+    }
+  }, [])
+
+  // The score counts seconds of PLAY: the clock pauses whenever the app leaves the foreground (a call,
+  // the app switcher, the home screen) and picks up again on return. Left running, time away counted
+  // only if the OS happened to keep the app alive (a killed app resumes from its last save instead).
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => setPaused('app', next !== 'active'))
+    return () => sub.remove()
+  }, [setPaused])
+
+  function stopClock() {
+    bankRun()
+    pausedRef.current = false
   }
 
   function reset() {
     stopClock()
     startedRef.current = false
     movesRef.current = 0
-    baseElapsedRef.current = 0
+    baseMsRef.current = 0
     setMoves(0)
     setStarted(false)
   }
@@ -73,7 +122,7 @@ export function useGameSession(): GameSession {
     if (!startedRef.current) {
       startedRef.current = true
       setStarted(true)
-      startedAtRef.current = Date.now()
+      startRun()
     }
     return movesRef.current
   }
@@ -85,12 +134,14 @@ export function useGameSession(): GameSession {
   function restore(savedMoves: number, savedElapsedSeconds: number) {
     movesRef.current = savedMoves
     setMoves(savedMoves)
-    baseElapsedRef.current = savedElapsedSeconds
+    baseMsRef.current = savedElapsedSeconds * 1000
+    pausedRef.current = false
+    startedAtRef.current = null
     const alreadyStarted = savedMoves > 0
     startedRef.current = alreadyStarted
     setStarted(alreadyStarted)
-    startedAtRef.current = alreadyStarted ? Date.now() : null
+    if (alreadyStarted) startRun()
   }
 
-  return { moves, started, registerMove, reset, stopClock, restore, getElapsed }
+  return { moves, started, registerMove, reset, stopClock, restore, getElapsed, getMoves, setPaused }
 }

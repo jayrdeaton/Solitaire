@@ -213,7 +213,7 @@ describe('GameChrome', () => {
 
   const chrome = (movesCount = 0) => (
     <PaperProvider>
-      <GameChrome title='Yukon' onNewGame={jest.fn()} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} hasProgress={movesCount > 0} getElapsedSeconds={() => 0} clockRunning={false} movesCount={movesCount} rules={[]}>
+      <GameChrome title='Yukon' onNewGame={jest.fn()} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} hasProgress={movesCount > 0} getElapsedSeconds={() => 0} pauseClock={jest.fn()} clockRunning={false} movesCount={movesCount} rules={[]}>
         <Content />
       </GameChrome>
     </PaperProvider>

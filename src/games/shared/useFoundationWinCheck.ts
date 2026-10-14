@@ -14,7 +14,7 @@ export interface FoundationWinCheck<TState> {
    * caller's own [state]-effect once the winning foundation cards have actually committed and
    * registered themselves in CardRegistry (see runWinCascade). */
   pendingWinCascadeRef: MutableRefObject<{ gen: number } | null>
-  checkWin: (next: TState, movesSoFar: number) => void
+  checkWin: (next: TState) => void
 }
 
 /**
@@ -40,12 +40,16 @@ export function useFoundationWinCheck<TState>(
   const recordedWinRef = useRef(false)
   const pendingWinCascadeRef = useRef<{ gen: number } | null>(null)
 
-  function checkWin(next: TState, movesSoFar: number) {
+  // Reads the move count through session.getMoves(), never a `session.moves` the caller closed over: an auto-played
+  // winning card commits after a measurement await, and a move the player made during that await is in the live count only.
+  function checkWin(next: TState) {
     if (controller.isWon(next) && !recordedWinRef.current) {
       recordedWinRef.current = true
       session.stopClock()
       setWon(true)
-      recordDealWon(gameId, { seconds: session.getElapsed(), moves: movesSoFar, score: computeScore(movesSoFar, session.getElapsed()), usedHint: hintsUsedRef.current })
+      const moves = session.getMoves()
+      const seconds = session.getElapsed()
+      recordDealWon(gameId, { seconds, moves, score: computeScore(moves, seconds), usedHint: hintsUsedRef.current })
       clearGameInProgress(gameId)
       pendingWinCascadeRef.current = { gen: dealTokenRef.current }
     }

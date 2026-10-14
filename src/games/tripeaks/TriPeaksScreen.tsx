@@ -213,9 +213,9 @@ function TriPeaksScreenInner() {
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
-  // Before the win check (see useStuckLossCheck). A dead board - no move left and no stock to deal - is a loss here, as in Aces Up:
+  // A dead board - no move left and no stock to deal - is a loss here, as in Aces Up, recorded when the player leaves it (see useStuckLossCheck):
   // it used to just sit there with the clock running.
-  const { stuck, recordedRef: recordedLossRef } = useStuckLossCheck(controller, state, 'tripeaks', recordDealAbandoned)
+  const { stuck } = useStuckLossCheck(controller, state, 'tripeaks', recordDealAbandoned)
   const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, 'tripeaks', session, dealTokenRef, recordDealWon, hintsUsedRef)
   // Nothing animating and the initial deal finished - what the win celebration waits for (see
   // useWinReveal). activeFlightCount covers every ghost flight (tap, drag, stock draw, undo all
@@ -272,7 +272,6 @@ function TriPeaksScreenInner() {
     pendingFlightRef.current = []
     session.reset()
     recordedWinRef.current = false
-    recordedLossRef.current = false
     winCascade.clear()
     pendingWinCascadeRef.current = null
     // The last shake belongs to the old board: card ids are reused by the next deal, so a cell dealt the shaken card must
@@ -307,13 +306,12 @@ function TriPeaksScreenInner() {
     pendingFlightRef.current = []
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
-    recordedLossRef.current = false
     setDealHiddenIds(new Set())
     commitState(saved.state)
   }
 
   function handleNewGame() {
-    if (session.moves > 0 && !won && !stuck) recordDealAbandoned('tripeaks')
+    if (session.moves > 0 && !won) recordDealAbandoned('tripeaks')
     setTripeaksRankWrap(settings.tripeaksRankWrap)
     startNewGame(createTriPeaksController(settings.tripeaksRankWrap))
   }
@@ -461,13 +459,12 @@ function TriPeaksScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Saves after every move/undo/fresh-deal (all flow through setState). Gated on !won so a
-  // just-won deal doesn't get checkpointed as still in-progress. Deliberately NOT also keyed on a
-  // ticking elapsed-seconds value the way an earlier version of this effect was:
-  // `session.getElapsed()` computes the true current elapsed from wall-clock time on demand (see
-  // useGameSession.ts), so a save made at the last real move is never stale even once the player
-  // just sits looking at the board afterward - resuming always recomputes the exact right value
-  // instead of depending on whenever this effect last happened to run.
+  // Saves after every move/undo/fresh-deal (all flow through setState). Gated on !won so a just-won
+  // deal doesn't get checkpointed as still in-progress. Deliberately NOT also keyed on a ticking
+  // elapsed-seconds value the way an earlier version of this effect was: `session.getElapsed()`
+  // computes the true current elapsed from wall-clock time on demand (see useGameSession.ts), but a
+  // save still holds the elapsed time from when it was made, so useSaveInProgressBackstop saves again
+  // every 10s, when the screen is left, and when the app is backgrounded.
   useEffect(() => {
     if (state && !won && !stuck) saveGameInProgress('tripeaks', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: tripeaksRankWrap ? 1 : 0 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -714,7 +711,7 @@ function TriPeaksScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='TriPeaks' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<TriPeaksSettingsSection />} rules={TRIPEAKS_RULES}>
+      <GameChrome title='TriPeaks' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<TriPeaksSettingsSection />} rules={TRIPEAKS_RULES}>
         <View style={styles.board}>
           <View style={styles.controlRow}>
             <StockWaste

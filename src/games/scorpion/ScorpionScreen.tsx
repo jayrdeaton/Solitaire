@@ -158,9 +158,9 @@ function ScorpionScreenInner() {
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const winCascade = useWinCascade()
-  // Before the win check (see useStuckLossCheck). A dead board - no move left and no stock to deal - is a loss here, as in Aces Up:
+  // A dead board - no move left and no stock to deal - is a loss here, as in Aces Up, recorded when the player leaves it (see useStuckLossCheck):
   // it used to just sit there with the clock running.
-  const { stuck, recordedRef: recordedLossRef } = useStuckLossCheck(controller, state, 'scorpion', recordDealAbandoned)
+  const { stuck } = useStuckLossCheck(controller, state, 'scorpion', recordDealAbandoned)
   // Derived from `state` every render (see useDerivedWinCheck), same as Spider/Golf - Scorpion has
   // no suit-based foundation for a "won" flag to hang off; isWon (rules.ts) checks each column's
   // own shape directly instead.
@@ -255,7 +255,6 @@ function ScorpionScreenInner() {
     undoStockDealHoldsRef.current.forEach((release) => release())
     session.reset()
     recordedWinRef.current = false
-    recordedLossRef.current = false
     winCascade.clear()
     pendingWinCascadeRef.current = null
 
@@ -287,7 +286,6 @@ function ScorpionScreenInner() {
     undoStockDealHoldsRef.current.forEach((release) => release()) // see startNewGame
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
-    recordedLossRef.current = false
     setDealHiddenIds(new Set())
     commitState(saved.state)
   }
@@ -296,7 +294,7 @@ function ScorpionScreenInner() {
   // only ever calls this after the player has confirmed that, or immediately when there's nothing
   // to lose (see components/GameChrome.tsx's warning dialog).
   function handleNewGame() {
-    if (session.moves > 0 && !won && !stuck) recordDealAbandoned('scorpion')
+    if (session.moves > 0 && !won) recordDealAbandoned('scorpion')
     setAssistedStock(settings.scorpionAssistedStock)
     startNewGame(createScorpionController(settings.scorpionAssistedStock))
   }
@@ -548,13 +546,12 @@ function ScorpionScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Saves after every move/undo/fresh-deal (all flow through setState). Gated on !won so a
-  // just-won deal doesn't get checkpointed as still in-progress. Deliberately NOT also keyed on a
-  // ticking elapsed-seconds value the way an earlier version of this effect was:
-  // `session.getElapsed()` computes the true current elapsed from wall-clock time on demand (see
-  // useGameSession.ts), so a save made at the last real move is never stale even once the player
-  // just sits looking at the board afterward - resuming always recomputes the exact right value
-  // instead of depending on whenever this effect last happened to run.
+  // Saves after every move/undo/fresh-deal (all flow through setState). Gated on !won so a just-won
+  // deal doesn't get checkpointed as still in-progress. Deliberately NOT also keyed on a ticking
+  // elapsed-seconds value the way an earlier version of this effect was: `session.getElapsed()`
+  // computes the true current elapsed from wall-clock time on demand (see useGameSession.ts), but a
+  // save still holds the elapsed time from when it was made, so useSaveInProgressBackstop saves again
+  // every 10s, when the screen is left, and when the app is backgrounded.
   useEffect(() => {
     if (state && !won && !stuck) saveGameInProgress('scorpion', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: assistedStock ? 1 : 0 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -776,7 +773,7 @@ function ScorpionScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
+      <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
         {/* Portrait: the stock packet lives in a card-tall top row at the right, as always. Wide layout: no
         top row (zero height, no margin) - the packet is absolutely positioned beside the tableau below.
         Once the assisted stock has been dealt, an empty slot stays in its place: the packet was the top row's

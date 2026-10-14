@@ -110,15 +110,15 @@ function AchievementsContent() {
           <StatRow label='Hints Used' value={String(getTotalHintsUsed(statsView))} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
         </StatSection>
 
-        {/* Per game. "Abandoned" rather than "lost": a solitaire deal is won or walked away from,
-        never lost outright - see stores/statsTypes.ts. */}
+        {/* Per game. "Lost" counts both ways a deal ends without a win: dealt over mid-game, and the No Moves Left
+        dead board of Aces Up, Golf, TriPeaks, Forty Thieves and Scorpion - see stores/statsTypes.ts. */}
         {SOLITAIRE_GAME_IDS.map((id) => {
           const v = statsView.variants[id]
           return (
             <StatSection key={id} label={GAME_TITLES[id].toUpperCase()} fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
               <StatRow label='Played' value={String(v.record.played)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
               <StatRow label='Won' value={String(v.record.wins)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Abandoned' value={String(v.record.losses)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+              <StatRow label='Lost' value={String(v.record.losses)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
               <StatRow label='Streak' value={`${v.streak.currentWinStreak} (best ${v.streak.bestWinStreak})`} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
               <StatRow label='Fastest' value={v.bestTimeSeconds === null ? '-' : formatTime(v.bestTimeSeconds)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
               <StatRow label='Fewest Moves' value={v.bestMoves === null ? '-' : String(v.bestMoves)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />

@@ -240,15 +240,14 @@ function FreeCellScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Saves after every move/undo/autoplay/fresh-deal (all flow through commitState). Gated on !won:
-  // Undo is never disabled post-win (a pre-existing gap, out of scope here), so without this guard,
-  // winning and then tapping the still-enabled Undo would resurrect a save for an already-resolved
-  // deal right after checkWin below just cleared it. Deliberately NOT also keyed on a ticking
-  // elapsed-seconds value the way an earlier version of this effect was: `session.getElapsed()`
-  // computes the true current elapsed from wall-clock time on demand (see useGameSession.ts), so a
-  // save made at the last real move is never stale even once the player just sits looking at the
-  // board afterward - resuming always recomputes the exact right value instead of depending on
-  // whenever this effect last happened to run.
+  // Saves after every move/undo/autoplay/fresh-deal (all flow through commitState). Gated on !won: Undo
+  // is never disabled post-win (a pre-existing gap, out of scope here), so without this guard, winning
+  // and then tapping the still-enabled Undo would resurrect a save for an already-resolved deal right
+  // after checkWin below just cleared it. Deliberately NOT also keyed on a ticking elapsed-seconds
+  // value the way an earlier version of this effect was: `session.getElapsed()` computes the true
+  // current elapsed from wall-clock time on demand (see useGameSession.ts), but a save still holds the
+  // elapsed time from when it was made, so useSaveInProgressBackstop saves again every 10s, when the
+  // screen is left, and when the app is backgrounded.
   useEffect(() => {
     if (state && !won) saveGameInProgress('freecell', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -750,8 +749,8 @@ function FreeCellScreenInner() {
       // off, see FreeCellUndoMove).
       pushUndo(current, moveInfo)
       commitState(result)
-      const movesSoFar = opts?.silent ? session.moves : session.registerMove()
-      checkWin(result, movesSoFar)
+      if (!opts?.silent) session.registerMove()
+      checkWin(result)
       // Only the player's own play of a card to a foundation (a tap or a drag) starts the cascade; any other
       // move of theirs stops it, so a card it uncovers is theirs to play. The finish follows ANY move of
       // theirs that leaves the board solved (see autoPlay.ts).
@@ -996,7 +995,7 @@ function FreeCellScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={FREECELL_RULES}>
+      <GameChrome title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won} movesCount={session.moves} rules={FREECELL_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.foundationsGroup, { gap: topRowGroupGap }]}>
             {state.foundation.map((pile, i) => {

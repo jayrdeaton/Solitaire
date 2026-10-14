@@ -146,9 +146,9 @@ function FortyThievesScreenInner() {
   const winCascade = useWinCascade()
   // Same rules as controllerRef.current (runMoves is set beside it everywhere), memoized so isStuck can run during render.
   const stuckController = useMemo(() => createFortyThievesController(runMoves), [runMoves])
-  // Before the win check (see useStuckLossCheck). A dead board - no move left and no stock to deal - is a loss here, as in Aces Up:
+  // A dead board - no move left and no stock to deal - is a loss here, as in Aces Up, recorded when the player leaves it (see useStuckLossCheck):
   // it used to just sit there with the clock running.
-  const { stuck, recordedRef: recordedLossRef } = useStuckLossCheck(stuckController, state, 'fortythieves', recordDealAbandoned)
+  const { stuck } = useStuckLossCheck(stuckController, state, 'fortythieves', recordDealAbandoned)
   // Reads controllerRef.current live inside isWon (rather than passing controllerRef.current
   // directly, which would freeze this render's controller into checkWin's closure) - matches
   // KlondikeScreen's identical fix, so a straggling call from a stale render's closure chain still
@@ -215,7 +215,6 @@ function FortyThievesScreenInner() {
     session.reset()
     setWon(false)
     recordedWinRef.current = false
-    recordedLossRef.current = false
     winCascade.clear()
     pendingWinCascadeRef.current = null
 
@@ -247,14 +246,13 @@ function FortyThievesScreenInner() {
     session.restore(saved.moves, saved.elapsedSeconds)
     setWon(false)
     recordedWinRef.current = false
-    recordedLossRef.current = false
     setDealHiddenIds(new Set())
     dimAfterDeal.releaseNow()
     commitState(saved.state)
   }
 
   function handleNewGame() {
-    if (session.moves > 0 && !won && !stuck) recordDealAbandoned('fortythieves')
+    if (session.moves > 0 && !won) recordDealAbandoned('fortythieves')
     startNewGame()
   }
 
@@ -411,11 +409,10 @@ function FortyThievesScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Deliberately not keyed on a ticking elapsed-seconds value: `session.getElapsed()` computes the
-  // true current elapsed from wall-clock time on demand (see useGameSession.ts), so a save made at
-  // the last real move is never stale even once the player just sits looking at the board
-  // afterward - resuming always recomputes the exact right value instead of depending on whenever
-  // this effect last happened to run.
+  // Deliberately not keyed on a ticking elapsed-seconds value: `session.getElapsed()` computes the true
+  // current elapsed from wall-clock time on demand (see useGameSession.ts), but a save still holds the
+  // elapsed time from when it was made, so useSaveInProgressBackstop saves again every 10s, when the
+  // screen is left, and when the app is backgrounded.
   useEffect(() => {
     if (state && !won && !stuck) saveGameInProgress('fortythieves', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: runMoves ? 1 : 0 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -537,8 +534,8 @@ function FortyThievesScreenInner() {
       // counts as a move (below) or arms the cascade again.
       pushUndo(current, { from, to, count, anchorCardId })
       commitState(result)
-      const movesSoFar = opts?.silent ? session.moves : session.registerMove()
-      checkWin(result, movesSoFar)
+      if (!opts?.silent) session.registerMove()
+      checkWin(result)
       // Only the player's own play of a card to a foundation starts the cascade; any other move of theirs
       // stops it, so a card it uncovers (the waste's next card, say) is theirs to find and play. The
       // finish follows ANY move of theirs that leaves the board solved (see useAutoFinish).
@@ -626,7 +623,7 @@ function FortyThievesScreenInner() {
     pushUndo(current, { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: 1, anchorCardId: entry.card.id })
     pushUndo(afterDraw, { from: entry.ref, to, count: 1, anchorCardId: entry.card.id })
     commitState(result)
-    checkWin(result, session.moves)
+    checkWin(result)
     pendingFlightRef.current.push({ cardId: entry.card.id, to, gen: dealTokenRef.current, flyingId, flight })
   }
 
@@ -769,7 +766,7 @@ function FortyThievesScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
+      <GameChrome title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
         {/* As wide as the tableau, the foundations at its left edge and the waste/stock pair at its right. It used to
         put a fixed 18pt between the two in portrait, which made it 16pt wider than the tableau: it ran off both
         edges of a phone. */}
@@ -840,7 +837,7 @@ function FortyThievesScreenInner() {
       {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} onNewGame={startNewGame} />}
-      {lossRevealed && !won && <LossBanner onNewGame={startNewGame} onUndo={handleUndo} />}
+      {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { AppState } from 'react-native'
 
 import { flushGameInProgress } from '@/stores/gameInProgress'
 
@@ -14,7 +15,8 @@ const BACKSTOP_INTERVAL_MS = 10000
  * dependency, so it can never itself trigger the kind of per-second whole-screen re-render the
  * ticking elapsed-time clock this replaced used to cause (see useGameSession.ts). Doesn't fire an
  * initial call of its own - the screen's own save-on-move effect already covers "right now," this
- * only covers "still open N seconds later with nothing new to say."
+ * covers "still open N seconds later with nothing new to say," and the moment the screen is left or
+ * the app leaves the foreground.
  */
 export function useSaveInProgressBackstop(active: boolean, save: () => void) {
   const saveRef = useRef(save)
@@ -28,8 +30,22 @@ export function useSaveInProgressBackstop(active: boolean, save: () => void) {
     return () => clearInterval(id)
   }, [active])
 
-  // Saves are coalesced (see stores/gameInProgress.ts), so leaving the screen - Home, or any other way the
-  // screen unmounts - must write whatever is still waiting out its debounce, or the last move or two
-  // would not be there on the next visit. Every game screen mounts this hook.
-  useEffect(() => () => void flushGameInProgress(), [])
+  // A save holds the elapsed time from when it was MADE (the last move, or the last tick above, up to
+  // BACKSTOP_INTERVAL_MS ago), so leaving the screen (Home, or any other way it unmounts) or the app
+  // leaving the foreground saves once more first: otherwise every trip Home handed back up to ten
+  // seconds of the clock. Then it writes whatever is still waiting out its debounce (saves are
+  // coalesced, see stores/gameInProgress.ts). `save` itself skips a won or lost deal. Every game screen
+  // mounts this hook.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') return
+      saveRef.current()
+      void flushGameInProgress()
+    })
+    return () => {
+      sub.remove()
+      saveRef.current()
+      void flushGameInProgress()
+    }
+  }, [])
 }

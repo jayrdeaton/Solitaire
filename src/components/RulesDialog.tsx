@@ -48,7 +48,7 @@ export function RulesDialog({ visible, onDismiss, title, rules, compact = false 
           engine/score.ts) is identical across every game, so duplicating this sentence into all
           11 games' constants/gameRules.ts entries would just be 11 copies to keep in sync. */}
           <Text style={[styles.scoreHeading, { color: colors.onSurface }]}>Scoring</Text>
-          <Text style={[styles.scoreText, { color: colors.onSurfaceVariant }]}>Score is moves plus seconds. Lower is better, so a fast, efficient win scores low.</Text>
+          <Text style={[styles.scoreText, { color: colors.onSurfaceVariant }]}>Score is moves plus seconds, and lower is better. The clock starts with your first move and pauses while you&rsquo;re away from the game or in Settings or Rules. Every move you make counts, even one you undo. Cards the game plays for you are free.</Text>
         </ScrollView>
         <Button mode='contained' onPress={onDismiss} style={[styles.closeButton, compact && styles.closeButtonCompact]}>
           Got it

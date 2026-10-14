@@ -7,7 +7,7 @@ import { DEFAULT_PROFILE_STATS } from './statsValidation'
 const NO_METRICS: DealMetrics = { seconds: null, moves: null, score: null, usedHint: false }
 
 // Applies one resolved deal to a single variant bucket. 'win' extends the streak and may set new
-// bests (time/moves/score - lower is better for all three); 'loss' (an abandoned deal) breaks it.
+// bests (time/moves/score - lower is better for all three); 'loss' (abandoned, or a dead board) breaks it.
 function bumpVariant(prev: VariantStats, result: 'win' | 'loss', metrics: DealMetrics): VariantStats {
   const isWin = result === 'win'
   const bestTimeSeconds = isWin && metrics.seconds !== null && (prev.bestTimeSeconds === null || metrics.seconds < prev.bestTimeSeconds) ? metrics.seconds : prev.bestTimeSeconds

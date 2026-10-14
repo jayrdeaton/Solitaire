@@ -12,9 +12,10 @@ export const SOLITAIRE_GAME_IDS: SolitaireGameId[] = ['klondike', 'spider', 'fre
 
 // One game variant's record.
 //
-// A solitaire deal is never "lost" the way a versus match is - it's won, or it's walked away from.
-// So `record.losses` here means ABANDONED: the player explicitly dealt a new game over one that was
-// still in progress, after confirming a warning dialog (see statsEngine.ts's applyDealAbandoned).
+// `record.losses` counts every deal that ended without a win: the player dealt a new game over one
+// still in progress (after confirming a warning dialog), or reached a dead board in a game that
+// declares one (useStuckLossCheck: Aces Up, Golf, TriPeaks, Forty Thieves, Scorpion). Both go through
+// statsEngine.ts's applyDealAbandoned; the Stats screen labels them "Lost".
 // `record.draws` is unused and stays 0; it rides along because @tastic/achievements' applyResult
 // maintains the whole quadruple.
 export interface VariantStats {

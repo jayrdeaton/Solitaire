@@ -111,9 +111,17 @@ const FOOTER_BUTTON_WIDTH = 88
 const FOOTER_BUTTON_HEIGHT = 52
 const FOOTER_GAP = 8
 
-// The moves/score/time readout is the footer's show/hide button. Its box is this wide (the captioned
-// row is ~160pt) and reaches 6pt above the text, so it is easy to hit without covering the board.
-const SCOREBOARD_WIDTH = 240
+// The moves/score/time readout is the footer's show/hide button. Captioned, it is laid out on the footer's own grid
+// (each stat as wide as a footer button, the same gap, so Moves sits over New Game, Score over Undo, Time over Hint -
+// Jay, 2026-10-14: a narrow block centred over the wider button row read as two unrelated things). Its box is that
+// row's width and reaches 6pt above the text, so it is easy to hit without covering the board.
+const SCOREBOARD_WIDTH = 3 * FOOTER_BUTTON_WIDTH + 2 * FOOTER_GAP
+// The scoreboard's text lines: fixed, so SCOREBOARD_DROP below is exact.
+const STAT_LABEL_LINE = 14
+const STAT_VALUE_LINE = 22
+// How far the scoreboard drops when the footer is tucked away: its numbers (the bottom line of the row, which sits
+// MOVES_TIMER_BOTTOM up) land centred where the button icons were (FOOTER_BOTTOM plus half a button).
+const SCOREBOARD_DROP = MOVES_TIMER_BOTTOM + STAT_VALUE_LINE / 2 - (FOOTER_BOTTOM + FOOTER_BUTTON_HEIGHT / 2)
 const SCOREBOARD_TOP_SLOP = 6
 
 // Wide (landscape) layout only - the footer and the readout live in the side gutters GameLayout
@@ -170,6 +178,9 @@ interface GameChromeProps {
    * the timer text below (while `clockRunning`) so re-rendering the rest of the screen - the whole
    * board - once a second isn't the price of a ticking clock display anymore. */
   getElapsedSeconds: () => number
+  /** The session's setPaused: GameChrome holds the clock ('dialog') while Rules or Settings is open, so reading the
+   * rules or changing a setting costs no score. */
+  pauseClock: (reason: string, paused: boolean) => void
   /** Whether the clock is actively counting up (session.started && !won) - gates GameChrome's own
    * internal once-a-second tick. Still re-reads getElapsedSeconds() whenever this flips even while
    * false, so a not-yet-started (0:00) or just-frozen post-win value shows immediately. */
@@ -232,7 +243,7 @@ function ElapsedClock({ getElapsedSeconds, clockRunning, children }: { getElapse
  * Previously each of the four game screens hand-rolled its own version of this row (and Pyramid's
  * had drifted to a bottom button row entirely) - unifying it here means a layout tweak (like this
  * one, and the header/footer regrouping that followed it) only has to happen once. */
-export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, autoHintKey, hintShowing, hintDisabled, won, hasProgress, getElapsedSeconds, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
+export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, autoHintKey, hintShowing, hintDisabled, won, hasProgress, getElapsedSeconds, pauseClock, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
   const router = useRouter()
   // The safe-area insets remapped onto the rotated frame's own edges (a no-op at rotation 0). The dialogs
   // below need no rotation of their own - see the Portal.Host in withGameProviders.
@@ -247,6 +258,10 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   const undoHold = useUndoHold(onUndo, UNDO_HOLD_REPEAT_MS)
   const { scrollProps, holdHeight, boardKey } = useBoardScroll(movesCount)
   const { settings } = useSettings()
+  const dialogOpen = settingsOpen || rulesOpen
+  useEffect(() => {
+    pauseClock('dialog', dialogOpen)
+  }, [pauseClock, dialogOpen])
   useAutoHint({ seconds: settings.autoHintSeconds, boardKey: autoHintKey, paused: !!hintDisabled || settingsOpen || rulesOpen || confirmNewGameVisible, hintShowing, onHint })
 
   const footerOpacity = useSharedValue(1)
@@ -255,19 +270,15 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
 
   // Slides the moves/timer row down to fill the footer's own spot once it's hidden, rather than
   // leaving it stranded above an empty gap - the row itself never fades as a whole (see
-  // toggleFooter), only repositions; its two internal layers (compact vs captioned, see
-  // captionOpacity below) crossfade independently of this translateY.
+  // toggleFooter), only repositions; its labels fade (labelOpacity below) as it goes.
   const movesTimerTranslateY = useSharedValue(0)
   const movesTimerAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ translateY: movesTimerTranslateY.value }] }))
 
-  // Crossfades the moves/timer row's two layers (see statsStack below) - 0 shows the bare
-  // "12 · 45 · 0:33" quick-glance line (footer visible, controls close by), 1 shows the
-  // small-captioned "MOVES/SCORE/TIME" breakdown (footer hidden, player has room to read it).
-  // Both layers stay mounted the whole time, absolutely stacked on top of each other, so this is
-  // a plain opacity crossfade rather than a mount/unmount swap.
-  const captionOpacity = useSharedValue(0)
-  const compactAnimatedStyle = useAnimatedStyle(() => ({ opacity: 1 - captionOpacity.value }))
-  const captionedAnimatedStyle = useAnimatedStyle(() => ({ opacity: captionOpacity.value }))
+  // The scoreboard's MOVES/SCORE/TIME labels: shown while the footer is up (the scoreboard is expanded), faded out while
+  // it is tucked away. It is ONE row in both states (Jay, 2026-10-14): the numbers keep their columns and only drop
+  // into the buttons' place, rather than swapping to a separate one-line "12 · 45 · 0:33" that regrouped them.
+  const labelOpacity = useSharedValue(1)
+  const labelAnimatedStyle = useAnimatedStyle(() => ({ opacity: labelOpacity.value }))
 
   function toggleFooter() {
     const next = !footerVisible
@@ -278,8 +289,8 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
     /* eslint-disable react-hooks/immutability */
     footerOpacity.value = withTiming(next ? 1 : 0, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
     footerTranslateY.value = withTiming(next ? 0 : 24, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
-    movesTimerTranslateY.value = withTiming(next ? 0 : MOVES_TIMER_BOTTOM - FOOTER_BOTTOM, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
-    captionOpacity.value = withTiming(next ? 0 : 1, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
+    movesTimerTranslateY.value = withTiming(next ? 0 : SCOREBOARD_DROP, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
+    labelOpacity.value = withTiming(next ? 1 : 0, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
     /* eslint-enable react-hooks/immutability */
   }
 
@@ -398,14 +409,10 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
 
       In portrait this row is also the footer's show/hide button (toggleFooter): tapping it tucks the
       footer away and tapping it again brings it back, from the same spot either way since the row slides
-      into the footer's place. Plain bare numbers while the footer (New Game/Undo/Hint) is still on
-      screen - that's the "quick glance mid-play" state, and a caption on every tick would just be noise
-      next to those buttons. Once the footer is hidden, this row inherits its spot and a
-      player has deliberately chosen to focus on the board over the numbers - small captions above
-      each value then earn their keep, without ever competing with the footer for attention. Both
-      layers below stay mounted throughout and crossfade via captionOpacity (see toggleFooter)
-      rather than swapping instantly, so the transition reads as one row relabeling itself, not a
-      flicker between two unrelated ones. */}
+      into the footer's place. Labeled (MOVES/SCORE/TIME over each value) while the footer is up: the
+      scoreboard is expanded along with the controls. Tucked away, the labels fade and the same three
+      numbers drop into the buttons' place, each staying in its column (Jay, 2026-10-14: it used to swap to
+      a separate one-line readout, and labeled the tucked-away state instead of the expanded one). */}
       {!won && isWide && (
         // Leading (local left) gutter, left-aligned inside [insets.left + 8, leftGutter] and vertically
         // centred in the safe area. Always the captioned form (there is room for it and no footer to
@@ -443,26 +450,19 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
             // While the footer is up the footer wins the 4pt where the two boxes meet.
             <Animated.View style={[styles.movesTimerWrap, { bottom: MOVES_TIMER_BOTTOM + insets.bottom }, !footerVisible && styles.movesTimerAboveFooter, movesTimerAnimatedStyle]} pointerEvents='box-none'>
               <Pressable onPress={toggleFooter} style={styles.scoreboardButton} accessibilityRole='button' accessibilityLabel={footerVisible ? 'Hide controls' : 'Show controls'}>
-                <View style={styles.statsStack}>
-                  <Animated.View style={[styles.statsLayer, compactAnimatedStyle]}>
-                    <Text style={styles.timerText} numberOfLines={1}>
-                      {movesCount} · {computeScore(movesCount, displayedElapsed)} · {formatTime(displayedElapsed)}
-                    </Text>
-                  </Animated.View>
-                  <Animated.View style={[styles.statsLayer, styles.statsRow, captionedAnimatedStyle]}>
-                    <View style={styles.statBlock}>
-                      <Text style={styles.statCaption}>Moves</Text>
-                      <Text style={styles.statValue}>{movesCount}</Text>
-                    </View>
-                    <View style={styles.statBlock}>
-                      <Text style={styles.statCaption}>Score</Text>
-                      <Text style={styles.statValue}>{computeScore(movesCount, displayedElapsed)}</Text>
-                    </View>
-                    <View style={styles.statBlock}>
-                      <Text style={styles.statCaption}>Time</Text>
-                      <Text style={styles.statValue}>{formatTime(displayedElapsed)}</Text>
-                    </View>
-                  </Animated.View>
+                <View style={styles.statsRow}>
+                  <View style={styles.statBlock}>
+                    <Animated.Text style={[styles.statCaption, labelAnimatedStyle]}>Moves</Animated.Text>
+                    <Text style={styles.statValue}>{movesCount}</Text>
+                  </View>
+                  <View style={styles.statBlock}>
+                    <Animated.Text style={[styles.statCaption, labelAnimatedStyle]}>Score</Animated.Text>
+                    <Text style={styles.statValue}>{computeScore(movesCount, displayedElapsed)}</Text>
+                  </View>
+                  <View style={styles.statBlock}>
+                    <Animated.Text style={[styles.statCaption, labelAnimatedStyle]}>Time</Animated.Text>
+                    <Text style={styles.statValue}>{formatTime(displayedElapsed)}</Text>
+                  </View>
                 </View>
               </Pressable>
             </Animated.View>
@@ -620,50 +620,29 @@ const styles = StyleSheet.create({
   scroll: {
     flex: 1
   },
+  // One column of the captioned scoreboard: as wide as the footer button under it (see SCOREBOARD_WIDTH).
   statBlock: {
-    alignItems: 'center'
+    alignItems: 'center',
+    width: FOOTER_BUTTON_WIDTH
   },
   statCaption: {
     color: 'rgba(255, 255, 255, 0.65)',
     fontFamily: CARD_FONT_FAMILY,
-    fontSize: 10,
+    fontSize: 11,
     letterSpacing: 0.5,
+    lineHeight: STAT_LABEL_LINE,
     textTransform: 'uppercase'
   },
   statValue: {
     color: '#fff',
     fontFamily: CARD_FONT_FAMILY,
-    fontSize: 16,
-    fontVariant: ['tabular-nums']
-  },
-  // Both the compact line and the captioned row render into one of these, absolutely filling
-  // statsStack below, so they can crossfade in place via opacity alone rather than one pushing
-  // the other around as it fades.
-  statsLayer: {
-    alignItems: 'center',
-    bottom: 0,
-    justifyContent: 'center',
-    left: 0,
-    position: 'absolute',
-    right: 0,
-    top: 0
+    fontSize: 17,
+    fontVariant: ['tabular-nums'],
+    lineHeight: STAT_VALUE_LINE
   },
   statsRow: {
     flexDirection: 'row',
-    gap: 20
-  },
-  // Needs a real height of its own - unlike a plain shrink-wrapping View, a box whose only
-  // children are position:'absolute' (statsLayer) has no content to size itself from, and would
-  // otherwise collapse to zero and hide both layers entirely.
-  statsStack: {
-    height: 34,
-    width: '100%'
-  },
-  timerText: {
-    color: '#fff',
-    fontFamily: CARD_FONT_FAMILY,
-    fontSize: 16,
-    fontVariant: ['tabular-nums']
+    gap: FOOTER_GAP
   },
   titleText: {
     color: '#fff',

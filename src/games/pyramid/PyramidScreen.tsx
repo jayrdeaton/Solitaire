@@ -1117,16 +1117,15 @@ function PyramidScreenInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Saves after every move/undo/autoplay/fresh-deal (all flow through setState). Gated on !won so
-  // a just-won deal doesn't get checkpointed as still in-progress (the win-check effect above
-  // clears the save outright instead) - since `won` is derived fresh from `state` on every render,
-  // undoing back out of a won position re-enables saving again on that same render, no separate
-  // reset needed. Deliberately NOT also keyed on a ticking elapsed-seconds value the way an
-  // earlier version of this effect was: `session.getElapsed()` computes the true current elapsed
-  // from wall-clock time on demand (see useGameSession.ts), so a save made at the last real move is
-  // never stale even once the player just sits looking at the board afterward - resuming always
-  // recomputes the exact right value instead of depending on whenever this effect last happened to
-  // run.
+  // Saves after every move/undo/autoplay/fresh-deal (all flow through setState). Gated on !won so a
+  // just-won deal doesn't get checkpointed as still in-progress (the win-check effect above clears the
+  // save outright instead) - since `won` is derived fresh from `state` on every render, undoing back
+  // out of a won position re-enables saving again on that same render, no separate reset needed.
+  // Deliberately NOT also keyed on a ticking elapsed-seconds value the way an earlier version of this
+  // effect was: `session.getElapsed()` computes the true current elapsed from wall-clock time on demand
+  // (see useGameSession.ts), but a save still holds the elapsed time from when it was made, so
+  // useSaveInProgressBackstop saves again every 10s, when the screen is left, and when the app is
+  // backgrounded.
   useEffect(() => {
     if (state && !won) saveGameInProgress('pyramid', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1860,7 +1859,7 @@ function PyramidScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={PYRAMID_RULES}>
+      <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} clockRunning={session.started && !won} movesCount={session.moves} rules={PYRAMID_RULES}>
         <View style={styles.board}>
           <View style={[styles.controlRow, { width }]}>
             <DiscardCell card={handoff ? undefined : discardCards[discardCards.length - 1]} isFlyingHere={discardFlying} settledCard={discardSettled} viewRef={discardViewRef} />

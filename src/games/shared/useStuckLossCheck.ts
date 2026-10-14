@@ -1,4 +1,4 @@
-import { MutableRefObject, useEffect, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 
 import { GameController } from '@/engine/gameTypes'
 import { clearGameInProgress } from '@/stores/gameInProgress'
@@ -6,38 +6,39 @@ import { SolitaireGameId } from '@/stores/statsTypes'
 
 export interface StuckLossCheck {
   stuck: boolean
-  recordedRef: MutableRefObject<boolean>
 }
 
 /**
  * A game's genuine, non-abandonment loss condition (Aces Up, Golf, TriPeaks, Forty Thieves and Scorpion: games whose
- * `isStuck` is exact - no recycle to fall back on) - derives `stuck` fresh from `state` every render (same "no separate useState
- * mirror" shape as useDerivedWinCheck), and a one-time effect records the loss via the SAME
- * recordDealAbandoned every other game's own "left mid-game" path already calls (see
- * stores/statsEngine.ts's applyDealAbandoned) - per this app's own convention, a real loss and an
- * abandoned deal are the exact same stat, not two different outcomes.
+ * `isStuck` is exact - no recycle to fall back on) - derives `stuck` fresh from `state` every render (same "no separate
+ * useState mirror" shape as useDerivedWinCheck).
  *
- * IMPORTANT: call this BEFORE the caller's own win-check hook (useDerivedWinCheck/
- * useFoundationWinCheck) if both exist, for the same effect-ordering reason those hooks' own doc
- * comments give - a game whose `isStuck` doesn't already exclude the won case (see
- * AcesUpController.isStuck's own `!isWon(state)` guard) could otherwise record both outcomes for
- * the same winning commit.
+ * The loss is recorded when the player LEAVES the dead board, not when it is reached (Jay, 2026-10-14): the loss dialog
+ * offers Undo, and recording on arrival counted one deal twice (the loss, then a win or a second loss on New Game after an
+ * Undo). The two ways out:
+ * - New Game: the screen's own handleNewGame records it, through the same `session.moves > 0 && !won` check as a deal
+ *   walked away from mid-game (a real loss and an abandoned deal are the same stat, recordDealAbandoned).
+ * - Leaving the screen (Home): recorded here, on unmount, and the save cleared so the next visit deals a fresh game.
+ * An Undo out of the dead board cancels it: nothing was recorded. The dead board itself is never saved (each screen's save
+ * skips `stuck`), so a killed app resumes the board one move before it died, which is just that Undo.
  */
 export function useStuckLossCheck<TState>(controller: Pick<GameController<TState>, 'isStuck'>, state: TState | null, gameId: SolitaireGameId, recordDealAbandoned: (gameId: SolitaireGameId) => void): StuckLossCheck {
   const stuck = state && controller.isStuck ? controller.isStuck(state) : false
-  const recordedRef = useRef(false)
 
+  const latestRef = useRef({ stuck, gameId, recordDealAbandoned })
   useEffect(() => {
-    if (!state || !controller.isStuck) return
-    if (controller.isStuck(state) && !recordedRef.current) {
-      recordedRef.current = true
-      recordDealAbandoned(gameId)
-      // As a win does (useDerivedWinCheck): the last save is the board one move before this loss, and resuming it would
-      // let the same deal be lost - and recorded - twice. An Undo out of the loss saves again from its next commit.
-      clearGameInProgress(gameId)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state])
+    latestRef.current = { stuck, gameId, recordDealAbandoned }
+  })
 
-  return { stuck, recordedRef }
+  useEffect(
+    () => () => {
+      const { stuck: leftStuck, gameId: id, recordDealAbandoned: record } = latestRef.current
+      if (!leftStuck) return
+      record(id)
+      clearGameInProgress(id)
+    },
+    []
+  )
+
+  return { stuck }
 }
