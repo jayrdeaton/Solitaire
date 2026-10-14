@@ -1,4 +1,4 @@
-import { BOUNCE_H_HALF_PERIOD_MAX_MS, BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_MIN_SPAN_PX, BOUNCE_TOP_MARGIN_PX, BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, cardXAtElapsed, cardYAtElapsed, cascadeApexY, CHAIN_MAX_SPAN_MS, CHAIN_SEGMENT_DELAY_MS, ChainPath, chainSegmentDelayMs, fanOffsetScale, horizontalXAtElapsed, isGhostVisible, spreadHHalfPeriods, verticalYAtElapsed } from '@/components/winning/winCascadeMotion'
+import { BOUNCE_FLOOR_MARGIN_PX, BOUNCE_H_HALF_PERIOD_MAX_MS, BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_H_MARGIN_PX, BOUNCE_MIN_SPAN_PX, BOUNCE_TOP_MARGIN_PX, BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, cardXAtElapsed, cardYAtElapsed, cascadeApexY, CascadeBounds, cascadeBounds, CHAIN_MAX_SPAN_MS, CHAIN_SEGMENT_DELAY_MS, ChainPath, chainSegmentDelayMs, fanOffsetScale, fitXToBounds, fitYToBounds, horizontalXAtElapsed, isGhostVisible, spreadHHalfPeriods, verticalYAtElapsed } from '@/components/winning/winCascadeMotion'
 
 // A fixed chain path: launches at (100, 200), falls to a floor at 700 (first fall 1000ms), then bounces between 700 and an apex
 // at 100 forever; heads for the wall at x=20 over a 1000ms first leg, then swings between it and x=320.
@@ -222,5 +222,50 @@ describe('spreadHHalfPeriods', () => {
 
   it('is a slight difference, not a wide one: the fastest chain is well under twice as fast as the slowest', () => {
     expect(BOUNCE_H_HALF_PERIOD_MAX_MS / BOUNCE_H_HALF_PERIOD_MIN_MS).toBeLessThan(1.5)
+  })
+})
+
+describe('cascadeBounds', () => {
+  it('puts the walls a margin in from each side, the floor a margin above the bottom, and the apex at the header', () => {
+    expect(cascadeBounds({ width: 400, height: 800 }, 64, 90, 56)).toEqual({ leftX: BOUNCE_H_MARGIN_PX, rightX: 400 - 64 - BOUNCE_H_MARGIN_PX, apexY: 56, floorY: 800 - 90 - BOUNCE_FLOOR_MARGIN_PX })
+  })
+})
+
+describe('fitXToBounds / fitYToBounds', () => {
+  // PATH was built in this box: walls at 20 and 320, apex 100, floor 700.
+  const BUILT: CascadeBounds = { leftX: 20, rightX: 320, apexY: 100, floorY: 700 }
+  // A quarter turn later: twice as wide, under half as tall.
+  const TURNED: CascadeBounds = { leftX: 12, rightX: 724, apexY: 56, floorY: 286 }
+
+  it('changes nothing, to the last bit, while the bounds are the ones the path was built in', () => {
+    for (const elapsed of SAMPLES) {
+      const x = cardXAtElapsed(PATH, elapsed, -30)
+      const y = cardYAtElapsed(PATH, elapsed, 264)
+      expect(fitXToBounds(PATH, { ...BUILT }, x)).toBe(x)
+      expect(fitYToBounds(PATH, { ...BUILT }, y)).toBe(y)
+    }
+  })
+
+  it('puts the walls, the apex and the floor on the new ones', () => {
+    expect(fitXToBounds(PATH, TURNED, PATH.firstX)).toBeCloseTo(TURNED.leftX, 9)
+    expect(fitXToBounds(PATH, TURNED, PATH.secondX)).toBeCloseTo(TURNED.rightX, 9)
+    expect(fitYToBounds(PATH, TURNED, PATH.apexY)).toBeCloseTo(TURNED.apexY, 9)
+    expect(fitYToBounds(PATH, TURNED, PATH.floorY)).toBeCloseTo(TURNED.floorY, 9)
+  })
+
+  it('is, at every moment, the path a chain built in the new bounds would take: same timing, same phase', () => {
+    const mapX = (x: number) => TURNED.leftX + ((x - BUILT.leftX) * (TURNED.rightX - TURNED.leftX)) / (BUILT.rightX - BUILT.leftX)
+    const mapY = (y: number) => TURNED.apexY + ((y - BUILT.apexY) * (TURNED.floorY - TURNED.apexY)) / (BUILT.floorY - BUILT.apexY)
+    const rebuilt: ChainPath = { ...PATH, origin: { x: mapX(PATH.origin.x), y: mapY(PATH.origin.y) }, firstX: TURNED.leftX, secondX: TURNED.rightX, apexY: TURNED.apexY, floorY: TURNED.floorY }
+    for (const elapsed of SAMPLES) {
+      expect(fitXToBounds(PATH, TURNED, horizontalXAtElapsed(PATH, elapsed))).toBeCloseTo(horizontalXAtElapsed(rebuilt, elapsed), 9)
+      expect(fitYToBounds(PATH, TURNED, verticalYAtElapsed(PATH, elapsed))).toBeCloseTo(verticalYAtElapsed(rebuilt, elapsed), 9)
+    }
+  })
+
+  it('keeps a chain that heads for the right wall first heading for the right wall', () => {
+    const rightFirst: ChainPath = { ...PATH, firstX: 320, secondX: 20 }
+    expect(fitXToBounds(rightFirst, TURNED, rightFirst.firstX)).toBeCloseTo(TURNED.rightX, 9)
+    expect(fitXToBounds(rightFirst, TURNED, rightFirst.secondX)).toBeCloseTo(TURNED.leftX, 9)
   })
 })

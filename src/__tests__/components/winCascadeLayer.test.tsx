@@ -1,9 +1,10 @@
+import { CARD_ASPECT } from '@tastic/cards'
 import { act, render, screen } from '@testing-library/react-native'
 import { useEffect } from 'react'
 import { StyleSheet, type ViewStyle } from 'react-native'
 
 import { ChainSpec, useWinCascade, WinCascadeController, WinCascadeGhosts, WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
-import { CHAIN_SEGMENT_DELAY_MS } from '@/components/winning/winCascadeMotion'
+import { cascadeBounds, CHAIN_SEGMENT_DELAY_MS } from '@/components/winning/winCascadeMotion'
 import type { Card } from '@/engine/types'
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -43,7 +44,8 @@ jest.mock('react-native-reanimated', () => {
   }
 })
 let mockRotation = 0
-jest.mock('@tastic/core', () => ({ useRotation: () => mockRotation, useRotatedWindowDimensions: () => ({ width: 400, height: 800 }), rotateInsets: (insets: unknown) => insets }))
+let mockFrame = { width: 400, height: 800 } // the ROTATED window: width and height swap under a quarter turn
+jest.mock('@tastic/core', () => ({ useRotation: () => mockRotation, useRotatedWindowDimensions: () => mockFrame, rotateInsets: (insets: unknown) => insets }))
 jest.mock('@/components/PlayingCard', () => {
   const { View } = require('react-native')
   const { useEffect: useMockEffect } = require('react')
@@ -72,13 +74,15 @@ function Capture() {
  * the faked clock in between) - what every ghost measures its own elapsed time against. */
 let startedAt = 0
 
+const tree = () => (
+  <WinCascadeProvider>
+    <Capture />
+    <WinCascadeGhosts />
+  </WinCascadeProvider>
+)
+
 async function start(chains: ChainSpec[]) {
-  const view = await render(
-    <WinCascadeProvider>
-      <Capture />
-      <WinCascadeGhosts />
-    </WinCascadeProvider>
-  )
+  const view = await render(tree())
   await act(async () => {
     startedAt = performance.now()
     controller.startChains(chains, CARD_WIDTH)
@@ -109,6 +113,7 @@ beforeEach(() => {
   jest.spyOn(Math, 'random').mockReturnValue(0.5)
   mockFrames.clear()
   mockRotation = 0
+  mockFrame = { width: 400, height: 800 }
 })
 afterEach(() => {
   jest.useRealTimers()
@@ -352,5 +357,84 @@ describe('WinCascadeGhosts - clear', () => {
       controller.clear()
     })
     expect(screen.queryAllByTestId(/^ghost-/)).toHaveLength(0)
+  })
+})
+
+describe('WinCascadeGhosts - a rotation while the cascade runs', () => {
+  const HEADER_BOTTOM = 56 // no safe-area inset in the tests + GAME_CONTENT_TOP_PADDING
+  const CARD_HEIGHT = CARD_WIDTH / CARD_ASPECT
+  const PORTRAIT = cascadeBounds({ width: 400, height: 800 }, CARD_WIDTH, CARD_HEIGHT, HEADER_BOTTOM)
+  const LANDSCAPE = cascadeBounds({ width: 800, height: 400 }, CARD_WIDTH, CARD_HEIGHT, HEADER_BOTTOM)
+  const CHAINS: ChainSpec[] = [
+    { cards: cards(1, 3), origin: { x: 40, y: 300 }, entranceDelayMs: 0 },
+    { cards: cards(11, 3), origin: { x: 200, y: 340 }, entranceDelayMs: 220 },
+    { cards: cards(21, 3), origin: { x: 300, y: 500 }, entranceDelayMs: 440 }
+  ]
+  const HEADS = ['c1', 'c11', 'c21']
+
+  /** Turns the frame the way FakeLandscapeView does: the same window, read with its width and height swapped. */
+  async function turn(view: Awaited<ReturnType<typeof start>>, frame: { width: number; height: number }, rotation: number) {
+    mockFrame = frame
+    mockRotation = rotation
+    await view.rerender(tree())
+  }
+
+  it('bounces every card inside the turned frame, out to its new walls and down to its new floor', async () => {
+    const view = await start(CHAINS)
+    await tick(3000)
+    await turn(view, { width: 800, height: 400 }, 90)
+
+    let right = -Infinity
+    let low = -Infinity
+    for (let ms = 3000; ms < 30_000; ms += 50) {
+      await tick(ms)
+      for (const id of HEADS) {
+        const { x, y } = positionOf(id)
+        expect(x).toBeGreaterThanOrEqual(LANDSCAPE.leftX - 1e-6)
+        expect(x).toBeLessThanOrEqual(LANDSCAPE.rightX + 1e-6)
+        expect(y).toBeGreaterThanOrEqual(LANDSCAPE.apexY - 1e-6)
+        expect(y).toBeLessThanOrEqual(LANDSCAPE.floorY + 1e-6) // the portrait floor (686) is far below this 400pt-tall frame
+        right = Math.max(right, x)
+        low = Math.max(low, y)
+      }
+    }
+    expect(right).toBeGreaterThan(LANDSCAPE.rightX - 15) // out past the portrait frame's right wall (324), to the new one
+    expect(low).toBeGreaterThan(LANDSCAPE.floorY - 5)
+  })
+
+  // Where every head is `ms` into a cascade that turned to landscape at `turnAtMs` (and back to portrait at `backAtMs`), if at all.
+  async function headsAt(ms: number, turnAtMs?: number, backAtMs?: number) {
+    const view = await start(CHAINS)
+    if (turnAtMs !== undefined) {
+      await tick(turnAtMs)
+      await turn(view, { width: 800, height: 400 }, 90)
+    }
+    if (backAtMs !== undefined) {
+      await tick(backAtMs)
+      await turn(view, { width: 400, height: 800 }, 0)
+    }
+    await tick(ms)
+    const positions = HEADS.map((id) => positionOf(id))
+    await view.unmount()
+    mockFrame = { width: 400, height: 800 }
+    mockRotation = 0
+    return positions
+  }
+
+  it('carries every card on from the same point of its bounce: nothing restarts, the bounce just takes the new frame', async () => {
+    const scaleX = (LANDSCAPE.rightX - LANDSCAPE.leftX) / (PORTRAIT.rightX - PORTRAIT.leftX)
+    const scaleY = (LANDSCAPE.floorY - LANDSCAPE.apexY) / (PORTRAIT.floorY - PORTRAIT.apexY)
+    for (const ms of [1500, 2600, 7000, 16_000]) {
+      const upright = await headsAt(ms)
+      const turned = await headsAt(ms, 1000)
+      upright.forEach((p, i) => {
+        expect(turned[i].x).toBeCloseTo(LANDSCAPE.leftX + (p.x - PORTRAIT.leftX) * scaleX, 6)
+        expect(turned[i].y).toBeCloseTo(LANDSCAPE.apexY + (p.y - PORTRAIT.apexY) * scaleY, 6)
+      })
+    }
+  })
+
+  it('is exactly the untouched cascade again once turned back', async () => {
+    expect(await headsAt(9000, 1000, 4000)).toEqual(await headsAt(9000))
   })
 })
