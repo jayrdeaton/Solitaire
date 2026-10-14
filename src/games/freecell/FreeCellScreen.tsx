@@ -6,6 +6,7 @@ import { useRotation } from '@tastic/core'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
+import { HintRequest } from '@/components/autoHint'
 import { cardLayoutForRow, SPLIT_TOP_ROW_MIN_GAP, splitTopRowGroupGap } from '@/components/cardLayout'
 import { columnTops } from '@/components/columnTops'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
@@ -45,6 +46,7 @@ import { useDimAfterDeal } from '@/games/shared/useDimAfterDeal'
 import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { useUndoStack } from '@/games/shared/useUndoStack'
@@ -161,6 +163,7 @@ function FreeCellScreenInner() {
   const topRowGroupGap = splitTopRowGroupGap(gap)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth)
   const ghost = useDragGhost()
+  const playHintGlide = useHintGlide(state, ghost.cardRegistry, dropZones)
   // `gen` is the `dealTokenRef` value at the moment this flight was queued - re-checked once the async
   // measurement below resolves, so a flight queued against a game that's since been replaced by
   // "New Game" doesn't measure/land against the new deal's DOM (card ids are shuffle-independent
@@ -602,17 +605,22 @@ function FreeCellScreenInner() {
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
   // the player still taps/drags the suggested card through the normal tap-to-move/drag flow.
-  function handleHint() {
+  function handleHint(request?: HintRequest) {
     if (!state) return
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(FreeCellController, state, skip)
     if (result.kind === 'none') {
-      infoToast('No moves available right now.')
+      if (!request?.auto) infoToast('No helpful moves right now.')
       return
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
     recordHintUsed('freecell')
+    if (result.kind === 'move') {
+      const { from, to, count } = result.move
+      const source = resolvePile(from) ?? []
+      void playHintGlide({ moving: source.slice(source.length - count), dest: resolvePile(to) ?? [], destFanned: to.zone === 'tableau', slot: to, cardWidth })
+    }
   }
 
   function pushUndo(prev: FreeCellState, move: MoveInfo | null) {
@@ -988,7 +996,7 @@ function FreeCellScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={FREECELL_RULES}>
+      <GameChrome title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={FREECELL_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.foundationsGroup, { gap: topRowGroupGap }]}>
             {state.foundation.map((pile, i) => {

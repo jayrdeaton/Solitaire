@@ -222,12 +222,15 @@ export default function RootLayout() {
   const fontsLoaded = useFontsPreload()
   const { playCardSound, playInvalidSound } = useCardSoundPlayers()
 
-  // The web tab title, rendered before the fonts gate so the static export's HTML has it too
-  const title = (
-    <Head>
-      <title>{Constants.expoConfig?.name}</title>
-    </Head>
-  )
+  // The web tab title, rendered before the fonts gate so the static export's HTML has it too. Web only: on
+  // iOS, expo-router's Head is Handoff/Spotlight metadata that needs the plugin's `origin` set, and without
+  // it every launch throws (a dev build) or shows a system alert (a production build).
+  const title =
+    Platform.OS === 'web' ? (
+      <Head>
+        <title>{Constants.expoConfig?.name}</title>
+      </Head>
+    ) : null
 
   if (!fontsLoaded) return title
 

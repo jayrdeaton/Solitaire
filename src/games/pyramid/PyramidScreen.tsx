@@ -9,6 +9,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { StyleSheet, View } from 'react-native'
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
 
+import { HintRequest } from '@/components/autoHint'
 import { FaceLoadTrackingContext, LANDED_GHOST_MAX_MS, markGhostPending, useGhostPaintGate, whenCardsSettled } from '@/components/cardFacePaint'
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
@@ -45,6 +46,7 @@ import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useDimAfterDeal } from '@/games/shared/useDimAfterDeal'
 import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { useUndoStack } from '@/games/shared/useUndoStack'
@@ -472,6 +474,9 @@ function PyramidScreenInner() {
   // instant the board actually changes, with no separate effect/setState needed.
   const [hint, setHint] = useState<{ result: HintResult; forState: PyramidState; skip: number } | null>(null)
   const activeHint = hint && hint.forState === state ? hint.result : null
+  // Both cards of a hinted pair are rung: both leave the board together (the glide shows one going onto the other).
+  // hintCountFor rings only a move's source, which for a pair would leave its partner unmarked.
+  const pairHinted = (ref: PileRef) => hintCountFor(activeHint, ref) > 0 || (activeHint?.kind === 'move' && activeHint.move.to.zone === ref.zone && activeHint.move.to.index === ref.index)
   // Whether the Hint button has produced a hint at any point during the CURRENT deal - read once,
   // at the exact instant a win is recorded (see useDerivedWinCheck's own hintsUsedRef param), to
   // decide whether this win counts toward the "wins without hint" stat/achievement. Reset on every
@@ -498,6 +503,7 @@ function PyramidScreenInner() {
   const dealTokenRef = useRef(0)
   const scheduleDeal = useDeferredDeal(state, dealTokenRef, runDeal)
   const ghost = useDragGhost()
+  const playHintGlide = useHintGlide(state, ghost.cardRegistry, dropZones)
   // True while the stock slot's real content is mid-flight elsewhere (a stock recycle, either
   // direction - see handleDrawStock's recycle branch / undoRecycle - or a draw being undone, whose
   // card is flying back to it) and should stay frozen on its
@@ -1794,17 +1800,26 @@ function PyramidScreenInner() {
   // Finds one legal move (a pairing/solo King) or a stock-draw suggestion to highlight - see
   // engine/hint.ts's findHint, which reuses this game's own legalMoves(). Only highlights; the
   // player still taps/drags the suggested card(s) through the normal flow.
-  function handleHint() {
+  function handleHint(request?: HintRequest) {
     if (!state) return
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(PyramidController, state, skip)
     if (result.kind === 'none') {
-      infoToast('No moves available right now.')
+      if (!request?.auto) infoToast('No helpful moves right now.')
       return
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
     recordHintUsed('pyramid')
+    if (result.kind === 'move') {
+      const { from, to } = result.move
+      const cardAt = (ref: PileRef) => (ref.zone === 'waste' ? state.waste[state.waste.length - 1] : state.pyramid[ref.index]) ?? undefined
+      const card = cardAt(from)
+      // A pair glides one card onto its partner; a lone King glides to the discard (not a drop zone: its own container).
+      const king = refsEqual(from, to)
+      const partner = king ? undefined : cardAt(to)
+      if (card) void playHintGlide({ moving: [card], dest: partner ? [partner] : [], destFanned: false, measureSlot: king ? () => measureView(discardViewRef.current) : undefined, cardWidth })
+    }
   }
 
   // The triangle cells' press and drop handlers: STABLE for the screen's lifetime, so the memoized PyramidCell is not
@@ -1845,11 +1860,11 @@ function PyramidScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={PYRAMID_RULES}>
+      <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} rules={PYRAMID_RULES}>
         <View style={styles.board}>
           <View style={[styles.controlRow, { width }]}>
             <DiscardCell card={handoff ? undefined : discardCards[discardCards.length - 1]} isFlyingHere={discardFlying} settledCard={discardSettled} viewRef={discardViewRef} />
-            <StockWaste gap={gap} dropZones={dropZones} stockTopCard={stockCards[stockCards.length - 1]} wasteTop={wasteTop} wasteUnder={wasteCards[wasteCards.length - 2]} wasteSelected={!!selected && selected.zone === 'waste'} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} wasteHiddenCount={flying.some((f) => f.to.zone === 'waste') ? 1 : 0} settledWasteTop={settledWasteTop} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} onDrawStock={handleDrawStock} onWastePress={handleSelectWaste} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, state.waste[state.waste.length - 1]?.id, x, y, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
+            <StockWaste gap={gap} dropZones={dropZones} stockTopCard={stockCards[stockCards.length - 1]} wasteTop={wasteTop} wasteUnder={wasteCards[wasteCards.length - 2]} wasteSelected={!!selected && selected.zone === 'waste'} wasteHinted={pairHinted({ zone: 'waste', index: 0 })} stockHinted={activeHint?.kind === 'drawStock'} wasteHiddenCount={flying.some((f) => f.to.zone === 'waste') ? 1 : 0} settledWasteTop={settledWasteTop} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} onDrawStock={handleDrawStock} onWastePress={handleSelectWaste} onWasteDrop={(x, y, flight) => attemptDrop({ zone: 'waste', index: 0 }, state.waste[state.waste.length - 1]?.id, x, y, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
           </View>
 
           <View ref={triangleViewRef} collapsable={false} style={[styles.triangle, { width, height }]}>
@@ -1858,7 +1873,7 @@ function PyramidScreenInner() {
             {state.pyramid.map((card, index) => {
               const { row, col } = rowColOf(index)
               const { left, top } = cardPosition(row, col, cardWidth, cardHeight, gap)
-              return <PyramidCell key={index} index={index} card={card} exposed={isExposed(state.pyramid, row, col)} hidden={!!card && pyramidHiddenIds.has(card.id)} selected={!!selected && selected.zone === 'pyramid' && selected.index === index} hinted={hintCountFor(activeHint, { zone: 'pyramid', index }) > 0} shakeToken={card && shake?.cardId === card.id ? shake.token : undefined} dimHeld={dimAfterDeal.held} left={left} top={top} zIndex={row} dropZones={dropZones} onSelect={onSelectCell} onDrop={onDropCell} />
+              return <PyramidCell key={index} index={index} card={card} exposed={isExposed(state.pyramid, row, col)} hidden={!!card && pyramidHiddenIds.has(card.id)} selected={!!selected && selected.zone === 'pyramid' && selected.index === index} hinted={pairHinted({ zone: 'pyramid', index })} shakeToken={card && shake?.cardId === card.id ? shake.token : undefined} dimHeld={dimAfterDeal.held} left={left} top={top} zIndex={row} dropZones={dropZones} onSelect={onSelectCell} onDrop={onDropCell} />
             })}
           </View>
         </View>

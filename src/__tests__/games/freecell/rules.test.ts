@@ -396,8 +396,8 @@ describe('FreeCell scoreHintMove', () => {
 
     expect(intactRelocation).toBeGreaterThan(fragmentPartial)
     // A whole run relocated intact has zero net run-structure change - freeing the source column
-    // and filling the (previously empty) destination column also cancel out, leaving only the tiny
-    // move.count tiebreak term, so the total stays small and non-negative.
+    // and filling the (previously empty) destination column also cancel out, so the total is 0 (the
+    // tiebreak is only added to a move that gains something).
     expect(intactRelocation).toBeGreaterThanOrEqual(0)
     expect(fragmentPartial).toBeLessThan(0)
   })
@@ -479,6 +479,25 @@ describe('FreeCell scoreHintMove', () => {
     const ontoShortRun = scoreOf(state, { zone: 'freecell', index: 1 }, 1, { zone: 'tableau', index: 1 }) // black 9 onto red 10, extending a 1-run
 
     expect(ontoLongRun).toBeGreaterThan(ontoShortRun)
+  })
+
+  // Hint used to offer moving the red 7 from one black 8 to the other, then moving it straight back:
+  // only the source's run counted before the move, so the 2-card run it left matched the 2-card run
+  // it built and both moves scored +2 from the size tiebreak alone.
+  it('scores a relocation that gains nothing, and its reverse, at 0', () => {
+    const t0: PileRef = { zone: 'tableau', index: 0 }
+    const t1: PileRef = { zone: 'tableau', index: 1 }
+    const state: FreeCellState = {
+      tableau: [[card('clubs-8-0', 'clubs', 8), card('hearts-7-0', 'hearts', 7)], [card('spades-8-0', 'spades', 8)], [card('hearts-13-0', 'hearts', 13)], [card('diamonds-13-0', 'diamonds', 13)], [card('hearts-12-0', 'hearts', 12)], [card('diamonds-12-0', 'diamonds', 12)], [card('hearts-11-0', 'hearts', 11)], [card('diamonds-11-0', 'diamonds', 11)]],
+      freecells: [card('hearts-2-0', 'hearts', 2), card('diamonds-2-0', 'diamonds', 2), card('hearts-3-0', 'hearts', 3), card('diamonds-3-0', 'diamonds', 3)],
+      foundation: [[], [], [], []]
+    }
+    const there = moveTo(state, t0, 1, t1)
+    expect(FreeCellController.scoreHintMove!(state, there)).toBe(0)
+
+    const back = FreeCellController.tryMove(state, there)!
+    expect(back).not.toBeNull()
+    expect(scoreOf(back, t1, 1, t0)).toBe(0)
   })
 
   it('is not asked to score foundation-bound moves (already sorted first by findHint), and returns 0 defensively if it is', () => {

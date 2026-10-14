@@ -189,15 +189,32 @@ function canonicalMoveFor(piles: Card[][], pileIndex: number): Move | null {
  * moves-to-empty - the same two-bucket shape this function always had, just deduplicated to one
  * entry per pile. That bucket order is what already gives Hint's skip-0 pick its "prefer real
  * progress" quality for free: ANY pile's available discard sorts ahead of ANY other pile's
- * move-to-empty, with no numeric scoreHintMove needed (see this game's own investigation notes -
- * a scorer wouldn't even fix the mismatch above, since it only reorders by category, it doesn't
- * deduplicate the redundant multi-destination entries that caused it). */
+ * move-to-empty (see this game's own investigation notes - a scorer wouldn't even fix the mismatch
+ * above, since it only reorders by category, it doesn't deduplicate the redundant multi-destination
+ * entries that caused it). scoreHintMove below keeps that order and exists for a different reason:
+ * telling Hint which moves gain nothing at all. */
 function legalMoves(state: AcesUpState): Move[] {
   const canonical: (Move | null)[] = []
   for (let i = 0; i < NUM_PILES; i++) canonical.push(canonicalMoveFor(state.piles, i))
   const discards = canonical.filter((m): m is Move => !!m && m.to.zone === 'discard')
   const moves = canonical.filter((m): m is Move => !!m && m.to.zone === 'tableau')
   return [...discards, ...moves]
+}
+
+/** Ranks a legal move for the Hint button (see engine/hint.ts's findHint, which sorts only
+ * 'foundation' moves ahead unscored, so a discard is ranked here too): a discard is real,
+ * irreversible progress; moving a card to an empty pile is worth something only when it exposes the
+ * card buried under it. Moving a pile's ONLY card to an empty pile just swaps which pile is empty, and
+ * the same card can go straight back - so it scores 0, and findHint deals the next round instead of
+ * suggesting it. Without a scorer Hint offered that move, then offered moving the card straight back,
+ * for as long as the player kept pressing. Discards score above exposing moves, keeping legalMoves'
+ * own discards-first order. */
+function scoreHintMove(state: AcesUpState, move: Move): number {
+  if (move.from.zone !== 'tableau') return 0
+  if (move.to.zone === 'discard') return 100
+  if (move.to.zone !== 'tableau') return 0
+  const fromPile = state.piles[move.from.index]
+  return fromPile && fromPile.length > 1 ? 50 : 0
 }
 
 /** Stock empty, not already won, and no discard/move remains - a genuine, common loss, unlike
@@ -225,5 +242,6 @@ export const AcesUpController: GameController<AcesUpState> = {
   drawStock,
   isWon,
   isStuck,
-  autoMoveHint
+  autoMoveHint,
+  scoreHintMove
 }

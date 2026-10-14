@@ -1,5 +1,6 @@
 import { isFullyAutoCompletable, isFullyAutoCompletableWithDraws } from '@/engine/autoFoundation'
 import { PileRef } from '@/engine/gameTypes'
+import { findHint } from '@/engine/hint'
 import { Card, Suit, SUITS } from '@/engine/types'
 import { canAutoFinish, CanfieldState, createCanfieldController, findSafeAutoPlay, isSafeAutoPlay, nextFinishMove } from '@/games/canfield/rules'
 
@@ -538,5 +539,31 @@ describe('Canfield scoreHintMove', () => {
 
     expect(extendsRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
     expect(lateralIntoEmptyColumn).toBeGreaterThan(fragmentIntoEmptyColumn)
+  })
+
+  // Hint used to offer moving the red 7 from one black 8 to the other, then moving it straight back:
+  // the source's run before (2) matched the destination's run after (2), so both moves netted 0 and
+  // scored +2 from the size tiebreak alone.
+  it('scores a relocation that gains nothing, and its reverse, at 0, so Hint draws instead of ping-ponging', () => {
+    const c = (suit: Suit, rank: number, faceUp = true): Card => ({ id: `${suit}-${rank}-0`, suit, rank, faceUp }) as Card
+    const t0: PileRef = { zone: 'tableau', index: 0 }
+    const t1: PileRef = { zone: 'tableau', index: 1 }
+    const state: CanfieldState = {
+      tableau: [[c('spades', 8), c('diamonds', 7)], [c('clubs', 8)], [c('hearts', 2)], [c('diamonds', 2)]],
+      foundation: [[], [], [], []],
+      foundationRank: 13,
+      reserve: [],
+      stock: [c('clubs', 12, false)],
+      waste: []
+    }
+    const there = moveTo(state, t0, 1, t1)
+    expect(CanfieldController.scoreHintMove!(state, there)).toBe(0)
+
+    const back = CanfieldController.tryMove(state, there)!
+    expect(back).not.toBeNull()
+    expect(scoreOf(back, t1, 1, t0)).toBe(0)
+
+    expect(findHint(CanfieldController, state)).toEqual({ kind: 'drawStock' })
+    expect(findHint(CanfieldController, back)).toEqual({ kind: 'drawStock' })
   })
 })

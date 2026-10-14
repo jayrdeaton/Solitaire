@@ -278,27 +278,32 @@ function autoMoveHint(state: FreeCellState, from: PileRef, cardId: string): Move
  * freecell->tableau (legalMoves() never offers freecell->freecell, so that shape can't reach here
  * in practice; the fallback below scores it defensively rather than assuming it can't happen).
  *
- * Same "opportunity-cost run valuation" shape Spider/Klondike/Canfield/FortyThieves all use: `R` is
- * the length of the coherent alternating-color-descending run (isDescendingAltColor - Klondike's
- * own rule, not Spider's same-suit one) already sitting at this move's source, and the move is
- * scored by comparing the best group left standing anywhere afterward (the destination's newly
- * extended run, or the leftover remainder back at a tableau source) against `R` - zero if the whole
- * group relocated intact, positive if it built something longer, negative if it tore `R` apart for
- * no compensating gain. As with Klondike, canPlaceOnTableau already enforces the alt-color-
- * descending relation as part of legality, so a legal move onto a non-empty column is, by
- * construction, always a coherent extension of whatever run sits there - no extra suit/color check
- * needed before crediting `newRunLenAtDest`. No reveal-a-hidden-card bonus exists here (unlike
- * Klondike/Spider): every FreeCell card is face-up from the very first deal and stays that way, so
- * there is never a face-down card to expose.
+ * Same "opportunity-cost run valuation" shape Spider/Klondike/Canfield/FortyThieves all use, with
+ * Klondike's own run rule (isDescendingAltColor, not Spider's same-suit one): the longest run either
+ * touched pile shows before the move against the longest either shows after it. `a` is the run the
+ * moving group's base card was continuing at its source (0 for a freecell, or when the card under it
+ * isn't part of its run) and `b` the run it lands on (0 for an empty column or a freecell), so before
+ * the move the source shows `count + a` and the destination `b`, and after it the source shows `a`
+ * and the destination `count + b` - zero if the group relocated intact onto nothing longer, positive
+ * if it built something longer, negative if it tore a run apart for no compensating gain. Measured
+ * the same way on both sides, a move and its exact reverse always score as opposites: the old
+ * version compared only the source's run before with the better of the two after, and added the
+ * size tiebreak to every move, so moving a card from one matching card to an equal one scored above
+ * 0 both ways and Hint offered it, then offered moving it straight back. As with Klondike,
+ * canPlaceOnTableau already enforces the alt-color-descending relation as part of legality, so a
+ * legal move onto a non-empty column is, by construction, always a coherent extension of whatever
+ * run sits there - no extra suit/color check needed before crediting `b`. No reveal-a-hidden-card
+ * bonus exists here (unlike Klondike/Spider): every FreeCell card is face-up from the very first
+ * deal and stays that way, so there is never a face-down card to expose.
  *
- * A freecell is treated as a trivially maximal "run of length equal to what's in/going into it"
- * on BOTH ends of this formula, the same way Canfield's scoreHintMove treats its single-card
- * waste/reserve sources (`runLen = move.count`, always 1 for them) - it's "the coherent thing
- * already sitting at this move's source/destination," so the same comparison falls out correctly
- * without a per-shape special case: moving a freecell's card onto an existing tableau run scores
- * exactly like extending that run from a tableau source would (`destRunLenBefore` credited in
- * full), and moving a lone/whole-run card INTO a freecell nets to 0 (relocated intact, same as any
- * other whole-run relocation) rather than being scored as if the destination held nothing at all -
+ * A freecell is treated as holding a trivially complete "run" of whatever is in or going into it on
+ * BOTH ends of this formula, the same way Canfield's scoreHintMove treats its single-card
+ * waste/reserve sources - it's "the coherent thing already sitting at this move's
+ * source/destination," so the same comparison falls out correctly without a per-shape special case:
+ * moving a freecell's card onto an existing tableau run scores exactly like extending that run from
+ * a tableau source would, and moving a lone/whole-run card INTO a freecell nets to 0 (relocated
+ * intact, same as any other whole-run relocation) rather than being scored as if the destination
+ * held nothing at all -
  * that asymmetry would otherwise treat routine, non-fragmenting freecell storage (an extremely
  * common move - a source column's own top run is very often just 1 card, since the tableau's
  * initial deal has no internal alternating-color-descending guarantee below it) as if it fragmented
@@ -311,6 +316,10 @@ function autoMoveHint(state: FreeCellState, from: PileRef, cardId: string): Move
  * above) - an extra empty freecell only adds +1 to the `(emptyFreecells + 1)` factor, while an extra
  * empty column DOUBLES the whole result via `2 ** emptyCols`. A move can free (or spend) at most one
  * of each kind at once, so the two deltas never double-count against each other; they're just added.
+ *
+ * The tiebreak, the length of the run the move builds at its destination (`count + b`), is only added
+ * to a move that already gains something, so it never lifts a relocation (or its reverse) above 0,
+ * and among moves that do gain it prefers building onto the longer run.
  */
 function scoreHintMove(state: FreeCellState, move: Move): number {
   if (move.to.zone === 'foundation') return 0 // already sorted first by findHint - not scored here
@@ -320,11 +329,16 @@ function scoreHintMove(state: FreeCellState, move: Move): number {
   if (move.from.zone === 'tableau' && !fromCol) return 0
   if (move.to.zone === 'tableau' && !toCol) return 0
 
-  const runLen = fromCol ? runLengthAtTop(fromCol) : 1
-  const destRunLenBefore = toCol && toCol.length > 0 ? runLengthAtTop(toCol) : 0
-  const newRunLenAtDest = toCol ? move.count + (toCol.length > 0 ? destRunLenBefore : 0) : move.count
-  const remainderRunLen = move.count < runLen ? runLen - move.count : 0
-  const netRunStructureChange = Math.max(newRunLenAtDest, remainderRunLen) - runLen
+  // A legal tableau group is always a clean run (see tryMove), so it is the whole of `count`.
+  let a = 0
+  if (fromCol && fromCol.length >= move.count) {
+    const remainder = fromCol.slice(0, fromCol.length - move.count)
+    const below = remainder[remainder.length - 1]
+    const base = fromCol[fromCol.length - move.count]
+    if (below !== undefined && isDescendingAltColor([below, base])) a = runLengthAtTop(remainder)
+  }
+  const b = toCol ? runLengthAtTop(toCol) : 0
+  const netRunStructureChange = Math.max(move.count + b, a) - Math.max(move.count + a, b)
 
   const fromBecomesEmpty = fromCol !== undefined && move.count === fromCol.length
   const toWasEmpty = toCol !== undefined && toCol.length === 0
@@ -337,8 +351,9 @@ function scoreHintMove(state: FreeCellState, move: Move): number {
   let score = netRunStructureChange * 30
   score += netEmptyColumnDelta * 50
   score += netFreecellDelta * 25
-  score += move.count * 2
-  return score
+  // The tiebreak only orders moves that already gain something.
+  if (score <= 0) return score
+  return score + (move.count + b) * 2
 }
 
 /** The card at the head of a `count`-card move from `from` - the first of the run, the one a

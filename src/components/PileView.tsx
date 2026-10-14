@@ -13,7 +13,7 @@ import { DragFlightHandle, useDragGhost } from './dragdrop/DragGhostLayer'
 import { scaledMs } from './dragdrop/dragSpring'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
 import { clearFanTop, setFanTop } from './dragdrop/fanTops'
-import { EmptySlot, PlayingCard } from './PlayingCard'
+import { EmptySlot, PlayingCard, RunOutline } from './PlayingCard'
 import { useShakeStyle } from './shakeAnimation'
 import { useCardSoundEffects } from './useCardSounds'
 
@@ -498,6 +498,15 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
   const shakeCardArrayIndex = shakeCardId ? cards.findIndex((c) => c.id === shakeCardId) : -1
   const shakeStartIndexFromTop = shakeCardArrayIndex === -1 ? null : cards.length - 1 - shakeCardArrayIndex
 
+  // A hinted or selected RUN (more than one card) gets one outline around the whole run (RunOutline), not a ring per
+  // card: per-card rings drew a ladder of lines across the run, and each hint glow spilled over the card above. A single
+  // card keeps its own ring. Selection wins over a hint, as on a single card (PlayingCard). No outline while any card of
+  // the run is hidden (in flight, or picked up by a drag): its ghost has no ring either.
+  const outlineKind: 'selected' | 'hint' | null = selectedCount > 1 ? 'selected' : hintCount > 1 ? 'hint' : null
+  const outlineCount = Math.min(outlineKind === 'selected' ? selectedCount : hintCount, cards.length)
+  const outlineStart = cards.length - outlineCount
+  const outline = outlineKind && outlineCount > 1 && cards.slice(outlineStart).every((card, j) => !isCardHidden(card, outlineCount - 1 - j)) ? { kind: outlineKind, top: tops[outlineStart], height: tops[cards.length - 1] + cardHeight - tops[outlineStart] } : null
+
   // react-hooks/refs flags reading a ref's `.current` during render (a component could in principle
   // render speculatively more than once for one commit under React's concurrent features), and - since
   // it traces data flow, not just the literal `.current` syntax - flags this WHOLE `cards.map(...)`
@@ -524,8 +533,9 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
           return <DraggableTableauCard key={d.card.id} card={d.card} selected={false} hinted={false} dimmed={false} top={d.top} zIndex={d.zIndex} runCount={0} indexFromTop={-1} isHidden={false} dimFadeIn={false} held onDragStart={handleDragStart} onDragEnd={handleDragEnd} originX={originX} originY={originY} dx={dx} dy={dy} startAbsX={startAbsX} startAbsY={startAbsY} />
         }
         const indexFromTop = cards.length - 1 - i
-        const isSelected = indexFromTop < selectedCount
-        const isHinted = indexFromTop < hintCount
+        // A run drawn with one outline (see `outline` above) doesn't ring its cards one by one.
+        const isSelected = indexFromTop < selectedCount && !(outline && outline.kind === 'selected')
+        const isHinted = indexFromTop < hintCount && !outline
         const isHidden = isCardHidden(card, indexFromTop)
         // getRunCount (tableauRunCount -> maxSupermoveCount -> an 8-column scan, plus a
         // descending-alt-color walk back down the column) is real, non-trivial computation, run
@@ -595,6 +605,11 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
         )
       })}
       {/* eslint-enable react-hooks/refs */}
+      {outline && (
+        <Animated.View layout={FAN_GLIDE} pointerEvents='none' style={[styles.outline, { top: outline.top, height: outline.height, width: cardWidth, zIndex: cards.length + held.length }]}>
+          <RunOutline kind={outline.kind} />
+        </Animated.View>
+      )}
       {allCardsHidden && (
         <View style={StyleSheet.absoluteFill} pointerEvents='none'>
           <EmptySlot />
@@ -658,5 +673,10 @@ const styles = StyleSheet.create({
   },
   noTouch: {
     pointerEvents: 'none'
+  },
+  // Placed and sized per render (top, height, width, zIndex above every card); RunOutline fills it.
+  outline: {
+    left: 0,
+    position: 'absolute'
   }
 })

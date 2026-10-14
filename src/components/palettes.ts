@@ -17,7 +17,8 @@ const CARD_INK_BLACK = '#1A1A1A'
 // profile stays red. They used to be navy, which dragged every hue toward blue (red came out plum).
 // Each grey has the HSL lightness of the navy it replaced, so card backs keep their old weight.
 // tableFelt/tableFeltDark are never rendered either: the felt is derived from the card back too (the
-// app's original hand-picked green, kept only because the TableColors shape needs a value).
+// app's original hand-picked green, kept only because the TableColors shape needs a value). hintGreen is
+// derived too (the hint ring: the theme's tertiary, muted and lifted), so these greens are never drawn either.
 export const lightColors: TableColors = {
   tableFelt: '#0B6E4F',
   tableFeltDark: '#08573F',

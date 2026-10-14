@@ -139,6 +139,34 @@ describe('findHint', () => {
     expect(findHint(withNoDrawStock, null)).toEqual({ kind: 'none' })
   })
 
+  describe('a move that gains nothing and can be moved straight back', () => {
+    // A board of two piles, a card moving between them. tryMove: any move from a non-empty pile is legal (so every move
+    // can be undone); scoreHintMove from the test.
+    type Board = number[]
+    const shuffle: Move = { from: { zone: 'tableau', index: 0 }, to: { zone: 'tableau', index: 1 }, count: 1 }
+    const back: Move = { from: { zone: 'tableau', index: 1 }, to: { zone: 'tableau', index: 0 }, count: 1 }
+    const tryMove = (board: Board, m: Move): Board | null => (board[m.from.index] > 0 ? board.map((n, i) => (i === m.from.index ? n - 1 : i === m.to.index ? n + 1 : n)) : null)
+    const controllerWith = (scoreOf: number, drawable: boolean) => ({ legalMoves: (b: Board) => [shuffle, back].filter((m) => tryMove(b, m) !== null), tryMove, scoreHintMove: () => scoreOf, drawStock: () => (drawable ? [0, 0] : null) })
+
+    it('is never suggested, even with nothing to draw: Hint reports none instead of moving it there and back', () => {
+      expect(findHint(controllerWith(0, false), [1, 0])).toEqual({ kind: 'none' })
+      expect(findHint(controllerWith(-30, false), [1, 0])).toEqual({ kind: 'none' })
+    })
+
+    it('leaves the draw as the hint when there is one', () => {
+      expect(findHint(controllerWith(0, true), [1, 0])).toEqual({ kind: 'drawStock' })
+    })
+
+    it('is still suggested when it gains something, reversible or not', () => {
+      expect(findHint(controllerWith(30, false), [1, 0])).toEqual({ kind: 'move', move: shuffle })
+    })
+
+    it('is still suggested when it cannot be moved back', () => {
+      const oneWay = { ...controllerWith(0, false), tryMove: (b: Board, m: Move) => (m === shuffle ? tryMove(b, m) : null) }
+      expect(findHint(oneWay, [1, 0])).toEqual({ kind: 'move', move: shuffle })
+    })
+  })
+
   describe('skip', () => {
     const moveA: Move = { from: { zone: 'tableau', index: 0 }, to: { zone: 'tableau', index: 1 }, count: 1 }
     const moveB: Move = { from: { zone: 'tableau', index: 2 }, to: { zone: 'tableau', index: 3 }, count: 1 }
@@ -173,8 +201,8 @@ describe('hintCountFor', () => {
     expect(hintCountFor(hint, { zone: 'tableau', index: 0 })).toBe(3)
   })
 
-  it('returns 1 for the destination pile, regardless of the source run length', () => {
-    expect(hintCountFor(hint, { zone: 'tableau', index: 1 })).toBe(1)
+  it('returns 0 for the destination pile: the glide shows where it goes, the ring only what to pick up', () => {
+    expect(hintCountFor(hint, { zone: 'tableau', index: 1 })).toBe(0)
   })
 
   it('returns 0 for an unrelated pile', () => {

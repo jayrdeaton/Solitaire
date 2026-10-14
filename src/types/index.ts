@@ -40,6 +40,10 @@ export interface Settings {
   // no-op for them, so the setting has nothing to affect there either way. Defaults true, matching
   // today's always-on behavior - a hint you can turn off for a harder, spot-it-yourself mode.
   dimUnplayable: boolean
+  // Global, not per-game: after how many seconds with no move the Hint shows by itself (GameChrome's
+  // useAutoHint), or 0 for never. An auto hint counts exactly like a pressed one (Hints Used, and the
+  // win no longer counts toward Wins Without Hint). Defaults 0, so nothing changes until it's turned on.
+  autoHintSeconds: AutoHintSeconds
   // 'decorated' renders the full-colour illustrated deck instead of the compact corner-index +
   // big-pip layout. 'tarot' is a peer option, not a sub-mode of 'compact': the same corner-index +
   // big-pip layout, but with cups/coins/wands/swords in place of hearts/diamonds/clubs/spades -
@@ -82,3 +86,7 @@ export interface Settings {
   // stays the default experience.
   reduceMotion: boolean
 }
+
+/** The Auto Hint setting's choices, in the order its Settings row cycles through them. */
+export const AUTO_HINT_CHOICES = [0, 15, 30] as const
+export type AutoHintSeconds = (typeof AUTO_HINT_CHOICES)[number]

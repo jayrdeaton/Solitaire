@@ -25,7 +25,7 @@ interface PlayingCardProps {
   card: Card
   /** Highlight this card as part of the current selection. */
   selected?: boolean
-  /** Highlight this card as the Hint feature's suggested source/destination - a pulsing ring in
+  /** Highlight this card as the one the Hint feature suggests moving - a breathing, glowing ring in
    * `colors.hintGreen`, distinct from `selected`'s static gold ring since Pyramid already uses
    * `selected` for its own real tap-to-pair-selection state. */
   hinted?: boolean
@@ -165,6 +165,18 @@ function HintRing({ style }: { style: StyleProp<ViewStyle> }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   return <Animated.View pointerEvents='none' style={[style, animatedStyle]} />
+}
+
+/** One ring around a whole run of cards (a column's hinted or selected run, see PileView): the same ring a single card
+ * draws (`hinted`/`selected`), only as tall as the run. Each card of the run ringing itself drew a ladder of lines across
+ * the run, and every card's hint glow spilled over the face of the card above it. Fills its parent, which places and
+ * sizes it. */
+export function RunOutline({ kind }: { kind: 'hint' | 'selected' }) {
+  const colors = useTableColors()
+  const { settings } = useSettings()
+  const { width } = useCardSize()
+  const styles = stylesFor(colors, settings.invertDarkModeColors, cardRadiusForWidth(width))
+  return kind === 'hint' ? <HintRing style={styles.hintRing} /> : <View pointerEvents='none' style={styles.selectedRing} />
 }
 
 /** The dim scrim of a card that takes part in a ghost hand-off (`dimHold` set). While `hold` is true - the real card is
@@ -372,11 +384,14 @@ function makeStyles(colors: TableColors, invertDarkModeColors?: boolean, radius:
     face: {
       backgroundColor: colors.cardFace
     },
+    // A ring with a soft glow around it (boxShadow, drawn outside the ring on every platform); HintRing's breathing
+    // opacity takes the glow with it.
     hintRing: {
       borderColor: colors.hintGreen,
       borderRadius: radius,
-      borderWidth: 3,
+      borderWidth: 2.5,
       bottom: 0,
+      boxShadow: `0 0 10px 2px ${colors.hintGreen}`,
       left: 0,
       position: 'absolute',
       right: 0,

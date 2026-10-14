@@ -1,3 +1,4 @@
+import { findHint } from '@/engine/hint'
 import { Card } from '@/engine/types'
 import { createScorpionController, ScorpionState } from '@/games/scorpion/rules'
 
@@ -250,7 +251,11 @@ describe('Scorpion scoreHintMove', () => {
     const intactRelocation = scoreOf(state, 2, 4, 0) // the whole run, kept together
     const harmlessSingle = scoreOf(state, 1, 1, 0) // an unrelated lone-card move, for scale
 
-    expect(intactRelocation).toBeGreaterThan(harmlessSingle)
+    // Both only relocate something intact onto nothing longer, so neither gains anything: both
+    // score 0 (no size tiebreak, which used to put the 4-card move ahead and kept every relocation
+    // above 0, so Hint offered it and then offered moving it straight back).
+    expect(intactRelocation).toBe(0)
+    expect(harmlessSingle).toBe(0)
     expect(fragmentOnto7).toBeLessThan(harmlessSingle)
     expect(partialFragment2).toBeLessThan(harmlessSingle)
     expect(partialFragment3).toBeLessThan(harmlessSingle)
@@ -326,5 +331,37 @@ describe('Scorpion scoreHintMove', () => {
     // correct, measured-directly value stays low because the diamonds-2 riding on top breaks the
     // run outright.
     expect(dirtyGroupMove).toBeLessThan(20)
+  })
+
+  // Hint used to offer moving the 6 from one 7 of spades to the other, then moving it straight back:
+  // only the source's run counted before the move, so the 2-card run it left matched the 2-card run
+  // it built and both moves scored +2 from the size tiebreak alone.
+  it('scores a relocation that gains nothing, and its reverse, at 0, so Hint deals the stock instead of ping-ponging', () => {
+    const state: ScorpionState = {
+      tableau: [[card('spades', 7), card('spades', 6)], [card('spades', 7, true, 1)], [card('hearts', 13)], [card('diamonds', 13)], [card('clubs', 13)], [card('hearts', 1)], [card('diamonds', 1)]],
+      stock: [card('clubs', 5, false), card('clubs', 9, false), card('hearts', 9, false)]
+    }
+    const there = moveTo(state, 0, 1, 1)
+    expect(Assisted.scoreHintMove!(state, there)).toBe(0)
+
+    const back = Assisted.tryMove(state, there)!
+    expect(back).not.toBeNull()
+    expect(scoreOf(back, 1, 1, 0)).toBe(0)
+
+    expect(findHint(Assisted, state)).toEqual({ kind: 'drawStock' })
+    expect(findHint(Assisted, back)).toEqual({ kind: 'drawStock' })
+  })
+
+  it('gives no completion credit for moving an already-complete column whole into an empty one, or back', () => {
+    const kingToAce = Array.from({ length: 13 }, (_, i) => card('hearts', (13 - i) as Card['rank']))
+    const state: ScorpionState = {
+      tableau: [kingToAce, [], [card('clubs', 13)], [card('diamonds', 13)], [card('spades', 13)], [card('clubs', 1)], [card('diamonds', 1)]],
+      stock: []
+    }
+    const there = moveTo(state, 0, 13, 1)
+    expect(controller.scoreHintMove!(state, there)).toBe(0)
+
+    const back = controller.tryMove(state, there)!
+    expect(scoreOf(back, 1, 13, 0)).toBe(0)
   })
 })

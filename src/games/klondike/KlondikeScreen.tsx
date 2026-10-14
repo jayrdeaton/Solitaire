@@ -6,6 +6,7 @@ import { useRotation } from '@tastic/core'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
+import { HintRequest } from '@/components/autoHint'
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
@@ -43,6 +44,7 @@ import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { useUndoStack } from '@/games/shared/useUndoStack'
@@ -147,6 +149,7 @@ function KlondikeScreenInner() {
   const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth)
   const ghost = useDragGhost()
+  const playHintGlide = useHintGlide(state, ghost.cardRegistry, dropZones)
   const rotation = useRotation()
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
@@ -679,17 +682,22 @@ function KlondikeScreenInner() {
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
   // the player still taps/drags the suggested card through the normal tap-to-move/drag flow.
-  function handleHint() {
+  function handleHint(request?: HintRequest) {
     if (!state) return
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(controllerRef.current, state, skip)
     if (result.kind === 'none') {
-      infoToast('No moves available right now.')
+      if (!request?.auto) infoToast('No helpful moves right now.')
       return
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
     recordHintUsed('klondike')
+    if (result.kind === 'move') {
+      const { from, to, count } = result.move
+      const source = resolvePile(from) ?? []
+      void playHintGlide({ moving: source.slice(source.length - count), dest: resolvePile(to) ?? [], destFanned: to.zone === 'tableau', slot: to, cardWidth })
+    }
   }
 
   // Every step gets its own undo entry, an auto-played one included (a silent foundation play, a
@@ -1333,7 +1341,7 @@ function KlondikeScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Klondike' subtitle={`Draw ${klondikeDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<KlondikeSettingsSection />} rules={KLONDIKE_RULES}>
+      <GameChrome title='Klondike' subtitle={`Draw ${klondikeDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<KlondikeSettingsSection />} rules={KLONDIKE_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {

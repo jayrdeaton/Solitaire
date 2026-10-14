@@ -13,7 +13,7 @@ import { SettingsSection } from '@/components/SettingsSection'
 import { useTableColors } from '@/components/theme'
 import { release } from '@/constants/release'
 import { useSettings } from '@/hooks/useSettings'
-import type { Settings } from '@/types'
+import { AUTO_HINT_CHOICES, type AutoHintSeconds, type Settings } from '@/types'
 
 const PREVIEW_WIDTH = 44
 const PREVIEW_HEIGHT = 64
@@ -62,6 +62,16 @@ function PreviewOption({ active, onPress, accessibilityLabel, children }: { acti
       </View>
     </TouchableRipple>
   )
+}
+
+/** The Auto Hint row's next choice: Off, 15s, 30s, then Off again. */
+function nextAutoHint(current: AutoHintSeconds): AutoHintSeconds {
+  return AUTO_HINT_CHOICES[(AUTO_HINT_CHOICES.indexOf(current) + 1) % AUTO_HINT_CHOICES.length]
+}
+
+function autoHintLabel(seconds: AutoHintSeconds, spoken: boolean): string {
+  if (seconds === 0) return spoken ? 'off' : 'Off'
+  return spoken ? `after ${seconds} seconds` : `${seconds}s`
 }
 
 interface SettingsDialogProps {
@@ -126,6 +136,22 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
             </View>
             <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
               Dim Unplayable Cards
+            </Text>
+          </View>
+        </TouchableRipple>
+        {/* Same bare-row shape as the toggles above, but three-way: each tap steps to the next choice
+        (Off, 15s, 30s, then Off again), and the choice shows on the right. See types/index.ts's own
+        doc comment on autoHintSeconds. */}
+        <TouchableRipple onPress={() => setSettings({ autoHintSeconds: nextAutoHint(settings.autoHintSeconds) })} style={styles.toggleButton} accessibilityLabel={`Auto hint ${autoHintLabel(settings.autoHintSeconds, true)}`}>
+          <View style={styles.toggleContent}>
+            <View style={[styles.iconBadge, { backgroundColor: settings.autoHintSeconds > 0 ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
+              <Icon source={settings.autoHintSeconds > 0 ? 'lightbulb-auto' : 'lightbulb-off-outline'} size={18} color={settings.autoHintSeconds > 0 ? paperColors.tertiary : paperColors.onSurfaceVariant} />
+            </View>
+            <Text variant='bodyLarge' style={[styles.rowLabel, { color: paperColors.onSurface }]}>
+              Auto Hint
+            </Text>
+            <Text variant='bodyLarge' style={{ color: paperColors.onSurfaceVariant }}>
+              {autoHintLabel(settings.autoHintSeconds, false)}
             </Text>
           </View>
         </TouchableRipple>
@@ -210,6 +236,10 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     gap: 10
+  },
+  // Pushes the Auto Hint row's choice to the right edge.
+  rowLabel: {
+    flex: 1
   },
   toggleButton: {
     borderRadius: 12,

@@ -278,4 +278,39 @@ describe('Aces Up legalMoves / Hint agreement with autoMoveHint', () => {
     const hint = findHint(AcesUpController, state, 0)
     expect(hint).toEqual({ kind: 'move', move: { from: { zone: 'tableau', index: 1 }, to: { zone: 'discard', index: 0 }, count: 1 } })
   })
+
+  // Hint used to offer moving a pile's only card into the empty pile, then moving it straight back,
+  // for as long as the player kept pressing: it was the first legal move both ways, and Aces Up had no
+  // scorer to tell findHint it gains nothing.
+  it("scores moving a pile's only card to an empty pile, and its reverse, at 0, so Hint deals instead of ping-ponging", () => {
+    const c = (suit: Card['suit'], rank: Card['rank']): Card => ({ id: `${suit}-${rank}-0`, suit, rank, faceUp: true })
+    const state: AcesUpState = {
+      piles: [[c('clubs', 5)], [], [c('hearts', 7)], [c('diamonds', 9)]],
+      stock: [c('spades', 2), c('spades', 3), c('spades', 4), c('spades', 6)].map((card) => ({ ...card, faceUp: false })),
+      discard: []
+    }
+    const there = AcesUpController.legalMoves(state)[0]
+    expect(there).toEqual({ from: { zone: 'tableau', index: 0 }, to: { zone: 'tableau', index: 1 }, count: 1 })
+    expect(AcesUpController.scoreHintMove!(state, there)).toBe(0)
+
+    const back = AcesUpController.tryMove(state, there)!
+    const reverse = AcesUpController.autoMoveHint!(back, { zone: 'tableau', index: 1 }, 'clubs-5-0')
+    expect(reverse).toEqual({ from: { zone: 'tableau', index: 1 }, to: { zone: 'tableau', index: 0 }, count: 1 })
+    expect(AcesUpController.scoreHintMove!(back, reverse!)).toBe(0)
+
+    expect(findHint(AcesUpController, state)).toEqual({ kind: 'drawStock' })
+    expect(findHint(AcesUpController, back)).toEqual({ kind: 'drawStock' })
+  })
+
+  it('still suggests a move to an empty pile that exposes a buried card, over dealing', () => {
+    const c = (suit: Card['suit'], rank: Card['rank']): Card => ({ id: `${suit}-${rank}-0`, suit, rank, faceUp: true })
+    const state: AcesUpState = {
+      piles: [[c('clubs', 5), c('clubs', 8)], [], [c('hearts', 7)], [c('diamonds', 9)]],
+      stock: [c('spades', 2), c('spades', 3), c('spades', 4), c('spades', 6)].map((card) => ({ ...card, faceUp: false })),
+      discard: []
+    }
+    const expose = { from: { zone: 'tableau', index: 0 }, to: { zone: 'tableau', index: 1 }, count: 1 }
+    expect(AcesUpController.scoreHintMove!(state, expose)).toBeGreaterThan(0)
+    expect(findHint(AcesUpController, state)).toEqual({ kind: 'move', move: expose })
+  })
 })

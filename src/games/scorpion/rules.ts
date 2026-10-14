@@ -146,14 +146,23 @@ function runLengthAtTop(column: Card[]): number {
  * sealed contents (see this file's header comment and isWon) - but the check is otherwise identical:
  * did this move leave some column with exactly a face-up, King-to-Ace, same-suit run at its top.
  *
+ * Moving an already-complete column whole into an empty one gets no completion credit: nothing new
+ * is completed (it scores like any other relocation, 0), and the same move straight back would
+ * otherwise score 1000 too.
+ *
  * Below that, the same three terms Spider's scorer uses, weighted identically - `netRunStructureChange`
- * (best coherent run this move leaves behind anywhere, destination or source remainder, versus what
- * the source's own top run was worth before), `netEmptyDelta` (actual before/after change in how
+ * (best coherent run either touched column shows after the move, destination or source remainder,
+ * versus the best either showed before it - both columns on both sides, so a move and its exact
+ * reverse always score as opposites and a relocation that gains nothing scores 0; the old version
+ * counted only the source's run before, so moving a card from one matching card to an equal one
+ * scored above 0 both ways and Hint offered it, then offered moving it straight back),
+ * `netEmptyDelta` (actual before/after change in how
  * many tableau columns are empty - Scorpion's only scarce maneuvering resource, no freecells here),
  * and a flat reveal bonus for exposing a previously face-down card. The same weight-bounding argument
  * from Spider's comment carries over unchanged: a same-suit descending run still caps at 13 cards
  * (ranks 1-13, no wraparound), so netRunStructureChange's realistic ceiling and the reveal/completion
- * gates stay in the same relative order regardless of board specifics.
+ * gates stay in the same relative order regardless of board specifics. The per-card size tiebreak is
+ * only added to a move that already gains something, so it never lifts a relocation above 0.
  */
 function scoreHintMove(state: ScorpionState, move: Move): number {
   if (move.from.zone !== 'tableau' || move.to.zone !== 'tableau') return 0
@@ -162,15 +171,16 @@ function scoreHintMove(state: ScorpionState, move: Move): number {
   if (!fromCol || !toCol) return 0
   const group = fromCol.slice(fromCol.length - move.count)
   const merged = [...toCol, ...group]
-  if (merged.length === 13) {
+  const relocatesWholeColumnToEmpty = toCol.length === 0 && move.count === fromCol.length
+  if (merged.length === 13 && !relocatesWholeColumnToEmpty) {
     if (merged[0].rank === 13 && merged.every((c) => c.faceUp) && isDescendingSameSuit(merged)) return 1000
   }
 
-  const runLen = runLengthAtTop(fromCol)
+  const runBefore = Math.max(runLengthAtTop(fromCol), runLengthAtTop(toCol))
   const newRunLenAtDest = runLengthAtTop(merged)
   const remainder = fromCol.slice(0, fromCol.length - move.count)
   const remainderRunLen = runLengthAtTop(remainder)
-  const netRunStructureChange = Math.max(newRunLenAtDest, remainderRunLen) - runLen
+  const netRunStructureChange = Math.max(newRunLenAtDest, remainderRunLen) - runBefore
 
   const fromBecomesEmpty = move.count === fromCol.length
   const toWasEmpty = toCol.length === 0
@@ -182,8 +192,9 @@ function scoreHintMove(state: ScorpionState, move: Move): number {
   let score = revealsHiddenCard ? 500 : 0
   score += netRunStructureChange * 30
   score += netEmptyDelta * 40
-  score += move.count * 2
-  return score
+  // The size tiebreak only orders moves that already gain something.
+  if (score <= 0) return score
+  return score + move.count * 2
 }
 
 export function createScorpionController(assistedStock: boolean): GameController<ScorpionState> {

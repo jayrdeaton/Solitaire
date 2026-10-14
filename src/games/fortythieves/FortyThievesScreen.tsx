@@ -12,6 +12,7 @@ import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
+import { HintRequest } from '@/components/autoHint'
 import { cardLayoutForRow, SPLIT_TOP_ROW_MIN_GAP, splitTopRowGroupGap } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { dealStaggerMs, paceFaceUpDeal } from '@/components/dealing/dealSpring'
@@ -48,6 +49,7 @@ import { useDimAfterDeal } from '@/games/shared/useDimAfterDeal'
 import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
@@ -131,6 +133,7 @@ function FortyThievesScreenInner() {
   const topRowGroupGap = splitTopRowGroupGap(gap)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth)
   const ghost = useDragGhost()
+  const playHintGlide = useHintGlide(state, ghost.cardRegistry, dropZones)
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
   // The waste slot itself (StockWaste's wasteRef) - exactly card-sized, and where the top card sits.
@@ -424,17 +427,22 @@ function FortyThievesScreenInner() {
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
   // the player still taps/drags the suggested card through the normal tap-to-move/drag flow.
-  function handleHint() {
+  function handleHint(request?: HintRequest) {
     if (!state) return
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(controllerRef.current, state, skip)
     if (result.kind === 'none') {
-      infoToast('No moves available right now.')
+      if (!request?.auto) infoToast('No helpful moves right now.')
       return
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
     recordHintUsed('fortythieves')
+    if (result.kind === 'move') {
+      const { from, to, count } = result.move
+      const source = resolvePile(from) ?? []
+      void playHintGlide({ moving: source.slice(source.length - count), dest: resolvePile(to) ?? [], destFanned: to.zone === 'tableau', slot: to, cardWidth })
+    }
   }
 
   function pushUndo(prev: FortyThievesState, move: MoveInfo | null) {
@@ -761,7 +769,7 @@ function FortyThievesScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
+      <GameChrome title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
         {/* As wide as the tableau, the foundations at its left edge and the waste/stock pair at its right. It used to
         put a fixed 18pt between the two in portrait, which made it 16pt wider than the tableau: it ran off both
         edges of a phone. */}

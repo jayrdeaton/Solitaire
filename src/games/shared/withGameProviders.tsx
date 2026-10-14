@@ -5,6 +5,7 @@ import { Portal } from 'react-native-paper'
 
 import { DealProvider } from '@/components/dealing/DealLayer'
 import { DragGhostProvider } from '@/components/dragdrop/DragGhostLayer'
+import { HintGlideProvider } from '@/components/hinting/HintGlideLayer'
 import { WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
 
 /**
@@ -39,6 +40,9 @@ import { WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
  * painting above the deal/drag ghost overlays and DealLayer's full-screen skip-tap layer (which are
  * later siblings of Inner) - a host inside GameChrome would have put them below those.
  *
+ * HintGlideProvider (the Hint button's see-through glide, components/hinting/HintGlideLayer.tsx) sits innermost, so its
+ * overlay paints over the board but under every real flight's ghost.
+ *
  * @tastic/core's RotationAwareStatusBar sits beside it (it renders nothing itself) so the OS status bar
  * hides exactly when the board is rotated: the bar is glued to the device's physical top edge and can't
  * turn with the content, so under a +/-90deg or 180deg rotation a visible one renders sideways or
@@ -56,7 +60,9 @@ export function withGameProviders(Inner: ComponentType): ComponentType {
             <DealProvider>
               <DragGhostProvider>
                 <WinCascadeProvider>
-                  <Inner />
+                  <HintGlideProvider>
+                    <Inner />
+                  </HintGlideProvider>
                 </WinCascadeProvider>
               </DragGhostProvider>
             </DealProvider>

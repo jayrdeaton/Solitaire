@@ -1,6 +1,8 @@
+import { FeedbackPressProvider } from '@rific/feedback-press'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { useEffect } from 'react'
 import { ScrollView, StyleSheet, View } from 'react-native'
+import * as RNPaper from 'react-native-paper'
 import { Provider as PaperProvider } from 'react-native-paper'
 
 import { BOARD_SCROLL_REST_MS, boardHoldHeight, boardOverflows, useBoardScroll } from '@/components/boardScroll'
@@ -13,6 +15,7 @@ import { GameChrome } from '@/components/GameChrome'
 
 jest.mock('@/components/SettingsDialog', () => ({ SettingsDialog: () => null }))
 jest.mock('@/components/RulesDialog', () => ({ RulesDialog: () => null }))
+jest.mock('@/hooks/useSettings', () => ({ useSettings: () => ({ settings: { ...jest.requireActual('@/redux/settingsSlice').DEFAULT_SETTINGS }, setSettings: jest.fn() }) }))
 jest.mock('@/components/useFontsPreload', () => ({ CARD_FONT_FAMILY: 'TestSerif' }))
 jest.mock('@/stores/lastActiveGame', () => ({ useLastActiveGame: () => ({ clearLastActiveGame: jest.fn(), setLastActiveGame: jest.fn(), consumeResumeGame: () => null }) }))
 
@@ -210,7 +213,7 @@ describe('GameChrome', () => {
 
   const chrome = (movesCount = 0) => (
     <PaperProvider>
-      <GameChrome title='Yukon' onNewGame={jest.fn()} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} won={false} hasProgress={movesCount > 0} getElapsedSeconds={() => 0} clockRunning={false} movesCount={movesCount} rules={[]}>
+      <GameChrome title='Yukon' onNewGame={jest.fn()} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} hasProgress={movesCount > 0} getElapsedSeconds={() => 0} clockRunning={false} movesCount={movesCount} rules={[]}>
         <Content />
       </GameChrome>
     </PaperProvider>
@@ -263,20 +266,25 @@ describe('GameChrome', () => {
     expect(minHeight()).toBe(0)
   })
 
-  it('a tap on the felt toggles the footer; a swipe does not', async () => {
+  it('tapping the moves/score/time readout hides the footer and tapping it again brings it back', async () => {
     await render(chrome())
     expect(footerPointerEvents()).toBe('box-none')
-    await press({ x: 200, y: 500 }, { x: 200, y: 660 }) // a swipe
-    expect(footerPointerEvents()).toBe('box-none')
-    await press({ x: 200, y: 500 }, { x: 204, y: 503 }) // a tap (a few points of finger wobble)
+    await fireEvent.press(screen.getByLabelText('Hide controls'))
     expect(footerPointerEvents()).toBe('none')
+    await fireEvent.press(screen.getByLabelText('Show controls'))
+    expect(footerPointerEvents()).toBe('box-none')
+  })
+
+  it('a tap on the felt leaves the footer alone (a tap that just missed a card used to hide it)', async () => {
+    await render(chrome())
     await press({ x: 200, y: 500 }, { x: 200, y: 500 })
     expect(footerPointerEvents()).toBe('box-none')
   })
 
-  it('a press with no pointer position (Enter on the web, an accessibility click) counts as a tap', async () => {
-    await render(chrome())
-    await press({ x: undefined as unknown as number, y: undefined as unknown as number }, { x: undefined as unknown as number, y: undefined as unknown as number })
-    expect(footerPointerEvents()).toBe('none')
+  it('the portrait footer is New Game, Undo, Hint, with no Rules button (the title opens the rules)', async () => {
+    // With Paper injected (as the app does), so the buttons carry their labels.
+    await render(<FeedbackPressProvider paper={RNPaper}>{chrome()}</FeedbackPressProvider>)
+    const labels = screen.getAllByLabelText(/^(New Game|Undo|Hint|Rules)$/).map((b) => b.props.accessibilityLabel as string)
+    expect(labels).toEqual(['New Game', 'Undo', 'Hint'])
   })
 })

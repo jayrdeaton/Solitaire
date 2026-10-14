@@ -353,23 +353,29 @@ function autoMoveHint(state: CanfieldState, from: PileRef, cardId: string): Move
  * a tableau column (waste/reserve are never move destinations - see tryMove), so `move.to` is always
  * `{ zone: 'tableau' }` here; `move.from` can be `tableau`, `waste`, or `reserve`.
  *
- * Adapted from Spider's own "opportunity-cost run valuation" scoreHintMove (see that file): `R` is
- * the length of the coherent isDescendingAltColorCyclic run already sitting at the top of the
- * SOURCE pile, and the move is scored by comparing the best group left standing anywhere afterward
- * (the destination's newly extended run, or the leftover remainder back at a tableau source) against
- * `R` - zero if the whole group relocated intact, positive if it built something longer, negative if
- * it tore `R` into pieces for no compensating gain. Two things differ from Spider's own version,
- * both because Canfield's board looks different:
+ * Adapted from Spider's own "opportunity-cost run valuation" scoreHintMove (see that file): the
+ * longest isDescendingAltColorCyclic run either touched pile shows before the move against the
+ * longest either shows after it. `a` is the run the moving group's base card was continuing at its
+ * source and `b` the run it lands on, so before the move the source shows `count + a` and the
+ * destination `b`, and after it the source shows `a` and the destination `count + b` - zero if the
+ * group relocated intact onto nothing longer, positive if it built something longer, negative if it
+ * tore a run into pieces for no compensating gain. Measured the same way on both sides, a move and
+ * its exact reverse always score as opposites: the old version compared only the source's run before
+ * with the better of the two after, and added the size tiebreak to every move, so moving a card from
+ * one matching card to an equal one scored above 0 both ways and Hint offered it, then offered moving
+ * it straight back. Two things differ from Spider's own version, both because Canfield's board looks
+ * different:
  *
- * (1) `R` only exists for a tableau source - waste and reserve are single-card-at-a-time piles with
- * no internal run to protect (tryMove forbids count > 1 from either), so for those `R` is simply
- * `move.count` (always 1), which makes every fragmentation term below a no-op for them.
+ * (1) `a` only exists for a tableau source - waste and reserve are single-card-at-a-time piles with
+ * no internal run to protect (tryMove forbids count > 1 from either), so for those `a` is 0, which
+ * makes every fragmentation term below a no-op for them. Neither can be moved back onto, so they
+ * have no reverse to worry about either.
  *
  * (2) canPlaceOnTableau's legality rule (opposite color, one rank down, cyclically) is EXACTLY
  * isDescendingAltColorCyclic's own pairwise rule - unlike Spider, where a legal placement can land on
  * a different suit and so NOT extend a same-suit run, every legal Canfield tableau destination
- * necessarily extends its own top run by the full moving group. So there's no Spider-style
- * "sameSuitExtension" gate needed here: `newRunLenAtDest` is always `move.count + destRunLenBefore`.
+ * necessarily extends its own top run by the full moving group. So there's no Spider-style suit gate
+ * needed here: `b` is always the destination's whole top run.
  *
  * In place of Spider's face-down-card reveal bonus - Canfield's tableau has no face-down cards at
  * all, every tableau card is dealt or placed face up (see newGame/tryMove) - this rewards draining
@@ -387,11 +393,14 @@ function scoreHintMove(state: CanfieldState, move: Move): number {
   if (!fromPile || fromPile.length < move.count) return 0
 
   const fromZone = move.from.zone
-  const runLen = fromZone === 'tableau' ? runLengthAtTop(fromPile) : move.count
-  const destRunLenBefore = runLengthAtTop(toCol)
-  const newRunLenAtDest = move.count + destRunLenBefore
-  const remainderRunLen = move.count < runLen ? runLen - move.count : 0
-  const netRunStructureChange = Math.max(newRunLenAtDest, remainderRunLen) - runLen
+  // A legal tableau group is always a clean run (see tryMove), so it is the whole of `count`.
+  const remainder = fromPile.slice(0, fromPile.length - move.count)
+  const below = remainder[remainder.length - 1]
+  const base = fromPile[fromPile.length - move.count]
+  const linkedAtSource = fromZone === 'tableau' && below !== undefined && below.faceUp && isDescendingAltColorCyclic([below, base])
+  const a = linkedAtSource ? runLengthAtTop(remainder) : 0
+  const b = runLengthAtTop(toCol)
+  const netRunStructureChange = Math.max(move.count + b, a) - Math.max(move.count + a, b)
 
   const fromBecomesEmpty = fromZone === 'tableau' && move.count === fromPile.length
   const toWasEmpty = toCol.length === 0
@@ -402,8 +411,9 @@ function scoreHintMove(state: CanfieldState, move: Move): number {
   let score = depletesReserve ? 500 : 0
   score += netRunStructureChange * 30
   score += netEmptyDelta * 40
-  score += move.count * 2
-  return score
+  // The size tiebreak only orders moves that already gain something.
+  if (score <= 0) return score
+  return score + move.count * 2
 }
 
 /** Every card currently reachable without drawing from stock - waste top, reserve top, and each

@@ -17,6 +17,7 @@ export const DEFAULT_SETTINGS: Settings = {
   fortyThievesRunMoves: false,
   autoMoveToFoundation: true,
   dimUnplayable: true,
+  autoHintSeconds: 0,
   cardStyle: 'compact',
   cardBackStyle: 'geometric',
   invertDarkModeColors: false,

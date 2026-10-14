@@ -15,6 +15,7 @@ import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
+import { HintRequest } from '@/components/autoHint'
 import { markGhostPending } from '@/components/cardFacePaint'
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
@@ -46,6 +47,7 @@ import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
@@ -150,6 +152,7 @@ function ScorpionScreenInner() {
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
   const ghost = useDragGhost()
+  const playHintGlide = useHintGlide(state, ghost.cardRegistry, dropZones)
   const deal = useDealAnimator()
   const [dealHiddenIds, setDealHiddenIds] = useState<Set<string>>(new Set())
   const dealTokenRef = useRef(0)
@@ -563,17 +566,22 @@ function ScorpionScreenInner() {
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
   // the player still taps/drags the suggested card through the normal tap-to-move/drag flow.
-  function handleHint() {
+  function handleHint(request?: HintRequest) {
     if (!state) return
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(controller, state, skip)
     if (result.kind === 'none') {
-      infoToast('No moves available right now.')
+      if (!request?.auto) infoToast('No helpful moves right now.')
       return
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
     recordHintUsed('scorpion')
+    if (result.kind === 'move') {
+      const { from, to, count } = result.move
+      const source = state.tableau[from.index]
+      void playHintGlide({ moving: source.slice(source.length - count), dest: state.tableau[to.index], destFanned: true, slot: to, cardWidth })
+    }
   }
 
   function pushUndo(prev: ScorpionState, move: MoveInfo | null) {
@@ -768,7 +776,7 @@ function ScorpionScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
+      <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
         {/* Portrait: the stock packet lives in a card-tall top row at the right, as always. Wide layout: no
         top row (zero height, no margin) - the packet is absolutely positioned beside the tableau below.
         Once the assisted stock has been dealt, an empty slot stays in its place: the packet was the top row's

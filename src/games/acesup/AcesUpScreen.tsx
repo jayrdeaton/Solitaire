@@ -25,6 +25,7 @@ import { CardSizeProvider } from '@tastic/cards'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
+import { HintRequest } from '@/components/autoHint'
 import { markGhostPending } from '@/components/cardFacePaint'
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
@@ -56,6 +57,7 @@ import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
@@ -119,6 +121,7 @@ function AcesUpScreenInner() {
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
   const ghost = useDragGhost()
+  const playHintGlide = useHintGlide(state, ghost.cardRegistry, dropZones)
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
   const discardViewRef = useRef<View>(null)
@@ -463,17 +466,24 @@ function AcesUpScreenInner() {
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() rules.ts already implements. Only highlights;
   // the player still taps/drags the suggested card through the normal tap-to-move/drag flow.
-  function handleHint() {
+  function handleHint(request?: HintRequest) {
     if (!state) return
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(AcesUpController, state, skip)
     if (result.kind === 'none') {
-      infoToast('No moves available right now.')
+      if (!request?.auto) infoToast('No helpful moves right now.')
       return
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
     recordHintUsed('acesup')
+    if (result.kind === 'move') {
+      const { from, to } = result.move
+      const source = state.piles[from.index]
+      // The discard isn't a drop zone (and its top isn't a registered card): land on its own card-sized container.
+      const toDiscard = to.zone === 'discard'
+      void playHintGlide({ moving: source.slice(-1), dest: toDiscard ? [] : state.piles[to.index], destFanned: true, slot: toDiscard ? undefined : to, measureSlot: toDiscard ? () => measureView(discardViewRef.current) : undefined, cardWidth })
+    }
   }
 
   function pushUndo(prev: AcesUpState, move: MoveInfo | null) {
@@ -702,7 +712,7 @@ function AcesUpScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} rules={ACESUP_RULES}>
+      <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} rules={ACESUP_RULES}>
         <View style={[styles.topRow, { width: pilesWidth }]}>
           <DiscardCell card={state.discard[state.discard.length - 1]} isFlyingHere={flying.some((f) => f.to.zone === 'discard')} viewRef={discardViewRef} />
           <View ref={stockViewRef} collapsable={false}>

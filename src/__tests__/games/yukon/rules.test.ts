@@ -367,6 +367,25 @@ describe('yukon scoreHintMove', () => {
     expect(extendsRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
     expect(lateralIntoEmptyColumn).toBeGreaterThan(fragmentIntoEmptyColumn)
   })
+
+  // Hint used to offer moving the red 7 from one black 8 to the other, then moving it straight back:
+  // only the source's run counted before the move, so the 2-card run it left matched the 2-card run
+  // it built and both moves scored +2 from the size tiebreak alone.
+  it('scores a relocation that gains nothing, and its reverse, at 0', () => {
+    const state: YukonState = {
+      tableau: [[card('spades', 8), card('diamonds', 7)], [card('clubs', 8)], [card('hearts', 13)], [card('diamonds', 13)], [card('hearts', 12)], [card('diamonds', 12)], [card('hearts', 11)]],
+      foundation: [[], [], [], []]
+    }
+    const there = moveTo(state, 0, 1)
+    expect(there.to).toEqual({ zone: 'tableau', index: 1 })
+    expect(controller.scoreHintMove!(state, there)).toBe(0)
+
+    const back = controller.tryMove(state, there)!
+    expect(back).not.toBeNull()
+    const reverse = moveTo(back, 1, 1)
+    expect(reverse.to).toEqual({ zone: 'tableau', index: 0 })
+    expect(controller.scoreHintMove!(back, reverse)).toBe(0)
+  })
 })
 
 describe('Yukon canAutoFinish / nextFinishMove - the finish only takes a SOLVED board', () => {

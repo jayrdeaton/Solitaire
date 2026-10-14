@@ -1,3 +1,4 @@
+import { findHint } from '@/engine/hint'
 import { Card } from '@/engine/types'
 import { canDealStock, createSpiderController, SpiderState } from '@/games/spider/rules'
 
@@ -355,7 +356,11 @@ describe('spider scoreHintMove', () => {
     const intactRelocation = scoreOf(state, 2, 4, 0) // the whole run, kept together
     const harmlessSingle = scoreOf(state, 1, 1, 0) // an unrelated lone-card move, for scale
 
-    expect(intactRelocation).toBeGreaterThan(harmlessSingle)
+    // Both only relocate something intact onto nothing longer, so neither gains anything: both
+    // score 0 (no size tiebreak, which used to put the 4-card move ahead and kept every relocation
+    // above 0, so Hint offered it and then offered moving it straight back).
+    expect(intactRelocation).toBe(0)
+    expect(harmlessSingle).toBe(0)
     expect(fragmentOnto7).toBeLessThan(harmlessSingle)
     expect(partialFragment2).toBeLessThan(harmlessSingle)
     expect(partialFragment3).toBeLessThan(harmlessSingle)
@@ -408,5 +413,26 @@ describe('spider scoreHintMove', () => {
     expect(extendsRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
     expect(relocatesWholeRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
     expect(lateralIntoEmptyColumn).toBeGreaterThan(fragmentIntoEmptyColumn)
+  })
+
+  // Hint used to offer moving the 6 from the red 7 it sat on to the other red 7, then moving it
+  // straight back: neither 7 is a spade, so both moves built nothing, and both scored +2 from the
+  // size tiebreak alone.
+  it('scores a relocation that gains nothing, and its reverse, at 0, so Hint deals instead of ping-ponging', () => {
+    const state: SpiderState = {
+      tableau: [[card('diamonds', 7), card('spades', 6)], [card('hearts', 7)], ...Array.from({ length: 8 }, (_, i) => [card('clubs', 1, true, i)])],
+      stock: Array.from({ length: 10 }, (_, i) => card('spades', 13, false, i)),
+      completed: [],
+      completedRuns: []
+    }
+    const there = moveTo(state, 0, 1, 1)
+    expect(controller.scoreHintMove!(state, there)).toBe(0)
+
+    const back = controller.tryMove(state, there)!
+    expect(back).not.toBeNull()
+    expect(scoreOf(back, 1, 1, 0)).toBe(0)
+
+    expect(findHint(controller, state)).toEqual({ kind: 'drawStock' })
+    expect(findHint(controller, back)).toEqual({ kind: 'drawStock' })
   })
 })

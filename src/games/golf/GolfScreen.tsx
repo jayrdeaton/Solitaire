@@ -10,6 +10,7 @@ import { CardSizeProvider } from '@tastic/cards'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
+import { HintRequest } from '@/components/autoHint'
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { dealStaggerMs, paceFaceUpDeal } from '@/components/dealing/dealSpring'
@@ -39,6 +40,7 @@ import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
 import { useDimAfterDeal } from '@/games/shared/useDimAfterDeal'
 import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurrency'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
+import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
@@ -111,6 +113,7 @@ function GolfScreenInner() {
   const hintsUsedRef = useRef(false)
   const session = useGameSession()
   const ghost = useDragGhost()
+  const playHintGlide = useHintGlide(state, ghost.cardRegistry, dropZones)
   const deal = useDealAnimator()
   const stockViewRef = useRef<View>(null)
   // The waste slot itself (StockWaste's wasteRef) - exactly card-sized, which matters under a rotated
@@ -416,17 +419,21 @@ function GolfScreenInner() {
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
   // the player still taps/drags the suggested card through the normal tap-to-move/drag flow.
-  function handleHint() {
+  function handleHint(request?: HintRequest) {
     if (!state) return
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(controller, state, skip)
     if (result.kind === 'none') {
-      infoToast('No moves available right now.')
+      if (!request?.auto) infoToast('No helpful moves right now.')
       return
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
     recordHintUsed('golf')
+    if (result.kind === 'move') {
+      const source = state.tableau[result.move.from.index]
+      void playHintGlide({ moving: source.slice(-1), dest: state.waste, destFanned: false, cardWidth })
+    }
   }
 
   // Mirrors handleCardTap's/handleDrawStock's forward flight, just in reverse: the card being
@@ -605,7 +612,7 @@ function GolfScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Golf' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<GolfSettingsSection />} rules={GOLF_RULES}>
+      <GameChrome title='Golf' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<GolfSettingsSection />} rules={GOLF_RULES}>
         {/* No foundation row at all (unlike Klondike/FreeCell/Yukon) - Golf has no suit-based
         foundation, just the stock/waste pair. Narrower than the tableau below, so it's centered
         above it by GameChrome's own content styling rather than stretched/pinned to an edge. */}

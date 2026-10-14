@@ -3,7 +3,7 @@ import type { TableColors } from '@tastic/cards'
 import { useMemo } from 'react'
 import { useTheme } from 'react-native-paper'
 
-import { DEFAULT_SEED_COLOR } from '@/constants/theme'
+import { DEFAULT_SEED_COLOR, HINT_RING_TONE, THEME_HARMONY } from '@/constants/theme'
 import { useProfiles } from '@/stores/profiles'
 
 import { darkColors, lightColors } from './palettes'
@@ -86,7 +86,7 @@ export function previewCardBack(seedHex: string, dark: boolean): string {
 
 /** Derives a full TableColors palette tinted toward a seed color (an active player profile's
  * color, or DEFAULT_SEED_COLOR when nothing's been picked - see useTableColors below). Only
- * cardBack/cardBackPattern/cardBackPatternInverted/tableFelt/tableFeltDark are overridden - every
+ * cardBack/cardBackPattern/cardBackPatternInverted/tableFelt/tableFeltDark/hintGreen are overridden - every
  * other token is spread from `base` untouched, so legibility-critical tokens (text/borders/glow)
  * never shift with a profile's color. The felt is the card back's opposite hue, darkened, so each
  * profile plays on its own complementary table (the default pink's is green). */
@@ -108,6 +108,10 @@ function derivePlayerTableColors(profileColor: string, dark: boolean, base: Tabl
     cardBackPattern,
     cardBackPatternInverted,
     tableFelt: getTonalColor(complementaryHue, dark ? FELT_TONE.dark : FELT_TONE.light),
+    // TableColors names this slot hintGreen (@tastic/cards' type; nothing in that package draws it). It is the hint
+    // ring's color: the app theme's own tertiary (ProfileThemeSync seeds the theme with this same cardBack and
+    // THEME_HARMONY, so it is already muted), lifted to HINT_RING_TONE.
+    hintGreen: getTonalColor(getTriadicPalette(cardBack, THEME_HARMONY).tertiary, HINT_RING_TONE),
     tableFeltDark: getTonalColor(complementaryHue, dark ? CHROME_TONE.dark : CHROME_TONE.light)
   }
 }

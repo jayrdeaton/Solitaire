@@ -1,7 +1,9 @@
-import { useAutoPaperTheme } from '@rific/auto-paper'
+import { getTonalColor, useAutoPaperTheme } from '@rific/auto-paper'
 import type { SwipePointer } from '@tastic/hud/guide'
 import { type StyleProp, StyleSheet, View, type ViewStyle } from 'react-native'
 import { Icon, Text } from 'react-native-paper'
+
+import { HINT_RING_TONE } from '@/constants/theme'
 
 // Solitaire's illustrations for the how-to-play cards (see constants/guideSteps.tsx). None of
 // @tastic/hud/guide's shared pictures (a swipe, key caps, a split phone) fits a card game, so these
@@ -127,21 +129,23 @@ export function GuideScore() {
 }
 
 // "Tap the light bulb to see a move you can make": GameChrome's Hint button (its exact
-// lightbulb-on-outline icon), a dotted path, and the move it points out, a red seven and the black
-// eight it can go on, each ringed the way a hinted card is ringed in a game (PlayingCard's HintRing).
+// lightbulb-on-outline icon), a dotted path, and the move it points out: a red seven, ringed and
+// glowing the way a hinted card is in a game (PlayingCard's HintRing), and the black eight it can go
+// on. Only the card to move is ringed, as in a game (the game's glide shows where it goes).
 export function GuideHint() {
   const { colors } = useAutoPaperTheme()
-  const ring = [styles.hintRing, { borderColor: colors.primary }]
+  // The game's hint ring color (theme.ts's hintGreen): the theme's tertiary, lifted.
+  const ringColor = getTonalColor(colors.tertiary, HINT_RING_TONE)
+  const ring = [styles.hintRing, { borderColor: ringColor, boxShadow: `0 0 8px 1px ${ringColor}` }]
 
   return (
-    <View accessible accessibilityLabel='The light bulb button, and a red seven and a black eight ringed as a move you can make' style={styles.hintStage}>
+    <View accessible accessibilityLabel='The light bulb button, and a red seven ringed as the card to move onto a black eight' style={styles.hintStage}>
       <View style={[styles.hintButton, { backgroundColor: colors.surfaceVariant }]}>
         <Icon source='lightbulb-on-outline' size={30} color={colors.primary} />
       </View>
       <PathDots style={styles.hintPath} />
       <View style={[ring, { left: HINT_SEVEN_LEFT - HINT_RING_GAP }]} />
       <MiniCard rank='7' suit='heart' style={[styles.hintCard, { left: HINT_SEVEN_LEFT }]} />
-      <View style={[ring, { left: HINT_EIGHT_LEFT - HINT_RING_GAP }]} />
       <MiniCard rank='8' suit='spade' style={[styles.hintCard, { left: HINT_EIGHT_LEFT }]} />
     </View>
   )
@@ -158,9 +162,9 @@ const TARGET_TOP = 12
 const ROW_TOP = TARGET_TOP + FAN_STEP
 const ROW_CENTER = ROW_TOP + CARD_HEIGHT / 2
 
-// The hint picture's layout, left to right: the round button, the dotted path, then the two ringed
-// cards. Each ring sits HINT_RING_GAP outside its
-// card, so its 3px stroke never covers the card's own edge.
+// The hint picture's layout, left to right: the round button, the dotted path, then the ringed seven
+// and the eight. The ring sits HINT_RING_GAP outside its card, so its 3px stroke never covers the
+// card's own edge; the eight keeps the same spacing so the picture's width is unchanged.
 const HINT_BUTTON = 56
 const HINT_TOP = 8
 const HINT_RING_GAP = 4

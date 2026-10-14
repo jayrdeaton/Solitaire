@@ -128,14 +128,20 @@ function altColorRunLengthAtTop(column: Card[]): number {
  * whole group to already be a same-suit run), this recomputes each run length directly off the
  * hypothetical resulting piles rather than assuming a simple `count + existing` sum - a jumbled
  * group (e.g. a black 8 with a red King sitting on top of it) only ever contributes its own
- * top-down valid prefix to whichever pile it lands in, not its full physical size.
+ * top-down valid prefix to whichever pile it lands in, not its full physical size. "Before" counts
+ * BOTH touched columns (the destination's own run too), exactly like "after" does, so a move and its
+ * exact reverse always score as opposites and a relocation that gains nothing scores 0: the old
+ * version counted only the source's run before, so moving a card from one matching card to an equal
+ * one scored above 0 both ways and Hint offered it, then offered moving it straight back.
  *
  * Reveal-of-a-hidden-card and empty-column economics both still apply exactly as they do everywhere
  * else in this app (long Yukon columns with several face-down cards, and only 7 scarce columns
  * total, make both matter a lot) - same shape and same weights as Spider's scorer for both terms.
  * The weights are bounds-checked the same way: Yukon's longest column ever reachable is 11 cards, so
  * `netRunStructureChange` (at most 11) times 30 tops out at 330 - comfortably under the 500-point
- * reveal bonus, so a reveal always outranks pure structural play regardless of board specifics.
+ * reveal bonus, so a reveal always outranks pure structural play regardless of board specifics. The
+ * per-card size tiebreak is only added to a move that already gains something, so it never lifts a
+ * relocation above 0.
  */
 function scoreHintMove(state: YukonState, move: Move): number {
   if (move.from.zone !== 'tableau' || move.to.zone !== 'tableau') return 0
@@ -146,7 +152,7 @@ function scoreHintMove(state: YukonState, move: Move): number {
   const group = fromCol.slice(fromCol.length - move.count)
   const remainder = fromCol.slice(0, fromCol.length - move.count)
 
-  const runBefore = altColorRunLengthAtTop(fromCol)
+  const runBefore = Math.max(altColorRunLengthAtTop(fromCol), altColorRunLengthAtTop(toCol))
   const runAfterDest = altColorRunLengthAtTop([...toCol, ...group])
   const runAfterRemainder = altColorRunLengthAtTop(remainder)
   const netRunStructureChange = Math.max(runAfterDest, runAfterRemainder) - runBefore
@@ -161,8 +167,9 @@ function scoreHintMove(state: YukonState, move: Move): number {
   let score = revealsHiddenCard ? 500 : 0
   score += netRunStructureChange * 30
   score += netEmptyDelta * 40
-  score += move.count * 2
-  return score
+  // The size tiebreak only orders moves that already gain something.
+  if (score <= 0) return score
+  return score + move.count * 2
 }
 
 export function createYukonController(): GameController<YukonState> {

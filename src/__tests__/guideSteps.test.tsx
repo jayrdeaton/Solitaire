@@ -128,6 +128,6 @@ describe('GuideArt', () => {
 
   it('renders the hint picture', async () => {
     await render(<GuideHint />)
-    expect(screen.getByLabelText('The light bulb button, and a red seven and a black eight ringed as a move you can make')).toBeTruthy()
+    expect(screen.getByLabelText('The light bulb button, and a red seven ringed as the card to move onto a black eight')).toBeTruthy()
   })
 })

@@ -121,16 +121,19 @@ function runLengthAtTop(column: Card[]): number {
  * move that's actually worth playing. Highest priority: completing a King->Ace run outright
  * (unconditional 1000, handled first).
  *
- * Below that, an opportunity-cost model: `R`, the length of the coherent run already sitting at
- * the top of the source column, is the "asset" a player holds there before this move. A move is
- * scored by `bestRunAfterMove - R` - the better of (a) the run this move creates at the
- * destination (extending an existing same-suit run there, if one exists) and (b) whatever coherent
- * run is left behind at the source when `count` is less than `R`. This is 0 for a move that just
- * relocates the whole existing run intact (nothing gained, nothing lost), positive when it builds
- * something longer than what was already there (e.g. extending a run, or feeding a longer run
- * elsewhere), and - critically - negative whenever the move only peels part of a coherent run onto
- * an unrelated card, fragmenting it into two pieces neither as long as the original, with nothing
- * gained to compensate. That last case was a real bug: the previous scorer rewarded a move purely
+ * Below that, an opportunity-cost model over the two columns the move touches: the longest run
+ * either of them shows before the move against the longest either shows after it. `a` is the run the
+ * moving group's base card was continuing at its source (0 when the card under it isn't part of its
+ * same-suit run), `b` the run it lands on (0 for an empty column or a different suit), so before the
+ * move the source shows `count + a` and the destination `b`, and after it the source shows `a` and
+ * the destination `count + b`. Measured the same way on both sides, a move and its exact reverse
+ * always score as opposites, and a relocation that gains nothing (the whole run moved intact onto
+ * nothing longer) scores exactly 0 - Hint used to offer such a move, then offer moving it straight
+ * back, because the old version only counted the destination's run after the move and the size
+ * tiebreak kept every relocation above 0. It is positive when the move builds something longer
+ * (extending a run), and - critically - negative whenever the move only peels part of a coherent run
+ * onto an unrelated card, fragmenting it into two pieces neither as long as the original, with
+ * nothing gained to compensate. That last case was a real bug: an older scorer rewarded a move purely
  * by how many cards it moved, so tearing the bottom card off a nice 4-card run to park it on some
  * unrelated matching card scored the same as any other harmless 1-card shuffle - never flagged as
  * the actively bad, run-destroying move it is. `netRunStructureChange` catches this without a
@@ -147,7 +150,8 @@ function runLengthAtTop(column: Card[]): number {
  * The weights are bounds-checked, not curve-fit: `netRunStructureChange` cannot reach 12 without
  * either hitting the completion check above or getting within one card of it, so its realistic
  * ceiling (12*30=360) plus the empty-column term's ceiling (40) plus the tiny per-card tiebreak
- * (count*2, capped low) stays comfortably under the 500-point reveal bonus, which in turn stays
+ * (count*2, capped low, and only added to a move that already gains something, so it never lifts a
+ * relocation above 0) stays comfortably under the 500-point reveal bonus, which in turn stays
  * under the 1000-point completion - so completion always outranks a reveal, which always outranks
  * pure structural play, regardless of board specifics.
  */
@@ -163,25 +167,28 @@ function scoreHintMove(state: SpiderState, move: Move): number {
     if (topRun[0].rank === 13 && topRun.every((c) => c.faceUp) && isDescendingSameSuit(topRun)) return 1000
   }
 
-  const runLen = runLengthAtTop(fromCol)
-  const destRunLenBefore = runLengthAtTop(toCol)
-  const sameSuitExtension = toCol.length > 0 && toCol[toCol.length - 1].suit === group[0].suit
-  const newRunLenAtDest = move.count + (sameSuitExtension ? destRunLenBefore : 0)
-  const remainderRunLen = move.count < runLen ? runLen - move.count : 0
-  const netRunStructureChange = Math.max(newRunLenAtDest, remainderRunLen) - runLen
+  // A legal move's group is always a clean same-suit run (see tryMove), so it is the whole of `count`.
+  const remainder = fromCol.slice(0, fromCol.length - move.count)
+  const below = remainder[remainder.length - 1]
+  const base = group[0]
+  const linkedAtSource = below !== undefined && below.faceUp && below.suit === base.suit && below.rank === base.rank + 1
+  const a = linkedAtSource ? runLengthAtTop(remainder) : 0
+  const destTop = toCol[toCol.length - 1]
+  const b = destTop !== undefined && destTop.suit === base.suit ? runLengthAtTop(toCol) : 0
+  const netRunStructureChange = Math.max(move.count + b, a) - Math.max(move.count + a, b)
 
   const fromBecomesEmpty = move.count === fromCol.length
   const toWasEmpty = toCol.length === 0
   const netEmptyDelta = (fromBecomesEmpty ? 1 : 0) - (toWasEmpty ? 1 : 0)
 
-  const newFromTop = fromCol[fromCol.length - move.count - 1]
-  const revealsHiddenCard = newFromTop !== undefined && !newFromTop.faceUp
+  const revealsHiddenCard = below !== undefined && !below.faceUp
 
   let score = revealsHiddenCard ? 500 : 0
   score += netRunStructureChange * 30
   score += netEmptyDelta * 40
-  score += move.count * 2
-  return score
+  // The size tiebreak only orders moves that already gain something.
+  if (score <= 0) return score
+  return score + move.count * 2
 }
 
 /** A deal needs a card under every column - unless the tableau holds fewer cards than there are columns, when that can never
