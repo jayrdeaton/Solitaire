@@ -96,4 +96,4 @@ The code is released under the MIT License, see [LICENSE](LICENSE).
 
 The game's name, logo, and icons, and the original artwork and audio in this repository, are not covered by that license and remain all rights reserved. If you fork it, please give your version its own name and look.
 
-The card artwork derived from [SVG-cards](https://github.com/htdebeer/SVG-cards) (David Bellot and Huub de Beer) is not original to this project and remains under the LGPL-2.1, as described in [`@tastic/cards`](https://www.npmjs.com/package/@tastic/cards).
+The card artwork derived from [SVG-cards](https://github.com/htdebeer/SVG-cards) (David Bellot and Huub de Beer) is not original to this project and remains under the LGPL-2.1, see the [artwork notice](https://github.com/jayrdeaton/React-Native-Cards/blob/main/src/artwork/NOTICE.md) in `@tastic/cards`.
