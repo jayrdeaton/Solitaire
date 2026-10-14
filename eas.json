@@ -31,7 +31,11 @@
     }
   },
   "submit": {
-    "production": {},
+    "production": {
+      "ios": {
+        "appName": "SolitaireTastic"
+      }
+    },
     "preview": {}
   }
 }

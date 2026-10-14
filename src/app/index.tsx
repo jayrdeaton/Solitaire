@@ -232,7 +232,7 @@ function HomeContent() {
             <View style={styles.wideHeader} pointerEvents='none'>
               <HeroCards scale={layout.heroScale} />
               <Text style={[styles.heading, { fontSize: layout.titleFontSize }]} maxFontSizeMultiplier={HOME_WIDE_MAX_FONT_SCALE}>
-                Solitaire Suite
+                Solitaire
               </Text>
               <Text style={[styles.subheading, styles.wideSubheading]} maxFontSizeMultiplier={HOME_WIDE_MAX_FONT_SCALE}>
                 No ads. No accounts. Plays offline. Just cards.
@@ -247,7 +247,7 @@ function HomeContent() {
         <ScrollView contentContainerStyle={[styles.container, { paddingTop: 56 + insets.top }]}>
           {pressAway}
           <HeroCards />
-          <Text style={styles.heading}>Solitaire Suite</Text>
+          <Text style={styles.heading}>Solitaire</Text>
           <Text style={styles.subheading}>No ads. No accounts. Plays offline. Just cards.</Text>
 
           <View style={styles.profilePanelWrap}>

@@ -2,7 +2,7 @@
 
 Eleven classic solitaire games in one ad-free app, from Klondike and FreeCell to Pyramid and Aces Up.
 
-Solitaire (Solitaire Suite on the home screen) is a single-player card game collection for iPhone, iPad, Android, and web, with no ads and no accounts. Built with Expo, React Native, Reanimated, and Redux Toolkit, it's part of a family of games built on my open-source `@tastic` game-engine and `@rific` Expo utility packages. App Store and Google Play release in progress.
+Solitaire (SolitaireTastic on the App Store) is a single-player card game collection for iPhone, iPad, Android, and web, with no ads and no accounts. Built with Expo, React Native, Reanimated, and Redux Toolkit, it's part of a family of games built on my open-source `@tastic` game-engine and `@rific` Expo utility packages. App Store and Google Play release in progress.
 
 <!-- TODO: add gameplay GIF/screenshot here -->
 

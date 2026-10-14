@@ -1,0 +1,63 @@
+{
+  "configVersion": 0,
+  "apple": {
+    "copyright": "2026 Jay Deaton",
+    "categories": [
+      [
+        "GAMES",
+        "GAMES_CARD",
+        "GAMES_CASUAL"
+      ]
+    ],
+    "info": {
+      "en-US": {
+        "title": "SolitaireTastic",
+        "subtitle": "11 Solitaire Games. No Ads.",
+        "description": "Eleven classic solitaire games in one app, with no ads and no accounts.\n\nKlondike, FreeCell, Yukon, Canfield, Forty Thieves, Spider, Scorpion, Pyramid, Golf, TriPeaks, and Aces Up, each with its rules one tap away.\n\n• Draw 1 or Draw 3, 1, 2, or 4 suit Spider, and more rule variants\n• Tap a card to send it to its best move, or drag it where you want\n• Unlimited undo, hints, and auto-move to the foundations\n• Stats for every game and 41 achievements\n• Four card faces and three card backs, in light or dark mode\n• Picks up right where you left off\n• Plays offline\n\nPart of the Tastic family of games. Your player profiles are shared with the other Tastic games on your device.\n\nOpen source on GitHub: https://github.com/jayrdeaton/Solitaire",
+        "keywords": [
+          "klondike",
+          "freecell",
+          "spider",
+          "pyramid",
+          "tripeaks",
+          "golf",
+          "yukon",
+          "canfield",
+          "patience",
+          "cards",
+          "offline"
+        ],
+        "marketingUrl": "https://solitaire.infinitetoken.com",
+        "supportUrl": "https://infinitetoken.com",
+        "privacyPolicyUrl": "https://solitaire.infinitetoken.com/privacy"
+      }
+    },
+    "advisory": {
+      "alcoholTobaccoOrDrugUseOrReferences": "NONE",
+      "contests": "NONE",
+      "gamblingSimulated": "NONE",
+      "gunsOrOtherWeapons": "NONE",
+      "horrorOrFearThemes": "NONE",
+      "matureOrSuggestiveThemes": "NONE",
+      "medicalOrTreatmentInformation": "NONE",
+      "profanityOrCrudeHumor": "NONE",
+      "sexualContentGraphicAndNudity": "NONE",
+      "sexualContentOrNudity": "NONE",
+      "violenceCartoonOrFantasy": "NONE",
+      "violenceRealistic": "NONE",
+      "violenceRealisticProlongedGraphicOrSadistic": "NONE",
+      "advertising": false,
+      "ageAssurance": false,
+      "gambling": false,
+      "healthOrWellnessTopics": false,
+      "lootBox": false,
+      "messagingAndChat": false,
+      "parentalControls": false,
+      "unrestrictedWebAccess": false,
+      "userGeneratedContent": false,
+      "kidsAgeBand": null,
+      "ageRatingOverride": "NONE",
+      "koreaAgeRatingOverride": "NONE"
+    }
+  }
+}

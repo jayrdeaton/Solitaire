@@ -4,7 +4,9 @@ import { Toaster, ToastProvider } from '@rific/toaster'
 import { OrientationProvider, useThemedRootBackground } from '@tastic/core'
 import { RotatedFrame } from '@tastic/hud'
 import { ProfileColorProvider } from '@tastic/profile'
+import Constants from 'expo-constants'
 import { DarkTheme, Stack, ThemeProvider as NavigationThemeProvider } from 'expo-router'
+import Head from 'expo-router/head'
 import { DeviceMotion } from 'expo-sensors'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
@@ -72,7 +74,7 @@ function ThemedStack() {
       <StatusBar style='light' />
       <NavigationThemeProvider value={TRANSPARENT_NAVIGATION_THEME}>
         <Stack screenOptions={screenOptions}>
-          <Stack.Screen name='index' options={{ title: 'Solitaire Suite' }} />
+          <Stack.Screen name='index' options={{ title: 'Solitaire' }} />
           <Stack.Screen name='klondike' options={{ title: 'Klondike' }} />
           <Stack.Screen name='spider' options={{ title: 'Spider' }} />
           <Stack.Screen name='freecell' options={{ title: 'FreeCell' }} />
@@ -220,10 +222,18 @@ export default function RootLayout() {
   const fontsLoaded = useFontsPreload()
   const { playCardSound, playInvalidSound } = useCardSoundPlayers()
 
-  if (!fontsLoaded) return null
+  // The web tab title, rendered before the fonts gate so the static export's HTML has it too
+  const title = (
+    <Head>
+      <title>{Constants.expoConfig?.name}</title>
+    </Head>
+  )
+
+  if (!fontsLoaded) return title
 
   return (
     <GestureHandlerRootView style={styles.root}>
+      {title}
       <SafeAreaProvider>
         <ReduxProvider store={store}>
           <PersistGate persistor={persistor}>
