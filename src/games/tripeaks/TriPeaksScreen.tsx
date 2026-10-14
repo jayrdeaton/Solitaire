@@ -491,7 +491,8 @@ function TriPeaksScreenInner() {
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
     recordHintUsed(variant)
-    if (result.kind === 'move') {
+    // The glide is the Hint button's alone: Auto Hint only rings the cards.
+    if (result.kind === 'move' && !request?.auto) {
       const card = state.tableau[result.move.from.index]
       if (card) void playHintGlide({ moving: [card], dest: state.waste, destFanned: false, cardWidth })
     }

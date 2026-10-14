@@ -1811,7 +1811,8 @@ function PyramidScreenInner() {
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
     recordHintUsed('pyramid')
-    if (result.kind === 'move') {
+    // The glide is the Hint button's alone: Auto Hint only rings the cards.
+    if (result.kind === 'move' && !request?.auto) {
       const { from, to } = result.move
       const cardAt = (ref: PileRef) => (ref.zone === 'waste' ? state.waste[state.waste.length - 1] : state.pyramid[ref.index]) ?? undefined
       const card = cardAt(from)

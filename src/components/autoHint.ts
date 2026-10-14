@@ -4,7 +4,7 @@ import { AppState } from 'react-native'
 
 /** What a screen's Hint handler is told about who asked for it. */
 export interface HintRequest {
-  /** The Auto Hint setting fired it, not the player: nothing to say if there's no move (no toast). */
+  /** The Auto Hint setting fired it, not the player: it only rings the cards (no glide), and says nothing if there's no move (no toast). */
   auto?: boolean
 }
 

@@ -1345,7 +1345,8 @@ function SpiderScreenInner() {
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
     recordHintUsed(variant)
-    if (result.kind === 'move') {
+    // The glide is the Hint button's alone: Auto Hint only rings the cards.
+    if (result.kind === 'move' && !request?.auto) {
       const { from, to, count } = result.move
       const source = state.tableau[from.index]
       void playHintGlide({ moving: source.slice(source.length - count), dest: state.tableau[to.index], destFanned: true, slot: to, cardWidth })

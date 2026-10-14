@@ -276,14 +276,22 @@ jest.mock('@/components/PileView', () => {
     }
   }
 })
+const mockHintGlides: string[][] = []
+jest.mock('@/games/shared/useHintGlide', () => ({
+  useHintGlide: () => async (target: { moving: { id: string }[] }) => {
+    mockHintGlides.push(target.moving.map((c) => c.id))
+  }
+}))
 jest.mock('@/components/GameChrome', () => {
   const { Pressable: MockPressable, Text: MockText, View: MockView } = require('react-native')
   return {
     GAME_CONTENT_PADDING: 6,
-    GameChrome: ({ children, onUndo, onNewGame, won, movesCount, undoDisabled }: { children: unknown; onUndo: () => void; onNewGame: () => void; won: boolean; movesCount: number; undoDisabled: boolean }) => (
+    GameChrome: ({ children, onUndo, onNewGame, onHint, won, movesCount, undoDisabled }: { children: unknown; onUndo: () => void; onNewGame: () => void; onHint: (request?: { auto?: boolean }) => void; won: boolean; movesCount: number; undoDisabled: boolean }) => (
       <MockView>
         <MockPressable testID='undo' onPress={onUndo} />
         <MockPressable testID='new-game' onPress={onNewGame} />
+        <MockPressable testID='hint' onPress={() => onHint()} />
+        <MockPressable testID='auto-hint' onPress={() => onHint({ auto: true })} />
         <MockText testID='chrome-won'>{String(won)}</MockText>
         <MockText testID='chrome-moves'>{String(movesCount)}</MockText>
         <MockText testID='chrome-undo-disabled'>{String(undoDisabled)}</MockText>
@@ -410,6 +418,7 @@ beforeEach(() => {
   mockLog.events = []
   mockUnmeasurableSlots.clear()
   mockRecordWon.mockClear()
+  mockHintGlides.length = 0
 })
 afterEach(async () => {
   await act(async () => {
@@ -1364,5 +1373,15 @@ describe("Klondike screen - once the board is solved, the player's foundation pl
     expect(mockLog.shown).toEqual([id('clubs', 12), id('clubs', 11)])
     expect(cardsOnBoard()).toBe(5)
     expect(won()).toBe('false')
+  })
+})
+
+describe('hint', () => {
+  it('the Hint button glides the hinted card; Auto Hint only rings it', async () => {
+    await mount(FIVE_THEN_SIX(), 4)
+    await tap('auto-hint')
+    expect(mockHintGlides).toEqual([])
+    await tap('hint')
+    expect(mockHintGlides.length).toBe(1)
   })
 })

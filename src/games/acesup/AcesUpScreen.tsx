@@ -473,7 +473,8 @@ function AcesUpScreenInner() {
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
     recordHintUsed('acesup')
-    if (result.kind === 'move') {
+    // The glide is the Hint button's alone: Auto Hint only rings the cards.
+    if (result.kind === 'move' && !request?.auto) {
       const { from, to } = result.move
       const source = state.piles[from.index]
       // The discard isn't a drop zone (and its top isn't a registered card): land on its own card-sized container.

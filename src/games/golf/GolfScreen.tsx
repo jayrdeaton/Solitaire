@@ -432,7 +432,8 @@ function GolfScreenInner() {
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
     recordHintUsed(variant)
-    if (result.kind === 'move') {
+    // The glide is the Hint button's alone: Auto Hint only rings the cards.
+    if (result.kind === 'move' && !request?.auto) {
       const source = state.tableau[result.move.from.index]
       void playHintGlide({ moving: source.slice(-1), dest: state.waste, destFanned: false, cardWidth })
     }
