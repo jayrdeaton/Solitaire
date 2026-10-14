@@ -23,7 +23,7 @@ import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostL
 import { FLIGHT_SPRING } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
-import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { wasteFanScreenShift } from '@/components/overlayFrame'
 import { PileOverlay } from '@/components/PileOverlay'
@@ -68,7 +68,6 @@ import { withGameProviders } from '@/games/shared/withGameProviders'
 import { useSettings } from '@/hooks/useSettings'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 
-import { BOARD_MODEL } from './boardModel'
 import { CanfieldSettingsSection } from './CanfieldSettingsSection'
 import { buildCanfieldDealSequence } from './dealSequence'
 import { canAutoFinish, CanfieldState, createCanfieldController, findSafeAutoPlay, isDescendingAltColorCyclic, nextFinishMove } from './rules'
@@ -178,11 +177,9 @@ function CanfieldScreenInner() {
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
   const { contentWidth } = useGameLayout()
-  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TOP_ROW_UNITS)
-  // Portrait keeps the width-derived size untouched; the wide layout is only ~400pt tall, so there the
-  // cards shrink until a tableau column with room to grow fits (see boardModel.ts).
-  const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
-  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TOP_ROW_UNITS)
+  // Sized by the width alone, in both layouts: in the wide layout a column too long for the ~400pt of height scrolls
+  // rather than shrinking every card to fit it (Jay, 2026-10-14: big cards in landscape, and scroll a bit sometimes).
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TOP_ROW_UNITS)
   // Both rows' width: the 7 slots and the 6 gaps between them.
   const rowWidth = cardWidth * TOP_ROW_UNITS + gap * (TOP_ROW_UNITS - 1)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth)

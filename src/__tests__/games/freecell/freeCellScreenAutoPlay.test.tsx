@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
-import { AUTO_PLAY_STAGGER_MS, dropSpringFor, FINISH_STAGGER_MS, FLIGHT_SPRING, scaledMs, springSettleMs } from '@/components/dragdrop/dragSpring'
+import { AUTO_PLAY_STAGGER_MS, dropSpringFor, FINISH_RAMP_START_MS, FINISH_STAGGER_MS, finishGapMs, FLIGHT_SPRING, scaledMs, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
 import FreeCellScreen from '@/games/freecell/FreeCellScreen'
@@ -336,6 +336,16 @@ async function dragTo(cardId: string, to: PileRef) {
   })
 }
 
+/** The finish's take-offs, after the move that started it (`triggerStart`): each one its ramped gap (finishGapMs) after the one before, to
+ * within the harness's resolution. */
+function expectFinishRamp(triggerStart: number, starts: number[]) {
+  expect(starts[0] - triggerStart).toBeLessThan(finishGapMs(0) + 2 * STEP_MS)
+  for (let i = 1; i < starts.length; i++) {
+    expect(starts[i] - starts[i - 1]).toBeGreaterThanOrEqual(finishGapMs(i) - STEP_MS)
+    expect(starts[i] - starts[i - 1]).toBeLessThan(finishGapMs(i) + 2 * STEP_MS)
+  }
+}
+
 const CLUBS_FOUNDATION: PileRef = { zone: 'foundation', index: SUITS.indexOf('clubs') }
 const EMPTY_COLUMN: PileRef = { zone: 'tableau', index: 6 }
 const FREECELL: PileRef = { zone: 'freecell', index: 0 }
@@ -527,7 +537,7 @@ describe("FreeCell screen - the safe-card cascade needs the player's own play of
   })
 })
 
-describe("FreeCell screen - once every column is sorted, any move of the player's finishes the rest, at the finish's quicker pace", () => {
+describe("FreeCell screen - once every column is sorted, the player's foundation play finishes the rest, at a pace that ramps up", () => {
   it("a tap to a foundation on a finishable board sweeps the whole board up, the first card a stagger after the player's own", async () => {
     await mount(FINISHABLE())
     await flush(3000)
@@ -541,34 +551,41 @@ describe("FreeCell screen - once every column is sorted, any move of the player'
     expect(screen.getByTestId('fireworks')).toBeTruthy()
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
     expect(mockLog.shown).toHaveLength(1 + 51) // the tap, then every other card of the game
-    // The 51 finish cards leave a FINISH gap apart (to within one STEP_MS, the harness's resolution) - half the safe-card cascade's - the
-    // first a gap after the tap, while the tapped card is still in the air.
+    // The 51 finish cards ramp up: the first at the safe-card cascade's gap after the tap, while the tapped card is still in the air, each
+    // later gap shorter, down to half that.
     const [tapFlight, ...finish] = mockLog.flights
     expect(finish).toHaveLength(51)
     expect(finish[0].start).toBeLessThan(tapFlight.end)
-    for (let i = 1; i < finish.length; i++) expect(finish[i].start - finish[i - 1].start).toBeGreaterThanOrEqual(FINISH_STAGGER_MS - STEP_MS)
-    for (let i = 1; i < finish.length; i++) expect(finish[i].start - finish[i - 1].start).toBeLessThan(FINISH_STAGGER_MS + 2 * STEP_MS)
-    expect(FINISH_STAGGER_MS).toBeLessThan(AUTO_PLAY_STAGGER_MS)
-    // The whole board files away in about 51 finish gaps, not 51 auto-play gaps.
-    expect(finish[finish.length - 1].start - finish[0].start).toBeLessThan(50 * (FINISH_STAGGER_MS + STEP_MS))
+    expectFinishRamp(
+      tapFlight.start,
+      finish.map((f) => f.start)
+    )
+    expect(finish[1].start - finish[0].start).toBeGreaterThan(finish[50].start - finish[49].start + STEP_MS) // it really does speed up
+    // The whole board files away in well under 51 auto-play gaps.
+    expect(finish[finish.length - 1].start - finish[0].start).toBeLessThan(50 * AUTO_PLAY_STAGGER_MS * 0.65)
   })
 
-  it('a tap that moves a card to a column and leaves every column sorted starts it at once - no foundation play needed', async () => {
+  it('a tap that moves a card to a column and leaves every column sorted does not start it - the next foundation play does', async () => {
     await mount(ONE_MOVE_FROM_FINISHABLE())
 
     await tap(id('clubs', 2)) // 2 of clubs -> off the Ace, onto an empty column: now every column is sorted, nothing left to decide
+    await flush(5000)
+    expect(mockLog.shown).toEqual([id('clubs', 2)]) // only the tap's own card moved
+    expect(cardsOnBoard()).toBe(52)
+
+    await tap(id('clubs', 1)) // the Ace to its foundation
     await flush(10000)
     expect(cardsOnBoard()).toBe(0)
     expect(screen.getByTestId('win-banner')).toBeTruthy()
-    expect(mockLog.shown).toHaveLength(1 + 52) // the tap, then every card of the game
-    expect(mockLog.flights[1].start - mockLog.flights[0].start).toBeLessThan(FINISH_STAGGER_MS + 2 * STEP_MS) // the first one a finish gap after it
+    expect(mockLog.shown).toHaveLength(2 + 51) // the two taps, then every other card of the game
+    expect(mockLog.flights[2].start - mockLog.flights[1].start).toBeLessThan(finishGapMs(0) + 2 * STEP_MS) // the first one a gap after the foundation play
   })
 
   it("a card the player's own earlier move is still flying in to waits for it to land before going up (taken mid-air it would show twice)", async () => {
     await mount(CLUBS_LEFT_TWO_ON_ACE(), 13)
 
-    await tap(id('clubs', 2)) // off the Ace, onto an empty column: every column is sorted, so the finish starts...
-    await tap(id('clubs', 1)) // ...but the player taps the Ace up at once, before its first card, while the 2 is still flying: the finish wants the 2 next
+    await tap(id('clubs', 2)) // off the Ace, onto an empty column: every column is sorted...
+    await tap(id('clubs', 1)) // ...and the player taps the Ace up at once, while the 2 is still flying: the finish starts and wants the 2 next
     await flush(5000)
 
     const [columnFlight, aceFlight, ...finish] = mockLog.flights
@@ -579,15 +596,14 @@ describe("FreeCell screen - once every column is sorted, any move of the player'
     expect(cardsOnBoard()).toBe(0)
   })
 
-  it('a DRAG to a column that leaves every column sorted starts it too', async () => {
+  it('a DRAG to a column that leaves every column sorted does not start it either', async () => {
     await mount(ONE_MOVE_FROM_FINISHABLE())
 
     await dragTo(id('clubs', 2), EMPTY_COLUMN)
-    await flush(10000)
-    expect(cardsOnBoard()).toBe(0)
-    expect(screen.getByTestId('win-banner')).toBeTruthy()
-    expect(screen.getByTestId('fireworks')).toBeTruthy()
-    expect(mockLog.shown).toHaveLength(52) // every card of the game, none of them the drag's own flight
+    await flush(5000)
+    expect(cardsOnBoard()).toBe(52)
+    expect(mockLog.shown).toEqual([]) // nothing went up (the drag's own flight is not counted here)
+    expect(screen.queryByTestId('win-banner')).toBeNull()
   })
 
   it('a drag to the foundation on a sorted board starts it the same way', async () => {
@@ -599,17 +615,22 @@ describe("FreeCell screen - once every column is sorted, any move of the player'
     expect(mockLog.shown).toHaveLength(51) // every other card of the game
   })
 
-  it('a resumed board that is already sorted is left alone until the player moves - then any move of theirs, even to a freecell, starts it', async () => {
+  it('a resumed board that is already sorted is left alone until the player plays a card to a foundation - a move to a freecell does not start it', async () => {
     await mount(FINISHABLE())
     await flush(3000)
     expect(mockLog.shown).toEqual([])
     expect(cardsOnBoard()).toBe(52)
 
-    await dragTo(id('spades', 1), FREECELL) // still sorted: a freecell card goes up like any column top
+    await dragTo(id('spades', 1), FREECELL) // still sorted, but not a foundation play
+    await flush(3000)
+    expect(mockLog.shown).toEqual([])
+    expect(cardsOnBoard()).toBe(52)
+
+    await tap(id('clubs', 1))
     await flush(10000)
     expect(cardsOnBoard()).toBe(0)
     expect(screen.getByTestId('win-banner')).toBeTruthy()
-    expect(mockLog.shown).toHaveLength(52)
+    expect(mockLog.shown).toHaveLength(52) // the tap, then the other 51 (a freecell card goes up like any column top)
   })
 
   it('the last card leaves one stagger after the card before it, like every other - no pause in front of it - and the win cascade still waits for it to land', async () => {
@@ -869,7 +890,8 @@ describe('FreeCell screen - a card never moves without its own flight', () => {
 })
 
 describe('FreeCell finish pacing follows the flight pace', () => {
-  it('the finish sends a card every finish gap: half the auto-play gap, re-paced with the flights', () => {
+  it('the finish ramps from the auto-play gap to its top speed, half that, re-paced with the flights', () => {
+    expect(FINISH_RAMP_START_MS).toBe(AUTO_PLAY_STAGGER_MS)
     expect(FINISH_STAGGER_MS).toBe(AUTO_PLAY_STAGGER_MS / 2)
     expect(FINISH_STAGGER_MS).toBe(scaledMs(30))
   })

@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react-native'
 
-import { AUTO_PLAY_STAGGER_MS, FINISH_STAGGER_MS } from '@/components/dragdrop/dragSpring'
+import { AUTO_PLAY_STAGGER_MS, finishGapMs } from '@/components/dragdrop/dragSpring'
 import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
 import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit } from '@/engine/types'
@@ -665,7 +665,7 @@ describe('Forty Thieves screen - every auto-played step is its own undo step', (
   })
 })
 
-describe("Forty Thieves screen - once the board is solved, any move of the player's files the rest away, at the finish's quicker pace", () => {
+describe("Forty Thieves screen - once the board is solved, the player's foundation play files the rest away, at a pace that ramps up", () => {
   // Every card is home but the second deck's clubs 8 to King and diamonds 10 to King: their piles (4 and 5) hold the Ace to the 7
   // and the Ace to the 9.
   const foundations = (): Card[][] => [pile('clubs', 13), pile('diamonds', 13), pile('hearts', 13), pile('spades', 13), pile('clubs', 7, 1), pile('diamonds', 9, 1), pile('hearts', 13, 1), pile('spades', 13, 1)]
@@ -714,11 +714,12 @@ describe("Forty Thieves screen - once the board is solved, any move of the playe
     })
   }
 
-  /** Each take-off in `at` follows the one before it by a finish gap, to within the harness's resolution (STEP_MS). */
+  /** Each take-off in `at` follows the one before it by the finish's ramped gap (the n-th by finishGapMs(n - 1)), to within the
+   * harness's resolution (STEP_MS). */
   function expectFinishPace(at: number[]) {
     for (let i = 1; i < at.length; i++) {
-      expect(at[i] - at[i - 1]).toBeGreaterThanOrEqual(FINISH_STAGGER_MS - STEP_MS)
-      expect(at[i] - at[i - 1]).toBeLessThan(FINISH_STAGGER_MS + 2 * STEP_MS)
+      expect(at[i] - at[i - 1]).toBeGreaterThanOrEqual(finishGapMs(i - 1) - STEP_MS)
+      expect(at[i] - at[i - 1]).toBeLessThan(finishGapMs(i - 1) + 2 * STEP_MS)
     }
   }
 
@@ -726,37 +727,37 @@ describe("Forty Thieves screen - once the board is solved, any move of the playe
     mockSettings.autoMove = true
   })
 
-  it('a tap that moves a card to a column and leaves the board solved starts it at once: every card flies once, a finish gap apart, and the game is won', async () => {
+  it('a tap that moves a card to a column and leaves the board solved does not start it: the next foundation play does, every card flies once, and the game is won', async () => {
     await mount(NINE_ON_EIGHT(), [], 10)
     await flush(3000)
     expect(mockLog.shown).toEqual([]) // nothing moves on its own
 
-    await press(`card-${id('clubs', 9, 1)}`) // onto the 10: no foundation play, but nothing is left to decide
+    await press(`card-${id('clubs', 9, 1)}`) // onto the 10: nothing is left to decide, but it is not a foundation play
+    await flush(3000)
+    expect(mockLog.shown).toEqual([id('clubs', 9, 1)])
+
+    await press(`card-${id('clubs', 8, 1)}`) // to its foundation
     await flush(3000)
 
-    expect(mockLog.shown).toEqual([id('clubs', 9, 1), ...FINISH_ORDER]) // the tap, then every card of the game exactly once
+    expect(mockLog.shown).toEqual([id('clubs', 9, 1), ...FINISH_ORDER]) // the two taps, then every other card of the game exactly once
     expect(cardsOnBoard()).toBe(0)
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('win-banner')).toBeTruthy()
-    expect(moves()).toBe('11') // the tap and each finished card
-    const [tapAt, ...finishAt] = mockLog.shownAt
-    expect(finishAt[0] - tapAt).toBeLessThan(FINISH_STAGGER_MS + 2 * STEP_MS) // the first card a finish gap after the tap
-    expectFinishPace(finishAt)
-    expect(FINISH_STAGGER_MS).toBeLessThan(AUTO_PLAY_STAGGER_MS)
+    expect(moves()).toBe('11') // the two taps and each finished card
+    expectFinishPace(mockLog.shownAt.slice(1)) // the first card one gap after the foundation play, each later gap shorter
   })
 
-  it('a DRAG to a column that leaves the board solved starts it too', async () => {
+  it('a DRAG to a column that leaves the board solved does not start it either', async () => {
     await mount(NINE_ON_EIGHT(), [], 10)
 
     await dragTo(id('clubs', 9, 1), COLUMN_0)
     await flush(3000)
 
-    expect(mockLog.shown).toEqual(FINISH_ORDER)
-    expectFinishPace(mockLog.shownAt)
-    expect(mockRecordWon).toHaveBeenCalledTimes(1)
+    expect(mockLog.shown).toEqual([])
+    expect(mockRecordWon).not.toHaveBeenCalled()
   })
 
-  it('a tap that moves the last card off the waste onto a column starts it too', async () => {
+  it('a tap that moves the last card off the waste onto a column does not start it either', async () => {
     await mount(NINE_ON_WASTE(), [], 10)
     await flush(3000)
     expect(mockLog.shown).toEqual([]) // every card could go up, but one is still on the waste: not solved
@@ -764,20 +765,18 @@ describe("Forty Thieves screen - once the board is solved, any move of the playe
     await press(`waste-${id('clubs', 9, 1)}`)
     await flush(3000)
 
-    expect(mockLog.shown).toEqual([id('clubs', 9, 1), ...FINISH_ORDER])
-    expectFinishPace(mockLog.shownAt.slice(1))
-    expect(mockRecordWon).toHaveBeenCalledTimes(1)
+    expect(mockLog.shown).toEqual([id('clubs', 9, 1)])
+    expect(mockRecordWon).not.toHaveBeenCalled()
   })
 
-  it('a DRAG of the last waste card onto a column starts it too', async () => {
+  it('a DRAG of the last waste card onto a column does not start it either', async () => {
     await mount(NINE_ON_WASTE(), [], 10)
 
     await dragWasteTo(NINE(), COLUMN_0)
     await flush(3000)
 
-    expect(mockLog.shown).toEqual(FINISH_ORDER)
-    expectFinishPace(mockLog.shownAt)
-    expect(mockRecordWon).toHaveBeenCalledTimes(1)
+    expect(mockLog.shown).toEqual([])
+    expect(mockRecordWon).not.toHaveBeenCalled()
   })
 
   it('a foundation play on a solved board sends the rest up at the finish pace, each card once: the cascade it also sets off steps aside', async () => {
@@ -835,7 +834,7 @@ describe("Forty Thieves screen - once the board is solved, any move of the playe
     for (let i = 1; i < cascadeAt.length; i++) expect(cascadeAt[i] - cascadeAt[i - 1]).toBeGreaterThanOrEqual(AUTO_PLAY_STAGGER_MS - STEP_MS)
   })
 
-  it('a resumed solved board sits until the player moves - then any move of theirs, even to a column, starts it', async () => {
+  it('a resumed solved board sits until the player plays a card to a foundation - a move to a column does not start it', async () => {
     await mount(NINE_APART(), [], 10)
     await flush(3000)
     expect(mockLog.shown).toEqual([])
@@ -843,7 +842,10 @@ describe("Forty Thieves screen - once the board is solved, any move of the playe
 
     await press(`card-${id('clubs', 9, 1)}`) // onto the 10: still solved
     await flush(3000)
+    expect(mockLog.shown).toEqual([id('clubs', 9, 1)])
 
+    await press(`card-${id('clubs', 8, 1)}`)
+    await flush(3000)
     expect(mockLog.shown).toEqual([id('clubs', 9, 1), ...FINISH_ORDER])
     expectFinishPace(mockLog.shownAt.slice(1))
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
@@ -863,10 +865,10 @@ describe("Forty Thieves screen - once the board is solved, any move of the playe
     expect(screen.queryByTestId(`card-${id('diamonds', 13, 1)}`)).not.toBeNull() // the last card is back on its column, and stays
   })
 
-  it("an undo pressed mid-finish stops it; the solved board it leaves sits until the player's next move starts it again", async () => {
+  it("an undo pressed mid-finish stops it; the solved board it leaves sits until the player's next foundation play starts it again", async () => {
     await mount(SOLVED(), [], 10)
     await press(`card-${id('clubs', 8, 1)}`)
-    await flush(FINISH_STAGGER_MS * 2 + STEP_MS) // the 9 and the 10 have gone up after the 8
+    await flush(finishGapMs(0) + finishGapMs(1) + STEP_MS) // the 9 and the 10 have gone up after the 8
     expect(mockLog.shown).toEqual(FINISH_ORDER.slice(0, 3))
 
     await press('undo')
@@ -875,7 +877,7 @@ describe("Forty Thieves screen - once the board is solved, any move of the playe
     expect(cardsOnBoard()).toBe(8)
     expect(mockRecordWon).not.toHaveBeenCalled()
 
-    await press(`card-${id('clubs', 10, 1)}`) // the player's own move
+    await press(`card-${id('clubs', 10, 1)}`) // the player's own foundation play
     await flush(3000)
     expect(mockLog.shown.slice(4)).toEqual(FINISH_ORDER.slice(2)) // the 10 again (theirs), then the rest
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
@@ -885,7 +887,7 @@ describe("Forty Thieves screen - once the board is solved, any move of the playe
     mockFlightMs = 10 // every flight lands well inside the finish's gap
     await mount(SOLVED(), [], 10)
     await press(`card-${id('clubs', 8, 1)}`)
-    await flush(70) // the 8 and the 9 are up and have landed; the finish is waiting out its gap before the 10
+    await flush(finishGapMs(0) + 20) // the 8 and the 9 are up and have landed; the finish is waiting out its gap before the 10
     expect(mockLog.shown).toEqual(FINISH_ORDER.slice(0, 2))
     expect(mockLog.inAir).toBe(0)
 
@@ -901,7 +903,7 @@ describe("Forty Thieves screen - once the board is solved, any move of the playe
 
   it('a new deal that happens to be solved is not filed away either', async () => {
     await mount(NINE_ON_EIGHT(), [], 10)
-    await press(`card-${id('diamonds', 10, 1)}`) // a player's move: the finish may follow the next solved board, but this one isn't (the 8 is buried)
+    await press(`card-${id('diamonds', 10, 1)}`) // a foundation play: the finish may follow the next solved board, but this one isn't (the 8 is buried)
     await flush(3000)
     expect(mockLog.shown).toEqual([id('diamonds', 10, 1)])
     const newController = fortyThievesRules.createFortyThievesController

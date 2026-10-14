@@ -24,7 +24,7 @@ import { measureView } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
-import { useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
@@ -60,7 +60,6 @@ import { withGameProviders } from '@/games/shared/withGameProviders'
 import { useSettings } from '@/hooks/useSettings'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 
-import { BOARD_MODEL } from './boardModel'
 import { buildScorpionDealSequence } from './dealSequence'
 import { createScorpionController, ScorpionState } from './rules'
 import { ScorpionSettingsSection } from './ScorpionSettingsSection'
@@ -123,11 +122,9 @@ function ScorpionScreenInner() {
   // so the row must have room for a packet-sized column on BOTH sides of it: the width-derived size/gap
   // budget 7 + 2 columns there. Portrait keeps its 7 (the packet is in the top row).
   const widthColumns = isWide ? TABLEAU_COLUMNS + 2 : TABLEAU_COLUMNS
-  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, widthColumns)
-  // The width-derived size in portrait (unchanged); in the wide layout also capped so the tallest
-  // starting column still fits the ~400pt of height - see boardModel.ts.
-  const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
-  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, widthColumns)
+  // Sized by the width alone, in both layouts: in the wide layout a column too long for the ~400pt of height scrolls
+  // rather than shrinking every card to fit it (Jay, 2026-10-14: big cards in landscape, and scroll a bit sometimes).
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, widthColumns)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, { topRowCards: isWide ? 0 : 1 })
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCountRef, and undoBusyRef - see
   // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual

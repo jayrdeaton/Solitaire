@@ -85,13 +85,15 @@ function AcesUpScreenInner() {
   const { info: infoToast } = useToast()
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
-  const { contentWidth, availableHeight } = useGameLayout()
+  const { contentWidth, availableHeight, isWide } = useGameLayout()
   const rowWidth = contentWidth - GAME_CONTENT_PADDING * 2
   const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(rowWidth, NUM_PILES)
-  // Capped so a pile as long as real games make it still fits the height (see boardModel.ts) - in BOTH layouts, unlike
-  // the other games: with only four piles, the width-derived card on a short phone (88pt on a 640pt Android) ran a
-  // pile past the bottom by its sixth card, in most games. Tall phones stay width-bound, so their cards are unchanged.
-  const cardWidth = fitCardWidthToHeight(widthCardWidth, availableHeight, BOARD_MODEL)
+  // In portrait, capped so a pile as long as real games make it still fits the height (see boardModel.ts), unlike the
+  // other games: with only four piles, the width-derived card on a short phone (88pt on a 640pt Android) ran a pile past
+  // the bottom by its sixth card, in most games. Tall phones stay width-bound, so their cards are unchanged. The wide
+  // layout keeps the width-derived size, like every column game, and a long pile scrolls (Jay, 2026-10-14: big cards in
+  // landscape).
+  const cardWidth = isWide ? widthCardWidth : fitCardWidthToHeight(widthCardWidth, availableHeight, BOARD_MODEL)
   const gap = cardWidth < widthCardWidth ? fittedGap(rowWidth, cardWidth, NUM_PILES) : widthGap
   // Spans the same width as pilesRow below (4 piles + 3 gaps) so topRow's own space-between can
   // put the discard pile and stock at its two ends, mirroring Pyramid's controlRow/triangle.

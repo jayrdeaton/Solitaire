@@ -16,7 +16,7 @@ import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostL
 import { FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
-import { TABLEAU_ROW_PADDING_BOTTOM, useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { TABLEAU_ROW_PADDING_BOTTOM, useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { OverlayFrame, toLocal, useOverlayFrame } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
@@ -52,7 +52,6 @@ import { withGameProviders } from '@/games/shared/withGameProviders'
 import { useSettings } from '@/hooks/useSettings'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 
-import { BOARD_MODEL } from './boardModel'
 import { buildSpiderDealSequence } from './dealSequence'
 import { createSpiderController, SpiderState } from './rules'
 import { SpiderSettingsSection } from './SpiderSettingsSection'
@@ -338,11 +337,9 @@ function SpiderScreenInner() {
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
   const { contentWidth } = useGameLayout()
-  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
-  // The width-derived size in portrait (unchanged); in the wide layout also capped so the tallest
-  // starting column still fits the ~400pt of height - see boardModel.ts.
-  const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
-  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
+  // Sized by the width alone, in both layouts: in the wide layout a column too long for the ~400pt of height scrolls
+  // rather than shrinking every card to fit it (Jay, 2026-10-14: big cards in landscape, and scroll a bit sometimes).
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS)
   // Adapts to the real window height the same way every other PileView-using game does (see
   // useTableauMaxHeight's own doc comment).
   const tableauMaxHeight = useTableauMaxHeight(cardWidth)

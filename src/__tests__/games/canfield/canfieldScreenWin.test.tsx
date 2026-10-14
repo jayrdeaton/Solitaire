@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react-native'
 
-import { AUTO_PLAY_STAGGER_MS, FINISH_STAGGER_MS } from '@/components/dragdrop/dragSpring'
+import { AUTO_PLAY_STAGGER_MS, finishGapMs } from '@/components/dragdrop/dragSpring'
 import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
 import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
@@ -760,15 +760,16 @@ describe('Canfield screen - every auto-played step is its own undo step', () => 
   })
 })
 
-describe("Canfield screen - once the board is solved, any move of the player's files the rest away at the finish's quicker pace", () => {
+describe("Canfield screen - once the board is solved, the player's foundation play files the rest away, at a pace that ramps up", () => {
   const moves = () => screen.getByTestId('moves').props.children as number
   const cardsOnBoard = () => screen.queryAllByTestId(/^card-|^reserve-|^waste-|^stock-/).length
 
-  /** Every gap between one take-off and the next is the finish's, to within the harness's resolution (STEP_MS). */
+  /** Every gap between one take-off and the next is the finish's, ramping up (the n-th its finishGapMs(n - 1)), to within the harness's
+   * resolution (STEP_MS). */
   function expectFinishPace(times: number[]) {
     for (let i = 1; i < times.length; i++) {
-      expect(times[i] - times[i - 1]).toBeGreaterThanOrEqual(FINISH_STAGGER_MS - STEP_MS)
-      expect(times[i] - times[i - 1]).toBeLessThan(FINISH_STAGGER_MS + 2 * STEP_MS)
+      expect(times[i] - times[i - 1]).toBeGreaterThanOrEqual(finishGapMs(i - 1) - STEP_MS)
+      expect(times[i] - times[i - 1]).toBeLessThan(finishGapMs(i - 1) + 2 * STEP_MS)
     }
   }
 
@@ -800,7 +801,7 @@ describe("Canfield screen - once the board is solved, any move of the player's f
   /** The order the finish sends the cards up in once the club J is on the diamond Q (the first column top that can go, each time). */
   const FINISH_ORDER = [id('clubs', 10), id('clubs', 11), id('diamonds', 11), id('diamonds', 12), id('clubs', 12), id('clubs', 13), id('diamonds', 13)]
 
-  it('a tap that sends the last reserve card to a column starts it at once: every card left goes up exactly once, a finish gap apart', async () => {
+  it('a tap that sends the last reserve card to a column does not start it: the next foundation play does, and every card left goes up exactly once', async () => {
     mockAutoMove = true
     await mount(J_IN_RESERVE(), [], 7)
     await flush(2000)
@@ -808,32 +809,32 @@ describe("Canfield screen - once the board is solved, any move of the player's f
 
     await press(`reserve-${id('clubs', 11)}`)
     await flush(3000)
+    expect(mockLog.shown).toEqual([id('clubs', 11)]) // the board is solved, but nothing goes up by itself
 
-    expect(mockLog.shown).toEqual([id('clubs', 11), ...FINISH_ORDER]) // the tap, then every card left, none of them twice
+    await press(`card-${id('clubs', 10)}`) // straight up onto the 9
+    await flush(3000)
+
+    expect(mockLog.shown).toEqual([id('clubs', 11), ...FINISH_ORDER]) // the two taps, then every card left, none of them twice
     expect(mockLog.hidden).toBe(0)
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('win-banner')).toBeTruthy()
-    expect(moves()).toBe(8) // the player's move and each finished card
-    // The first card a finish gap after the tap (the club 10, while the tapped J is still in the air), then the same gap every time -
-    // half the safe-card cascade's. The J itself waits for its own flight onto the column to land, which it has by its turn.
-    const [tap, ...finish] = mockLog.shownAt
-    expectFinishPace([tap, ...finish])
-    expect(FINISH_STAGGER_MS).toBeLessThan(AUTO_PLAY_STAGGER_MS)
+    expect(moves()).toBe(8) // the player's two moves and each finished card
+    // The first card one gap after the foundation play (the club J, while the 10 is still in the air), each gap after it shorter.
+    expectFinishPace(mockLog.shownAt.slice(1))
   })
 
-  it("a drag does the same - the waste's last card dragged onto a column", async () => {
+  it("a drag does not start it either - the waste's last card dragged onto a column", async () => {
     mockAutoMove = true
     await mount(board({ tableau: COLUMNS(), waste: [card('clubs', 11)], foundation: HOME() }), [], 7)
 
     await drop('waste', card('clubs', 11), { zone: 'tableau', index: 0 })
     await flush(3000)
 
-    expect(mockLog.shown).toEqual(FINISH_ORDER) // the drag's own ghost was handed in, not shown: these are the finish's
-    expect(mockRecordWon).toHaveBeenCalledTimes(1)
-    expectFinishPace(mockLog.shownAt)
+    expect(mockLog.shown).toEqual([]) // the drag's own ghost was handed in, not shown
+    expect(mockRecordWon).not.toHaveBeenCalled()
   })
 
-  it('and so does a column-to-column drag that frees the card the rest was waiting on', async () => {
+  it('nor does a column-to-column drag that frees the card the rest was waiting on', async () => {
     mockAutoMove = true
     // The club J lies on the club 10 it has to follow up: nothing can clear until it moves.
     await mount(board({ tableau: [COLUMNS()[0], [card('diamonds', 13), card('clubs', 12), card('diamonds', 11)], [card('clubs', 10), card('clubs', 11)]], foundation: HOME() }), [], 7)
@@ -845,9 +846,8 @@ describe("Canfield screen - once the board is solved, any move of the player's f
     })
     await flush(3000)
 
-    expect(mockLog.shown).toEqual([id('diamonds', 11), id('clubs', 10), id('clubs', 11), id('diamonds', 12), id('clubs', 12), id('clubs', 13), id('diamonds', 13)])
-    expect(mockRecordWon).toHaveBeenCalledTimes(1)
-    expectFinishPace(mockLog.shownAt)
+    expect(mockLog.shown).toEqual([])
+    expect(mockRecordWon).not.toHaveBeenCalled()
   })
 
   it("a play to a foundation on a solved board files the rest away at the finish's pace, never also at the cascade's - no card flies twice", async () => {
@@ -859,7 +859,7 @@ describe("Canfield screen - once the board is solved, any move of the player's f
 
     expect(mockLog.shown).toEqual([id('clubs', 10), id('diamonds', 11), id('diamonds', 12), id('clubs', 11), id('clubs', 12), id('clubs', 13), id('diamonds', 13)])
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
-    expectFinishPace(mockLog.shownAt) // the first a finish gap after the tap, not the cascade's longer one
+    expectFinishPace(mockLog.shownAt) // the finish's ramp from the tap on: no cascade card in between
   })
 
   it('the cascade a foundation play sets off hands over to the finish the moment it leaves the board solved', async () => {
@@ -924,7 +924,7 @@ describe("Canfield screen - once the board is solved, any move of the player's f
     expect(mockRecordWon).not.toHaveBeenCalled()
   })
 
-  it('a resumed solved board sits until the player moves - then any move, here a card onto another column, starts it', async () => {
+  it('a resumed solved board sits until the player plays a card to a foundation - a card onto another column does not start it', async () => {
     mockAutoMove = true
     await mount(SOLVED(), [], 7)
     await flush(3000)
@@ -932,16 +932,19 @@ describe("Canfield screen - once the board is solved, any move of the player's f
 
     await press(`card-${id('clubs', 11)}`) // no foundation takes it: onto the diamond Q
     await flush(3000)
+    expect(mockLog.shown).toEqual([id('clubs', 11)])
 
+    await press(`card-${id('clubs', 10)}`)
+    await flush(3000)
     expect(mockLog.shown).toEqual([id('clubs', 11), ...FINISH_ORDER])
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
-    expectFinishPace(mockLog.shownAt)
+    expectFinishPace(mockLog.shownAt.slice(1))
   })
 
   it('undoing the cards it sent up leaves each where it lands: nothing goes back up by itself, Undo after Undo', async () => {
     mockAutoMove = true
-    await mount(J_IN_RESERVE(), [], 7)
-    await press(`reserve-${id('clubs', 11)}`)
+    await mount(SOLVED(), [], 7)
+    await press(`card-${id('clubs', 10)}`)
     await flush(3000)
     expect(cardsOnBoard()).toBe(0)
 
@@ -959,30 +962,30 @@ describe("Canfield screen - once the board is solved, any move of the player's f
     expect(screen.queryByTestId('win-banner')).toBeNull()
   })
 
-  it('an undo pressed while it is running stops it, it does not start again by itself, and the next move of the player starts it again', async () => {
+  it('an undo pressed while it is running stops it, it does not start again by itself, and the next foundation play starts it again', async () => {
     mockAutoMove = true
-    await mount(J_IN_RESERVE(), [], 7)
-    await press(`reserve-${id('clubs', 11)}`)
-    await flush(110) // the club 10 and the club J have gone up
-    expect(mockLog.shown).toEqual([id('clubs', 11), id('clubs', 10), id('clubs', 11)])
+    await mount(SOLVED(), [], 7)
+    await press(`card-${id('clubs', 10)}`)
+    await flush(finishGapMs(0) + 20) // the club 10 and the finish's first card, the diamond J, have gone up
+    expect(mockLog.shown).toEqual([id('clubs', 10), id('diamonds', 11)])
 
     await press('undo')
     await flush(3000)
-    expect(mockLog.shown).toEqual([id('clubs', 11), id('clubs', 10), id('clubs', 11), id('clubs', 11)]) // only the J back down
-    expect(foundationTop('clubs')).toBe(id('clubs', 10))
+    expect(mockLog.shown).toEqual([id('clubs', 10), id('diamonds', 11), id('diamonds', 11)]) // only the J back down
+    expect(foundationTop('diamonds')).toBe(id('diamonds', 10))
     expect(cardsOnBoard()).toBe(6)
 
-    await press(`card-${id('diamonds', 11)}`) // the player's next move: the diamond J up
+    await press(`card-${id('diamonds', 11)}`) // the player's next foundation play: the diamond J up
     await flush(3000)
     expect(cardsOnBoard()).toBe(0)
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
   })
 
-  it('undoing a move that left the board unsolved, back onto a solved one, does not start it - even an undo with no flight to wait for', async () => {
+  it('undoing a column move that left the board unsolved, back onto a solved one, does not start it - even an undo with no flight to wait for', async () => {
     mockAutoMove = true
     // Solved - until the club J goes onto the diamond Q, burying the club 10 it has to follow up (the 10 lies under the Q).
     await mount(board({ tableau: [[card('clubs', 10), card('diamonds', 12)], [card('clubs', 11)], [card('clubs', 13), card('diamonds', 13)], [card('clubs', 12)]], foundation: [pile('clubs', 9), pile('diamonds', 11), pile('hearts', 13), pile('spades', 13)] }), [], 6)
-    await press(`card-${id('clubs', 11)}`) // a move of the player's: the finish may start once the board is solved, and waits
+    await press(`card-${id('clubs', 11)}`) // a move of the player's, not to a foundation
     await flush(500)
     expect(mockLog.shown).toEqual([id('clubs', 11)])
 
@@ -996,24 +999,24 @@ describe("Canfield screen - once the board is solved, any move of the player's f
     expect(foundationTop('clubs')).toBe(id('clubs', 9))
   })
 
-  it('a new deal that happens to be solved is not filed away, even while a move of the player has the finish waiting for one', async () => {
+  it('a new deal that happens to be solved is not filed away, even while a foundation play of the player has the finish waiting for one', async () => {
     mockAutoMove = true
-    // The move onto the diamond Q turns over the reserve's last card: not solved, so the finish waits for the board to be.
+    // The reserve still holds a face-down card under the club J: not solved, so the finish the foundation play allows waits.
     await mount(board({ tableau: COLUMNS(), reserve: [{ ...card('hearts', 13), faceUp: false }, card('clubs', 11)], foundation: [pile('clubs', 9), pile('diamonds', 10), pile('hearts', 12), pile('spades', 13)] }), [], 7)
-    await press(`reserve-${id('clubs', 11)}`)
-    await flush(500)
-    expect(mockLog.shown).toEqual([id('clubs', 11)])
+    await press(`card-${id('clubs', 10)}`)
+    await flush(50) // before its cascade's first card
+    expect(mockLog.shown).toEqual([id('clubs', 10)])
 
     mockNextDeal = SOLVED()
     await press('new-game')
     await flush(3000)
 
-    expect(mockLog.shown).toEqual([id('clubs', 11)]) // no card of the new deal went up
+    expect(mockLog.shown).toEqual([id('clubs', 10)]) // no card of the new deal went up
     expect(cardsOnBoard()).toBe(7)
     expect(mockRecordWon).not.toHaveBeenCalled()
   })
 
-  it('a card the player takes back off a foundation onto a solved board is not sent straight back up; their next move starts it again', async () => {
+  it('a card the player takes back off a foundation onto a solved board is not sent straight back up; their next foundation play starts it again', async () => {
     mockAutoMove = true
     await mount(SOLVED(), [], 7)
 
@@ -1032,23 +1035,23 @@ describe("Canfield screen - once the board is solved, any move of the player's f
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
   })
 
-  it('a card the player takes back off a foundation while it is running stops it there; their next move starts it again', async () => {
+  it('a card the player takes back off a foundation while it is running stops it there; their next foundation play starts it again', async () => {
     mockAutoMove = true
     mockFlightMs = 10 // each card lands long before the next one leaves, so the one taken back is really there to take
-    await mount(J_IN_RESERVE(), [], 7)
-    await press(`reserve-${id('clubs', 11)}`)
-    await flushUntil(() => mockLog.shown.length === 3 && underGhost('clubs') === 'none', 200)
-    expect(mockLog.shown).toEqual([id('clubs', 11), id('clubs', 10), id('clubs', 11)]) // the tap, then the club 10 and J up, and landed
+    await mount(SOLVED(), [], 7)
+    await press(`card-${id('clubs', 10)}`)
+    await flushUntil(() => mockLog.shown.length === 2 && underGhost('diamonds') === 'none', 200)
+    expect(mockLog.shown).toEqual([id('clubs', 10), id('diamonds', 11)]) // the tap, then the diamond J up, and landed
 
-    await drop('foundation-clubs', card('clubs', 11), { zone: 'tableau', index: 0 }) // the J back down onto the diamond Q
+    await drop('foundation-diamonds', card('diamonds', 11), { zone: 'tableau', index: 1 }) // the J back down onto the club Q
     await flush(3000)
-    expect(mockLog.shown).toEqual([id('clubs', 11), id('clubs', 10), id('clubs', 11)]) // still solved, but nothing else went up
+    expect(mockLog.shown).toEqual([id('clubs', 10), id('diamonds', 11)]) // still solved, but nothing else went up
     expect(foundationTop('clubs')).toBe(id('clubs', 10))
     expect(foundationTop('diamonds')).toBe(id('diamonds', 10))
     expect(cardsOnBoard()).toBe(6)
-    expect(moves()).toBe(4) // the tap, the finish's two cards and the drop
+    expect(moves()).toBe(3) // the tap, the finish's card and the drop
 
-    await press(`card-${id('clubs', 11)}`) // up again, by the player this time: the rest follows
+    await press(`card-${id('diamonds', 11)}`) // up again, by the player this time: the rest follows
     await flush(3000)
     expect(cardsOnBoard()).toBe(0)
     expect(mockRecordWon).toHaveBeenCalledTimes(1)

@@ -16,7 +16,7 @@ import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { DropZone } from '@/components/dragdrop/DropZone'
 import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
-import { CARD_HEIGHT_RATIO, useFittedCardWidth, useFittedGap, useGameLayout } from '@/components/gameLayout'
+import { CARD_HEIGHT_RATIO, useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { rectOffsetToScreenPoint } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
@@ -58,7 +58,6 @@ import { useSettings } from '@/hooks/useSettings'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 
 import { canAutoFinish, nextFinishMove, nextSafeCascadeStep } from './autoPlay'
-import { BOARD_MODEL } from './boardModel'
 import { buildFreeCellDealSequence } from './dealSequence'
 import { countEmptyFreecells, countEmptyTableauColumns, FreeCellController, FreeCellState, maxSupermoveCount, moveHeadCard } from './rules'
 const TABLEAU_COLUMNS = 8
@@ -156,11 +155,9 @@ function FreeCellScreenInner() {
   const rotation = useRotation()
   // The tableau's gap floor is doubled so the top row can squeeze its foundations and freecells to half of it and
   // pool the rest between the two groups - see SPLIT_TOP_ROW_MIN_GAP.
-  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, SPLIT_TOP_ROW_MIN_GAP)
-  // The width-derived size in portrait (unchanged); in the wide layout also shrunk until the whole board
-  // (top row + the tallest starting column) fits the window's short axis - see boardModel.ts.
-  const cardWidth = useFittedCardWidth(widthCardWidth, BOARD_MODEL)
-  const gap = useFittedGap(widthGap, widthCardWidth, cardWidth, contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, SPLIT_TOP_ROW_MIN_GAP)
+  // Sized by the width alone, in both layouts: in the wide layout a column too long for the ~400pt of height scrolls
+  // rather than shrinking every card to fit it (Jay, 2026-10-14: big cards in landscape, and scroll a bit sometimes).
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, TABLEAU_COLUMNS, SPLIT_TOP_ROW_MIN_GAP)
   const topRowGroupGap = splitTopRowGroupGap(gap)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth)
   const ghost = useDragGhost()
