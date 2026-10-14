@@ -72,3 +72,9 @@ npx expo export --platform web
 Implemented: all 4 games fully playable end-to-end (deal, legal moves, win detection, undo, timer, per-game win/streak stats, Klondike draw-1/draw-3 and Spider 1/2/4-suit difficulty settings).
 
 Not yet built (ideas for later): drag gestures/animations, card-flip/win-celebration animations, actual sound *audio* (the settings toggle currently drives haptic feedback only - see [Theming & feedback](#theming--feedback) - wiring real sound effects needs `expo-audio` plus sound assets this project doesn't have yet), hint button (the rules layer already exposes `legalMoves`, just needs a "show me a move" UI), local multiplayer (parked as a phase 2 - likely a head-to-head timed race using a peer-to-peer connection so it stays server-free).
+
+## License
+
+The code is released under the MIT License, see [LICENSE](LICENSE).
+
+The game's name, logo, and icons, and the original artwork and audio in this repository, are not covered by that license and remain all rights reserved. If you fork it, please give your version its own name and look.
