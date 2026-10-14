@@ -16,7 +16,7 @@ import { StyleSheet, View } from 'react-native'
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
-import { measureView } from '@/components/dealing/measureView'
+import { measureView, ScreenPoint } from '@/components/dealing/measureView'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { FLIGHT_SPRING } from '@/components/dragdrop/dragSpring'
@@ -880,49 +880,78 @@ function CanfieldScreenInner() {
     const current = stateRef.current
     if (!current || !controllerRef.current.drawStock) return
     if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
-    const result = controllerRef.current.drawStock(current)
-    if (!result) return
+    const planned = controllerRef.current.drawStock(current)
+    if (!planned) return
     startFlights(1)
     // A draw is the player's, but it is not a play: it never sets auto-play off, and it stops a cascade
-    // still running from their last play, so a card they just drew is theirs to find and play. The
-    // finish needs nothing here: a draw or a recycle never leaves the board solved (the waste or the
-    // stock still holds a card).
-    if (!opts?.sweep) {
-      session.registerMove()
-      cascade.disarm()
+    // still running from their last play, so a card they just drew is theirs to find and play. Stopped
+    // at the tap, before the measurement below, so no auto-played card can go up in between. The finish
+    // needs nothing here: a draw or a recycle never leaves the board solved (the waste or the stock still
+    // holds a card).
+    if (!opts?.sweep) cascade.disarm()
+
+    // A recycle (nothing flies) and a draw-3 fan (its deal-style flight measures once it has committed -
+    // see the [state]-effect above) have nothing to measure first, so they commit right here, on the
+    // board as tapped. A single card flies from the stock pile, measured first, and what it actually
+    // draws is worked out from the board as it is once the measurement is back (Pyramid's
+    // handleDrawStock does the same): computed before the await and committed after it, two quick
+    // taps both drew the SAME card (two moves and two undo entries for it), and a tap-to-move
+    // committed meanwhile was undone in state while its ghost flew on.
+    const single = !!top(planned.waste) && planned.waste.length - current.waste.length === 1
+    let board = current
+    let result = planned
+    let origin: ScreenPoint | null = null
+    if (single) {
+      const gen = dealTokenRef.current
+      origin = await measureView(stockViewRef.current)
+      // A New Game or restore mid-measurement replaced the board and already dropped this claim
+      // (resetFlightConcurrency) - drop the draw too, rather than draw from the new deal.
+      if (dealTokenRef.current !== gen) return
+      // The cascade's own draw (a sweep) must not commit once the player's move has ended the cascade, or over a board that
+      // moved on while it was measuring (its step was worked out for the board it started from).
+      if (opts?.sweep && (!cascade.isArmed() || stateRef.current !== current)) {
+        settleFlight()
+        return
+      }
+      // Re-read and committed below in one synchronous stretch, so nothing can commit in between.
+      const latest = stateRef.current
+      const redrawn = latest && controllerRef.current.drawStock(latest)
+      if (!latest || !redrawn) {
+        settleFlight()
+        return
+      }
+      board = latest
+      result = redrawn
     }
+    // Counted here, with the draw that really happens - not at the tap, whose draw may have been dropped.
+    if (!opts?.sweep) session.registerMove()
 
     const drawnCard = top(result.waste)
     if (!drawnCard) {
       // Recycling the waste back into the stock, not a single card being drawn - nothing
       // card-shaped to fly, so undo just reverts this instantly (see MoveInfo | null above).
-      pushUndo(current, null)
+      pushUndo(board, null)
       commitState(result)
       settleFlight()
       return
     }
 
-    const drawnCount = result.waste.length - current.waste.length
+    const drawnCount = result.waste.length - board.waste.length
     const move: MoveInfo = { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: drawnCount, anchorCardId: drawnCard.id }
 
+    // A fan - drawn at the tap, or (rarely) by a single-card tap that was measuring when a recycle
+    // committed ahead of it and refilled the stock.
     if (drawnCount > 1) {
       const drawnCards = result.waste.slice(result.waste.length - drawnCount) // oldest -> newest/top
-      pushUndo(current, move)
+      pushUndo(board, move)
       const flyingId = beginFlying({ zone: 'waste', index: 0 }, drawnCount)
       pendingDealDrawRef.current.push({ topCardId: drawnCard.id, drawnCards, gen: dealTokenRef.current, flyingId })
       commitState(result)
       return
     }
 
-    const origin = await measureView(stockViewRef.current)
-    // The cascade's own draw (a sweep) must not commit once the player's move has ended the cascade, or over a board that
-    // moved on while it was measuring (committing `result` would undo whatever landed meanwhile).
-    if (opts?.sweep && (!cascade.isArmed() || stateRef.current !== current)) {
-      settleFlight()
-      return
-    }
     if (!origin) {
-      pushUndo(current, move)
+      pushUndo(board, move)
       commitState(result)
       settleFlight()
       return
@@ -936,7 +965,7 @@ function CanfieldScreenInner() {
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
 
-    pushUndo(current, move)
+    pushUndo(board, move)
     commitState(result)
     pendingFlightRef.current.push({ cardId: drawnCard.id, to: { zone: 'waste', index: 0 }, gen: dealTokenRef.current, flyingId, flight })
   }

@@ -116,12 +116,13 @@ function runLengthAtTop(column: Card[]): number {
 }
 
 /**
- * Ranks a legal tableau-to-tableau move for the Hint button (see engine/hint.ts's findHint).
+ * Ranks a legal tableau or waste move onto the tableau for the Hint button (see engine/hint.ts's findHint).
  * Klondike has a real foundation zone - a foundation-bound move (the actual "completion" mechanic
  * here) already sorts first in findHint, unconditionally, so unlike Spider's synthetic 13-card
  * completion check, there is no completion case to special-case here at all; this only ever ranks
- * the remaining tableau moves (and, defensively, scores 0 for any move it wasn't designed for - a
- * waste->tableau move, since waste has no "coherent run" of its own to preserve or fragment).
+ * the remaining moves onto the tableau. A waste play scores like a one-card run plus a bonus for
+ * leaving the waste: it used to score 0, and since findHint suggests a draw whenever nothing scores
+ * above 0, Hint never suggested playing the waste card at all.
  *
  * Same opportunity-cost shape as Spider's scoreHintMove, adapted to Klondike's own run-validity
  * rule (alternating-color descending, not same-suit descending) and to a real difference in what
@@ -131,43 +132,52 @@ function runLengthAtTop(column: Card[]): number {
  * extension. Klondike's own canPlaceOnTableau already enforces the alternating-color-descending
  * relation as part of legality - so any legal move onto a non-empty column is, by construction,
  * already a coherent extension of whatever run sits there; no extra suit/color check is needed
- * before crediting `newRunLenAtDest`.
+ * before crediting the destination's run.
  *
- * `R` = the coherent run already at the top of the source column. A move scores 0 if it relocates
- * that whole run intact, positive if it builds something longer (extending the destination's run,
- * or leaving a longer remainder behind than expected), negative if it fragments R for no
- * compensating gain. `netEmptyDelta` is the actual before/after change in empty tableau columns
+ * The run term compares the longest run the move touches before and after it: positive if it builds
+ * something longer (extending the destination's run), negative if it fragments the source's run for
+ * no compensating gain, and 0 for a relocation, which then scores 0 overall (no size tiebreak), so
+ * Hint never offers it or its reverse. `netEmptyDelta` is the actual before/after change in empty tableau columns
  * (freeing one is a real gain; a lateral shuffle into the one empty column nets to zero).
  * `revealsHiddenCard` is a flat bonus, only reachable when count === R (going past the source's own
  * run boundary is the only way to expose a face-down card underneath).
  */
 function scoreHintMove(state: KlondikeState, move: Move): number {
-  if (move.from.zone !== 'tableau' || move.to.zone !== 'tableau') return 0
-  const fromCol = state.tableau[move.from.index]
+  if (move.to.zone !== 'tableau') return 0
+  if (move.from.zone !== 'tableau' && move.from.zone !== 'waste') return 0
+  const fromWaste = move.from.zone === 'waste'
+  const fromPile = fromWaste ? state.waste : state.tableau[move.from.index]
   const toCol = state.tableau[move.to.index]
-  if (!fromCol || !toCol) return 0
+  if (!fromPile || !toCol || fromPile.length < move.count) return 0
 
-  const runLen = runLengthAtTop(fromCol)
-  const destRunLenBefore = runLengthAtTop(toCol)
-  // A legal move onto a non-empty column is already a coherent alt-color-descending extension of
-  // whatever run sits there (canPlaceOnTableau enforced that to make the move legal at all) - unlike
-  // Spider, no extra same-suit check is needed to credit the extension.
-  const newRunLenAtDest = move.count + (toCol.length > 0 ? destRunLenBefore : 0)
-  const remainderRunLen = move.count < runLen ? runLen - move.count : 0
-  const netRunStructureChange = Math.max(newRunLenAtDest, remainderRunLen) - runLen
+  // Measured the same way before and after the move, so a move and its exact reverse always score
+  // as opposites and a relocation that gains nothing scores 0 (Hint used to offer it, then offer
+  // moving it straight back). `a` is the run the moving group's base card was continuing at its
+  // source (0 for the waste, or when the card below isn't part of its run), `b` the run it lands on
+  // (0 for an empty column). A Klondike group is always a clean run, so it is the whole of `count`.
+  const remainder = fromPile.slice(0, fromPile.length - move.count)
+  const below = remainder[remainder.length - 1]
+  const base = fromPile[fromPile.length - move.count]
+  const linkedAtSource = !fromWaste && below !== undefined && below.faceUp && below.rank === base.rank + 1 && cardColor(below.suit) !== cardColor(base.suit)
+  const a = linkedAtSource ? runLengthAtTop(remainder) : 0
+  const b = runLengthAtTop(toCol)
+  const netRunStructureChange = Math.max(move.count + b, a) - Math.max(move.count + a, b)
 
-  const fromBecomesEmpty = move.count === fromCol.length
+  const fromBecomesEmpty = !fromWaste && move.count === fromPile.length
   const toWasEmpty = toCol.length === 0
   const netEmptyDelta = (fromBecomesEmpty ? 1 : 0) - (toWasEmpty ? 1 : 0)
 
-  const newFromTop = fromCol[fromCol.length - move.count - 1]
-  const revealsHiddenCard = newFromTop !== undefined && !newFromTop.faceUp
+  const revealsHiddenCard = !fromWaste && below !== undefined && !below.faceUp
 
   let score = revealsHiddenCard ? 500 : 0
+  // A waste card played to the tableau leaves the stock/waste for good. Worth more than an empty
+  // column, since a Klondike empty column only ever takes a King.
+  if (fromWaste) score += 50
   score += netRunStructureChange * 30
   score += netEmptyDelta * 40
-  score += move.count * 2
-  return score
+  // The size tiebreak only orders moves that already gain something.
+  if (score <= 0) return score
+  return score + move.count * 2
 }
 
 export function createKlondikeController(drawCount: 1 | 3): GameController<KlondikeState> {

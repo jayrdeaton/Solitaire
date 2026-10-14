@@ -1,4 +1,5 @@
 import { GameController } from '@/engine/gameTypes'
+import { findHint } from '@/engine/hint'
 import { Card, SUITS } from '@/engine/types'
 import { canAutoFinish, createFortyThievesController, findFoundationSlot, FortyThievesState, isFullyAutoCompletable, isFullyAutoCompletableWithDraws, nextAutoCompleteMove, nextAutoCompleteMoveWithDraws, nextFinishMove } from '@/games/fortythieves/rules'
 
@@ -374,15 +375,20 @@ describe('Forty Thieves scoreHintMove', () => {
     expect(extendsRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
   })
 
-  it('scores a waste-to-tableau move as neutral (0) - no source group to weigh a tradeoff against', () => {
+  // A waste-to-tableau play used to score 0, so Hint drew instead of ever suggesting one.
+  it('suggests playing the waste card onto a column over drawing, but leaves an empty column to the player', () => {
     const state: FortyThievesState = {
       tableau: emptyTableau({ 0: [card('clubs', 8)] }),
       foundation: emptyFoundation(),
-      stock: [],
+      stock: [card('hearts', 13)],
       waste: [card('clubs', 7)]
     }
-    const move = Strict.legalMoves(state).find((m) => m.from.zone === 'waste' && m.to.zone === 'tableau' && m.to.index === 0)
-    expect(move).toBeDefined()
-    expect(Strict.scoreHintMove!(state, move!)).toBe(0)
+    const onto = Strict.legalMoves(state).find((m) => m.from.zone === 'waste' && m.to.zone === 'tableau' && m.to.index === 0)!
+    const intoEmpty = Strict.legalMoves(state).find((m) => m.from.zone === 'waste' && m.to.zone === 'tableau' && m.to.index === 1)!
+    expect(onto).toBeDefined()
+    expect(intoEmpty).toBeDefined()
+    expect(Strict.scoreHintMove!(state, onto)).toBeGreaterThan(0)
+    expect(Strict.scoreHintMove!(state, intoEmpty)).toBe(0)
+    expect(findHint(Strict, state)).toEqual({ kind: 'move', move: onto })
   })
 })

@@ -313,10 +313,12 @@ export function createFortyThievesController(runMoves: boolean): GameController<
   /**
    * Ranks non-foundation legal moves for the Hint feature (see engine/hint.ts's findHint) -
    * foundation-bound moves already sort first there, unconditionally, so this is only ever asked
-   * to rank the rest: tableau-to-tableau moves, and a waste card's choice of tableau column. Only
-   * the tableau-to-tableau case gets a real score; a waste play has no "coherent group already
-   * held" to weigh a tradeoff against (the waste is always exactly one card), so it scores 0, same
-   * as Spider's own zone check.
+   * to rank the rest: tableau-to-tableau moves, and a waste card's choice of tableau column. A waste
+   * card played onto a column (always a same-suit extension, by legality) scores like Klondike's: a
+   * bonus for leaving the stock/waste plus the run it builds. It used to score 0, and since findHint
+   * suggests a draw whenever nothing scores above 0, Hint never suggested playing the waste card at
+   * all. A waste card into an empty column still scores 0: it spends this game's one scarce resource
+   * on a card that may be better drawn past, so that stays the player's call.
    *
    * Adapted from Spider's scoreHintMove ("Opportunity-Cost Run Valuation") for this game's own
    * coherent-run rule - same predicate, same-suit descending (isDescendingSameSuit) - with two
@@ -345,7 +347,13 @@ export function createFortyThievesController(runMoves: boolean): GameController<
    * scarce resource, no freecells/reserve) is untouched from Spider's own shape.
    */
   function scoreHintMove(state: FortyThievesState, move: Move): number {
-    if (move.from.zone !== 'tableau' || move.to.zone !== 'tableau') return 0
+    if (move.to.zone !== 'tableau') return 0
+    if (move.from.zone === 'waste') {
+      const dest = state.tableau[move.to.index]
+      if (!dest || dest.length === 0 || state.waste.length === 0) return 0
+      return 50 + 30 + 2 // leaves the waste, extends the destination's run by one card
+    }
+    if (move.from.zone !== 'tableau') return 0
     const fromCol = state.tableau[move.from.index]
     const toCol = state.tableau[move.to.index]
     if (!fromCol || !toCol) return 0

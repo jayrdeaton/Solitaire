@@ -994,6 +994,80 @@ describe('Klondike screen - recycling the waste', () => {
   })
 })
 
+describe("Klondike screen - the player's draw is worked out from the board as it is once its measurement is back", () => {
+  // A draw-1 measures the stock (and the waste) before it commits, a native round trip; MEASURE_MS stands in for it. Anything
+  // committed in that window - a second stock tap, a tap-to-move - must be built on, never overwritten.
+  const MEASURE_MS = 40
+
+  it('two stock taps inside one measurement draw two different cards, each its own move and its own undo step', async () => {
+    await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)]], stock: [card('spades', 3, false), card('spades', 4, false)], foundation: foundations({}) }), 2)
+    mockMeasureViewMs = MEASURE_MS
+
+    await tap('stock-pile')
+    await tap('stock-pile') // the first draw is still measuring
+    await flush(MEASURE_MS + FLIGHT_MS + 50)
+
+    expect(mockLog.shown).toEqual([id('spades', 4), id('spades', 3)]) // the top card, then the one under it - not the top card twice
+    expect(wasteTop()).toBe(id('spades', 3))
+    expect(movesCount()).toBe('2')
+
+    // Each undo entry holds the board right before ITS draw: one Undo takes back exactly one card.
+    mockMeasureViewMs = 0
+    await tap('undo')
+    await flush(FLIGHT_MS + 50)
+    expect(wasteTop()).toBe(id('spades', 4))
+    await tap('undo')
+    await flush(FLIGHT_MS + 50)
+    expect(wasteTop()).toBe('none')
+    expect(undoDisabled()).toBe('true')
+  })
+
+  it('a tap-to-move committed while a draw is measuring is not undone by the draw', async () => {
+    await mount(board({ tableau: [[card('spades', 10)], [card('diamonds', 2, false), card('hearts', 9)]], stock: [card('clubs', 4, false)], foundation: foundations({}) }), 3)
+    mockMeasureViewMs = MEASURE_MS
+
+    await tap('stock-pile')
+    await tapCard(id('hearts', 9)) // onto the 10 of spades - it commits at once, while the draw is still measuring
+    expect(pileIds(0)).toEqual([id('spades', 10), id('hearts', 9)])
+    await flush(MEASURE_MS + FLIGHT_MS + 50)
+
+    expect(pileIds(0)).toEqual([id('spades', 10), id('hearts', 9)]) // still where its ghost flew - the draw built on the move
+    expect(pileIds(1)).toEqual([id('diamonds', 2)])
+    expect(wasteTop()).toBe(id('clubs', 4))
+    expect(mockLog.shown).toEqual([id('hearts', 9), id('clubs', 4)])
+    expect(movesCount()).toBe('2')
+  })
+
+  it('a second tap made while the first draws the last stock card recycles the waste instead of drawing that card again', async () => {
+    await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)]], stock: [card('spades', 4, false)], waste: [card('clubs', 2)], foundation: foundations({}) }), 3)
+    mockMeasureViewMs = MEASURE_MS
+
+    await tap('stock-pile')
+    await tap('stock-pile') // tapped on a board with one stock card left - but by the time it commits, the stock is empty
+    await flush(MEASURE_MS + FLIGHT_MS + 50)
+
+    expect(mockLog.shown).toEqual([id('spades', 4), `${id('clubs', 2)}+${id('spades', 4)}`]) // the draw, then the whole waste back
+    expect(wasteTop()).toBe('none')
+    expect(movesCount()).toBe('2')
+  })
+
+  it('a New Game while a draw is measuring drops the draw instead of committing the old board over the new deal', async () => {
+    const newController = klondikeRules.createKlondikeController
+    jest.spyOn(klondikeRules, 'createKlondikeController').mockImplementation((draw) => ({ ...newController(draw), newGame: () => board({ tableau: [[card('hearts', 8)]], stock: [card('diamonds', 4, false)], foundation: foundations({}) }) }))
+    await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)]], stock: [card('spades', 4, false)], foundation: foundations({}) }), 2)
+    mockMeasureViewMs = MEASURE_MS
+
+    await tap('stock-pile')
+    await tap('new-game') // before the draw's measurement is back
+    await flush(MEASURE_MS + FLIGHT_MS + 50)
+
+    expect(mockLog.shown).toEqual([]) // the old deal's card never flew
+    expect(wasteTop()).toBe('none')
+    expect(pileIds(0)).toEqual([id('hearts', 8)])
+    expect(movesCount()).toBe('0')
+  })
+})
+
 describe('Klondike screen - a foundation card back down to the tableau', () => {
   it('flies onto the column and counts as a move, and one Undo flies it back up', async () => {
     await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)], [card('diamonds', 3)]], foundation: foundations({ clubs: 2 }) }), 3)

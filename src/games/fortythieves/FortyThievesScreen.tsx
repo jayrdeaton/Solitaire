@@ -652,28 +652,42 @@ function FortyThievesScreenInner() {
     const current = stateRef.current
     if (won || !current || !controllerRef.current.drawStock) return
     if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
-    const result = controllerRef.current.drawStock(current)
-    if (!result) return
+    if (!controllerRef.current.drawStock(current)) return
     startFlights(1)
     // A draw is the player's, but it is not a play: it never sets auto-play off, and it stops a cascade
-    // still running from their last play, so a card they just drew is theirs to find and play.
-    if (!opts?.sweep) {
-      session.registerMove()
-      cascade.disarm()
-    }
+    // still running from their last play, so a card they just drew is theirs to find and play. Stopped
+    // at the tap, before the measurement below, so no auto-played card can go up in between.
+    if (!opts?.sweep) cascade.disarm()
 
-    const drawnCard = top(result.waste)!
-    const move: MoveInfo = { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: 1, anchorCardId: drawnCard.id }
-
+    const gen = dealTokenRef.current
     const origin = await measureView(stockViewRef.current)
+    // A New Game or restore mid-measurement replaced the board and already dropped this claim
+    // (resetFlightConcurrency) - drop the draw too, rather than draw from the new deal.
+    if (dealTokenRef.current !== gen) return
     // The cascade's own draw (a sweep) must not commit once the player's move has ended the cascade, or over a board that
-    // moved on while it was measuring (committing `result` would undo whatever landed meanwhile).
+    // moved on while it was measuring (its step was worked out for the board it started from).
     if (opts?.sweep && (!cascade.isArmed() || stateRef.current !== current)) {
       settleFlight()
       return
     }
+    // What is drawn is worked out from the board as it is now that the measurement is back, and
+    // committed in this same synchronous stretch (Pyramid's handleDrawStock does the same): computed
+    // before the await and committed after it, two quick taps both drew the SAME card (two moves and
+    // two undo entries for it), and a tap-to-move committed meanwhile was undone in state while its
+    // ghost flew on. The stock may have run out meanwhile (a tap ahead of this one drew its last card).
+    const board = stateRef.current
+    const result = board && controllerRef.current.drawStock(board)
+    if (!board || !result) {
+      settleFlight()
+      return
+    }
+    // Counted here, with the draw that really happens - not at the tap, whose draw may have been dropped.
+    if (!opts?.sweep) session.registerMove()
+
+    const drawnCard = top(result.waste)!
+    const move: MoveInfo = { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: 1, anchorCardId: drawnCard.id }
     if (!origin) {
-      pushUndo(current, move)
+      pushUndo(board, move)
       commitState(result)
       settleFlight()
       return
@@ -687,7 +701,7 @@ function FortyThievesScreenInner() {
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
 
-    pushUndo(current, move)
+    pushUndo(board, move)
     commitState(result)
     pendingFlightRef.current.push({ cardId: drawnCard.id, to: { zone: 'waste', index: 0 }, gen: dealTokenRef.current, flyingId, flight })
   }

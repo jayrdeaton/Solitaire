@@ -9,7 +9,7 @@ import { StyleSheet, View } from 'react-native'
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
-import { measureView } from '@/components/dealing/measureView'
+import { measureView, ScreenPoint } from '@/components/dealing/measureView'
 import { DragFlightHandle, useDragGhost } from '@/components/dragdrop/DragGhostLayer'
 import { FLIGHT_SPRING } from '@/components/dragdrop/dragSpring'
 import { DropZone } from '@/components/dragdrop/DropZone'
@@ -1132,49 +1132,77 @@ function KlondikeScreenInner() {
     const current = stateRef.current
     if (!current || !controllerRef.current.drawStock) return
     if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
-    const result = controllerRef.current.drawStock(current)
-    if (!result) return
+    const planned = controllerRef.current.drawStock(current)
+    if (!planned) return
     startFlights(1)
     // A draw is the player's, but it is not a play: it never sets auto-play off, and it stops a cascade
-    // still running from their last play, so a card they just drew is theirs to find and play.
-    if (!opts?.sweep) {
-      session.registerMove()
-      cascade.disarm()
+    // still running from their last play, so a card they just drew is theirs to find and play. Stopped
+    // at the tap, before the measurement below, so no auto-played card can go up in between.
+    if (!opts?.sweep) cascade.disarm()
+
+    // A draw-3 fan has nothing to measure first (its deal-style flight measures once it has committed -
+    // see the [state]-effect above), so it commits right here, on the board as tapped. A single card or
+    // a recycle flies from a container measured first, and what it actually draws - or recycles - is
+    // worked out from the board as it is once the measurements are back (Pyramid's handleDrawStock
+    // does the same): computed before the await and committed after it, two quick taps both drew the
+    // SAME card (two moves and two undo entries for it), and a tap-to-move committed meanwhile was
+    // undone in state while its ghost flew on.
+    const fan = !!top(planned.waste) && planned.waste.length - current.waste.length > 1
+    let board = current
+    let result = planned
+    let stockPos: ScreenPoint | null = null
+    let wastePos: ScreenPoint | null = null
+    if (!fan) {
+      const gen = dealTokenRef.current
+      // Both containers are always mounted and card-sized, so both are measured whichever branch the
+      // re-read draw below turns out to be.
+      ;[stockPos, wastePos] = await Promise.all([measureView(stockViewRef.current), measureView(wasteViewRef.current)])
+      // A New Game or restore mid-measurement replaced the board and already dropped this claim
+      // (resetFlightConcurrency) - drop the draw too, rather than draw from the new deal.
+      if (dealTokenRef.current !== gen) return
+      // The cascade's own draw (a sweep) must not commit once the player's move has ended the cascade, or over a board that
+      // moved on while it was measuring (its step was worked out for the board it started from).
+      if (opts?.sweep && (!cascade.isArmed() || stateRef.current !== current)) {
+        settleFlight()
+        return
+      }
+      // Re-read and committed below in one synchronous stretch, so nothing can commit in between.
+      const latest = stateRef.current
+      const redrawn = latest && controllerRef.current.drawStock(latest)
+      if (!latest || !redrawn) {
+        settleFlight()
+        return
+      }
+      board = latest
+      result = redrawn
     }
+    // Counted here, with the draw that really happens - not at the tap, whose draw may have been dropped.
+    if (!opts?.sweep) session.registerMove()
 
     const drawnCard = top(result.waste)
     if (!drawnCard) {
       // Recycling the waste back into the stock (see PATTERN_RECYCLE) - the whole waste flies as
       // one clump, from the waste slot to the stock slot, both content-independent container refs
-      // measurable synchronously (no post-commit deferral needed for either end). cardIds records
-      // the full group (oldest-to-newest) - a legacy save's cascaded-undo reversal needed it to
-      // reconstruct exactly this move's own cards even after other moves happened on top of it (see
-      // undoTypes.ts).
-      const wasteOrigin = await measureView(wasteViewRef.current)
-      const stockDest = await measureView(stockViewRef.current)
-      // The cascade's own draw (a sweep) must not commit once the player's move has ended the cascade, or over a board that
-      // moved on while it was measuring (committing `result` would undo whatever landed meanwhile).
-      if (opts?.sweep && (!cascade.isArmed() || stateRef.current !== current)) {
-        settleFlight()
-        return
-      }
-      const recycledCards = current.waste.slice()
+      // (no post-commit deferral needed for either end). cardIds records the full group
+      // (oldest-to-newest) - a legacy save's cascaded-undo reversal needed it to reconstruct exactly
+      // this move's own cards even after other moves happened on top of it (see undoTypes.ts).
+      const recycledCards = board.waste.slice()
       const move: MoveInfo = { from: { zone: 'waste', index: 0 }, to: { zone: 'stock', index: 0 }, count: recycledCards.length, anchorCardId: recycledCards[0]?.id ?? '', cardIds: recycledCards.map((c) => c.id) }
-      pushUndo(current, move)
+      pushUndo(board, move)
 
-      if (wasteOrigin && stockDest && recycledCards.length > 0) {
+      if (wastePos && stockPos && recycledCards.length > 0) {
         if (opts?.sweep) cascadeFeedback()
         else {
           playCardSound()
           hapticCard()
         }
-        const flight = ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth }, { x: wasteOrigin.x, y: wasteOrigin.y })
+        const flight = ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth }, { x: wastePos.x, y: wastePos.y })
         // Landing on the STOCK (Pyramid's recycle too). Counted as landing on the waste, it froze the waste on the card that
         // had just left it, so that card showed twice for the whole flight: on the waste and as the ghost.
         const flyingId = beginFlying({ zone: 'stock', index: 0 }, recycledCards.length)
         setStockHidden(true)
         commitState(result)
-        flight.flyTo(stockDest.x, stockDest.y, () => {
+        flight.flyTo(stockPos.x, stockPos.y, () => {
           endFlying(flyingId)
           setStockHidden(false)
           settleFlight()
@@ -1188,28 +1216,23 @@ function KlondikeScreenInner() {
 
     // How many cards this draw actually added - normally klondikeDraw, but fewer once the stock
     // runs low (rules.ts's drawStock clamps to what's left).
-    const drawnCount = result.waste.length - current.waste.length
+    const drawnCount = result.waste.length - board.waste.length
     const move: MoveInfo = { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: drawnCount, anchorCardId: drawnCard.id }
 
+    // A fan - drawn at the tap, or (rarely) by a tap that was measuring for a single card or a
+    // recycle when a recycle committed ahead of it and refilled the stock.
     if (drawnCount > 1) {
       const drawnCards = result.waste.slice(result.waste.length - drawnCount) // oldest -> newest/top
       const moveWithIds: MoveInfo = { ...move, cardIds: drawnCards.map((c) => c.id) }
-      pushUndo(current, moveWithIds)
+      pushUndo(board, moveWithIds)
       const flyingId = beginFlying({ zone: 'waste', index: 0 }, drawnCount)
       pendingDealDrawRef.current.push({ topCardId: drawnCard.id, drawnCards, gen: dealTokenRef.current, flyingId })
       commitState(result)
       return
     }
 
-    const origin = await measureView(stockViewRef.current)
-    // The cascade's own draw (a sweep) must not commit once the player's move has ended the cascade, or over a board that
-    // moved on while it was measuring (committing `result` would undo whatever landed meanwhile).
-    if (opts?.sweep && (!cascade.isArmed() || stateRef.current !== current)) {
-      settleFlight()
-      return
-    }
-    if (!origin) {
-      pushUndo(current, move)
+    if (!stockPos) {
+      pushUndo(board, move)
       commitState(result)
       settleFlight()
       return
@@ -1220,10 +1243,10 @@ function KlondikeScreenInner() {
       playCardSound()
       hapticCard()
     }
-    const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
+    const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: stockPos.x, y: stockPos.y })
     const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
 
-    pushUndo(current, move)
+    pushUndo(board, move)
     commitState(result)
     pendingFlightRef.current.push({ cardId: drawnCard.id, to: { zone: 'waste', index: 0 }, gen: dealTokenRef.current, flyingId, flight })
   }

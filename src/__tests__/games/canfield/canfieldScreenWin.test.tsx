@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react-native'
+import { act, fireEvent, render, screen, within } from '@testing-library/react-native'
 
 import { AUTO_PLAY_STAGGER_MS, FINISH_STAGGER_MS } from '@/components/dragdrop/dragSpring'
 import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
@@ -166,7 +166,14 @@ jest.mock('@/components/winning/WinCascadeLayer', () => {
     useWinCascade: () => useContext(CascadeContext).controller
   }
 })
-jest.mock('@/components/dealing/measureView', () => ({ measureView: async (view: unknown) => (view ? SLOT : null) }))
+/** How long a slot-container measurement takes to come back (a real one is a native round trip) - 0 resolves at once. */
+let mockMeasureViewMs = 0
+jest.mock('@/components/dealing/measureView', () => ({
+  measureView: async (view: unknown) => {
+    if (mockMeasureViewMs > 0) await new Promise((resolve) => setTimeout(resolve, mockMeasureViewMs))
+    return view ? SLOT : null
+  }
+}))
 // The real rules, except that a New Game can be handed the board it deals (mockNextDeal).
 jest.mock('@/games/canfield/rules', () => {
   const actual = jest.requireActual('@/games/canfield/rules')
@@ -354,8 +361,9 @@ async function flushUntil(done: () => boolean, maxMs = 2000) {
   for (let t = 0; !done() && t < maxMs; t += STEP_MS) await flush(STEP_MS)
 }
 
-async function mount(state: CanfieldState, undoStack: unknown[] = [], expectedCards = 1) {
-  seedGameInProgress('canfield', { state, undoStack, moves: 0, elapsedSeconds: 0, config: 3 })
+/** `draw` is the deal's draw count (Canfield keeps the one a deal was dealt under). */
+async function mount(state: CanfieldState, undoStack: unknown[] = [], expectedCards = 1, draw: 1 | 3 = 3) {
+  seedGameInProgress('canfield', { state, undoStack, moves: 0, elapsedSeconds: 0, config: draw })
   await render(<CanfieldScreen />)
   await flush() // loadGameInProgress -> restoreGame
   expect(screen.queryAllByTestId(/^card-|^reserve-|^waste-|^stock-/).length).toBe(expectedCards)
@@ -390,6 +398,7 @@ beforeEach(() => {
   mockNoSlot.clear()
   mockRecordWon.mockClear()
   mockFlightMs = FLIGHT_MS
+  mockMeasureViewMs = 0
   mockAutoMove = false
   mockDrops.clear()
   mockPileDrags.clear()
@@ -1054,5 +1063,66 @@ describe("Canfield screen - once the board is solved, any move of the player's f
     expect(mockLog.shown).toEqual([id('clubs', 11)])
     expect(cardsOnBoard()).toBe(7)
     expect(foundationTop('clubs')).toBe(id('clubs', 9))
+  })
+})
+
+describe("Canfield screen - the player's draw is worked out from the board as it is once its measurement is back", () => {
+  // A single-card draw measures the stock before it commits, a native round trip; MEASURE_MS stands in for it. Anything
+  // committed in that window - a second stock tap, a tap-to-move - must be built on, never overwritten.
+  const MEASURE_MS = 40
+  const moves = () => screen.getByTestId('moves').props.children as number
+  const wasteShows = (cardId: string) => screen.queryByTestId(`waste-${cardId}`) !== null
+  const pileHas = (pileIndex: number, cardId: string) => within(screen.getByTestId(`pile-${pileIndex}`)).queryByTestId(`card-${cardId}`) !== null
+
+  it('two stock taps inside one measurement draw two different cards, each its own move and its own undo step', async () => {
+    await mount(board({ tableau: [[card('clubs', 5)]], reserve: [card('diamonds', 5)], foundation: [[], [], [], []], stock: [card('spades', 3), card('clubs', 4)] }), [], 3, 1)
+    mockMeasureViewMs = MEASURE_MS
+
+    await press('stock-pile')
+    await press('stock-pile') // the first draw is still measuring
+    await flush(MEASURE_MS + FLIGHT_MS + 50)
+
+    expect(mockLog.shown).toEqual([id('clubs', 4), id('spades', 3)]) // the top card, then the one under it - not the top card twice
+    expect(wasteShows(id('spades', 3))).toBe(true)
+    expect(moves()).toBe(2)
+
+    // Each undo entry holds the board right before ITS draw: one Undo takes back exactly one card.
+    mockMeasureViewMs = 0
+    await press('undo')
+    await flush(FLIGHT_MS + 50)
+    expect(wasteShows(id('clubs', 4))).toBe(true)
+    await press('undo')
+    await flush(FLIGHT_MS + 50)
+    expect(screen.queryByTestId(/^waste-/)).toBeNull()
+  })
+
+  it('a tap-to-move committed while a draw is measuring is not undone by the draw', async () => {
+    await mount(board({ tableau: [[card('spades', 10)], [card('hearts', 9)]], reserve: [card('diamonds', 5)], foundation: [[], [], [], []], stock: [card('clubs', 4)] }), [], 4, 1)
+    mockMeasureViewMs = MEASURE_MS
+
+    await press('stock-pile')
+    await press(`card-${id('hearts', 9)}`) // onto the 10 of spades - it commits at once, while the draw is still measuring
+    expect(pileHas(0, id('hearts', 9))).toBe(true)
+    await flush(MEASURE_MS + FLIGHT_MS + 50)
+
+    expect(pileHas(0, id('hearts', 9))).toBe(true) // still where its ghost flew - the draw built on the move
+    expect(pileHas(1, id('hearts', 9))).toBe(false)
+    expect(wasteShows(id('clubs', 4))).toBe(true)
+    expect(mockLog.shown).toEqual([id('hearts', 9), id('clubs', 4)])
+    expect(moves()).toBe(2)
+  })
+
+  it('a second tap made while the first draws the last stock card recycles the waste instead of drawing that card again', async () => {
+    await mount(board({ tableau: [[card('clubs', 5)]], reserve: [card('diamonds', 5)], foundation: [[], [], [], []], stock: [card('spades', 4)], waste: [card('hearts', 2)] }), [], 4)
+    mockMeasureViewMs = MEASURE_MS
+
+    await press('stock-pile') // draw-3 with one card left: a single card, measured first
+    await press('stock-pile') // tapped on a board with one stock card left - but by the time it commits, the stock is empty
+    await flush(MEASURE_MS + FLIGHT_MS + 50)
+
+    expect(mockLog.shown).toEqual([id('spades', 4)]) // the draw (a recycle does not fly)
+    expect(screen.queryByTestId(/^waste-/)).toBeNull() // the whole waste went back to the stock
+    expect(screen.queryByTestId('stock-pile')).not.toBeNull()
+    expect(moves()).toBe(2)
   })
 })

@@ -1,4 +1,5 @@
 import { isFullyAutoCompletable, isFullyAutoCompletableWithDraws } from '@/engine/autoFoundation'
+import { findHint } from '@/engine/hint'
 import { Card, SUITS } from '@/engine/types'
 import { canAutoFinish, createKlondikeController, KlondikeState, nextFinishMove } from '@/games/klondike/rules'
 
@@ -433,6 +434,40 @@ describe('Klondike scoreHintMove', () => {
 
     expect(extendsRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
     expect(relocatesWholeRunAndFreesColumn).toBeGreaterThan(lateralIntoEmptyColumn)
+  })
+
+  // Hint used to offer moving the 5 from one black 6 to the other, then moving it straight back:
+  // both scored +2 from the size tiebreak alone.
+  it('scores a relocation that gains nothing, and its reverse, at 0, so Hint draws instead of ping-ponging', () => {
+    const state: KlondikeState = {
+      tableau: [[card('clubs', 9), card('spades', 6), card('hearts', 5)], [card('clubs', 6)], [], [], [], [], []],
+      foundation: [[], [], [], []],
+      stock: [card('diamonds', 13, false)],
+      waste: []
+    }
+    const there = moveTo(state, 0, 1, 1)
+    expect(controller.scoreHintMove!(state, there)).toBe(0)
+
+    const back = controller.tryMove(state, there)!
+    expect(back).not.toBeNull()
+    expect(scoreOf(back, 1, 1, 0)).toBe(0)
+
+    expect(findHint(controller, state)).toEqual({ kind: 'drawStock' })
+    expect(findHint(controller, back)).toEqual({ kind: 'drawStock' })
+  })
+
+  // A waste-to-tableau play used to score 0, so whenever it was the only thing to do Hint drew instead.
+  it('suggests playing the waste card onto the tableau over drawing', () => {
+    const state: KlondikeState = {
+      tableau: [[card('clubs', 6)], [], [], [], [], [], []],
+      foundation: [[], [], [], []],
+      stock: [card('diamonds', 13, false)],
+      waste: [card('hearts', 5)]
+    }
+    const play = controller.legalMoves(state).find((m) => m.from.zone === 'waste' && m.to.zone === 'tableau' && m.to.index === 0)!
+    expect(play).toBeDefined()
+    expect(controller.scoreHintMove!(state, play)).toBeGreaterThan(0)
+    expect(findHint(controller, state)).toEqual({ kind: 'move', move: play })
   })
 })
 
