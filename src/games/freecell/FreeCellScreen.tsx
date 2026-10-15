@@ -39,6 +39,7 @@ import { computeScore } from '@/engine/score'
 import { Card, SUITS } from '@/engine/types'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
+import { showNoHintToast } from '@/games/shared/gameToasts'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFinish } from '@/games/shared/useAutoFinish'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
@@ -607,7 +608,7 @@ function FreeCellScreenInner() {
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(FreeCellController, state, skip)
     if (result.kind === 'none') {
-      if (!request?.auto) infoToast('No helpful moves right now.')
+      if (!request?.auto) showNoHintToast(infoToast)
       return
     }
     setHint({ result, forState: state, skip })
@@ -863,7 +864,8 @@ function FreeCellScreenInner() {
           // double as its own intermediate storage, so this is the count of OTHER empty columns
           // that could help, not the board's total (which would be one higher here).
           const otherEmptyCols = countEmptyTableauColumns(current, to.index)
-          infoToast(`Only ${cap} card${cap === 1 ? '' : 's'} can move to an empty column with ${freecells} empty freecell${freecells === 1 ? '' : 's'} and ${otherEmptyCols} other empty column${otherEmptyCols === 1 ? '' : 's'}.`)
+          // A short title and the reason under it: as one sentence it ran past the toast's two title lines and was cut off.
+          infoToast(`Only ${cap} card${cap === 1 ? '' : 's'} can move there`, `With ${freecells} empty freecell${freecells === 1 ? '' : 's'} and ${otherEmptyCols} other empty column${otherEmptyCols === 1 ? '' : 's'}.`, undefined, { icon: 'card-multiple-outline' })
         }
       }
       return false

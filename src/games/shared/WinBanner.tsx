@@ -1,8 +1,8 @@
 import { useAutoPaperTheme } from '@rific/auto-paper'
 import { Button } from '@rific/feedback-press'
-import { OverlayBackdrop, OverlayCard, overlayActionStyles, useOverlayCardColors } from '@tastic/hud'
+import { DialogHeader, overlayActionStyles, OverlayBackdrop, OverlayCard, useCompactDialog, useOverlayCardColors } from '@tastic/hud'
 import { StyleSheet, View } from 'react-native'
-import { Icon, Text } from 'react-native-paper'
+import { Text } from 'react-native-paper'
 
 import { formatTime, GAME_DIALOG_Z_INDEX } from '@/components/GameChrome'
 import { describeVsPar, Par } from '@/engine/par'
@@ -22,6 +22,7 @@ export interface WinBannerProps {
 export function WinBanner({ elapsedSeconds, moves, score, par, onNewGame }: WinBannerProps) {
   const { colors } = useAutoPaperTheme()
   const { fg, fgMuted } = useOverlayCardColors()
+  const { compact, onLayout } = useCompactDialog()
   const stats = [
     { label: 'MOVES', value: String(moves), par: String(par.moves) },
     { label: 'SCORE', value: String(score), par: String(par.score) },
@@ -31,12 +32,9 @@ export function WinBanner({ elapsedSeconds, moves, score, par, onNewGame }: WinB
   return (
     // The backdrop takes every touch, so nothing behind the dialog (the board, the footer) can be played.
     // GameChrome's Home and Settings stay live: they're portaled above this backdrop.
-    <OverlayBackdrop style={styles.overlay}>
+    <OverlayBackdrop style={styles.overlay} onLayout={onLayout}>
       <OverlayCard style={styles.card}>
-        <Icon source='trophy' size={64} color={colors.primary} />
-        <Text variant='headlineLarge' style={[styles.title, { color: colors.primary }]}>
-          You Won!
-        </Text>
+        <DialogHeader icon='trophy' title='You Won!' compact={compact} />
         <View style={styles.statRow}>
           {stats.map(({ label, value, par: parValue }) => (
             <View key={label} style={styles.stat}>
@@ -85,9 +83,5 @@ const styles = StyleSheet.create({
   statRow: {
     flexDirection: 'row',
     gap: 28
-  },
-  title: {
-    fontWeight: 'bold',
-    textAlign: 'center'
   }
 })

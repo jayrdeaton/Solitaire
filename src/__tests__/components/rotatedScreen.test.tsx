@@ -20,8 +20,6 @@ import { RotatedScreen } from '@/components/RotatedScreen'
 //   - react-native-safe-area-context keeps its REAL SafeAreaInsetsContext (and Provider); only the FRAME's own read
 //     (`useSafeAreaInsets`) is a mutable stand-in. The children read the context itself through `Probe`, so what they see is
 //     exactly what the frame's provider hands its subtree.
-//   - expo-router's useIsFocused is mutable (`mockFocused`) and @tastic/core's RotationAwareStatusBar is a stand-in with a
-//     testID that records its props.
 // The tree is inspected through screen.toJSON() (host elements only, in tree order), so "inside the frame" and "ancestor of"
 // are asserted on what would really reach the native side.
 // ---------------------------------------------------------------------------------------------------------------------
@@ -31,9 +29,6 @@ type ViewRotation = 0 | 90 | 180 | -90
 let mockRotation: ViewRotation = 0
 let mockWindow = { width: 402, height: 874 }
 let mockInsets = { top: 0, right: 0, bottom: 0, left: 0 }
-let mockFocused = true
-/** The props RotationAwareStatusBar's stand-in last rendered with. */
-let mockStatusBarProps: object | null = null
 
 /** How many times each probe has been MOUNTED / UNMOUNTED - an unchanged tree keeps these at 1 / 0 across a rotation. */
 const mockMounts: Record<string, number> = {}
@@ -44,13 +39,8 @@ const mockSeenInsets = jest.fn((_insets: EdgeInsets | null) => {})
 jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({ __esModule: true, default: () => ({ ...mockWindow, scale: 1, fontScale: 1 }) }))
 jest.mock('@tastic/core', () => {
   const actual = jest.requireActual('@tastic/core')
-  const { View: RNView } = require('react-native')
   return {
     ...actual,
-    RotationAwareStatusBar: (props: object) => {
-      mockStatusBarProps = props
-      return <RNView testID='status-bar' />
-    },
     useRotation: () => mockRotation,
     useRotatedWindowDimensions: () => actual.rotateDimensions(mockWindow.width, mockWindow.height, mockRotation)
   }
@@ -61,7 +51,6 @@ jest.mock('react-native-safe-area-context', () => ({
   SafeAreaProvider: ({ children }: { children: unknown }) => children,
   useSafeAreaInsets: () => mockInsets
 }))
-jest.mock('expo-router', () => ({ useIsFocused: () => mockFocused }))
 
 // ------------------------------------------------------------------------------------------------- probes
 
@@ -170,8 +159,6 @@ beforeEach(() => {
   mockRotation = 0
   mockWindow = { ...PORTRAIT_WINDOW }
   mockInsets = { ...PHYSICAL_INSETS }
-  mockFocused = true
-  mockStatusBarProps = null
   for (const key of Object.keys(mockMounts)) delete mockMounts[key]
   for (const key of Object.keys(mockUnmounts)) delete mockUnmounts[key]
   mockSeenInsets.mockClear()
@@ -645,66 +632,6 @@ describe('RotatedFrame: one tree at every angle', () => {
 // ------------------------------------------------------------------------------------------------- RotatedScreen
 
 describe('RotatedScreen', () => {
-  it('renders the light status bar beside the frame (not inside it) while focused', async () => {
-    await render(
-      <RotatedScreen>
-        <Probe />
-      </RotatedScreen>
-    )
-
-    expect(screen.getByTestId('status-bar')).toBeTruthy()
-    // Always light (the felt is dark in every appearance mode), and unlocked like the frame's own rotation reading.
-    expect(mockStatusBarProps).toEqual({ style: 'light' })
-    expect(screen.getByTestId('probe')).toBeTruthy()
-    // The status bar is a root sibling of the frame: turning the frame must not turn it.
-    const roots = snapshot()
-    expect(pathOrFail('status-bar', roots)).toHaveLength(1)
-    expect(pathOrFail('probe', roots)[0]).not.toBe(pathOrFail('status-bar', roots)[0])
-  })
-
-  it('mounts the status bar only while focused, and the rest of the frame stays mounted when focus flips', async () => {
-    const tree = () => (
-      <RotatedScreen>
-        <Probe />
-        <PortalProbe />
-      </RotatedScreen>
-    )
-    await render(tree())
-    expect(screen.getByTestId('status-bar')).toBeTruthy()
-    expect(mockMounts.probe).toBe(1)
-    expect(mockMounts['portal-content']).toBe(1)
-
-    mockFocused = false
-    await screen.rerender(tree())
-
-    expect(screen.queryByTestId('status-bar')).toBeNull()
-    expect(screen.getByTestId('probe')).toBeTruthy()
-    expect(screen.getByTestId('portal-content')).toBeTruthy()
-    expect(mockUnmounts.probe ?? 0).toBe(0)
-    expect(mockUnmounts['portal-content'] ?? 0).toBe(0)
-
-    mockFocused = true
-    await screen.rerender(tree())
-
-    expect(screen.getByTestId('status-bar')).toBeTruthy()
-    expect(mockMounts.probe).toBe(1)
-    expect(mockUnmounts.probe ?? 0).toBe(0)
-    expect(mockMounts['portal-content']).toBe(1)
-    expect(mockUnmounts['portal-content'] ?? 0).toBe(0)
-  })
-
-  it('renders no status bar at all when it starts unfocused, but still renders its content', async () => {
-    mockFocused = false
-    await render(
-      <RotatedScreen>
-        <Probe />
-      </RotatedScreen>
-    )
-
-    expect(screen.queryByTestId('status-bar')).toBeNull()
-    expect(screen.getByTestId('probe')).toBeTruthy()
-  })
-
   it('always mounts a Portal.Host inside the frame (a Portal child renders, inside the rotated frame)', async () => {
     mockRotation = 90
     await render(

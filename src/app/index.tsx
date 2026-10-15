@@ -275,7 +275,7 @@ function HomeContent() {
       already turned with it - the dialog's own ambient rotation on top would turn them twice. */}
       <SettingsDialog visible={settingsOpen} onDismiss={() => setSettingsOpen(false)} rotation={0} showHowToPlay />
 
-      <RulesDialog visible={!!rulesFor} onDismiss={() => setRulesFor(null)} title={rulesFor?.title ?? ''} rules={rulesFor?.rules ?? []} compact={isWide} />
+      <RulesDialog visible={!!rulesFor} onDismiss={() => setRulesFor(null)} title={rulesFor?.title ?? ''} rules={rulesFor?.rules ?? []} />
     </View>
   )
 }

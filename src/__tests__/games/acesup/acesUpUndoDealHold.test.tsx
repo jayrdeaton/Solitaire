@@ -120,7 +120,6 @@ jest.mock('@/components/winning/WinCascadeLayer', () => ({
   useWinCascade: () => ({ startChains: () => {}, clear: () => {} })
 }))
 jest.mock('@/components/dealing/measureView', () => ({ measureView: async () => mockStock.rect }))
-jest.mock('@tastic/core', () => ({ ...jest.requireActual('@tastic/core'), RotationAwareStatusBar: () => null }))
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => {}, hapticCard: () => {}, hapticInvalid: () => {} }) }))
 jest.mock('@rific/feedback-press', () => {
   const { Pressable: MockPressable } = require('react-native')

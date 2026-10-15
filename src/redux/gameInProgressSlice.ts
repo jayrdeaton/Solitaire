@@ -1,6 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import { combineReducers } from '@reduxjs/toolkit'
-import { createSettingsSlice } from '@rific/core'
+import { combineReducers, createSlice, type Draft, type PayloadAction } from '@reduxjs/toolkit'
 import { persistReducer } from 'redux-persist'
 
 import type { UndoEntry } from '@/games/shared/undoTypes'
@@ -26,7 +25,17 @@ export interface SavedGame<TState, TUndo = UndoEntry<TState>> {
   config?: number
 }
 
-export type GameInProgressSlot = { saved: SavedGame<unknown, unknown> | null }
+// Saves are per profile (2026-10-15, Jay: his daughter's new profile resumed his deals). A slot's keys
+// are owners: a profile id, or GUEST_PLAYER_ID while no profile is selected. Owners are the slot's TOP-LEVEL
+// keys on purpose: redux-persist serializes each top-level key of a persisted state on its own and only
+// re-serializes the keys that changed, so a move costs one stringify of the mover's own board, not every
+// player's. All of a game's owners still share that game's one storage entry (see below), so two players
+// deep into long games of the same game sum toward Android's per-entry limit. `saved` is the shape
+// before this change (one save per game, nobody's in particular); stores/gameInProgress.ts hands it to
+// the profile active when it first runs (adoptLegacy) and nothing writes it again.
+export const LEGACY_OWNER = 'saved'
+
+export type GameInProgressSlot = Partial<Record<string, SavedGame<unknown, unknown>>>
 
 // One slot per game, each persisted under its OWN redux-persist key (`persist:gameInProgress.<id>`),
 // never the root store's: a save holds the whole board plus an undo stack that embeds a full board
@@ -36,7 +45,28 @@ export type GameInProgressSlot = { saved: SavedGame<unknown, unknown> | null }
 // blacklists `gameInProgress` from the root persistConfig, and its serializability check skips it.
 // Read and written only through stores/gameInProgress.ts, which coalesces writes; no component
 // subscribes to these slots, so a save never re-renders anything.
-const slots = Object.fromEntries(SOLITAIRE_GAME_IDS.map((id) => [id, createSettingsSlice<GameInProgressSlot>(`gameInProgress/${id}`, { initialState: { saved: null } })])) as Record<SolitaireGameId, ReturnType<typeof createSettingsSlice<GameInProgressSlot>>>
+const createSlot = (id: SolitaireGameId) =>
+  createSlice({
+    initialState: {} as GameInProgressSlot,
+    name: `gameInProgress/${id}`,
+    reducers: {
+      // `saved: null` drops the owner's key rather than storing a null, so a cleared player leaves nothing behind.
+      setSaved: (state, action: PayloadAction<{ owner: string; saved: SavedGame<unknown, unknown> | null }>) => {
+        const { owner, saved } = action.payload
+        if (saved) state[owner] = saved as Draft<SavedGame<unknown, unknown>>
+        else delete state[owner]
+      },
+      // Gives the pre-per-profile save to `owner`, unless they already have one of their own.
+      adoptLegacy: (state, action: PayloadAction<string>) => {
+        const legacy = state[LEGACY_OWNER]
+        delete state[LEGACY_OWNER]
+        if (legacy && !state[action.payload]) state[action.payload] = legacy
+      },
+      clearAll: () => ({})
+    }
+  })
+
+const slots = Object.fromEntries(SOLITAIRE_GAME_IDS.map((id) => [id, createSlot(id)])) as Record<SolitaireGameId, ReturnType<typeof createSlot>>
 
 export const gameInProgressActions = Object.fromEntries(SOLITAIRE_GAME_IDS.map((id) => [id, slots[id].actions])) as Record<SolitaireGameId, (typeof slots)[SolitaireGameId]['actions']>
 

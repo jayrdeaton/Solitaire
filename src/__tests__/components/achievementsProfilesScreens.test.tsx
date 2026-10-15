@@ -35,7 +35,6 @@ interface Insets {
 let mockRotation: ViewRotation = 0
 let mockWindow = { width: 402, height: 874 }
 let mockInsets: Insets = { top: 0, right: 0, bottom: 0, left: 0 }
-let mockFocused = true
 
 interface BaseStatsProps {
   onBack: () => void
@@ -68,10 +67,8 @@ const mockStoreActions = { createProfile: jest.fn(), updateProfile: jest.fn(), d
 jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({ __esModule: true, default: () => ({ ...mockWindow, scale: 1, fontScale: 1 }) }))
 jest.mock('@tastic/core', () => {
   const actual = jest.requireActual('@tastic/core')
-  const { View } = require('react-native')
   return {
     ...actual,
-    RotationAwareStatusBar: () => <View testID='status-bar' />,
     useRotation: () => mockRotation,
     useRotatedWindowDimensions: () => actual.rotateDimensions(mockWindow.width, mockWindow.height, mockRotation)
   }
@@ -90,10 +87,11 @@ jest.mock('react-native-safe-area-context', () => {
   }
 })
 jest.mock('expo-router', () => ({
-  useIsFocused: () => mockFocused,
   useRouter: () => ({ push: jest.fn(), replace: jest.fn(), back: jest.fn(), dismissTo: jest.fn() })
 }))
 jest.mock('@/utils/navigation', () => ({ safeBack: jest.fn() }))
+// The real one reaches the app's store, whose reducers need the parts of @tastic/profile mocked out below.
+jest.mock('@/stores/playerData', () => ({ forgetPlayerData: jest.fn() }))
 jest.mock('@/stores/gameStats', () => {
   const { DEFAULT_STATS } = jest.requireActual('@/stores/statsValidation')
   return {
@@ -236,7 +234,6 @@ beforeEach(() => {
   mockRotation = 0
   mockWindow = { ...PORTRAIT_WINDOW }
   mockInsets = { top: 0, right: 0, bottom: 0, left: 0 }
-  mockFocused = true
   mockProfilesInsetsSeen.current = null
   mockBaseStats.mockClear()
   mockProfilesScreen.mockClear()
@@ -334,21 +331,6 @@ describe('Achievements screen', () => {
     expect(alignOverride).toBeDefined()
     // Not measured yet (nothing is open), and its `maxHeight` starts at the popover's own content height: 8+8 padding + guest + 2 profiles.
     expect(alignOverride).toMatchObject({ measured: false, verticalAlign: 'below', maxHeight: 16 + 3 * 36 })
-  })
-
-  it('mounts the status bar only while the screen is focused, keeping the content mounted', async () => {
-    await render(<Achievements />)
-    expect(screen.getByTestId('status-bar')).toBeTruthy()
-
-    mockFocused = false
-    await screen.rerender(<Achievements />)
-
-    expect(screen.queryByTestId('status-bar')).toBeNull()
-    expect(screen.getByTestId('base-stats')).toBeTruthy()
-
-    mockFocused = true
-    await screen.rerender(<Achievements />)
-    expect(screen.getByTestId('status-bar')).toBeTruthy()
   })
 
   it('tapping back calls safeBack', async () => {
@@ -473,17 +455,6 @@ describe('Profiles screen', () => {
     expect(mockStoreActions.updateProfile).toHaveBeenCalledWith('p1', { name: 'Bea' })
     expect(mockStoreActions.deleteProfile).toHaveBeenCalledWith('p2')
     expect(props.bg).toBe('transparent')
-  })
-
-  it('mounts the status bar only while focused', async () => {
-    await render(<Profiles />)
-    expect(screen.getByTestId('status-bar')).toBeTruthy()
-
-    mockFocused = false
-    await screen.rerender(<Profiles />)
-
-    expect(screen.queryByTestId('status-bar')).toBeNull()
-    expect(screen.getByTestId('profiles-screen')).toBeTruthy()
   })
 
   it('portals its delete-confirm into a Portal.Host that lives INSIDE the rotated frame', async () => {

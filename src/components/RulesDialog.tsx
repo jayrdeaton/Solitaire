@@ -1,7 +1,10 @@
+import { FadingScrollView, useAutoPaperTheme } from '@rific/auto-paper'
 import { Button } from '@rific/feedback-press'
-import { useRotatedWindowDimensions } from '@tastic/core'
-import { ScrollView, StyleSheet, View } from 'react-native'
-import { Modal, Portal, Text, useTheme } from 'react-native-paper'
+import { rotateInsets, useRotatedWindowDimensions, useRotation } from '@tastic/core'
+import { DialogHeader, overlayActionStyles, OverlayBackdrop, OverlayCard, useCompactDialog } from '@tastic/hud'
+import { useEffect } from 'react'
+import { BackHandler, Pressable, StyleSheet, View } from 'react-native'
+import { Portal, Text } from 'react-native-paper'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import type { Par } from '@/engine/par'
@@ -15,55 +18,75 @@ interface RulesDialogProps {
   rules: string[]
   /** In a game: its variant's par, told after the scoring rule. Home's sheet has no deal, so no par. */
   par?: Par
-  // The wide (landscape) layout: the sheet is only ~400pt tall there, so it trades some padding and
-  // margin for reading room (the portrait sizing left a ~50pt scroll area, about two bullets). Both the game
-  // screens and the menu pass it when their rotated footprint is landscape.
-  compact?: boolean
 }
 
-/** "How to play" sheet for a game - a plain bulleted rules list, reached from GameChrome's own
- * rules icon. Built directly on Paper's Modal/Portal (no existing @tastic/hud dialog fits:
- * BaseSettingsDialog is genuinely settings-specific, and ConfirmDialog's `message` is a single
- * string with no scroll area, not a bulleted list). */
-export function RulesDialog({ visible, onDismiss, title, rules, par, compact = false }: RulesDialogProps) {
-  const { colors } = useTheme()
-  // The sheet's cap is a number, never a percentage. On iOS Paper's Surface splits its style over two
-  // views, and maxHeight lands on the INNER one, so '80%' resolved against the outer view's
-  // content-sized height: the outer white sheet came out 80% of the screen and the content was clipped
-  // to 80% of THAT, leaving an empty band under the button. This is the size '80%' already gives on
-  // web/Android: a share of Paper's Modal wrapper, the frame (the turned window, since the dialog
-  // portals into the rotated frame's host) less the top/bottom insets Paper sets as its margins.
+/** "How to play" sheet for a game - a bulleted rules list, reached from GameChrome's info button and
+ * each Home tile's. Built from the fleet's dialog parts (@tastic/hud's OverlayBackdrop/OverlayCard,
+ * DialogHeader and the single-button action row), so it matches the Settings sheet, the New Game
+ * confirm and the win/loss cards (Jay, 2026-10-15: "I value consistency above all else"). It used to
+ * be a Paper Modal with its own plain dark title and a 160pt "Got it" button. ConfirmDialog itself
+ * doesn't fit: its `message` is one centered paragraph with no scroll area. Like the Settings sheet
+ * (and unlike a confirm), a tap outside the card or Android's back button closes it. */
+export function RulesDialog({ visible, onDismiss, title, rules, par }: RulesDialogProps) {
+  const { colors } = useAutoPaperTheme()
+  const { compact, onLayout } = useCompactDialog()
+  // The card's cap is a number, never a percentage: the space the dialog lays out in (the rotated
+  // frame, since it portals into the frame's host) less the frame's own safe-area edges and the
+  // backdrop's 24pt gutter on each side, so a long list scrolls inside the card instead of running
+  // off the screen. The insets come in portrait and are turned onto the frame's edges here: held
+  // sideways, the notch is on a side of the turned frame, not its top.
   const { height } = useRotatedWindowDimensions()
-  const { top, bottom } = useSafeAreaInsets()
-  const maxHeight = Math.max(0, height - top - bottom) * (compact ? COMPACT_MAX_HEIGHT_RATIO : MAX_HEIGHT_RATIO)
+  const insets = rotateInsets(useSafeAreaInsets(), useRotation())
+  const maxHeight = Math.max(0, height - insets.top - insets.bottom - OVERLAY_GUTTER * 2)
+
+  useEffect(() => {
+    if (!visible) return undefined
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      onDismiss()
+      return true
+    })
+    return () => subscription.remove()
+  }, [visible, onDismiss])
+
+  if (!visible) return null
 
   return (
     <Portal>
-      <Modal visible={visible} onDismiss={onDismiss} contentContainerStyle={[styles.container, compact && styles.containerCompact, { backgroundColor: colors.surface, maxHeight }]}>
-        <Text style={[styles.title, { color: colors.onSurface }]}>{title}</Text>
-        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-          {rules.map((rule, i) => (
-            <View key={i} style={styles.row}>
-              <Text style={[styles.bullet, { color: colors.onSurfaceVariant }]}>{'•'}</Text>
-              <Text style={[styles.ruleText, { color: colors.onSurfaceVariant }]}>{rule}</Text>
+      <OverlayBackdrop style={styles.overlay} onLayout={onLayout}>
+        <Pressable accessibilityLabel='Close rules' accessibilityRole='button' onPress={onDismiss} style={StyleSheet.absoluteFill} />
+        <OverlayCard accessibilityViewIsModal style={[styles.card, { maxHeight }]}>
+          {/* The header scrolls away with the rules, as on the Settings sheet, so a long list gets the
+            whole card once scrolled; Done stays pinned below, and the rules fade out above it while
+            there is more to read (auto-paper's FadingScrollView, the Settings sheet's too). */}
+          <FadingScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} testID='rules-scroll'>
+            <DialogHeader icon='information-outline' title={title} compact={compact} />
+            <View>
+              {rules.map((rule, i) => (
+                <View key={i} style={styles.row}>
+                  <Text style={[styles.bullet, { color: colors.onSurfaceVariant }]}>{'•'}</Text>
+                  <Text style={[styles.ruleText, { color: colors.onSurfaceVariant }]}>{rule}</Text>
+                </View>
+              ))}
+              {/* One shared section rather than a per-game rules.ts bullet - the formula (see
+              engine/score.ts) is identical across every game, so duplicating this sentence into all
+              11 games' constants/gameRules.ts entries would just be 11 copies to keep in sync. */}
+              <Text style={[styles.scoreHeading, { color: colors.onSurface }]}>Scoring</Text>
+              <Text style={[styles.scoreText, { color: colors.onSurfaceVariant }]}>Score is moves plus seconds, and lower is better. The clock starts with your first move and pauses while you&rsquo;re away from the game or in Settings or Rules. Every move counts, even one you undo or one the game plays for you.{par ? ` Par, a good win under these rules, is ${par.score}: ${par.moves} moves in ${formatParTime(par.seconds)}.` : ''}</Text>
             </View>
-          ))}
-          {/* One shared section rather than a per-game rules.ts bullet - the formula (see
-          engine/score.ts) is identical across every game, so duplicating this sentence into all
-          11 games' constants/gameRules.ts entries would just be 11 copies to keep in sync. */}
-          <Text style={[styles.scoreHeading, { color: colors.onSurface }]}>Scoring</Text>
-          <Text style={[styles.scoreText, { color: colors.onSurfaceVariant }]}>Score is moves plus seconds, and lower is better. The clock starts with your first move and pauses while you&rsquo;re away from the game or in Settings or Rules. Every move counts, even one you undo or one the game plays for you.{par ? ` Par, a good win under these rules, is ${par.score}: ${par.moves} moves in ${formatParTime(par.seconds)}.` : ''}</Text>
-        </ScrollView>
-        <Button mode='contained' onPress={onDismiss} style={[styles.closeButton, compact && styles.closeButtonCompact]}>
-          Got it
-        </Button>
-      </Modal>
+          </FadingScrollView>
+          <View style={overlayActionStyles.actions}>
+            <Button mode='contained' onPress={onDismiss} style={overlayActionStyles.actionButtonSingle} buttonColor={colors.primary} textColor={colors.onPrimary} testID='rules-done'>
+              Done
+            </Button>
+          </View>
+        </OverlayCard>
+      </OverlayBackdrop>
     </Portal>
   )
 }
 
-const MAX_HEIGHT_RATIO = 0.8
-const COMPACT_MAX_HEIGHT_RATIO = 0.94
+// The backdrop's side gutter, as on ConfirmDialog and the win/loss cards.
+const OVERLAY_GUTTER = 24
 
 // m:ss, as the game's own readout shows time (GameChrome's formatTime, which this file can't import: GameChrome imports it).
 function formatParTime(seconds: number): string {
@@ -76,21 +99,16 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     width: 16
   },
-  closeButton: {
-    alignSelf: 'center',
-    marginTop: 16,
-    width: 160
+  // ConfirmDialog's own card addition: the card claims its full maxWidth instead of shrinking to its
+  // content. The scroll area runs to the card's top edge (its content carries the 24pt inset), and
+  // meets the Done row with no gap of its own, like the Settings sheet's.
+  card: {
+    gap: 0,
+    paddingTop: 0,
+    width: '100%'
   },
-  closeButtonCompact: {
-    marginTop: 8
-  },
-  container: {
-    borderRadius: 16,
-    marginHorizontal: 24,
-    padding: 24
-  },
-  containerCompact: {
-    padding: 16
+  overlay: {
+    paddingHorizontal: OVERLAY_GUTTER
   },
   row: {
     flexDirection: 'row',
@@ -115,16 +133,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20
   },
+  // The card centers its children; the list takes the card's full width and shrinks (scrolling) when
+  // the card reaches its maxHeight.
   scroll: {
-    flexGrow: 0
+    alignSelf: 'stretch',
+    flexGrow: 0,
+    flexShrink: 1
   },
+  // The header and the rules scroll together: the card's 24pt inset above the header, the overlay
+  // cards' 16pt gap below it, and 16pt below the last line before the Done row.
   scrollContent: {
-    paddingTop: 4
-  },
-  title: {
-    fontFamily: CARD_FONT_FAMILY,
-    fontSize: 22,
-    fontWeight: '800',
-    marginBottom: 12
+    gap: 16,
+    paddingBottom: 16,
+    paddingTop: 24
   }
 })

@@ -6,10 +6,10 @@ import { achievementsActions } from '@/redux/achievementsSlice'
 import type { RootState } from '@/redux/store'
 
 import { ACHIEVEMENT_CATALOG } from './achievementCatalog'
-import { clearGameInProgress } from './gameInProgress'
+import { clearAllGamesInProgress } from './gameInProgress'
 import { useProfiles } from './profiles'
 import { applyDealAbandoned, applyDealWon, applyHintUsed, getProfileStatsView } from './statsEngine'
-import { AchievementDefinition, DealMetrics, SOLITAIRE_GAME_IDS, StatsState, UnlockedAchievementsState } from './statsTypes'
+import { AchievementDefinition, DealMetrics, StatsState, UnlockedAchievementsState } from './statsTypes'
 
 interface GameStatsContextValue {
   stats: StatsState
@@ -79,10 +79,10 @@ export function GameStatsProvider({ children }: { children: ReactNode }) {
 
   // Wraps the package's own resetAll (which only knows about the achievements slice) so
   // "Reset Stats" also drops any resumable saves - leaving one behind after an explicit full reset
-  // would be the more surprising outcome.
+  // would be the more surprising outcome. Every player's, like the stats it resets.
   const resetAllAndProgress = useCallback(() => {
     resetAll()
-    SOLITAIRE_GAME_IDS.forEach((id) => clearGameInProgress(id))
+    clearAllGamesInProgress()
   }, [resetAll])
 
   const value = useMemo(

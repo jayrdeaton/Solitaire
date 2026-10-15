@@ -51,6 +51,7 @@ import { Card, SUITS } from '@/engine/types'
 import { canfieldVariant } from '@/engine/variants'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
+import { showNoHintToast } from '@/games/shared/gameToasts'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFinish } from '@/games/shared/useAutoFinish'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
@@ -570,7 +571,7 @@ function CanfieldScreenInner() {
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(controllerRef.current, state, skip)
     if (result.kind === 'none') {
-      if (!request?.auto) infoToast('No helpful moves right now.')
+      if (!request?.auto) showNoHintToast(infoToast)
       return
     }
     setHint({ result, forState: state, skip })

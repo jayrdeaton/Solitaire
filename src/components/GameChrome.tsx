@@ -521,11 +521,11 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
         {settingsContent}
       </SettingsDialog>
 
-      <RulesDialog visible={rulesOpen} onDismiss={() => setRulesOpen(false)} title={title} rules={rules} par={par} compact={isWide} />
+      <RulesDialog visible={rulesOpen} onDismiss={() => setRulesOpen(false)} title={title} rules={rules} par={par} />
 
       <ConfirmDialog
         visible={confirmNewGameVisible}
-        title='Start a new game?'
+        title='Start a New Game?'
         message='This game is still in progress. Starting a new one counts it as a loss.'
         confirmLabel='New Game'
         cancelLabel='Cancel'

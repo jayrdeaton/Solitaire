@@ -35,6 +35,7 @@ import { top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { golfVariant } from '@/engine/variants'
+import { showNoHintToast } from '@/games/shared/gameToasts'
 import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
@@ -426,7 +427,7 @@ function GolfScreenInner() {
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(controller, state, skip)
     if (result.kind === 'none') {
-      if (!request?.auto) infoToast('No helpful moves right now.')
+      if (!request?.auto) showNoHintToast(infoToast)
       return
     }
     setHint({ result, forState: state, skip })

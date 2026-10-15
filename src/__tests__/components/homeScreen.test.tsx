@@ -13,7 +13,7 @@ import { computeHomeLayout } from '@/components/homeLayout'
 //     AND useRotatedWindowDimensions are both replaced (the latter imports the former internally, so replacing only
 //     useRotation would leave it reading rotation 0), and react-native's useWindowDimensions - which RotatedFrame and
 //     FakeLandscapeView read directly - is replaced at its module.
-//   - the heavy children (HeroCards, ProfilePanel, GamePreview, the two dialogs, RotationAwareStatusBar) are recording stand-ins.
+//   - the heavy children (HeroCards, ProfilePanel, GamePreview, the two dialogs) are recording stand-ins.
 //   - @rific/feedback-press's IconButton/Pressable are thin RN Pressables that keep accessibilityLabel/onPress/style (the real
 //     ones, without a provider, drop `style` - which would hide the corner offsets under test).
 // The tree is inspected through screen.toJSON() (host elements only, in tree order), so "ancestor of", "sibling order" and
@@ -32,7 +32,7 @@ const mockRouter = { push: jest.fn(), replace: jest.fn(), back: jest.fn(), dismi
 const mockConsumeResumeGame = jest.fn(() => mockResume)
 const mockHeroCards = jest.fn((_props: { scale?: number }) => null)
 const mockSettingsDialog = jest.fn((_props: { visible: boolean; onDismiss: () => void; rotation?: number }) => null)
-const mockRulesDialog = jest.fn((_props: { visible: boolean; onDismiss: () => void; title: string; rules: string[]; compact?: boolean }) => null)
+const mockRulesDialog = jest.fn((_props: { visible: boolean; onDismiss: () => void; title: string; rules: string[] }) => null)
 /** The popover host the Home screen hands its ProfilePanel - the test opens a popover through it. */
 const mockHostRef: { current: { openId: string | null; toggle: (id: string) => void; close: () => void } | null } = { current: null }
 /** How many times each stand-in has been MOUNTED / UNMOUNTED - an unchanged tree keeps these at 1 / 0 across a rotation. */
@@ -42,10 +42,8 @@ const mockUnmounts: Record<string, number> = {}
 jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({ __esModule: true, default: () => ({ ...mockWindow, scale: 1, fontScale: 1 }) }))
 jest.mock('@tastic/core', () => {
   const actual = jest.requireActual('@tastic/core')
-  const { View } = require('react-native')
   return {
     ...actual,
-    RotationAwareStatusBar: () => <View testID='status-bar' />,
     useRotation: () => mockRotation,
     useRotatedWindowDimensions: () => actual.rotateDimensions(mockWindow.width, mockWindow.height, mockRotation)
   }
@@ -140,7 +138,7 @@ jest.mock('@/components/SettingsDialog', () => {
 jest.mock('@/components/RulesDialog', () => {
   const { View } = require('react-native')
   return {
-    RulesDialog: (props: { visible: boolean; onDismiss: () => void; title: string; rules: string[]; compact?: boolean }) => {
+    RulesDialog: (props: { visible: boolean; onDismiss: () => void; title: string; rules: string[] }) => {
       mockRulesDialog(props)
       return <View testID='rules-dialog' />
     }
@@ -348,8 +346,6 @@ describe('Home: portrait', () => {
     const tile = styleOf(tileOf(t, '/klondike'))
     expect(tile.flexDirection).toBe('row')
     expect(tile.width).toBeUndefined()
-    // The rules dialog is the full-size one.
-    expect(lastProps(mockRulesDialog).compact).toBe(false)
     // No frame rotation.
     expect(rotatedFrameOf(pathOrFail(t, byTestId('hero-cards'), 'hero'))).toBeNull()
   })
@@ -404,7 +400,7 @@ describe('Home: landscape (rotated 90)', () => {
     expect(cog).toMatchObject({ position: 'absolute', top: 8, right: 8 + 34 })
   })
 
-  it('renders the wide two-pane layout with a compact rules dialog', async () => {
+  it('renders the wide two-pane layout', async () => {
     setLandscape()
     await renderHome()
 
@@ -419,11 +415,9 @@ describe('Home: landscape (rotated 90)', () => {
     const { scale } = lastProps(mockHeroCards)
     expect(scale).toBe(layout.heroScale)
     expect(scale).toBeLessThan(1)
-    // The rules dialog switches to its compact form.
-    expect(lastProps(mockRulesDialog).compact).toBe(true)
   })
 
-  it("opens the compact rules dialog for a tile from the wide layout's floating rules button", async () => {
+  it("opens the rules dialog for a tile from the wide layout's floating rules button", async () => {
     setLandscape()
     await renderHome()
     const event = { preventDefault: jest.fn(), stopPropagation: jest.fn() }
@@ -431,7 +425,7 @@ describe('Home: landscape (rotated 90)', () => {
     await fireEvent.press(screen.getByLabelText('Golf rules'), event)
 
     const props = lastProps(mockRulesDialog)
-    expect(props).toMatchObject({ visible: true, title: 'Golf', compact: true })
+    expect(props).toMatchObject({ visible: true, title: 'Golf' })
     expect(mockRouter.push).not.toHaveBeenCalled()
   })
 
@@ -565,22 +559,6 @@ describe('Home: the cold-launch resume redirect', () => {
   })
 })
 
-// ------------------------------------------------------------------------------------------------- status bar
-
-describe('Home: the status bar', () => {
-  it('mounts the rotation-aware status bar only while Home is focused', async () => {
-    await renderHome()
-    expect(screen.getByTestId('status-bar')).toBeTruthy()
-
-    mockFocused = false
-    await rerenderHome()
-
-    expect(screen.queryByTestId('status-bar')).toBeNull()
-    // The menu itself stays mounted underneath whatever covers it.
-    expect(screen.getByTestId('hero-cards')).toBeTruthy()
-  })
-})
-
 // ------------------------------------------------------------------------------------------------- covered by another screen
 
 describe('Home: while another screen covers it', () => {
@@ -596,13 +574,11 @@ describe('Home: while another screen covers it', () => {
     await rerenderHome()
     // (portrait renders the hero at its natural size, i.e. without a `scale` prop)
     expect(lastProps(mockHeroCards).scale).toBeUndefined()
-    expect(screen.queryByTestId('status-bar')).toBeNull()
 
     // Back on the menu: it catches up to the way the phone is held now.
     mockFocused = true
     await rerenderHome()
     expect(lastProps(mockHeroCards).scale).toBeLessThan(1)
-    expect(lastProps(mockRulesDialog).compact).toBe(true)
   })
 })
 

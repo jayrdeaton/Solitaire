@@ -42,6 +42,7 @@ import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
 import { tripeaksVariant } from '@/engine/variants'
+import { showNoHintToast } from '@/games/shared/gameToasts'
 import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
@@ -485,7 +486,7 @@ function TriPeaksScreenInner() {
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(controller, state, skip)
     if (result.kind === 'none') {
-      if (!request?.auto) infoToast('No helpful moves right now.')
+      if (!request?.auto) showNoHintToast(infoToast)
       return
     }
     setHint({ result, forState: state, skip })

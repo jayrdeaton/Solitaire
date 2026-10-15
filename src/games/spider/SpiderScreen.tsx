@@ -37,6 +37,7 @@ import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
 import { spiderVariant } from '@/engine/variants'
+import { showNoHintToast } from '@/games/shared/gameToasts'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
@@ -1339,7 +1340,7 @@ function SpiderScreenInner() {
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(controller, state, skip)
     if (result.kind === 'none') {
-      if (!request?.auto) infoToast('No helpful moves right now.')
+      if (!request?.auto) showNoHintToast(infoToast)
       return
     }
     setHint({ result, forState: state, skip })
@@ -1562,7 +1563,7 @@ function SpiderScreenInner() {
       // With a row's worth still in the stock, a deal is refused only while a column is empty (and the tableau holds enough
       // cards to fill them all - see rules.ts's canDealStock). An exhausted stock's slot does nothing. A toast, never text on
       // the felt.
-      if (current.stock.length >= TABLEAU_COLUMNS) infoToast('Fill every empty column before dealing.')
+      if (current.stock.length >= TABLEAU_COLUMNS) infoToast('Fill every empty column before dealing.', undefined, undefined, { icon: 'view-column-outline' })
       return
     }
     startFlights(1)

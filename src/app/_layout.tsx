@@ -1,7 +1,7 @@
 import { useAutoPaperTheme, useThemeSettings } from '@rific/auto-paper'
 import { FeedbackPressProvider, hapticActions, type HapticSettings, soundActions, type SoundSettings } from '@rific/feedback-press'
-import { Toaster, ToastProvider } from '@rific/toaster'
-import { OrientationProvider, useThemedRootBackground } from '@tastic/core'
+import { ToastProvider } from '@rific/toaster'
+import { OrientationProvider, useRotationAwareStatusBar, useThemedRootBackground } from '@tastic/core'
 import { RotatedFrame } from '@tastic/hud'
 import { ProfileColorProvider } from '@tastic/profile'
 import Constants from 'expo-constants'
@@ -9,7 +9,6 @@ import { DarkTheme, Stack, ThemeProvider as NavigationThemeProvider } from 'expo
 import Head from 'expo-router/head'
 import { DeviceMotion } from 'expo-sensors'
 import * as SplashScreen from 'expo-splash-screen'
-import { StatusBar } from 'expo-status-bar'
 import { type ReactNode, useCallback, useEffect } from 'react'
 import { Platform, StyleSheet, View } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
@@ -20,8 +19,9 @@ import { PersistGate } from 'redux-persist/integration/react'
 
 import { GuideHost } from '@/components/GuideHost'
 import { TableBackground } from '@/components/TableBackground'
-import { previewCardBack, useTableColors } from '@/components/theme'
+import { previewCardBack } from '@/components/theme'
 import { ThemeBridge } from '@/components/ThemeBridge'
+import { ThemedToaster } from '@/components/ThemedToaster'
 import { UpdateDialog } from '@/components/UpdateDialog'
 import { useCardSoundPlayers } from '@/components/useCardSounds'
 import { useFontsPreload } from '@/components/useFontsPreload'
@@ -61,17 +61,20 @@ function ThemedStack() {
   // sits at full opacity under the incoming screen. iOS is left on its own UIKit push (checked frame by
   // frame in the simulator - no bleed-through). Derived from the installed react-native-screens sources; NOT
   // yet observed on an Android device or emulator.
-  const screenOptions = { ...rootBackground, contentStyle: { backgroundColor: 'transparent' }, animation: Platform.select({ android: 'fade' as const }) }
+  //
+  // The status bar is set here, for every screen: hidden while the content is turned (every screen in this app turns
+  // with the phone, and the bar is glued to the device's physical top edge, so it would read sideways or upside
+  // down), and always light, since every screen sits on the dark felt in every appearance mode (the default `auto`
+  // gives dark text in a light-mode system). Screen options rather than a StatusBar component: an app linked against
+  // the iOS 27 SDK can't set the status bar app-wide any more, which is the only way React Native's StatusBar works on
+  // iOS, so react-native-screens sets it per screen (@tastic/core's config plugin turns on the Info.plist key that
+  // needs). Nothing in this app mounts a StatusBar (auto-paper's is off, see ThemeBridge): with that key on, one logs
+  // an error. Home stays mounted under a game, and the top screen's options win, so a covered screen has no say.
+  const statusBar = useRotationAwareStatusBar({ style: 'light' })
+  const screenOptions = { ...rootBackground, ...statusBar, contentStyle: { backgroundColor: 'transparent' }, animation: Platform.select({ android: 'fade' as const }) }
   return (
     <View style={styles.root}>
       <TableBackground />
-      {/* Explicitly light, not the default `auto`: every screen here sits on the dark-toned felt in
-      every appearance mode (see theme.ts), so `auto` flips to dark status-bar text in a light-mode
-      system and reads poorly against it. Mounted here, next to the Stack, rather than once at the
-      very root - confirmed live on iOS that a root-level instance never took effect (the bar stayed
-      dark on the menu) while this one does. Game screens, Home, Achievements and Profiles layer their own
-      rotation-aware hide on top - see withGameProviders and RotatedScreen. */}
-      <StatusBar style='light' />
       <NavigationThemeProvider value={TRANSPARENT_NAVIGATION_THEME}>
         <Stack screenOptions={screenOptions}>
           <Stack.Screen name='index' options={{ title: 'Solitaire' }} />
@@ -97,8 +100,8 @@ function ThemedStack() {
 /** The toaster and the update dialog, laid OVER the whole app in a frame that turns with the phone - they used to
  * sit outside the rotation (toasts on the physical bottom edge, the "Update Available" card upright while
  * everything else was sideways). `passThrough` because this frame covers the Stack: only a toast card / the
- * dialog claims a touch. `rotatedSafeArea` so the toaster's own `useSafeAreaInsets()` bottom offset lands on the
- * frame's bottom edge; `portalHost` so the update dialog's Paper Portal lands inside the frame (its `rotation`
+ * dialog claims a touch. `rotatedSafeArea` so the toaster's own `useSafeAreaInsets()` top offset (and ThemedToaster's
+ * side insets) land on the frame's own edges; `portalHost` so the update dialog's Paper Portal lands inside the frame (its `rotation`
  * stays 0). The absoluteFill wrapper takes the frame out of the Stack's layout. The toaster renders inline in the
  * frame (ToastProvider is given no `paper`, so it does not portal); only the update dialog uses the frame's
  * Portal.Host. The toaster needs no rotation prop: as of @rific/toaster 0.7.1 its swipe-to-dismiss is measured in
@@ -113,17 +116,6 @@ function RootOverlays() {
       </RotatedFrame>
     </View>
   )
-}
-
-function ThemedToaster() {
-  const colors = useTableColors()
-  // clearButton/historyButton default to a "clear"/"history" chip stacked above the toasts - this
-  // app never surfaces a reason to dig through past toasts or bulk-dismiss them, so both are turned
-  // off outright (passing null, not omitting the prop, is what actually suppresses the default -
-  // see @rific/toaster's Toaster: `resolvedXButton = xButton === void 0 ? defaultXButton : xButton`).
-  // limit is already 3 by default; passed explicitly so it doesn't silently drift with a future
-  // library bump.
-  return <Toaster backgroundColor={colors.tableFeltDark} textColor='#fff' clearButton={null} historyButton={null} limit={3} />
 }
 
 /** Keeps auto-paper's own theme (colors.primary/secondary/tertiary, used by every Paper-flavored

@@ -7,6 +7,10 @@ import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 // field folded into `profiles` or `tableColor`, so each stays a single, obviously-named concern.
 export type ActiveProfileState = string | null
 
+// The key everything kept per player (saved games, settings) files Guest under while no profile is
+// selected. Profile ids are `profile-<time>-<random>`, so it can never name a real profile.
+export const GUEST_PLAYER_ID = 'guest'
+
 const slice = createSlice({
   initialState: null as ActiveProfileState,
   name: 'activeProfile',

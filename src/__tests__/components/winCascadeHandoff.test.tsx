@@ -54,7 +54,6 @@ jest.mock('react-native-reanimated', () => {
 
 jest.mock('@tastic/core', () => ({
   ...jest.requireActual('@tastic/core'),
-  RotationAwareStatusBar: () => null,
   useRotation: () => 0,
   useRotatedWindowDimensions: () => ({ width: 400, height: 800 }),
   rotateInsets: (insets: unknown) => insets

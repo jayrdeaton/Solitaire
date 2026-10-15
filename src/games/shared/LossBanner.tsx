@@ -1,8 +1,8 @@
 import { useAutoPaperTheme } from '@rific/auto-paper'
 import { Button } from '@rific/feedback-press'
-import { OverlayBackdrop, OverlayCard, overlayActionStyles, useOverlayCardColors } from '@tastic/hud'
+import { DialogHeader, overlayActionStyles, OverlayBackdrop, OverlayCard, useCompactDialog, useOverlayCardColors } from '@tastic/hud'
 import { StyleSheet, View } from 'react-native'
-import { Icon, Text } from 'react-native-paper'
+import { Text } from 'react-native-paper'
 
 import { GAME_DIALOG_Z_INDEX } from '@/components/GameChrome'
 
@@ -17,15 +17,15 @@ export interface LossBannerProps {
  * but no score/time/moves summary - a loss has none worth showing. */
 export function LossBanner({ onNewGame, onUndo }: LossBannerProps) {
   const { colors } = useAutoPaperTheme()
-  const { fg, fgMuted } = useOverlayCardColors()
+  const { fg } = useOverlayCardColors()
+  const { compact, onLayout } = useCompactDialog()
   return (
     // The backdrop takes every touch, like WinBanner's: Undo is on the card, and Home/Settings are portaled above it.
-    <OverlayBackdrop style={styles.overlay}>
+    <OverlayBackdrop style={styles.overlay} onLayout={onLayout}>
       <OverlayCard style={styles.card}>
-        <Icon source='cards-outline' size={64} color={fgMuted} />
-        <Text variant='headlineLarge' style={[styles.title, { color: fg }]}>
-          No Moves Left
-        </Text>
+        {/* The theme's primary like every other dialog's header (it used to be the muted ink, a
+          deliberate "not a celebration"; Jay, 2026-10-15, wants one header everywhere). */}
+        <DialogHeader icon='cards-outline' title='No Moves Left' compact={compact} />
         <Text variant='bodyLarge' style={[styles.body, { color: fg }]}>
           This deal can&rsquo;t be won from here.
         </Text>
@@ -56,9 +56,5 @@ const styles = StyleSheet.create({
   overlay: {
     paddingHorizontal: 24,
     zIndex: GAME_DIALOG_Z_INDEX
-  },
-  title: {
-    fontWeight: 'bold',
-    textAlign: 'center'
   }
 })

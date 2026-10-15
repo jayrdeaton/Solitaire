@@ -13,6 +13,7 @@ import activeProfile from './activeProfileSlice'
 import gameInProgress from './gameInProgressSlice'
 import guide, { LEGACY_STORAGE_KEYS } from './guideSlice'
 import lastActiveGame from './lastActiveGameSlice'
+import playerSettings, { playerSettingsMiddleware } from './playerSettingsSlice'
 import settings from './settingsSlice'
 import tableColor from './tableColorSlice'
 
@@ -61,8 +62,12 @@ const rootReducer = combineReducers({
   // a Settings field, so it survives Reset Stats.
   // See guideSlice.ts's own doc.
   guide,
-  // The persisted settings (see settingsSlice.ts).
-  settings
+  // The persisted settings (see settingsSlice.ts): the selected player's, for the ones that follow the
+  // player.
+  settings,
+  // Every other player's settings, swapped with the live ones above (and `sound`/`haptic`) whenever the
+  // selected profile changes (see playerSettingsSlice.ts).
+  playerSettings
 })
 
 export const persistConfig = {
@@ -89,7 +94,7 @@ export const store = configureStore({
         ignoredPaths: ['gameInProgress']
       }
     })
-    return defaultMiddleware.concat(errorMiddleware)
+    return defaultMiddleware.concat(errorMiddleware, playerSettingsMiddleware)
   },
   reducer: persistedReducer
 })

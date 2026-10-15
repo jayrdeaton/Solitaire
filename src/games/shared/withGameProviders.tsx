@@ -1,4 +1,4 @@
-import { FakeLandscapeView, RotationAwareStatusBar } from '@tastic/core'
+import { FakeLandscapeView } from '@tastic/core'
 import { ComponentType } from 'react'
 import { StyleSheet } from 'react-native'
 import { Portal } from 'react-native-paper'
@@ -26,8 +26,9 @@ import { WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
  * screen's own entire exported component (src/app/<game>.tsx re-exports withGameProviders(Inner)
  * directly), so this one wrapper is what gives a game screen the rotation. Home, Achievements and Profiles
  * get the same frame from RotatedScreen (components/RotatedScreen.tsx: @tastic/hud's RotatedFrame, which is a
- * FakeLandscapeView + a Portal.Host, plus a focus-gated status bar), and the root layout's toaster/update dialog from
- * RotatedFrame - so nothing in the app is left in physical portrait.
+ * FakeLandscapeView + a Portal.Host), and the root layout's toaster/update dialog from RotatedFrame - so nothing in
+ * the app is left in physical portrait. The status bar hides while the frame is turned from the root Stack's screen
+ * options (_layout.tsx's ThemedStack), not from here.
  *
  * The Portal.Host sits inside FakeLandscapeView and OUTSIDE the three providers, for two reasons. (1) The
  * game's dialogs (Settings, Rules, the New Game confirm) render through Paper's Portal, which by default
@@ -43,32 +44,23 @@ import { WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
  * HintGlideProvider (the Hint button's see-through glide, components/hinting/HintGlideLayer.tsx) sits innermost, so its
  * overlay paints over the board but under every real flight's ghost.
  *
- * @tastic/core's RotationAwareStatusBar sits beside it (it renders nothing itself) so the OS status bar
- * hides exactly when the board is rotated: the bar is glued to the device's physical top edge and can't
- * turn with the content, so under a +/-90deg or 180deg rotation a visible one renders sideways or
- * upside-down. It reads the same orientation state FakeLandscapeView does (both unlocked), so the two
- * can never disagree. Always `light`: the felt is dark-toned in every appearance mode (see theme.ts), so
- * the default `auto` flips to dark text in a light-mode system and reads poorly against it.
  */
 export function withGameProviders(Inner: ComponentType): ComponentType {
   return function GameScreen() {
     return (
-      <>
-        <RotationAwareStatusBar style='light' />
-        <FakeLandscapeView style={styles.root}>
-          <Portal.Host>
-            <DealProvider>
-              <DragGhostProvider>
-                <WinCascadeProvider>
-                  <HintGlideProvider>
-                    <Inner />
-                  </HintGlideProvider>
-                </WinCascadeProvider>
-              </DragGhostProvider>
-            </DealProvider>
-          </Portal.Host>
-        </FakeLandscapeView>
-      </>
+      <FakeLandscapeView style={styles.root}>
+        <Portal.Host>
+          <DealProvider>
+            <DragGhostProvider>
+              <WinCascadeProvider>
+                <HintGlideProvider>
+                  <Inner />
+                </HintGlideProvider>
+              </WinCascadeProvider>
+            </DragGhostProvider>
+          </DealProvider>
+        </Portal.Host>
+      </FakeLandscapeView>
     )
   }
 }

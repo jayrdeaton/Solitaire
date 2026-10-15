@@ -3,11 +3,12 @@ type Redux = typeof import('@/redux/store')
 
 const board = (moves: number) => ({ state: { tableau: [] as number[], n: moves }, undoStack: [], moves, elapsedSeconds: moves })
 // redux-persist stores each key of a persisted slice as its own JSON string inside the entry.
-const persistedMoves = (disk: Map<string, string>, gameId: string): number | undefined => {
+// Each owner (a profile id, or 'guest') is a key of its game's entry.
+const persistedMoves = (disk: Map<string, string>, gameId: string, owner = 'guest'): number | undefined => {
   const raw = disk.get(`persist:gameInProgress.${gameId}`)
   if (!raw) return undefined
-  const saved = JSON.parse(JSON.parse(raw).saved)
-  return saved?.moves
+  const entry = JSON.parse(raw)[owner]
+  return entry ? JSON.parse(entry)?.moves : undefined
 }
 
 describe('game-in-progress persistence (coalesced saves)', () => {
@@ -20,7 +21,8 @@ describe('game-in-progress persistence (coalesced saves)', () => {
 
   // Every setSaved dispatch for one game - one per actual save into the store.
   const savesOf = (gameId: string) => dispatch.mock.calls.filter(([action]) => action.type === `gameInProgress/${gameId}/setSaved`)
-  const movesInStore = (gameId: 'klondike' | 'spider') => (redux.store.getState().gameInProgress[gameId].saved as { moves: number } | null)?.moves
+  const movesInStore = (gameId: 'klondike' | 'spider', owner = 'guest') => (redux.store.getState().gameInProgress[gameId][owner] as { moves: number } | undefined)?.moves
+  const selectProfile = (id: string | null) => redux.store.dispatch(require('@/redux/activeProfileSlice').activeProfileActions.select(id))
 
   beforeEach(async () => {
     jest.useFakeTimers()
@@ -111,7 +113,7 @@ describe('game-in-progress persistence (coalesced saves)', () => {
     await jest.advanceTimersByTimeAsync(5000)
 
     expect(movesInStore('klondike')).toBeUndefined()
-    expect(savesOf('klondike').every(([action]) => action.payload === null)).toBe(true)
+    expect(savesOf('klondike').every(([action]) => action.payload.saved === null)).toBe(true)
   })
 
   it('a read sees the latest board even if its save is still waiting out the debounce', async () => {
@@ -142,5 +144,101 @@ describe('game-in-progress persistence (coalesced saves)', () => {
     api.saveGameInProgress('klondike', board(1))
 
     await expect(api.flushGameInProgress()).resolves.toBeUndefined()
+  })
+
+  describe('per profile', () => {
+    it('a player only ever resumes their own deal', async () => {
+      selectProfile('profile-dad')
+      api.saveGameInProgress('klondike', board(40))
+      await api.flushGameInProgress()
+
+      selectProfile('profile-kid')
+      expect(await api.loadGameInProgress('klondike')).toBeNull()
+      api.saveGameInProgress('klondike', board(3))
+      await api.flushGameInProgress()
+
+      selectProfile(null)
+      expect(await api.loadGameInProgress('klondike')).toBeNull()
+
+      selectProfile('profile-dad')
+      expect((await api.loadGameInProgress('klondike'))?.moves).toBe(40)
+      expect(persistedMoves(disk, 'klondike', 'profile-dad')).toBe(40)
+      expect(persistedMoves(disk, 'klondike', 'profile-kid')).toBe(3)
+    })
+
+    it('a save is filed under the player who made it, even if another is picked before it is stored', async () => {
+      selectProfile('profile-dad')
+      api.saveGameInProgress('klondike', board(12))
+      selectProfile('profile-kid')
+      api.saveGameInProgress('klondike', board(1))
+      await api.flushGameInProgress()
+
+      expect(movesInStore('klondike', 'profile-dad')).toBe(12)
+      expect(movesInStore('klondike', 'profile-kid')).toBe(1)
+    })
+
+    it("clearing a deal clears only the active player's", async () => {
+      selectProfile('profile-dad')
+      api.saveGameInProgress('klondike', board(12))
+      selectProfile('profile-kid')
+      api.saveGameInProgress('klondike', board(1))
+      await api.clearGameInProgress('klondike')
+      await api.flushGameInProgress()
+
+      expect(movesInStore('klondike', 'profile-kid')).toBeUndefined()
+      expect(movesInStore('klondike', 'profile-dad')).toBe(12)
+    })
+
+    it("a deleted profile's deals go with it, and Reset Stats drops everyone's", async () => {
+      selectProfile('profile-dad')
+      api.saveGameInProgress('klondike', board(12))
+      api.saveGameInProgress('spider', board(30))
+      selectProfile('profile-kid')
+      api.saveGameInProgress('klondike', board(1))
+      await api.flushGameInProgress()
+
+      api.clearProfileGamesInProgress('profile-dad')
+      expect(movesInStore('klondike', 'profile-dad')).toBeUndefined()
+      expect(movesInStore('spider', 'profile-dad')).toBeUndefined()
+      expect(movesInStore('klondike', 'profile-kid')).toBe(1)
+
+      api.clearAllGamesInProgress()
+      expect(movesInStore('klondike', 'profile-kid')).toBeUndefined()
+      await api.flushGameInProgress()
+      expect(persistedMoves(disk, 'klondike', 'profile-kid')).toBeUndefined()
+    })
+  })
+})
+
+describe('saves from before they were per profile', () => {
+  afterEach(() => {
+    jest.useRealTimers()
+    jest.restoreAllMocks()
+  })
+
+  it('go to the player active when they are first touched, and nobody else', async () => {
+    jest.useFakeTimers()
+    jest.resetModules()
+    const AsyncStorage = require('@react-native-async-storage/async-storage')
+    // What a build from before this change left on disk: one `saved` per game, plus the root store's active profile.
+    const disk = new Map<string, string>([
+      ['persist:gameInProgress.klondike', JSON.stringify({ saved: JSON.stringify(board(77)), _persist: JSON.stringify({ version: -1, rehydrated: true }) })],
+      ['persist:gameInProgress.spider', JSON.stringify({ saved: JSON.stringify(board(5)), _persist: JSON.stringify({ version: -1, rehydrated: true }) })]
+    ])
+    jest.spyOn(AsyncStorage, 'setItem').mockImplementation((async (k: string, v: string) => void disk.set(k, v)) as never)
+    jest.spyOn(AsyncStorage, 'getItem').mockImplementation((async (k: string) => disk.get(k) ?? null) as never)
+    jest.spyOn(AsyncStorage, 'removeItem').mockImplementation((async (k: string) => void disk.delete(k)) as never)
+    const redux: Redux = require('@/redux/store')
+    while (!redux.persistor.getState().bootstrapped) await jest.advanceTimersByTimeAsync(10)
+    redux.store.dispatch(require('@/redux/activeProfileSlice').activeProfileActions.select('profile-dad'))
+    const api: Api = require('@/stores/gameInProgress')
+
+    expect((await api.loadGameInProgress('klondike'))?.moves).toBe(77)
+
+    const slots = redux.store.getState().gameInProgress
+    expect(slots.spider['profile-dad']?.moves).toBe(5)
+    expect(slots.klondike.saved).toBeUndefined()
+    redux.store.dispatch(require('@/redux/activeProfileSlice').activeProfileActions.select('profile-kid'))
+    expect(await api.loadGameInProgress('klondike')).toBeNull()
   })
 })

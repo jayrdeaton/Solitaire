@@ -69,9 +69,9 @@ function nextAutoHint(current: AutoHintSeconds): AutoHintSeconds {
   return AUTO_HINT_CHOICES[(AUTO_HINT_CHOICES.indexOf(current) + 1) % AUTO_HINT_CHOICES.length]
 }
 
-function autoHintLabel(seconds: AutoHintSeconds, spoken: boolean): string {
-  if (seconds === 0) return spoken ? 'off' : 'Off'
-  return spoken ? `after ${seconds} seconds` : `${seconds}s`
+/** The Auto Hint row's caption: Off, After 15 seconds, After 30 seconds. */
+function autoHintCaption(seconds: AutoHintSeconds): string {
+  return seconds === 0 ? 'Off' : `After ${seconds} seconds`
 }
 
 interface SettingsDialogProps {
@@ -108,53 +108,77 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
   return (
     <BaseSettingsDialog visible={visible} onDismiss={onDismiss} rotation={rotation} version={release.otaVersion} onUpdateError={(message) => error('Update check failed', message)} lockOrientation={settings.lockOrientation} onLockOrientationChange={(value) => setSettings({ lockOrientation: value })} onShowHowToPlay={showHowToPlay ? openGuide : undefined}>
       {children}
-      <SettingsSection>
-        {/* Same bare-row shape as BaseSettingsDialog's own Sound/Haptics rows (an icon badge whose
-        color/glyph flips with state, plus a single-line label, no separate Switch) - that
-        component doesn't export its SettingIcon helper, so the small badge is replicated here
-        rather than imported. Global (not per-game), since it's one play-style preference that
-        applies identically to every foundation-building game rather than a rule variant any single
-        game owns - see types/index.ts's own doc comment on autoMoveToFoundation. */}
-        <TouchableRipple onPress={() => setSettings({ autoMoveToFoundation: !settings.autoMoveToFoundation })} style={styles.toggleButton} accessibilityLabel={`Auto-move to foundation ${settings.autoMoveToFoundation ? 'on' : 'off'}`}>
-          <View style={styles.toggleContent}>
-            <View style={[styles.iconBadge, { backgroundColor: settings.autoMoveToFoundation ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
-              <Icon source={settings.autoMoveToFoundation ? 'arrow-up-bold-circle' : 'arrow-up-bold-circle-outline'} size={18} color={settings.autoMoveToFoundation ? paperColors.tertiary : paperColors.onSurfaceVariant} />
+      {/* Two labeled sections, like hud's APPEARANCE above them (Jay, 2026-10-15: an unlabeled
+      section left a bare 24pt gap after the Blur row). Toggle rows sit 4pt apart, hud's own
+      toggle-group spacing. */}
+      <SettingsSection label='GAMEPLAY'>
+        <View style={styles.rows}>
+          {/* Same bare-row shape as BaseSettingsDialog's own Sound/Haptics rows (an icon badge whose
+          color/glyph flips with state, plus a single-line label, no separate Switch) - that
+          component doesn't export its SettingIcon helper, so the small badge is replicated here
+          rather than imported. Global (not per-game), since it's one play-style preference that
+          applies identically to every foundation-building game rather than a rule variant any single
+          game owns - see types/index.ts's own doc comment on autoMoveToFoundation. */}
+          <TouchableRipple onPress={() => setSettings({ autoMoveToFoundation: !settings.autoMoveToFoundation })} style={styles.toggleButton} accessibilityLabel={`Auto-move to foundation ${settings.autoMoveToFoundation ? 'on' : 'off'}`}>
+            <View style={styles.toggleContent}>
+              <View style={[styles.iconBadge, { backgroundColor: settings.autoMoveToFoundation ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
+                <Icon source={settings.autoMoveToFoundation ? 'arrow-up-bold-circle' : 'arrow-up-bold-circle-outline'} size={18} color={settings.autoMoveToFoundation ? paperColors.tertiary : paperColors.onSurfaceVariant} />
+              </View>
+              <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
+                Auto-Move to Foundation
+              </Text>
             </View>
-            <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
-              Auto-Move to Foundation
-            </Text>
-          </View>
-        </TouchableRipple>
-        {/* Same bare-row shape as the toggle above - a second gameplay-assist preference, not a
-        rule variant (see types/index.ts's own doc comment on dimUnplayable). Only
-        FreeCell/Canfield/Golf/Spider ever have a face-up-but-unplayable card to dim in the first
-        place; a no-op everywhere else. */}
-        <TouchableRipple onPress={() => setSettings({ dimUnplayable: !settings.dimUnplayable })} style={styles.toggleButton} accessibilityLabel={`Dim unplayable cards ${settings.dimUnplayable ? 'on' : 'off'}`}>
-          <View style={styles.toggleContent}>
-            <View style={[styles.iconBadge, { backgroundColor: settings.dimUnplayable ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
-              <Icon source={settings.dimUnplayable ? 'card-off-outline' : 'card-outline'} size={18} color={settings.dimUnplayable ? paperColors.tertiary : paperColors.onSurfaceVariant} />
+          </TouchableRipple>
+          {/* Same bare-row shape as the toggle above - a second gameplay-assist preference, not a
+          rule variant (see types/index.ts's own doc comment on dimUnplayable). Only
+          FreeCell/Canfield/Golf/Spider ever have a face-up-but-unplayable card to dim in the first
+          place; a no-op everywhere else. */}
+          <TouchableRipple onPress={() => setSettings({ dimUnplayable: !settings.dimUnplayable })} style={styles.toggleButton} accessibilityLabel={`Dim unplayable cards ${settings.dimUnplayable ? 'on' : 'off'}`}>
+            <View style={styles.toggleContent}>
+              <View style={[styles.iconBadge, { backgroundColor: settings.dimUnplayable ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
+                <Icon source={settings.dimUnplayable ? 'card-off-outline' : 'card-outline'} size={18} color={settings.dimUnplayable ? paperColors.tertiary : paperColors.onSurfaceVariant} />
+              </View>
+              <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
+                Dim Unplayable Cards
+              </Text>
             </View>
-            <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
-              Dim Unplayable Cards
-            </Text>
-          </View>
-        </TouchableRipple>
-        {/* Same bare-row shape as the toggles above, but three-way: each tap steps to the next choice
-        (Off, 15s, 30s, then Off again), and the choice shows on the right. See types/index.ts's own
-        doc comment on autoHintSeconds. */}
-        <TouchableRipple onPress={() => setSettings({ autoHintSeconds: nextAutoHint(settings.autoHintSeconds) })} style={styles.toggleButton} accessibilityLabel={`Auto hint ${autoHintLabel(settings.autoHintSeconds, true)}`}>
-          <View style={styles.toggleContent}>
-            <View style={[styles.iconBadge, { backgroundColor: settings.autoHintSeconds > 0 ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
-              <Icon source={settings.autoHintSeconds > 0 ? 'lightbulb-auto' : 'lightbulb-off-outline'} size={18} color={settings.autoHintSeconds > 0 ? paperColors.tertiary : paperColors.onSurfaceVariant} />
+          </TouchableRipple>
+          {/* Same bare-row shape as the toggles above, but three-way: each tap steps to the next choice
+          (Off, 15s, 30s, then Off again), and the choice is the row's caption, in the same spot as
+          the other rows' captions (Jay, 2026-10-15: it used to sit on the right, the only row that
+          did). See types/index.ts's own doc comment on autoHintSeconds. */}
+          <TouchableRipple onPress={() => setSettings({ autoHintSeconds: nextAutoHint(settings.autoHintSeconds) })} style={styles.toggleButton} accessibilityLabel={`Auto hint ${autoHintCaption(settings.autoHintSeconds).toLowerCase()}`}>
+            <View style={styles.toggleContent}>
+              <View style={[styles.iconBadge, { backgroundColor: settings.autoHintSeconds > 0 ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
+                <Icon source={settings.autoHintSeconds > 0 ? 'lightbulb-auto' : 'lightbulb-off-outline'} size={18} color={settings.autoHintSeconds > 0 ? paperColors.tertiary : paperColors.onSurfaceVariant} />
+              </View>
+              <View style={styles.flexShrink}>
+                <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
+                  Auto Hint
+                </Text>
+                <Text variant='bodySmall' numberOfLines={1} style={{ color: paperColors.onSurfaceVariant }}>
+                  {autoHintCaption(settings.autoHintSeconds)}
+                </Text>
+              </View>
             </View>
-            <Text variant='bodyLarge' style={[styles.rowLabel, { color: paperColors.onSurface }]}>
-              Auto Hint
-            </Text>
-            <Text variant='bodyLarge' style={{ color: paperColors.onSurfaceVariant }}>
-              {autoHintLabel(settings.autoHintSeconds, false)}
-            </Text>
-          </View>
-        </TouchableRipple>
+          </TouchableRipple>
+          {/* Same bare-row shape as the toggles above - a standard "Reduce Motion" accessibility
+          preference (see types/index.ts's own doc comment on reduceMotion): skips every deal/
+          draw/undo/sweep flight straight to landed, the same instant-land outcome a mid-deal skip tap
+          already produces, just automatic rather than requiring one. */}
+          <TouchableRipple onPress={() => setSettings({ reduceMotion: !settings.reduceMotion })} style={styles.toggleButton} accessibilityLabel={`Reduce motion ${settings.reduceMotion ? 'on' : 'off'}`}>
+            <View style={styles.toggleContent}>
+              <View style={[styles.iconBadge, { backgroundColor: settings.reduceMotion ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
+                <Icon source={settings.reduceMotion ? 'motion-pause-outline' : 'motion-play-outline'} size={18} color={settings.reduceMotion ? paperColors.tertiary : paperColors.onSurfaceVariant} />
+              </View>
+              <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
+                Reduce Motion
+              </Text>
+            </View>
+          </TouchableRipple>
+        </View>
+      </SettingsSection>
+      <SettingsSection label='CARDS'>
         {/* Same bare-row shape as BaseSettingsDialog's own Sound/Haptics rows (an icon badge whose
         color/glyph flips with state, plus a single-line label, no separate Switch) - that
         component doesn't export its SettingIcon helper, so the small badge is replicated here
@@ -166,20 +190,6 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
             </View>
             <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
               Invert Dark Mode Colors
-            </Text>
-          </View>
-        </TouchableRipple>
-        {/* Same bare-row shape as the toggles above - a standard "Reduce Motion" accessibility
-        preference (see types/index.ts's own doc comment on reduceMotion): skips every deal/
-        draw/undo/sweep flight straight to landed, the same instant-land outcome a mid-deal skip tap
-        already produces, just automatic rather than requiring one. */}
-        <TouchableRipple onPress={() => setSettings({ reduceMotion: !settings.reduceMotion })} style={styles.toggleButton} accessibilityLabel={`Reduce motion ${settings.reduceMotion ? 'on' : 'off'}`}>
-          <View style={styles.toggleContent}>
-            <View style={[styles.iconBadge, { backgroundColor: settings.reduceMotion ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
-              <Icon source={settings.reduceMotion ? 'motion-pause-outline' : 'motion-play-outline'} size={18} color={settings.reduceMotion ? paperColors.tertiary : paperColors.onSurfaceVariant} />
-            </View>
-            <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
-              Reduce Motion
             </Text>
           </View>
         </TouchableRipple>
@@ -197,7 +207,7 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
             </PreviewOption>
           ))}
         </View>
-        <Text variant='bodySmall' style={styles.credit}>
+        <Text variant='bodySmall' style={{ color: paperColors.onSurfaceVariant }}>
           Card artwork based on SVG-cards by David Bellot and Huub de Beer, licensed under LGPL-2.1. Card numerals set in DejaVu Serif, © Bitstream, Inc.
         </Text>
       </SettingsSection>
@@ -206,8 +216,9 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
 }
 
 const styles = StyleSheet.create({
-  credit: {
-    opacity: 0.7
+  // A row's label and caption, as in BaseSettingsDialog's captioned rows.
+  flexShrink: {
+    flexShrink: 1
   },
   // Matches BaseSettingsDialog's own iconBadge/toggleButton/toggleContent values exactly, so this
   // row reads as one of that same family rather than a visually distinct one-off.
@@ -237,9 +248,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10
   },
-  // Pushes the Auto Hint row's choice to the right edge.
-  rowLabel: {
-    flex: 1
+  // BaseSettingsDialog's toggleGroup spacing between bare toggle rows.
+  rows: {
+    gap: 4
   },
   toggleButton: {
     borderRadius: 12,

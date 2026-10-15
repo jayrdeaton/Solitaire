@@ -29,8 +29,12 @@ export { CARD_FONT_FAMILY }
 // `if (!allLoaded) return null` guard - the mechanism that blocks the JS-side tree, separate from
 // the native splash screen useSplashReady hides - can fold this gate in the same way it folds in the
 // other five.
+//
+// A failed load counts as loaded: `loaded` stays false forever after an error, which would leave the
+// splash up and _layout.tsx on its title for good, so the app opens on the system fallback font.
 export function useFontsPreload(): boolean {
-  const [loaded] = useFonts({ ...MaterialCommunityIcons.font, [CARD_FONT_FAMILY]: require('dejavu-fonts-ttf/ttf/DejaVuSerif-Bold.ttf') })
-  useSplashReady('fonts', loaded)
-  return loaded
+  const [loaded, error] = useFonts({ ...MaterialCommunityIcons.font, [CARD_FONT_FAMILY]: require('dejavu-fonts-ttf/ttf/DejaVuSerif-Bold.ttf') })
+  const ready = loaded || !!error
+  useSplashReady('fonts', ready)
+  return ready
 }
