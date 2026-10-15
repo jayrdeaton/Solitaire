@@ -7,7 +7,7 @@
   "main": "expo-router/entry",
   "scripts": {
     "android": "expo run:android",
-    "build": "DEVELOPER_DIR='/Applications/Xcode 26.6.app/Contents/Developer' rific-updater-build",
+    "build": "eas build",
     "client": "expo start --dev-client",
     "doctor": "expo install --fix && npx expo-doctor@latest",
     "fingerprint:compare": "eas fingerprint:compare",
@@ -22,7 +22,7 @@
     "submit": "eas submit",
     "test": "jest",
     "typecheck": "tsc --noEmit",
-    "update": "rific-updater-update",
+    "update": "eas update",
     "verify": "npm run lint && npm test && npm run typecheck",
     "web": "expo start --web"
   },

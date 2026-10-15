@@ -52,7 +52,7 @@ Solitaire (SolitaireTastic on the App Store) is a single-player card game collec
 | [`@rific/feedback-press`](https://www.npmjs.com/package/@rific/feedback-press) | Buttons with haptic and sound feedback, pooled card sounds |
 | [`@rific/toaster`](https://www.npmjs.com/package/@rific/toaster) | Toast notifications (no moves for a hint, update errors) |
 | [`@rific/splash-gate`](https://www.npmjs.com/package/@rific/splash-gate) | Keeps the splash screen up until the theme, fonts, and profiles are ready |
-| [`@rific/updater`](https://www.npmjs.com/package/@rific/updater) | OTA update checks and the build/update scripts |
+| [`@rific/updater`](https://www.npmjs.com/package/@rific/updater) | OTA update checks behind `@tastic/hud`'s update dialog |
 | [`@rific/focus-chain`](https://www.npmjs.com/package/@rific/focus-chain) | Peer dependency of `@tastic/profile` for form focus |
 
 ## Getting started
