@@ -7,7 +7,7 @@
   "main": "expo-router/entry",
   "scripts": {
     "android": "expo run:android",
-    "build": "rific-updater-build",
+    "build": "DEVELOPER_DIR='/Applications/Xcode 26.6.app/Contents/Developer' rific-updater-build",
     "client": "expo start --dev-client",
     "doctor": "expo install --fix && npx expo-doctor@latest",
     "fingerprint:compare": "eas fingerprint:compare",
