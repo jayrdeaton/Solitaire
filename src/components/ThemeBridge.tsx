@@ -1,4 +1,5 @@
 import { Provider as AutoPaperProvider, themeActions, type ThemeSettings, useThemeBridgeProps } from '@rific/auto-paper'
+import * as ExpoBlur from 'expo-blur'
 import { ReactNode, useCallback } from 'react'
 import { shallowEqual, useDispatch, useSelector } from 'react-redux'
 
@@ -17,8 +18,11 @@ export function ThemeBridge({ children }: { children: ReactNode }) {
   const onChange = useCallback((next: ThemeSettings) => dispatch(themeActions.initialize(next)), [dispatch])
   const onReady = useCallback(() => markSplashReady('theme'), [])
   const bridgeProps = useThemeBridgeProps({ initialValue: settings, onChange, onReady })
+  // expoBlur is what lets auto-paper's BlurView actually blur (the settings sheet, Paper menus and
+  // @tastic/hud's overlay cards) while the player's Blur setting is on. Without it they paint the
+  // theme's solid surface instead, and hud's Settings hides the Blur row.
   return (
-    <AutoPaperProvider {...bridgeProps} fontFamily={CARD_FONT_FAMILY}>
+    <AutoPaperProvider {...bridgeProps} expoBlur={ExpoBlur} fontFamily={CARD_FONT_FAMILY}>
       {children}
     </AutoPaperProvider>
   )

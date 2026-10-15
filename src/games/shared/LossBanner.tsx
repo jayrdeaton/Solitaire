@@ -1,6 +1,6 @@
 import { useAutoPaperTheme } from '@rific/auto-paper'
 import { Button } from '@rific/feedback-press'
-import { getOverlayCardColors, overlayActionStyles, overlayStyles } from '@tastic/hud'
+import { OverlayBackdrop, OverlayCard, overlayActionStyles, useOverlayCardColors } from '@tastic/hud'
 import { StyleSheet, View } from 'react-native'
 import { Icon, Text } from 'react-native-paper'
 
@@ -16,12 +16,12 @@ export interface LossBannerProps {
  * games/shared/useStuckLossCheck.ts). Visual sibling of WinBanner.tsx, the same fleet overlay card,
  * but no score/time/moves summary - a loss has none worth showing. */
 export function LossBanner({ onNewGame, onUndo }: LossBannerProps) {
-  const { colors, dark } = useAutoPaperTheme()
-  const { fg, fgMuted, cardBg, cardBorder } = getOverlayCardColors(dark)
+  const { colors } = useAutoPaperTheme()
+  const { fg, fgMuted } = useOverlayCardColors()
   return (
     // The backdrop takes every touch, like WinBanner's: Undo is on the card, and Home/Settings are portaled above it.
-    <View style={[overlayStyles.overlay, styles.overlay]}>
-      <View style={[overlayStyles.card, styles.card, { backgroundColor: cardBg, borderColor: cardBorder }]}>
+    <OverlayBackdrop style={styles.overlay}>
+      <OverlayCard style={styles.card}>
         <Icon source='cards-outline' size={64} color={fgMuted} />
         <Text variant='headlineLarge' style={[styles.title, { color: fg }]}>
           No Moves Left
@@ -39,8 +39,8 @@ export function LossBanner({ onNewGame, onUndo }: LossBannerProps) {
             New Game
           </Button>
         </View>
-      </View>
-    </View>
+      </OverlayCard>
+    </OverlayBackdrop>
   )
 }
 
