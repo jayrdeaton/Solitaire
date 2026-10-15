@@ -13,6 +13,7 @@ import { describeVsPar, parFor } from '@/engine/par'
 import { VARIANTS } from '@/engine/variants'
 import { ACHIEVEMENT_CATALOG } from '@/stores/achievementCatalog'
 import { useGameStats } from '@/stores/gameStats'
+import { usePlayerData } from '@/stores/playerData'
 import { useProfiles } from '@/stores/profiles'
 import { getBestParRatio, getBestStreak, getGamesWon, getProfileStatsView, getTotalHintsUsed, getTotalPlayed, getTotalWins } from '@/stores/statsEngine'
 import { SOLITAIRE_GAME_IDS, SolitaireGameId } from '@/stores/statsTypes'
@@ -59,6 +60,7 @@ function AchievementsContent() {
   const insets = useSafeAreaInsets()
   const { dark } = useTheme()
   const { stats, unlockedAchievements, resetAll } = useGameStats()
+  const { resetPlayer } = usePlayerData()
   const { profiles } = useProfiles()
   // Own popover host, independent of whichever profile is active for gameplay elsewhere (see
   // stores/profiles.tsx's activeProfileId, which only drives the cosmetic card-back/felt color) -
@@ -76,6 +78,11 @@ function AchievementsContent() {
   const effectiveProfileId = selectedProfileId && profiles.some((p) => p.id === selectedProfileId) ? selectedProfileId : null
   const profileBucket = effectiveProfileId ? (stats.profiles[effectiveProfileId] ?? DEFAULT_PROFILE_STATS) : null
   const statsView = profileBucket ? getProfileStatsView(profileBucket) : stats
+
+  // Reset follows the picker: one player's stats, achievements and saved games while they are shown, everyone's on All
+  // Profiles. A player's reset leaves the All Profiles totals alone, so the copy says so.
+  const selectedName = effectiveProfileId ? (profiles.find((p) => p.id === effectiveProfileId)?.name ?? '') : null
+  const reset = selectedName !== null ? { onReset: () => resetPlayer(effectiveProfileId!), label: `Reset ${selectedName}'s Stats`, title: `Reset ${selectedName}?`, body: `Erases ${selectedName}'s stats, achievements and saved games. All Profiles keeps its totals. This cannot be undone.` } : { onReset: resetAll, label: 'Reset All Stats', title: 'Reset Everything?', body: "Erases every player's stats, achievements and saved games. This cannot be undone." }
 
   const played = getTotalPlayed(statsView)
   const wins = getTotalWins(statsView)
@@ -95,7 +102,7 @@ function AchievementsContent() {
     <View style={styles.screen}>
       {/* rotation={0}: its reset-confirm portals into the Portal.Host RotatedScreen mounts INSIDE the frame, so it is
       already turned with it - the ambient rotation on top would turn it twice. */}
-      <BaseStatsScreen onBack={safeBack} insets={insets} onReset={resetAll} fg={CHROME_FG} bg='transparent' rotation={0}>
+      <BaseStatsScreen onBack={safeBack} insets={insets} onReset={reset.onReset} resetLabel={reset.label} resetConfirmTitle={reset.title} resetConfirmBody={reset.body} fg={CHROME_FG} bg='transparent' rotation={0}>
         {profiles.length > 0 && <ProfilePicker idPrefix='achievements' host={profilePickerHost} profiles={profiles} selectedId={effectiveProfileId} color={CHROME_FG} dark={dark} guestLabel='All Profiles' nullLabel='All Profiles' nullIcon='account-group' onSelect={(profile) => setSelectedProfileId(profile?.id ?? null)} alignOverride={profilePickerAlign} />}
 
         <StatSection label='OVERALL' fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>

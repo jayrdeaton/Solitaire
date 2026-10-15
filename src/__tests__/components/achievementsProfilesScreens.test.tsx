@@ -43,6 +43,9 @@ interface BaseStatsProps {
   fg?: string
   bg?: string
   onReset?: () => void
+  resetLabel?: string
+  resetConfirmTitle?: string
+  resetConfirmBody?: string
 }
 const mockBaseStats = jest.fn((_props: BaseStatsProps) => null)
 interface ProfilesScreenProps {
@@ -60,6 +63,7 @@ let mockProfilesList: unknown[] = []
 /** What ProfilesManager would read: the insets `useSafeAreaInsets()` returns from INSIDE the ProfilesScreen. */
 const mockProfilesInsetsSeen: { current: Insets | null } = { current: null }
 const mockResetAll = jest.fn()
+const mockPlayerData = { resetPlayer: jest.fn(), forgetPlayer: jest.fn() }
 /** How many times BaseStatsScreen's stand-in has been MOUNTED / UNMOUNTED - an unchanged tree keeps these at 1 / 0 across a rotation. */
 const mockBaseStatsLifecycle = { mounts: 0, unmounts: 0 }
 const mockStoreActions = { createProfile: jest.fn(), updateProfile: jest.fn(), deleteProfile: jest.fn() }
@@ -91,7 +95,7 @@ jest.mock('expo-router', () => ({
 }))
 jest.mock('@/utils/navigation', () => ({ safeBack: jest.fn() }))
 // The real one reaches the app's store, whose reducers need the parts of @tastic/profile mocked out below.
-jest.mock('@/stores/playerData', () => ({ forgetPlayerData: jest.fn() }))
+jest.mock('@/stores/playerData', () => ({ usePlayerData: () => mockPlayerData }))
 jest.mock('@/stores/gameStats', () => {
   const { DEFAULT_STATS } = jest.requireActual('@/stores/statsValidation')
   return {
@@ -240,6 +244,8 @@ beforeEach(() => {
   mockProfilePicker.mockClear()
   mockProfilesList = []
   mockResetAll.mockClear()
+  mockPlayerData.resetPlayer.mockClear()
+  mockPlayerData.forgetPlayer.mockClear()
   mockBaseStatsLifecycle.mounts = 0
   mockBaseStatsLifecycle.unmounts = 0
   mockStoreActions.createProfile.mockClear()
@@ -342,12 +348,32 @@ describe('Achievements screen', () => {
     expect(safeBack).toHaveBeenCalledTimes(1)
   })
 
-  it("wires the reset action to the stats store's resetAll", async () => {
+  it("on All Profiles, the reset resets everyone through the stats store's resetAll", async () => {
     await render(<Achievements />)
+    const props = lastProps(mockBaseStats)
 
-    await act(() => lastProps(mockBaseStats).onReset?.())
+    await act(() => props.onReset?.())
 
     expect(mockResetAll).toHaveBeenCalledTimes(1)
+    expect(mockPlayerData.resetPlayer).not.toHaveBeenCalled()
+    expect(props.resetLabel).toBe('Reset All Stats')
+    expect(props.resetConfirmBody).toContain("every player's")
+  })
+
+  it('with a player picked, the reset resets just that player, and says so', async () => {
+    const kid = { id: 'profile-kid', name: 'Kid', color: '#ff0000', tag: 'K', createdAt: 1, updatedAt: 1 }
+    mockProfilesList = [kid]
+    await render(<Achievements />)
+
+    await act(() => (lastProps(mockProfilePicker) as unknown as { onSelect: (p: typeof kid | null) => void }).onSelect(kid))
+    const props = lastProps(mockBaseStats)
+    await act(() => props.onReset?.())
+
+    expect(mockPlayerData.resetPlayer).toHaveBeenCalledWith('profile-kid')
+    expect(mockResetAll).not.toHaveBeenCalled()
+    expect(props.resetLabel).toBe("Reset Kid's Stats")
+    expect(props.resetConfirmTitle).toBe('Reset Kid?')
+    expect(props.resetConfirmBody).toContain('All Profiles keeps its totals')
   })
 
   it('portals dialogs into a Portal.Host that lives INSIDE the rotated frame', async () => {
@@ -454,6 +480,8 @@ describe('Profiles screen', () => {
     expect(mockStoreActions.createProfile).toHaveBeenCalledWith({ name: 'Ada' })
     expect(mockStoreActions.updateProfile).toHaveBeenCalledWith('p1', { name: 'Bea' })
     expect(mockStoreActions.deleteProfile).toHaveBeenCalledWith('p2')
+    // Its stats, achievements, saved games and settings go with it.
+    expect(mockPlayerData.forgetPlayer).toHaveBeenCalledWith('p2')
     expect(props.bg).toBe('transparent')
   })
 

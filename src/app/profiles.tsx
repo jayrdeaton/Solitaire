@@ -5,7 +5,7 @@ import { RotatedScreen } from '@/components/RotatedScreen'
 import { CHROME_FG } from '@/components/theme'
 import { useFrameAutoAlign } from '@/components/useFrameAutoAlign'
 import { DEFAULT_SEED_COLOR } from '@/constants/theme'
-import { forgetPlayerData } from '@/stores/playerData'
+import { usePlayerData } from '@/stores/playerData'
 import { useProfiles } from '@/stores/profiles'
 import { safeBack } from '@/utils/navigation'
 
@@ -42,10 +42,11 @@ const SCREEN_MAX_WIDTH = 640
 
 function ProfilesContent() {
   const { profiles, createProfile, updateProfile, deleteProfile } = useProfiles()
-  // A deleted profile's saved deals and settings go with it.
+  const { forgetPlayer } = usePlayerData()
+  // A deleted profile's stats, achievements, saved deals and settings go with it.
   const handleDelete = (id: string) => {
     deleteProfile(id)
-    forgetPlayerData(id)
+    forgetPlayer(id)
   }
 
   return (
