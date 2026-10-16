@@ -46,7 +46,7 @@
     "@tastic/cards": "^0.5.0",
     "@tastic/core": "^0.14.0",
     "@tastic/hud": "^0.19.0",
-    "@tastic/profile": "^0.14.0",
+    "@tastic/profile": "^0.14.1",
     "@tastic/split-screen": "^0.5.2",
     "@tastic/sprites": "^0.2.1",
     "dejavu-fonts-ttf": "^2.37.3",
