@@ -1,5 +1,5 @@
 import { Pressable } from '@rific/feedback-press'
-import { CardBack, CardFace, DecoratedCardBack, rankLabel, type TableColors, useCardSize } from '@tastic/cards'
+import { CardFace, rankLabel, type TableColors, useCardSize } from '@tastic/cards'
 import React from 'react'
 import { Image, ImageSourcePropType, ImageStyle, StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import { useTheme } from 'react-native-paper'
@@ -9,6 +9,7 @@ import { Card, Rank, Suit } from '@/engine/types'
 import { useSettings } from '@/hooks/useSettings'
 import { useProfiles } from '@/stores/profiles'
 
+import { CardBackArt } from './CardBackArt'
 import { CARD_FACE_BITMAPS } from './cardFaceBitmaps'
 import { FaceLoadTrackingContext, trackFaceLoad } from './cardFacePaint'
 import { DIM_FADE_BACKSTOP_MS, fadeInDimScrim } from './dimScrimAnimation'
@@ -101,7 +102,7 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold,
     const backstop = setTimeout(handleFacePainted, FLIP_BACK_MAX_MS)
     return () => clearTimeout(backstop)
   }, [backUntilPainted, handleFacePainted])
-  const backArt = () => (settings.cardBackStyle === 'geometric' ? <CardBack colors={colors} width={width} height={height} tag={activeProfile?.tag} invertDarkModeColors={settings.invertDarkModeColors} /> : <DecoratedCardBack style={settings.cardBackStyle} colors={colors} width={width} height={height} invertDarkModeColors={settings.invertDarkModeColors} />)
+  const backArt = () => <CardBackArt backStyle={settings.cardBackStyle} colors={colors} width={width} height={height} tag={activeProfile?.tag} invertDarkModeColors={settings.invertDarkModeColors} />
 
   if (!card.faceUp) {
     return (

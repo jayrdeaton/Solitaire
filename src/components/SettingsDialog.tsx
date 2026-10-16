@@ -1,7 +1,7 @@
 import { useAutoPaperTheme } from '@rific/auto-paper'
 import { TouchableRipple } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
-import { CardBack, CardFace, DecoratedCardBack } from '@tastic/cards'
+import { CardFace } from '@tastic/cards'
 import { type ViewRotation } from '@tastic/core'
 import { BaseSettingsDialog } from '@tastic/hud'
 import { useGuide } from '@tastic/hud/guide'
@@ -9,10 +9,12 @@ import { ReactNode } from 'react'
 import { StyleSheet, View } from 'react-native'
 import { Icon, Text } from 'react-native-paper'
 
+import { CardBackArt } from '@/components/CardBackArt'
 import { SettingsSection } from '@/components/SettingsSection'
 import { useTableColors } from '@/components/theme'
 import { release } from '@/constants/release'
 import { useSettings } from '@/hooks/useSettings'
+import { useProfiles } from '@/stores/profiles'
 import { AUTO_HINT_CHOICES, type AutoHintSeconds, type Settings } from '@/types'
 
 const PREVIEW_WIDTH = 44
@@ -21,7 +23,8 @@ const PREVIEW_HEIGHT = 64
 const BACK_STYLE_OPTIONS: { value: Settings['cardBackStyle']; label: string }[] = [
   { value: 'geometric', label: 'Geometric' },
   { value: 'ornate', label: 'Ornate' },
-  { value: 'plain', label: 'Plain' }
+  { value: 'plain', label: 'Plain' },
+  { value: 'monogram', label: 'Monogram' }
 ]
 
 const FACE_STYLE_OPTIONS: { value: Settings['cardStyle']; label: string }[] = [
@@ -104,6 +107,7 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
   const colors = useTableColors()
   const { colors: paperColors } = useAutoPaperTheme()
   const { error } = useToast()
+  const { activeProfile } = useProfiles()
 
   return (
     <BaseSettingsDialog visible={visible} onDismiss={onDismiss} rotation={rotation} version={release.otaVersion} onUpdateError={(message) => error('Update check failed', message)} lockOrientation={settings.lockOrientation} onLockOrientationChange={(value) => setSettings({ lockOrientation: value })} onShowHowToPlay={showHowToPlay ? openGuide : undefined}>
@@ -203,7 +207,8 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
         <View style={styles.row}>
           {BACK_STYLE_OPTIONS.map(({ value, label }) => (
             <PreviewOption key={value} active={settings.cardBackStyle === value} onPress={() => setSettings({ cardBackStyle: value })} accessibilityLabel={label}>
-              {value === 'geometric' ? <CardBack colors={colors} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT} invertDarkModeColors={settings.invertDarkModeColors} /> : <DecoratedCardBack style={value} colors={colors} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT} invertDarkModeColors={settings.invertDarkModeColors} />}
+              {/* The Monogram preview shows the selected player's own tag (or S), so it is what they'll get. */}
+              <CardBackArt backStyle={value} colors={colors} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT} tag={activeProfile?.tag} invertDarkModeColors={settings.invertDarkModeColors} />
             </PreviewOption>
           ))}
         </View>

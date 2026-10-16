@@ -28,6 +28,8 @@ jest.mock('@/components/theme', () => {
   return { ...actual, useTableColors: () => actual.lightColors }
 })
 jest.mock('@/components/useFontsPreload', () => ({ CARD_FONT_FAMILY: 'TestSerif' }))
+// The Monogram back's preview shows the selected player's tag; a guest has none.
+jest.mock('@/stores/profiles', () => ({ useProfiles: () => ({ activeProfile: null }) }))
 
 const lastProps = <T,>(mock: jest.Mock<null, [T]>): T => mock.mock.calls[mock.mock.calls.length - 1][0]
 

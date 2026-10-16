@@ -1,4 +1,4 @@
-import { CardBack, DecoratedCardBack, type TableColors } from '@tastic/cards'
+import { type TableColors } from '@tastic/cards'
 import { useIsFocused } from 'expo-router'
 import { useEffect, useRef } from 'react'
 import { AppState, StyleSheet, View } from 'react-native'
@@ -6,7 +6,9 @@ import Animated, { cancelAnimation, Easing, SharedValue, useAnimatedStyle, useSh
 
 import { useSettings } from '@/hooks/useSettings'
 import { useProfiles } from '@/stores/profiles'
+import type { Settings } from '@/types'
 
+import { CardBackArt } from './CardBackArt'
 import { HERO_CARD_COUNT, HERO_FAN_CARDS, HERO_FAN_CENTER_Y, HERO_FAN_HEIGHT, HERO_FAN_SPAN, HERO_WAVE_CYCLE_MS, heroBumpAt, type HeroFanCard } from './heroFan'
 import { CARD_HEIGHT, CARD_RADIUS, CARD_WIDTH, cardRadiusForWidth, useTableColors } from './theme'
 
@@ -44,7 +46,7 @@ function startWave(wave: SharedValue<number>, leadInMs: number) {
   wave.value = withDelay(leadInMs, withRepeat(withTiming(HERO_WAVE_CYCLE_MS, { duration: HERO_WAVE_CYCLE_MS, easing: Easing.linear }), -1, false))
 }
 
-function HeroCard({ card, wave, colors, tag, cardBackStyle, invertDarkModeColors, scale }: { card: HeroFanCard; wave: SharedValue<number>; colors: TableColors; tag?: string; cardBackStyle: 'geometric' | 'ornate' | 'plain'; invertDarkModeColors?: boolean; scale: number }) {
+function HeroCard({ card, wave, colors, tag, cardBackStyle, invertDarkModeColors, scale }: { card: HeroFanCard; wave: SharedValue<number>; colors: TableColors; tag?: string; cardBackStyle: Settings['cardBackStyle']; invertDarkModeColors?: boolean; scale: number }) {
   // Every length below is the natural (scale 1) one times `scale`; rotation is never scaled. At scale 1
   // the width/height/radius are exactly CARD_WIDTH/CARD_HEIGHT/CARD_RADIUS.
   const width = Math.round(CARD_WIDTH * scale)
@@ -70,7 +72,9 @@ function HeroCard({ card, wave, colors, tag, cardBackStyle, invertDarkModeColors
 
   return (
     <Animated.View style={[styles.cardShadow, position, { borderRadius: radius, width, height, zIndex: card.zIndex }, animatedStyle]}>
-      <View style={[styles.cardClip, { borderRadius: radius }]}>{cardBackStyle === 'geometric' ? <CardBack colors={colors} width={width} height={height} tag={tag} invertDarkModeColors={invertDarkModeColors} /> : <DecoratedCardBack style={cardBackStyle} colors={colors} width={width} height={height} invertDarkModeColors={invertDarkModeColors} />}</View>
+      <View style={[styles.cardClip, { borderRadius: radius }]}>
+        <CardBackArt backStyle={cardBackStyle} colors={colors} width={width} height={height} tag={tag} invertDarkModeColors={invertDarkModeColors} />
+      </View>
     </Animated.View>
   )
 }

@@ -52,10 +52,11 @@ export interface Settings {
   // pip (court cards keep their illustrated figure either way) - easier to read at a glance in a
   // same-suit run (e.g. Spider), where every big pip otherwise looks alike.
   cardStyle: 'compact' | 'decorated' | 'tarot' | 'numeric'
-  // 'geometric' is CardBack.tsx's own original design; 'ornate'/'plain' are SVG-cards-derived (see
-  // artwork/NOTICE.md), rendered via DecoratedCardBack. Independent of cardStyle above - a face
-  // style choice, not a back style choice.
-  cardBackStyle: 'geometric' | 'ornate' | 'plain'
+  // 'geometric' is CardBack.tsx's own original design; 'monogram' is the same back with the selected
+  // player's tag in the middle, or S until they have one (components/CardBackArt.tsx); 'ornate'/'plain'
+  // are SVG-cards-derived (see artwork/NOTICE.md), rendered via DecoratedCardBack. Independent of
+  // cardStyle above - a face style choice, not a back style choice.
+  cardBackStyle: 'monogram' | 'geometric' | 'ornate' | 'plain'
   // Dark mode only: flips black suit ink (spades/clubs) to white and the card face to near-black.
   // Red suits are never touched. A no-op in light mode (see theme.ts's textBlackInverted/
   // cardFaceInverted/dimOverlayInverted, which mirror their normal counterparts on lightColors) -

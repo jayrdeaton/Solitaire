@@ -57,16 +57,6 @@ const PROFILE_TINT_ALPHA = 0.55
 // lighten instead of relying on the anchors' difference alone.
 const ACCENT_LIGHTEN_ALPHA = 0.25
 
-// How far cardBackPatternInverted gets pushed toward black instead - "invert dark mode colors"'s
-// darkened counterpart to the lighten above. Slightly stronger than ACCENT_LIGHTEN_ALPHA (was equal
-// at 0.25, kept symmetric with the lighten above) - bumped up on request, but there's real headroom
-// tension here: cardBackPattern's own un-inverted luminance is fixed regardless of alpha, while this
-// blend's luminance falls linearly as alpha grows, so past a seed-color-dependent threshold (~0.4
-// measured against one profile's tint) the darkened accent's brightness converges on cardBack's own
-// and the pattern silently loses all contrast against it, rather than degrading gracefully. 0.4 hit
-// exactly that wall (confirmed unreadable); this is a smaller, safer step up from the original.
-const ACCENT_DARKEN_ALPHA = 0.3
-
 // getTonalColor targets (0-1 lightness), per appearance mode, for the felt/chrome pair.
 // tableFeltDark is the darker accent already used for the Toaster and the felt's vignette in both
 // palettes - reused here as "chrome" rather than inventing a third TableColors field. Both modes keep
@@ -93,10 +83,9 @@ export function previewCardBack(seedHex: string, dark: boolean): string {
 function derivePlayerTableColors(profileColor: string, dark: boolean, base: TableColors): TableColors {
   const cardBack = previewCardBack(profileColor, dark)
   const cardBackPattern = getBlendedColor('#FFFFFF', getBlendedColor(profileColor, base.cardBackPattern, PROFILE_TINT_ALPHA), ACCENT_LIGHTEN_ALPHA)
-  // Only actually darkened in dark mode - in light mode this is an exact no-op (equals
-  // cardBackPattern itself), same contract as this file's other *Inverted tokens, just expressed
-  // via `dark` here instead of a light/dark anchor difference (see the interface doc for why).
-  const cardBackPatternInverted = dark ? getBlendedColor('#000000', cardBackPattern, ACCENT_DARKEN_ALPHA) : cardBackPattern
+  // The back's detail keeps its accent with Invert Dark Mode Colors on (Jay, 2026-10-16): it used to be pushed 30%
+  // toward black there, which left the pattern barely showing against the dark-mode card back.
+  const cardBackPatternInverted = cardBackPattern
 
   // 'complementary' harmony's own `tertiary` output is the true 180°-opposite hue of cardBack, so
   // this generalizes to whatever hue cardBack ends up as, not just today's blue.
