@@ -9,8 +9,8 @@ import { MIN_FAN_SCALE } from './columnTops'
  * The one place a game screen's board geometry comes from - both orientations.
  *
  * Portrait chrome (GameChrome's title/corner band on top, moves/timer + footer band on the bottom)
- * reserves GAME_CONTENT_TOP_PADDING + GAME_CONTENT_BOTTOM_PADDING = 144pt of a screen that's ~870pt
- * tall, which is fine. Rotated to landscape the same screen is only ~402pt tall, and 144pt of that
+ * reserves GAME_CONTENT_TOP_PADDING + GAME_CONTENT_BOTTOM_PADDING = 154pt of a screen that's ~870pt
+ * tall, which is fine. Rotated to landscape the same screen is only ~402pt tall, and 154pt of that
  * gone to chrome (plus a card row sized from the much WIDER rotated width) left no room for a
  * board at all - the tableau scrolled off the short axis with its playable bottom cards out of view.
  * So a "wide" layout (any window whose rotated footprint is landscape - a phone held sideways, an
@@ -31,10 +31,10 @@ export const GAME_CONTENT_MAX_WIDTH = 1040
 /** Vertical space GameChrome's title/corner-icon band and its moves/timer + footer band each reserve
  * above/below the scrolling board in PORTRAIT (on top of the safe-area insets). */
 export const GAME_CONTENT_TOP_PADDING = 56
-export const GAME_CONTENT_BOTTOM_PADDING = 88
+export const GAME_CONTENT_BOTTOM_PADDING = 98
 
-/** Wide layout: width the TRAILING (local right) gutter reserves for the footer column (an 8pt margin off the
- * safe edge, a 40pt IconButton, and 8pt of air before the board), ON TOP of the safe-area inset on that
+/** Wide layout: width the TRAILING (local right) gutter reserves for the footer column (a 4pt margin off the
+ * safe edge, a 48pt captioned button, and 4pt of air before the board), ON TOP of the safe-area inset on that
  * side. The controls live on the right - where the thumb is in a landscape hold. */
 export const WIDE_FOOTER_SIDE_WIDTH = 56
 /** Wide layout: width the LEADING (local left) gutter reserves for the moves/score/time readout (an 8pt margin off

@@ -327,7 +327,10 @@ function mockMakeFlight() {
 const mockRegistered = new Set<string>()
 const mockGhost = {
   cardRegistry: { register: () => {}, unregister: () => {}, measure: async (cardId: string) => (mockRegistered.has(cardId) ? { x: 10, y: 10, width: 40, height: 56 } : null) },
-  show: () => mockMakeFlight()
+  show: () => mockMakeFlight(),
+  // Undo chains are not what this suite is about: nothing is ever taken back out of a flight.
+  canPeel: () => false,
+  peel: () => null
 }
 const mockDeal = {
   start: (entries: { cardId: string }[], _w: number, onLanded: (id: string) => void, onDone?: () => void) => {

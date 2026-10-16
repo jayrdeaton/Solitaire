@@ -320,7 +320,7 @@ function SpiderScreenInner() {
   // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
   // unchanged. Spider has no foundation piles/useAutoFoundationCascade, so activeFlightCount (the state
   // mirror of the ref, which handleUndo's own guard reads) only feeds the win celebration's `settled` flag.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<SpiderState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<SpiderState>()
   const [history, setHistory, historyRef] = useUndoStack<HistoryEntry>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -834,6 +834,13 @@ function SpiderScreenInner() {
     })
   }
 
+  // The ghost a plain undo of `move` flies back: the run it takes off `move.to` as `current` has it.
+  function undoGhost(move: MoveInfo, current: SpiderState) {
+    const sourcePile = current.tableau[move.to.index] ?? null
+    const cards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : []
+    return { cards, offsetStep: move.count > 1 ? faceUpFanOffset(cardWidth) : 0, cardWidth }
+  }
+
   // Phase 2 of an undo-of-completion (see startUndoRunCompletion), and the entire body of a plain
   // move-undo: the card(s) being undone are sitting wherever the move left them (`move.to`) -
   // measure that real position before reverting (the pendingMoveFlightsRef effect above can
@@ -848,19 +855,25 @@ function SpiderScreenInner() {
   // `current` is the board as of right now (stateRef.current) - not the render closure's, which can be behind it.
   async function finishMoveUndo(current: SpiderState | null, move: MoveInfo, prevState: SpiderState) {
     const token = dealTokenRef.current
-    const sourcePile = current?.tableau[move.to.index] ?? null
-    const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : []
-    const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
-    const origin = movingCards.length > 0 ? await ghost.cardRegistry.measure(move.anchorCardId) : null
+    const ghostContent = current ? undoGhost(move, current) : { cards: [], offsetStep: 0, cardWidth }
+    const movingCards = ghostContent.cards
+    // Cards the undo before this one is still flying in (a held Undo, where that undo's move put them
+    // on this pile): they turn back in mid-air, the rest of that flight landing as before, instead of
+    // the undo waiting for them to land and then sending them off again. Taken here, before any await,
+    // in the same task the gate saw them (undoGate).
+    const peeled = movingCards.length > 0 ? ghost.peel(ghostContent) : null
+    const origin = peeled || movingCards.length === 0 ? null : await ghost.cardRegistry.measure(move.anchorCardId)
     // New Game/restore replaced the game while the measurement was pending (undo holds every other action off, so nothing
     // else moves the token meanwhile): `prevState` is the old game's board - committing it would overwrite the fresh deal -
     // and this undo's claim was reset with everything else, so there is nothing to settle either.
     if (dealTokenRef.current !== token) return
 
-    if (origin) {
+    const flight = peeled ?? (origin ? ghost.show(ghostContent, { x: origin.x, y: origin.y }) : null)
+    if (flight) {
       playCardSound()
       hapticCard()
-      const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
+      // The flight they were taken out of now reveals only what it still carries when it lands.
+      if (peeled) shrinkLanding(move.to, movingCards.length)
       const flyingId = beginFlying(move.from, move.count)
       commitState(prevState)
       pendingMoveFlightsRef.current.push({ cardId: move.anchorCardId, flight, flyingId, sweep: null })
@@ -1653,6 +1666,8 @@ function SpiderScreenInner() {
     // and removed its run - undoing in that gap would revert the board the sweep is about to edit.
     if (sweepPendingRef.current > 0) return 'blocked'
     if (!entry.move || current.completedRuns.length > entry.state.completedRuns.length) return 'exclusive'
+    // A run still flying in to that column turns back in mid-air (finishMoveUndo's peel): nothing to wait for.
+    if (ghost.canPeel(undoGhost(entry.move, current))) return { takesFrom: [] }
     return { takesFrom: [entry.move.to] }
   }
 

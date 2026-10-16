@@ -8,6 +8,7 @@ import { FreeCellController, FreeCellState } from '@/games/freecell/rules'
 import { FINISH_LANDING_WAIT_MS } from '@/games/shared/useAutoFinish'
 
 import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
+import { peelableFlights } from '../../../testUtils/peelableFlights'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for FreeCell's auto-play policy (see src/games/freecell/autoPlay.ts): the REAL FreeCellScreen, real
@@ -81,13 +82,20 @@ function mockMakeFlight(cards = '') {
     }
   }
 }
+/** An undo turning cards back mid-air (ghost.peel): the cards each flight still carries, and every peel. */
+const mockPeel = peelableFlights((ids) => mockMakeFlight(ids.join('+')))
 const mockGhost = {
   cardRegistry: { register: () => {}, unregister: () => {}, measure: async () => ({ x: 10, y: 10 }) },
   show: (spec: { cards: { id: string }[] }) => {
     const cards = spec.cards.map((c) => c.id).join('+')
     mockLog.shown.push(cards)
-    return mockMakeFlight(cards)
-  }
+    return mockPeel.track(
+      spec.cards.map((c) => c.id),
+      mockMakeFlight(cards)
+    )
+  },
+  canPeel: mockPeel.canPeel,
+  peel: mockPeel.peel
 }
 /** Every deal.start() the screen made (initial deals and cascade-undo batches alike): the entries it flew and the callbacks it handed over. */
 interface MockDealCall {
@@ -351,6 +359,7 @@ const FREECELL: PileRef = { zone: 'freecell', index: 0 }
 
 beforeEach(() => {
   jest.useFakeTimers()
+  mockPeel.reset()
   mockSettings.autoMove = true
   mockPiles.clear()
   mockPileInstance = 0
@@ -1003,5 +1012,37 @@ describe("FreeCell screen - the deck placeholder leaves with the last card, on t
     const second = mockDealCalls[1]
     await takeOff(second, [byDelay(second).at(-1)!.cardId])
     expect(deckShown()).toBe(false)
+  })
+})
+
+// A held Undo used to stall whenever the next undo needed cards the one before it was still flying back (Jay's Yukon recording,
+// 2026-10-16). A card flying back to a freecell, a column or a foundation turns back in mid-air instead (ghost.peel).
+describe('FreeCell screen - an undo that needs a card still flying back', () => {
+  it('a card flying back into its freecell turns back to its column at once, instead of landing first', async () => {
+    // The 5 of spades went into a freecell, then out of it onto the 6 of hearts.
+    const s0 = board([[card('hearts', 9), card('spades', 5)], [card('hearts', 6)]])
+    const s1: FreeCellState = { ...board([[card('hearts', 9)], [card('hearts', 6)]]), freecells: [card('spades', 5), null, null, null] }
+    const s2 = board([[card('hearts', 9)], [card('hearts', 6), card('spades', 5)]])
+    const entry = (state: FreeCellState, from: PileRef, to: PileRef) => ({ state, move: { primary: { from, to, count: 1, anchorCardId: id('spades', 5) }, cascaded: [] } })
+    seedGameInProgress('freecell', { state: s2, undoStack: [entry(s0, { zone: 'tableau', index: 0 }, FREECELL), entry(s1, FREECELL, { zone: 'tableau', index: 1 })], moves: 2, elapsedSeconds: 0 })
+    await render(<FreeCellScreen />)
+    await flush()
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+    await flush(STEP_MS)
+    expect(mockLog.shown).toEqual([id('spades', 5)])
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+    await flush(STEP_MS)
+    expect(mockPeel.peeled).toEqual([id('spades', 5)]) // turned back out of its flight into the freecell
+    expect(mockPeel.peeledAt[0] - mockLog.flights[0].start).toBeLessThan(FLIGHT_MS) // while that flight was still in the air
+    expect(mockLog.shown).toHaveLength(1)
+
+    await flushUntil(() => mockLog.inAir === 0)
+    expect(screen.queryAllByTestId(/^freecell-/)).toEqual([]) // the freecell is empty again
+    expect([...mockPiles.values()].slice(0, 2).map((p) => p.cards.map((c) => c.id))).toEqual([[id('hearts', 9), id('spades', 5)], [id('hearts', 6)]])
   })
 })

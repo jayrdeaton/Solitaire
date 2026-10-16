@@ -110,7 +110,7 @@ function AcesUpScreenInner() {
   // has no foundation-by-suit auto-play, so (unlike Klondike) nothing here ever needs
   // shrinkFlying - only runUndo for handleUndo, and activeFlightCount (the state mirror) for the win
   // reveal's `settled` below.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<AcesUpState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<AcesUpState>()
   const [undoStack, setUndoStack, undoStackRef] = useUndoStack<UndoEntry<AcesUpState>>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -500,8 +500,20 @@ function AcesUpScreenInner() {
   // runRoundDeal's own doc comment), so only the flight count reports it as in-flight.
   function undoGate(): UndoGate {
     const entry = undoStackRef.current[undoStackRef.current.length - 1]
-    if (!entry || !stateRef.current) return null
-    return entry.move ? { takesFrom: [entry.move.to] } : 'exclusive'
+    const current = stateRef.current
+    if (!entry || !current) return null
+    if (!entry.move) return 'exclusive'
+    // A card still flying in to that pile (the undo of the discard it went on to) turns back in mid-air
+    // (revertTopUndo's peel): nothing to wait for. Nothing ever lands on the discard during an undo.
+    if (entry.move.to.zone !== 'discard' && ghost.canPeel(undoGhost(entry.move, current))) return { takesFrom: [] }
+    return { takesFrom: [entry.move.to] }
+  }
+
+  // The ghost a plain undo of a move to a pile flies back: the card it takes off that pile, if it is
+  // the card the move put there.
+  function undoGhost(move: MoveInfo, current: AcesUpState) {
+    const movingCard = top(current.piles[move.to.index])
+    return { cards: movingCard && movingCard.id === move.anchorCardId ? [movingCard] : [], offsetStep: 0, cardWidth }
   }
 
   // Every branch below claims exactly one flight (startFlights(1)) and settles it exactly once -
@@ -568,15 +580,22 @@ function AcesUpScreenInner() {
       return
     }
 
-    const movingCard = top(current.piles[move.to.index])
-    const origin = movingCard && movingCard.id === move.anchorCardId ? await ghost.cardRegistry.measure(move.anchorCardId) : null
+    const ghostContent = undoGhost(move, current)
+    // Cards the undo before this one is still flying in (a held Undo, where that undo's move put them
+    // on this pile): they turn back in mid-air, the rest of that flight landing as before, instead of
+    // the undo waiting for them to land and then sending them off again. Taken here, before any await,
+    // in the same task the gate saw them (undoGate).
+    const peeled = ghostContent.cards.length > 0 ? ghost.peel(ghostContent) : null
+    const origin = peeled || ghostContent.cards.length === 0 ? null : await ghost.cardRegistry.measure(move.anchorCardId)
 
     setUndoStack((stack) => stack.slice(0, -1))
 
-    if (origin && movingCard) {
+    const flight = peeled ?? (origin ? ghost.show(ghostContent, { x: origin.x, y: origin.y }) : null)
+    if (flight) {
       playCardSound()
       hapticCard()
-      const flight = ghost.show({ cards: [movingCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
+      // The flight it was taken out of now reveals nothing when it lands.
+      if (peeled) shrinkLanding(move.to, 1)
       const flyingId = beginFlying(move.from, 1)
       commitState(prevState)
       pendingFlightRef.current.push({ cardId: move.anchorCardId, gen: dealTokenRef.current, flyingId, flight })

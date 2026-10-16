@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react-native'
+import { act, fireEvent, render, screen, within } from '@testing-library/react-native'
 import { StrictMode } from 'react'
 
 import { FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
@@ -8,6 +8,7 @@ import { SpiderState } from '@/games/spider/rules'
 import SpiderScreen from '@/games/spider/SpiderScreen'
 
 import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
+import { peelableFlights } from '../../../testUtils/peelableFlights'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for Spider's WIN: the REAL SpiderScreen, real rules, real useFlightConcurrency / useDerivedWinCheck /
@@ -84,6 +85,8 @@ function mockMakeFlight() {
     }
   }
 }
+/** An undo turning cards back mid-air (ghost.peel): the cards each flight still carries, and every peel. */
+const mockPeel = peelableFlights(() => mockMakeFlight())
 const mockGhost = {
   cardRegistry: {
     register: (id: string, ref: unknown) => void mockRegistered.set(id, ref),
@@ -98,8 +101,13 @@ const mockGhost = {
   },
   show: (spec: { cards: { id: string }[] }) => {
     mockLog.shown.push(spec.cards.map((c) => c.id).join('+'))
-    return mockMakeFlight()
-  }
+    return mockPeel.track(
+      spec.cards.map((c) => c.id),
+      mockMakeFlight()
+    )
+  },
+  canPeel: mockPeel.canPeel,
+  peel: mockPeel.peel
 }
 /** While set, a deal started from now on stays in the air until it resolves - see holdDeals. */
 let mockDealGate: Promise<void> | null = null
@@ -383,6 +391,7 @@ const kingShownInSlot = (deck: number) => !!screen.queryByTestId(`pc-${id(13, de
 
 beforeEach(() => {
   jest.useFakeTimers()
+  mockPeel.reset()
   mockPiles.clear()
   mockPileInstance = 0
   mockRegistered.clear()
@@ -1233,5 +1242,49 @@ describe('Spider screen - restoring a saved game over one in progress', () => {
     await flush(10)
     expect(mockLog.deals).toBe(2)
     expect(stockPackets()).toBe(1)
+  })
+})
+
+// A held Undo used to stall whenever the next undo needed cards the one before it was still flying back (Jay's Yukon recording,
+// 2026-10-16). A run flying in to a column turns back in mid-air instead (ghost.peel).
+describe('Spider screen - an undo that needs cards still flying back', () => {
+  const col = (index: number) => ({ zone: 'tableau' as const, index })
+  /** Keeps advancing fake time until `done()`. */
+  async function flushUntil(done: () => boolean, maxMs = 2000) {
+    for (let t = 0; !done() && t < maxMs; t += 10) await flush(10)
+  }
+  async function undo() {
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+  }
+  const columnIds = (index: number) =>
+    within(screen.getByTestId(`pile-${index}`))
+      .queryAllByTestId(/^card-/)
+      .map((n) => (n.props.testID as string).slice('card-'.length))
+  const spiderBoard = (columns: Card[][]): SpiderState => ({ tableau: Array.from({ length: 10 }, (_, i) => columns[i] ?? []), stock: [], completed: [], completedRuns: [] })
+
+  it('turns them back in mid-air at once, instead of waiting for them to land', async () => {
+    // The 5 went onto the 6, then the 6 and 5 together onto the 7.
+    const s0 = spiderBoard([[card(5, 0)], [card(7, 0)], [card(6, 0)]])
+    const s1 = spiderBoard([[], [card(7, 0)], [card(6, 0), card(5, 0)]])
+    const s2 = spiderBoard([[], [card(7, 0), card(6, 0), card(5, 0)]])
+    const entry = (state: SpiderState, from: number, to: number, count: number, anchorCardId: string) => ({ state, move: { from: col(from), to: col(to), count, anchorCardId } })
+    seedGameInProgress('spider', { state: s2, undoStack: [entry(s0, 0, 2, 1, id(5, 0)), entry(s1, 2, 1, 2, id(6, 0))], moves: 2, elapsedSeconds: 30, config: 1 })
+    await render(<SpiderScreen />)
+    await flush()
+
+    const pressed = Date.now()
+    await undo()
+    await flush(10)
+    expect(mockLog.shown).toEqual([`${id(6, 0)}+${id(5, 0)}`])
+    await undo()
+    await flush(10)
+    expect(mockPeel.peeled).toEqual([id(5, 0)]) // the 5 turned back out of the pair's flight
+    expect(mockPeel.peeledAt[0] - pressed).toBeLessThan(FLIGHT_MS) // while the pair was still in the air
+    expect(mockLog.shown).toHaveLength(1)
+
+    await flushUntil(() => mockLog.inAir === 0)
+    expect([0, 1, 2].map(columnIds)).toEqual([[id(5, 0)], [id(7, 0)], [id(6, 0)]])
   })
 })

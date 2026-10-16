@@ -76,6 +76,10 @@ export interface FlightConcurrency<TState> {
    * sweep, ...) whose cards land one at a time rather than all together - see DealLayer's
    * per-card onCardLanded callback. Never goes below 0. */
   shrinkFlying(flyingId: number): void
+  /** Takes `count` cards back out of the flights still landing on `pile`, newest first (they carry its top cards): cards a later
+   * move sends somewhere else before they have landed - an undo that turns them back in mid-air (DragGhostController.peel). The
+   * flight lands as before, revealing only what it still carries. */
+  shrinkLanding(pile: PileRef, count: number): void
   /** Whether a card is still flying in to `pile` right now - read live (kept in step with every
    * beginFlying/endFlying/shrinkFlying as it happens, not on React's next render), for a loop that
    * outlives the render that started it (the auto-play cascade: a card whose own flight hasn't
@@ -183,6 +187,21 @@ export function useFlightConcurrency<TState>(): FlightConcurrency<TState> {
 
   function shrinkFlying(flyingId: number) {
     updateFlying((f) => f.map((e) => (e.id === flyingId ? { ...e, count: Math.max(0, e.count - 1) } : e)))
+  }
+
+  function shrinkLanding(pile: PileRef, count: number) {
+    updateFlying((f) => {
+      let left = count
+      const next = [...f]
+      for (let i = next.length - 1; i >= 0 && left > 0; i--) {
+        const e = next[i]
+        if (e.count === 0 || e.to.zone !== pile.zone || e.to.index !== pile.index) continue
+        const taken = Math.min(e.count, left)
+        next[i] = { ...e, count: e.count - taken }
+        left -= taken
+      }
+      return next
+    })
   }
 
   function isLanding(pile: PileRef): boolean {
@@ -349,6 +368,7 @@ export function useFlightConcurrency<TState>(): FlightConcurrency<TState> {
     beginFlying,
     endFlying,
     shrinkFlying,
+    shrinkLanding,
     isLanding,
     activeFlightCount,
     activeFlightCountRef,

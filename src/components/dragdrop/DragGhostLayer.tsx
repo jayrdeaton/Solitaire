@@ -3,6 +3,7 @@ import { useRotation } from '@tastic/core'
 import React, { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 import Animated, { makeMutable, SharedValue, useAnimatedStyle, withSpring, WithSpringConfig } from 'react-native-reanimated'
+import { scheduleOnUI } from 'react-native-worklets'
 
 import { Card } from '@/engine/types'
 
@@ -91,6 +92,21 @@ export interface DragGhostController {
    * otherwise - just as independent of every other concurrent flight.
    */
   showLive(content: GhostContent, values: { originX: SharedValue<number>; originY: SharedValue<number>; dx: SharedValue<number>; dy: SharedValue<number> }): DragFlightHandle
+  /** Whether peel() would find these cards in the air right now: the top `content.cards` (same ids, in order, same faces) of a show()
+   * flight that has shown its ghost and not landed yet. */
+  canPeel(content: GhostContent): boolean
+  /**
+   * Takes cards back out of a flight still in the air and gives them a flight of their own, for a move that sends them somewhere else
+   * before they have landed (a held Undo taking back a card the undo before it is still flying in: it turns back in mid-air instead of
+   * landing first and leaving again). `content.cards` must be the top cards of one such flight (canPeel); the rest of it flies on and
+   * lands as before. Returns null when they are not.
+   *
+   * The new ghost rides along with the cards where they are until its flyTo starts it (and, like show(), its turn in the start queue
+   * comes): in that one UI-thread step the old ghost stops drawing them and the new one carries on from exactly where they were, so
+   * nothing jumps or blinks. The caller does the rest of what show() would need (the cards' new destination, its landing) and must
+   * take the cards out of the old flight's landing bookkeeping (useFlightConcurrency's shrinkLanding).
+   */
+  peel(content: GhostContent): DragFlightHandle | null
 }
 
 const DragGhostContext = createContext<DragGhostController | null>(null)
@@ -141,6 +157,13 @@ interface StartTicket {
   open: () => void
 }
 
+/** What a peeled flight (DragGhostController.peel) rides along with until its own flight starts: the flight it was taken out of, and
+ * how far down that flight's fan its first card sits. */
+interface PeelFrom {
+  source: FlightEntry
+  index: number
+}
+
 interface FlightEntry {
   id: number
   /** The ghost's React key: the flight's id, or - when this flight ADOPTED a landed ghost of the same cards (see
@@ -172,6 +195,24 @@ interface FlightEntry {
    * (flyTo) - the spacing of the column it lands on (fanTops.ts). Columns compress their fans to fit the screen, so these
    * differ from `content.offsetStep` and from each other. Always `content.offsetStep` for a single card or an unfanned stack. */
   step: SharedValue<number>
+  /** How far down its own fan (the overlay's local y, so it holds under a quarter turn) the ghost is drawn from its position: 0,
+   * except for a peeled flight, whose first card starts `PeelFrom.index` cards down the fan it was taken out of and springs to 0 over
+   * its flight. */
+  lift: SharedValue<number>
+  /** What the ghost follows until `handedOff`: its own `lift`/`step`, except a peeled flight's, which follow the flight it was taken
+   * out of (`followIndex` cards down its fan). */
+  liveLift: SharedValue<number>
+  liveStep: SharedValue<number>
+  followIndex: number
+  /** How many of the ghost's cards it draws, from the bottom of the run: the rest have been peeled off (DragGhostController.peel) and
+   * fly in a ghost of their own. `visible` is the same count on the JS side, cut as soon as a peel takes the cards - the shared value
+   * only once the peeled ghost takes over. */
+  visibleCount: SharedValue<number>
+  visible: { current: number }
+  /** A show() flight: cards can be peeled off it. */
+  peelable: boolean
+  /** Whether the ghost follows its own values yet (a peeled flight: once its flight starts). Always true for a show() flight. */
+  handed: { current: boolean }
   /** Set in the commit that reveals the real card under this ghost (its settle): the flight is over, and the ghost only
    * stays until that card's face has painted - see LANDED_GHOST_MAX_MS. */
   landed?: boolean
@@ -193,7 +234,7 @@ function visibleFaceIds(content: GhostContent): string[] {
 /** A ghost that has been on screen, of exactly these cards (same ids in the same order, same faces, size and fan): a new
  * flight can carry on with it - it is painted, so the new flight needs no take-off hold at all. */
 function adoptable(entry: FlightEntry, content: GhostContent): boolean {
-  if (!entry.shown.current || entry.content.cardWidth !== content.cardWidth || entry.content.offsetStep !== content.offsetStep) return false
+  if (!entry.shown.current || !entry.handed.current || entry.visible.current !== entry.content.cards.length || entry.content.cardWidth !== content.cardWidth || entry.content.offsetStep !== content.offsetStep) return false
   const a = entry.content.cards
   const b = content.cards
   return a.length === b.length && a.every((c, i) => c.id === b[i].id && c.faceUp === b[i].faceUp)
@@ -235,15 +276,33 @@ interface FlightGhostCardProps {
   own: FlightValues
   handedOff: SharedValue<number>
   step: SharedValue<number>
+  lift: SharedValue<number>
+  liveLift: SharedValue<number>
+  liveStep: SharedValue<number>
+  followIndex: number
+  visibleCount: SharedValue<number>
   frame: OverlayFrame
   landed: boolean
 }
 
+interface GhostCardSlotProps {
+  index: number
+  handedOff: SharedValue<number>
+  visibleCount: SharedValue<number>
+  children: React.ReactNode
+}
+
 /** One card of a fanned run's ghost, `index` steps down the fan. The step is a shared value (FlightEntry.step), so the run
- * respaces on the UI thread, in step with the flight that carries it. */
-function FannedGhostCard({ index, step, children }: { index: number; step: SharedValue<number>; children: React.ReactNode }) {
-  const fanStyle = useAnimatedStyle(() => ({ transform: [{ translateY: index * step.value }] }))
+ * respaces on the UI thread, in step with the flight that carries it. Cards peeled off the run (FlightEntry.visibleCount) are not drawn. */
+function FannedGhostCard({ index, step, liveStep, handedOff, visibleCount, children }: GhostCardSlotProps & { step: SharedValue<number>; liveStep: SharedValue<number> }) {
+  const fanStyle = useAnimatedStyle(() => ({ opacity: index < visibleCount.value ? 1 : 0, transform: [{ translateY: index * (handedOff.value === 1 ? step.value : liveStep.value) }] }))
   return <Animated.View style={[styles.stackedCard, fanStyle]}>{children}</Animated.View>
+}
+
+/** One card of a ghost stacked with no fan (a recycle's whole waste): every card sits on the first. Drawn unless peeled off. */
+function StackedGhostCard({ index, visibleCount, children }: GhostCardSlotProps) {
+  const peelStyle = useAnimatedStyle(() => ({ opacity: index < visibleCount.value ? 1 : 0 }))
+  return <Animated.View style={[styles.stackedCard, peelStyle]}>{children}</Animated.View>
 }
 
 // Memoized: several of these can be mounted at once (see DragGhostProvider's `flights`), and every
@@ -251,7 +310,7 @@ function FannedGhostCard({ index, step, children }: { index: number; step: Share
 // is only ever set once at creation; the shared values and `frame` never change
 // identity) - without this, every remaining ghost would re-render whenever any sibling's own
 // landing removed it from `flights`, same reasoning as DealLayer.tsx's GhostSlot.
-const FlightGhostCard = memo(function FlightGhostCard({ onVisible, releasePending, prePainted, content, live, own, handedOff, step, frame, landed }: FlightGhostCardProps) {
+const FlightGhostCard = memo(function FlightGhostCard({ onVisible, releasePending, prePainted, content, live, own, handedOff, step, lift, liveLift, liveStep, followIndex, visibleCount, frame, landed }: FlightGhostCardProps) {
   const cardHeight = content.cardWidth / CARD_ASPECT
   // Invisible until its visible faces have painted (visibleFaceIds; see useGhostPaintGate): a ghost is a freshly mounted
   // Image, blank for a frame or two, while the source keeps drawing the departing card meanwhile (cardFacePaint.ts's ghost
@@ -272,7 +331,9 @@ const FlightGhostCard = memo(function FlightGhostCard({ onVisible, releasePendin
     const sx = handed ? ownOriginX.value + ownDx.value : liveOriginX.value + liveDx.value
     const sy = handed ? ownOriginY.value + ownDy.value : liveOriginY.value + liveDy.value
     const p = toLocal(sx, sy, content.cardWidth, cardHeight, frame)
-    return { transform: [{ translateX: p.x }, { translateY: p.y }] }
+    // Down the fan, in the overlay's own frame: 0 but for a peeled flight (FlightEntry.lift).
+    const down = handed ? lift.value : liveLift.value + followIndex * liveStep.value
+    return { transform: [{ translateX: p.x }, { translateY: p.y + down }] }
   })
   // An explicit size for the container - its only children are absolutely positioned, so without it this lays out as
   // an exactly-zero frame at the overlay's origin, which trips a React Native (Fabric, iOS) view-recycling bug that
@@ -287,15 +348,15 @@ const FlightGhostCard = memo(function FlightGhostCard({ onVisible, releasePendin
         <Animated.View style={[styles.ghostLayer, { width: content.cardWidth, height: groupHeight }, !visible && styles.unpainted, animatedStyle]}>
           {content.cards.map((c, i) => {
             const card = <PlayingCard card={c} style={landed ? LANDED_CARD_STYLE : undefined} onFacePainted={c.faceUp ? () => markPainted(c.id) : undefined} />
-            // A stack with no fan (a recycle's whole waste) needs no per-card animation: every card sits on the first.
+            // A stack with no fan (a recycle's whole waste): every card sits on the first.
             return content.offsetStep > 0 ? (
-              <FannedGhostCard key={c.id} index={i} step={step}>
+              <FannedGhostCard key={c.id} index={i} step={step} liveStep={liveStep} handedOff={handedOff} visibleCount={visibleCount}>
                 {card}
               </FannedGhostCard>
             ) : (
-              <View key={c.id} style={styles.stackedCard}>
+              <StackedGhostCard key={c.id} index={i} handedOff={handedOff} visibleCount={visibleCount}>
                 {card}
-              </View>
+              </StackedGhostCard>
             )
           })}
         </Animated.View>
@@ -450,10 +511,13 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
   // cards are marked as taking off (cardFacePaint.ts) right here, synchronously - before the move's own commit renders -
   // so their sources (and any other landed ghost of them, see the paint wait below) keep drawing them until this ghost
   // shows. A show() flight (`inStartOrder`) also joins the start queue (startQueueRef), adopted or not.
+  //
+  // A peeled flight (`peel`) adopts nothing and marks nothing: its cards are drawn by the flight they were taken out of until it takes
+  // over (see peel()), and nothing on the board is drawing them.
   const addFlight = useCallback(
-    (id: number, mountGate: MountGate, content: GhostContent, live: FlightValues, own: FlightValues, handedOff: SharedValue<number>, step: SharedValue<number>, inStartOrder: boolean, candidate?: FlightEntry) => {
-      const adopted = candidate && adoptable(candidate, content) ? candidate : modelRef.current.find((f) => f.landed && adoptable(f, content))
-      const releasePending = adopted ? () => {} : markGhostPending(visibleFaceIds(content))
+    (id: number, mountGate: MountGate, content: GhostContent, live: FlightValues, own: FlightValues, handedOff: SharedValue<number>, step: SharedValue<number>, lift: SharedValue<number>, inStartOrder: boolean, candidate?: FlightEntry, peel?: PeelFrom) => {
+      const adopted = peel ? undefined : candidate && adoptable(candidate, content) ? candidate : modelRef.current.find((f) => f.landed && adoptable(f, content))
+      const releasePending = adopted || peel ? () => {} : markGhostPending(visibleFaceIds(content))
       const shown = { current: false }
       const ticket: StartTicket | null = inStartOrder ? { id, ready: false, open: () => mountGate.open() } : null
       const onVisible = () => {
@@ -464,7 +528,28 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
         } else mountGate.open()
         releasePending()
       }
-      const entry: FlightEntry = { id, key: adopted ? adopted.key : id, mountGate, releasePending, prePainted: !!adopted, onVisible, shown, content, live, own, handedOff, step }
+      const entry: FlightEntry = {
+        id,
+        key: adopted ? adopted.key : id,
+        mountGate,
+        releasePending,
+        prePainted: !!adopted,
+        onVisible,
+        shown,
+        content,
+        live,
+        own,
+        handedOff,
+        step,
+        lift,
+        liveLift: peel ? peel.source.lift : lift,
+        liveStep: peel ? peel.source.step : step,
+        followIndex: peel ? peel.index : 0,
+        visibleCount: makeMutable(content.cards.length),
+        visible: { current: content.cards.length },
+        peelable: inStartOrder,
+        handed: { current: !peel }
+      }
       // Queued before the model changes, so the prune in applyFlights finds it among the flights it keeps.
       if (ticket) startQueueRef.current.push(ticket)
       applyFlights((prev) => [...(adopted ? prev.filter((f) => f.id !== adopted.id) : prev), entry])
@@ -490,9 +575,10 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
     }
     for (const f of flights) {
       if (!f.landed || waits.has(f.id)) continue
-      // Every card of the ghost, whatever its own face: only the board's faces are ever loading (a ghost's are not
-      // tracked), so a card that lands face-down simply has nothing to wait for, and one the reveal turns face-up does.
-      const ids = f.content.cards.map((c) => c.id)
+      // Every card the ghost still draws, whatever its own face: only the board's faces are ever loading (a ghost's are not
+      // tracked), so a card that lands face-down simply has nothing to wait for, and one the reveal turns face-up does. Cards
+      // peeled off it landed somewhere else, under their own ghost.
+      const ids = f.content.cards.slice(0, f.visible.current).map((c) => c.id)
       let painted = false
       const cancel = whenCardsSettled(ids, LANDED_GHOST_MAX_MS, () => {
         painted = true
@@ -521,7 +607,7 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
   // `source` is the caller's persistent originX (a showLive flight) or null (a show flight, which
   // never had persistent values and is born released).
   const createFlight = useCallback(
-    (id: number, mountGate: MountGate, content: GhostContent, live: FlightValues, own: FlightValues, handedOff: SharedValue<number>, step: SharedValue<number>, source: SharedValue<number> | null, releasePending: () => void): DragFlightHandle => {
+    (id: number, mountGate: MountGate, content: GhostContent, live: FlightValues, own: FlightValues, handedOff: SharedValue<number>, step: SharedValue<number>, lift: SharedValue<number>, source: SharedValue<number> | null, releasePending: () => void, peel?: PeelFrom, handed?: { current: boolean }): DragFlightHandle => {
       let generation = 0
       let pendingSettle: (() => void) | null = null
       let released = source === null
@@ -584,6 +670,36 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
         })
       }
 
+      // A peeled flight's cards are drawn by the flight they were taken out of (and ridden along with) until this runs - the first step
+      // of its own flight, on the UI thread, in one go: the old ghost stops drawing them, this one takes over from exactly where they
+      // are (that flight's position and lift, `index` cards down its fan, at its current spacing) and springs from there to
+      // `target`, its lift to 0 and its spacing to `landingStep`. Each frame is either all before or all after it.
+      function takeOver(target: { x: number; y: number } | null, landingStep: number | null, config: WithSpringConfig) {
+        if (!peel || !handed || handed.current) return
+        handed.current = true
+        const { source: from, index } = peel
+        const fromOwn = from.own
+        const fromLift = from.lift
+        const fromStep = from.step
+        const fromVisible = from.visibleCount
+        scheduleOnUI(() => {
+          'worklet'
+          fromVisible.value = Math.min(fromVisible.value, index)
+          if (!target) return
+          own.originX.value = fromOwn.originX.value
+          own.originY.value = fromOwn.originY.value
+          own.dx.value = fromOwn.dx.value
+          own.dy.value = fromOwn.dy.value
+          lift.value = fromLift.value + index * fromStep.value
+          step.value = fromStep.value
+          handedOff.value = 1
+          own.dx.value = withSpring(target.x - own.originX.value, config)
+          own.dy.value = withSpring(target.y - own.originY.value, config)
+          lift.value = withSpring(0, config)
+          if (landingStep !== null) step.value = withSpring(landingStep, config)
+        })
+      }
+
       // What a caller reads/animates: the persistent values until the drag ends, the flight's own after.
       function values(): FlightValues {
         return released ? own : live
@@ -639,6 +755,10 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
             config,
             onArrived,
             () => {
+              if (peel && handed && !handed.current) {
+                takeOver({ x: targetX, y: targetY }, landingStep, config)
+                return
+              }
               own.dx.value = withSpring(targetX - own.originX.value, config)
               own.dy.value = withSpring(targetY - own.originY.value, config)
               if (landingStep !== null) step.value = withSpring(landingStep, config)
@@ -655,6 +775,8 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
           generation += 1
           // And of its take-off hold: a ghost hidden before it ever mounted has no unmount to release it.
           releasePending()
+          // A peeled flight that never took over: its cards are not going back where the old ghost is taking them, so it stops drawing them.
+          takeOver(null, null, FLIGHT_SPRING)
           removeFlight(id)
         }
       }
@@ -664,6 +786,23 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
     [playInvalidSound, hapticInvalid, removeFlight, land]
   )
 
+  // The show() flight still in the air whose top cards are exactly `content.cards` (see DragGhostController.canPeel): newest first, so a
+  // card that has been taken back out of one flight is found in the one carrying it now. A flight that has not shown its ghost yet, or
+  // (a peeled one) not taken its cards over yet, is not one: there is nothing on screen to follow. A partial peel needs a fan to split.
+  const peelSource = useCallback((content: GhostContent): FlightEntry | null => {
+    const k = content.cards.length
+    if (k === 0) return null
+    for (let i = modelRef.current.length - 1; i >= 0; i--) {
+      const f = modelRef.current[i]
+      if (!f.peelable || f.landed || !f.shown.current || !f.handed.current || f.content.cardWidth !== content.cardWidth) continue
+      const n = f.visible.current
+      if (k > n || (k < n && f.content.offsetStep === 0)) continue
+      const tail = f.content.cards.slice(n - k, n)
+      if (tail.every((c, j) => c.id === content.cards[j].id && c.faceUp === content.cards[j].faceUp)) return f
+    }
+    return null
+  }, [])
+
   const controller = useMemo<DragGhostController>(
     () => ({
       cardRegistry,
@@ -672,9 +811,29 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
         const own = { originX: makeMutable(origin.x), originY: makeMutable(origin.y), dx: makeMutable(0), dy: makeMutable(0) }
         const handedOff = makeMutable(1)
         const step = makeMutable(takeOffStep(content))
+        const lift = makeMutable(0)
         const mountGate = createMountGate()
-        const releasePending = addFlight(id, mountGate, content, own, own, handedOff, step, true)
-        return createFlight(id, mountGate, content, own, own, handedOff, step, null, releasePending)
+        const releasePending = addFlight(id, mountGate, content, own, own, handedOff, step, lift, true)
+        return createFlight(id, mountGate, content, own, own, handedOff, step, lift, null, releasePending)
+      },
+      canPeel(content) {
+        return peelSource(content) !== null
+      },
+      peel(content) {
+        const source = peelSource(content)
+        if (!source) return null
+        const id = ++nextIdRef.current
+        const peelFrom: PeelFrom = { source, index: source.visible.current - content.cards.length }
+        // Cut on the JS side at once, so a later peel (or canPeel) sees what is left; the old ghost keeps drawing them until takeOver.
+        source.visible.current = peelFrom.index
+        const own = { originX: makeMutable(0), originY: makeMutable(0), dx: makeMutable(0), dy: makeMutable(0) }
+        const handedOff = makeMutable(0)
+        const step = makeMutable(content.offsetStep)
+        const lift = makeMutable(0)
+        const mountGate = createMountGate()
+        const releasePending = addFlight(id, mountGate, content, source.own, own, handedOff, step, lift, true, undefined, peelFrom)
+        const entry = modelRef.current.find((f) => f.id === id)
+        return createFlight(id, mountGate, content, source.own, own, handedOff, step, lift, null, releasePending, peelFrom, entry?.handed)
       },
       showLive(content, values) {
         // A flight still on these values is a snap-back to be ended by this pick-up (or a drag that
@@ -689,14 +848,15 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
         const own = { originX: makeMutable(0), originY: makeMutable(0), dx: makeMutable(0), dy: makeMutable(0) }
         const handedOff = makeMutable(0)
         const step = makeMutable(takeOffStep(content))
+        const lift = makeMutable(0)
         const mountGate = createMountGate()
-        const releasePending = addFlight(id, mountGate, content, values, own, handedOff, step, false, candidate)
-        const handle = createFlight(id, mountGate, content, values, own, handedOff, step, values.originX, releasePending)
+        const releasePending = addFlight(id, mountGate, content, values, own, handedOff, step, lift, false, candidate)
+        const handle = createFlight(id, mountGate, content, values, own, handedOff, step, lift, values.originX, releasePending)
         liveOwnersRef.current.set(values.originX, handle)
         return handle
       }
     }),
-    [cardRegistry, createFlight, addFlight]
+    [cardRegistry, createFlight, addFlight, peelSource]
   )
 
   return (
@@ -707,7 +867,7 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
       which needs the view to already exist. */}
       <View ref={overlayRef} pointerEvents='none' style={StyleSheet.absoluteFill}>
         {flights.map((flight) => (
-          <FlightGhostCard key={flight.key} onVisible={flight.onVisible} releasePending={flight.releasePending} prePainted={flight.prePainted} content={flight.content} live={flight.live} own={flight.own} handedOff={flight.handedOff} step={flight.step} frame={frame} landed={!!flight.landed} />
+          <FlightGhostCard key={flight.key} onVisible={flight.onVisible} releasePending={flight.releasePending} prePainted={flight.prePainted} content={flight.content} live={flight.live} own={flight.own} handedOff={flight.handedOff} step={flight.step} lift={flight.lift} liveLift={flight.liveLift} liveStep={flight.liveStep} followIndex={flight.followIndex} visibleCount={flight.visibleCount} frame={frame} landed={!!flight.landed} />
         ))}
       </View>
     </DragGhostContext.Provider>

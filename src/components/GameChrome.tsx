@@ -1,4 +1,4 @@
-import { IconButton, Pressable } from '@rific/feedback-press'
+import { Pressable } from '@rific/feedback-press'
 import { rotateInsets, useRotation } from '@tastic/core'
 import { ConfirmDialog, CornerActionButtons } from '@tastic/hud'
 import { useRouter } from 'expo-router'
@@ -70,9 +70,9 @@ export { GAME_CONTENT_MAX_WIDTH }
  * (useTableauMaxHeight) can subtract the exact same two numbers this component actually renders
  * with, instead of guessing at them independently. */
 export { GAME_CONTENT_TOP_PADDING }
-// 8 (footer's own bottom offset) + 40 (an IconButton's touch size, size=24 + 2*8 padding) + 8 (gap
-// up to the moves/timer row sitting right above it) + ~20 (that row's own text line) + 12 of actual
-// breathing room above that, so the last row of board content doesn't sit flush against either row.
+// The band reserved below the board for the footer buttons and the scoreboard's numbers above them (see
+// FOOTER_BUTTON_HEIGHT and MOVES_TIMER_BOTTOM below); the scoreboard's labels and chevron reach a little
+// above it, over the felt.
 export { GAME_CONTENT_BOTTOM_PADDING }
 
 /** zIndex for a screen-level win/loss dialog (WinBanner/LossBanner, or a game's own custom banner
@@ -90,7 +90,7 @@ export { GAME_CONTENT_BOTTOM_PADDING }
  * set this explicitly instead. */
 export const GAME_DIALOG_Z_INDEX = 9999
 
-// Press-and-hold-to-repeat undo (see the IconButton below and useUndoHold). The cards stream back at
+// Press-and-hold-to-repeat undo (see the Undo button below and useUndoHold). The cards stream back at
 // the auto-play's own pace, AUTO_PLAY_STAGGER_MS apart (96ms at the default), each leaving while the
 // ones before it are still flying - the hold is the auto-play run backwards. A screen whose next undo
 // can't share the air yet (the same card still landing, a deal-layer revert) makes it wait rather than
@@ -101,15 +101,22 @@ const UNDO_HOLD_REPEAT_MS = AUTO_PLAY_STAGGER_MS
 // Vertical rhythm shared by the footer and the moves/timer row that sits just above it - single
 // source for both their JSX bottom offsets and how far the moves/timer row slides down to fill the
 // footer's own spot once it's hidden (see toggleFooter's movesTimerTranslateY).
+// The scoreboard's bottom sits a clear gap above the buttons' tops (60), wider than the gap between any
+// number or icon and its own label, so each label reads as its own row's (Jay, 2026-10-16: every label goes
+// under its number or icon).
 const FOOTER_BOTTOM = 8
-const MOVES_TIMER_BOTTOM = 56
+const MOVES_TIMER_BOTTOM = 66
 
-// Portrait footer buttons (New Game | Undo | Hint): each a wide 88x52 target around the same 24pt icon,
-// 8pt apart, so a thumb that lands a little off still hits. Rules isn't in this row - tapping the title
-// opens it. The 52pt box with no margin keeps the icon centre exactly where the old 40pt box (plus
-// Paper's 6pt margin) drew it, FOOTER_BOTTOM + 26 up from the bottom.
+// Portrait footer buttons (New Game | Undo | Hint): each a wide 88x52 target, 8pt apart, so a thumb that
+// lands a little off still hits. Rules isn't in this row - tapping the title opens it. Each button is its
+// 24pt icon over a caption in the scoreboard's label style (Jay, 2026-10-16: his kids had to ask where to
+// start a new game; the icon alone, a fan of cards, didn't say it). The caption fits inside the same 52pt
+// box: icon, a 2pt gap, the caption's line, set a little low (FOOTER_CAPTION_BOTTOM).
 const FOOTER_BUTTON_WIDTH = 88
-const FOOTER_BUTTON_HEIGHT = 52
+const FOOTER_ICON_SIZE = 24
+const FOOTER_ICON_TOP = 8
+const FOOTER_CAPTION_GAP = 2
+const FOOTER_CAPTION_BOTTOM = 4
 const FOOTER_GAP = 8
 
 // The moves/score/time readout is the footer's show/hide button. Captioned, it is laid out on the footer's own grid
@@ -121,19 +128,43 @@ const SCOREBOARD_WIDTH = 3 * FOOTER_BUTTON_WIDTH + 2 * FOOTER_GAP
 const STAT_LABEL_LINE = 14
 const STAT_VALUE_LINE = 22
 const STAT_LABEL_COLOR = 'rgba(255, 255, 255, 0.65)'
+// A footer button: icon, gap and one caption line (in the scoreboard's label style) plus its padding.
+const FOOTER_BUTTON_HEIGHT = FOOTER_ICON_TOP + FOOTER_ICON_SIZE + FOOTER_CAPTION_GAP + STAT_LABEL_LINE + FOOTER_CAPTION_BOTTOM
+// A footer button while pressed (Paper's IconButton overlay on iOS): the chrome's white at 12%.
+const FOOTER_PRESSED_COLOR = 'rgba(255, 255, 255, 0.12)'
 const CHEVRON_SIZE = 18
-// How far the scoreboard drops when the footer is tucked away: its numbers (the bottom line of the row, which sits
-// MOVES_TIMER_BOTTOM up) land centred where the button icons were (FOOTER_BOTTOM plus half a button).
-const SCOREBOARD_DROP = MOVES_TIMER_BOTTOM + STAT_VALUE_LINE / 2 - (FOOTER_BOTTOM + FOOTER_BUTTON_HEIGHT / 2)
+// How far the scoreboard drops when the footer is tucked away: its numbers (the row's top line, over the labels'
+// line, which sits MOVES_TIMER_BOTTOM up) land centred on the buttons' row (FOOTER_BOTTOM plus half a button).
+const SCOREBOARD_DROP = MOVES_TIMER_BOTTOM + STAT_LABEL_LINE + STAT_VALUE_LINE / 2 - (FOOTER_BOTTOM + FOOTER_BUTTON_HEIGHT / 2)
 const SCOREBOARD_TOP_SLOP = 6
+// How far a portrait footer button's touch area reaches above its pill: over the gap and the scoreboard's labels'
+// line, up to its numbers (Jay, 2026-10-16: he kept collapsing the footer when he meant to press Hint). Nobody taps
+// the word TIME to tuck the controls away, so a tap there is a Hint tap a little high. The footer is drawn after
+// the scoreboard, so while it is up it wins that line; tucked away it takes no touches (and the scoreboard is
+// stacked above it), so the whole scoreboard is the toggle again.
+const FOOTER_TOUCH_REACH = MOVES_TIMER_BOTTOM + STAT_LABEL_LINE - (FOOTER_BOTTOM + FOOTER_BUTTON_HEIGHT)
 
 // Wide (landscape) layout only - the footer and the readout live in the side gutters GameLayout
-// reserves (see gameLayout.ts), never over the board. The 8pt margins keep both columns off the
-// gutter's own outer edge / the safe-area inset, and 40 is an IconButton's touch size (24 icon + 2*8
-// padding), so the footer column is exactly one button wide.
-const WIDE_FOOTER_RIGHT_MARGIN = 8
-const WIDE_FOOTER_BUTTON_WIDTH = 40
+// reserves (see gameLayout.ts), never over the board. The 8pt margin keeps the readout off the
+// gutter's own outer edge / the safe-area inset. The footer column is one button wide: 48pt, room for
+// its widest caption (RULES, ~45pt; NEW GAME wraps onto two lines), 4pt off the safe edge, so each icon
+// sits where the old 40pt IconButton at 8pt drew it. Both columns are centred in the height below the
+// corner buttons (GAME_CONTENT_TOP_PADDING, their band), so a tall footer column never runs under the
+// Settings cog on a short screen (a 320pt-tall phone held sideways).
+const WIDE_FOOTER_RIGHT_MARGIN = 4
+const WIDE_FOOTER_BUTTON_WIDTH = 48
 const WIDE_FOOTER_GAP = 8
+
+interface FooterButtonLayout {
+  width: number
+  /** Touch area above the pill (FOOTER_TOUCH_REACH in portrait). */
+  reach: number
+  /** Half the gap to each neighbour, so a press between two buttons still lands. Only along the row or column:
+   * iOS and Android never hand a child a touch outside its parent's bounds, and the wide column is one button wide. */
+  hitSlop: { top?: number; bottom?: number; left?: number; right?: number }
+}
+const FOOTER_BUTTON_LAYOUT: FooterButtonLayout = { width: FOOTER_BUTTON_WIDTH, reach: FOOTER_TOUCH_REACH, hitSlop: { left: FOOTER_GAP / 2, right: FOOTER_GAP / 2 } }
+const WIDE_FOOTER_BUTTON_LAYOUT: FooterButtonLayout = { width: WIDE_FOOTER_BUTTON_WIDTH, reach: 0, hitSlop: { top: WIDE_FOOTER_GAP / 2, bottom: WIDE_FOOTER_GAP / 2 } }
 const WIDE_STATS_LEFT_MARGIN = 8
 const WIDE_STATS_GAP = 10
 
@@ -284,10 +315,9 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   // into the buttons' place, rather than swapping to a separate one-line "12 · 45 · 0:33" that regrouped them.
   const labelOpacity = useSharedValue(1)
   const labelAnimatedStyle = useAnimatedStyle(() => ({ opacity: labelOpacity.value }))
-  // The chevron over the scoreboard (Jay, 2026-10-14: nothing said the scoreboard hides the buttons): points down while
-  // they show, turns to point up as they tuck away, and comes down onto the numbers as the labels between fade. Driven
-  // by labelOpacity, so all three move as one.
-  const chevronAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ translateY: (1 - labelOpacity.value) * STAT_LABEL_LINE }, { rotate: `${(1 - labelOpacity.value) * 180}deg` }] }))
+  // The chevron over the scoreboard's numbers (Jay, 2026-10-14: nothing said the scoreboard hides the buttons): points
+  // down while they show and turns to point up as they tuck away. Driven by labelOpacity, so it turns as the labels fade.
+  const chevronAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${(1 - labelOpacity.value) * 180}deg` }] }))
 
   function toggleFooter() {
     const next = !footerVisible
@@ -303,18 +333,17 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
     /* eslint-enable react-hooks/immutability */
   }
 
-  // Portrait gives each button a wide target (see FOOTER_BUTTON_WIDTH); the wide layout's column keeps
-  // Paper's default box, exactly one gutter wide.
-  const footerButtonStyle = isWide ? undefined : styles.footerButton
+  // Portrait gives each button a wide target (see FOOTER_BUTTON_WIDTH); the wide layout's column is one
+  // button wide (see WIDE_FOOTER_BUTTON_WIDTH).
+  const footerLayout = isWide ? WIDE_FOOTER_BUTTON_LAYOUT : FOOTER_BUTTON_LAYOUT
 
-  const undoButton = <IconButton icon='undo' iconColor={CHROME_FG} size={24} style={footerButtonStyle} disabled={undoDisabled} onPress={() => void onUndo()} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={UNDO_LONG_PRESS_MS} accessibilityLabel='Undo' />
+  const undoButton = <FooterButton icon='undo' label='Undo' layout={footerLayout} disabled={undoDisabled} onPress={() => void onUndo()} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={UNDO_LONG_PRESS_MS} />
 
   const newGameButton = (
-    <IconButton
+    <FooterButton
       icon='cards-playing-outline'
-      iconColor={CHROME_FG}
-      size={24}
-      style={footerButtonStyle}
+      label='New Game'
+      layout={footerLayout}
       onPress={() => {
         // Nothing to lose yet - deal immediately, no warning. Otherwise, dealing a new game
         // abandons the one in progress (counted as a loss - see stores/gameStats.tsx), so confirm
@@ -326,11 +355,10 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
         }
         setConfirmNewGameVisible(true)
       }}
-      accessibilityLabel='New Game'
     />
   )
 
-  const hintButton = <IconButton icon='lightbulb-on-outline' iconColor={CHROME_FG} size={24} style={footerButtonStyle} disabled={hintDisabled} onPress={() => onHint()} accessibilityLabel='Hint' />
+  const hintButton = <FooterButton icon='lightbulb-on-outline' label='Hint' layout={footerLayout} disabled={hintDisabled} onPress={() => onHint()} />
 
   // The dialogs below (Settings, Rules, the New Game confirm) portal into the Portal.Host that
   // withGameProviders mounts INSIDE the rotated frame - so they lay out against the rotated size and
@@ -418,34 +446,35 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
 
       In portrait this row is also the footer's show/hide button (toggleFooter): tapping it tucks the
       footer away and tapping it again brings it back, from the same spot either way since the row slides
-      into the footer's place. Labeled (MOVES/SCORE/TIME over each value) while the footer is up: the
-      scoreboard is expanded along with the controls. Tucked away, the labels fade and the same three
-      numbers drop into the buttons' place, each staying in its column (Jay, 2026-10-14: it used to swap to
-      a separate one-line readout, and labeled the tucked-away state instead of the expanded one). */}
+      into the footer's place. Labeled (MOVES/SCORE/TIME under each value, as each button's name is under its
+      icon) while the footer is up: the scoreboard is expanded along with the controls. Tucked away, the labels
+      fade and the same three numbers drop into the buttons' place, each staying in its column (Jay, 2026-10-14:
+      it used to swap to a separate one-line readout, and labeled the tucked-away state instead of the expanded
+      one). */}
       {!won && isWide && (
         // Leading (local left) gutter, left-aligned inside [insets.left + 8, leftGutter] and vertically
         // centred in the safe area. Always the captioned form (there is room for it and no footer to
         // compete with) and never animated - see the footer's own wide branch below.
         <ElapsedClock getElapsedSeconds={getElapsedSeconds} clockRunning={clockRunning}>
           {(displayedElapsed) => (
-            <View style={[styles.wideStatsWrap, { left: insets.left + WIDE_STATS_LEFT_MARGIN, right: windowWidth - leftGutter, top: insets.top, bottom: insets.bottom }]} pointerEvents='none'>
+            <View style={[styles.wideStatsWrap, { left: insets.left + WIDE_STATS_LEFT_MARGIN, right: windowWidth - leftGutter, top: insets.top + GAME_CONTENT_TOP_PADDING, bottom: insets.bottom }]} pointerEvents='none'>
               <View style={styles.wideStatBlock}>
-                <Text style={styles.statCaption}>Moves</Text>
                 <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
                   {movesCount}
                 </Text>
+                <Text style={styles.statCaption}>Moves</Text>
               </View>
               <View style={styles.wideStatBlock}>
-                <Text style={styles.statCaption}>Score</Text>
                 <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
                   {computeScore(movesCount, displayedElapsed)}
                 </Text>
+                <Text style={styles.statCaption}>Score</Text>
               </View>
               <View style={styles.wideStatBlock}>
-                <Text style={styles.statCaption}>Time</Text>
                 <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
                   {formatTime(displayedElapsed)}
                 </Text>
+                <Text style={styles.statCaption}>Time</Text>
               </View>
             </View>
           )}
@@ -456,7 +485,6 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
           {(displayedElapsed) => (
             // Above the footer while it is hidden: the lowered readout then sits under the hidden buttons, and on
             // the web a child's own pointer-events beat a parent's pointerEvents='none', so they would take its tap.
-            // While the footer is up the footer wins the 4pt where the two boxes meet.
             <Animated.View style={[styles.movesTimerWrap, { bottom: MOVES_TIMER_BOTTOM + insets.bottom }, !footerVisible && styles.movesTimerAboveFooter, movesTimerAnimatedStyle]} pointerEvents='box-none'>
               <Pressable onPress={toggleFooter} style={styles.scoreboardButton} accessibilityRole='button' accessibilityLabel={footerVisible ? 'Hide controls' : 'Show controls'}>
                 <Animated.View style={[styles.chevron, chevronAnimatedStyle]} accessibilityElementsHidden importantForAccessibility='no-hide-descendants'>
@@ -464,16 +492,16 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
                 </Animated.View>
                 <View style={styles.statsRow}>
                   <View style={styles.statBlock}>
-                    <Animated.Text style={[styles.statCaption, labelAnimatedStyle]}>Moves</Animated.Text>
                     <Text style={styles.statValue}>{movesCount}</Text>
+                    <Animated.Text style={[styles.statCaption, labelAnimatedStyle]}>Moves</Animated.Text>
                   </View>
                   <View style={styles.statBlock}>
-                    <Animated.Text style={[styles.statCaption, labelAnimatedStyle]}>Score</Animated.Text>
                     <Text style={styles.statValue}>{computeScore(movesCount, displayedElapsed)}</Text>
+                    <Animated.Text style={[styles.statCaption, labelAnimatedStyle]}>Score</Animated.Text>
                   </View>
                   <View style={styles.statBlock}>
-                    <Animated.Text style={[styles.statCaption, labelAnimatedStyle]}>Time</Animated.Text>
                     <Text style={styles.statValue}>{formatTime(displayedElapsed)}</Text>
+                    <Animated.Text style={[styles.statCaption, labelAnimatedStyle]}>Time</Animated.Text>
                   </View>
                 </View>
               </Pressable>
@@ -509,11 +537,11 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
       it away frees room); here it sits in a gutter, so hiding it would give the board nothing back. The
       wrapper is box-none so only the icons claim taps; the rest falls through to the board. */}
       {!won && isWide && (
-        <View style={[styles.wideFooterWrap, { right: insets.right + WIDE_FOOTER_RIGHT_MARGIN, top: insets.top, bottom: insets.bottom }]} pointerEvents='box-none'>
+        <View style={[styles.wideFooterWrap, { right: insets.right + WIDE_FOOTER_RIGHT_MARGIN, top: insets.top + GAME_CONTENT_TOP_PADDING, bottom: insets.bottom }]} pointerEvents='box-none'>
           {undoButton}
           {newGameButton}
           {hintButton}
-          <IconButton icon='information-outline' iconColor={CHROME_FG} size={24} onPress={() => setRulesOpen(true)} accessibilityLabel='Rules' />
+          <FooterButton icon='information-outline' label='Rules' layout={footerLayout} onPress={() => setRulesOpen(true)} />
         </View>
       )}
 
@@ -538,6 +566,38 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
         onCancel={() => setConfirmNewGameVisible(false)}
       />
     </View>
+  )
+}
+
+interface FooterButtonProps {
+  icon: string
+  /** The caption under the icon, and the button's screen-reader label. */
+  label: string
+  layout: FooterButtonLayout
+  disabled?: boolean
+  onPress: () => void
+  onLongPress?: () => void
+  onPressOut?: () => void
+  delayLongPress?: number
+}
+
+/** One of the game's controls (New Game, Undo, Hint, and in the wide layout Rules): its icon over a caption,
+ * one touch target. feedback-press's Pressable (the same press sound/haptic an IconButton plays) rather than a
+ * Paper IconButton, which has no room for a caption. The touch area is the pill plus `layout.reach` above it
+ * (see FOOTER_TOUCH_REACH); the pressed highlight is drawn on the pill alone, on every platform (an Android
+ * ripple would fill the whole touch area). */
+function FooterButton({ icon, label, layout, disabled, onPress, onLongPress, onPressOut, delayLongPress }: FooterButtonProps) {
+  return (
+    <Pressable accessibilityRole='button' accessibilityLabel={label} accessibilityState={{ disabled: !!disabled }} disabled={disabled} onPress={onPress} onLongPress={onLongPress} onPressOut={onPressOut} delayLongPress={delayLongPress} hitSlop={layout.hitSlop} style={{ paddingTop: layout.reach, width: layout.width }}>
+      {({ pressed }) => (
+        <View style={[styles.footerButton, pressed && styles.footerButtonPressed]}>
+          <View style={[styles.footerContent, disabled && styles.footerContentDisabled]}>
+            <Icon source={icon} size={FOOTER_ICON_SIZE} color={CHROME_FG} />
+            <Text style={[styles.statCaption, styles.footerCaption]}>{label}</Text>
+          </View>
+        </View>
+      )}
+    </Pressable>
   )
 }
 
@@ -581,12 +641,32 @@ const styles = StyleSheet.create({
     top: 0,
     zIndex: 10
   },
-  // See FOOTER_BUTTON_WIDTH. margin 0 replaces Paper's 6pt, so the box is exactly the target.
+  // See FooterButton. Its height is the content's (FOOTER_BUTTON_HEIGHT with a one-line caption); the
+  // radius rounds the pressed highlight into a pill. No overflow: 'hidden': the rounded corners reach into
+  // the caption's line and clipped RULES in the 48pt wide-layout column.
   footerButton: {
+    alignItems: 'center',
     borderRadius: FOOTER_BUTTON_HEIGHT / 2,
-    height: FOOTER_BUTTON_HEIGHT,
-    margin: 0,
-    width: FOOTER_BUTTON_WIDTH
+    paddingBottom: FOOTER_CAPTION_BOTTOM,
+    paddingTop: FOOTER_ICON_TOP
+  },
+  footerButtonPressed: {
+    backgroundColor: FOOTER_PRESSED_COLOR
+  },
+  // The scoreboard's caption style (statCaption), centred under the icon and allowed to wrap (NEW GAME in the
+  // narrow wide-layout column).
+  footerCaption: {
+    marginTop: FOOTER_CAPTION_GAP,
+    textAlign: 'center'
+  },
+  footerContent: {
+    alignItems: 'center'
+  },
+  // A disabled button (Undo with nothing to undo, Hint on a finished board): icon and caption at 38%, as on a
+  // Paper button. The felt is dark in every appearance mode, so this is the chrome's white dimmed rather than
+  // the theme's onSurfaceDisabled (dark in light mode, so nearly invisible on the felt).
+  footerContentDisabled: {
+    opacity: 0.38
   },
   // New Game/Undo/Hint, floating bottom-center - no bar/background, matching the minimal look
   // the rest of this chrome already has. Hidden/shown by GameChrome's own footerVisible state
@@ -689,8 +769,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     zIndex: 10
   },
-  // Wide layout footer column: `width` is exactly one IconButton so alignItems centres each button on
-  // the column's own axis.
+  // Wide layout footer column: `width` is exactly one button (WIDE_FOOTER_BUTTON_WIDTH).
   // column-reverse: the buttons are declared Undo..Rules (the portrait row's left-to-right order), which as a
   // column would put Undo on top; in landscape the info button is wanted at the top and Undo at the bottom
   // (nearest the thumb's natural rest) - so the same children just stack the other way.

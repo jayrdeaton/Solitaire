@@ -9,6 +9,7 @@ import { YukonState } from '@/games/yukon/rules'
 import YukonScreen from '@/games/yukon/YukonScreen'
 
 import { resetGameInProgress, seedGameInProgress, storedGame } from '../../../testUtils/gameInProgressStore'
+import { peelableFlights } from '../../../testUtils/peelableFlights'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for Yukon's win: the REAL YukonScreen, real rules, real useFlightConcurrency / useWinReveal /
@@ -33,7 +34,7 @@ const mockSettings = { autoMove: false }
 let mockFlightMs = FLIGHT_MS
 /** What a column's drag hands the screen when a drag of its cards ends over a pile (PileView's drag.onDrop). */
 type MockDrop = (to: PileRef, count: number, anchorCardId: string, flight: unknown) => Promise<boolean> | boolean
-const mockPiles = new Map<number, { cards: Card[]; drag?: { onDrop: MockDrop } }>()
+const mockPiles = new Map<number, { cards: Card[]; drag?: { onDrop: MockDrop }; hiddenCount?: number }>()
 /** Each foundation cell's onDrop (a card dragged back down to the tableau), by suit - unset while the screen gives none
  * (won) or a card is flying in to that pile, like the real cell. */
 const mockFoundationDrops = new Map<string, ((x: number, y: number, flight: unknown, dragged: Card) => Promise<boolean> | boolean) | undefined>()
@@ -93,6 +94,8 @@ function mockMakeFlight() {
     }
   }
 }
+/** An undo turning cards back mid-air: the cards each flight still carries, and every peel. */
+const mockPeel = peelableFlights(() => mockMakeFlight())
 const mockGhost = {
   cardRegistry: {
     register: () => {},
@@ -105,8 +108,13 @@ const mockGhost = {
   show: (spec: { cards: { id: string }[] }) => {
     mockLog.shown.push(spec.cards.map((c) => c.id).join('+'))
     mockLog.shownAt.push(Date.now())
-    return mockMakeFlight()
-  }
+    return mockPeel.track(
+      spec.cards.map((c) => c.id),
+      mockMakeFlight()
+    )
+  },
+  canPeel: mockPeel.canPeel,
+  peel: mockPeel.peel
 }
 /** Every deal.start() the screen made (the initial deal and a cascade undo's return flights alike): the entries it flew and the callbacks it handed over. */
 interface MockDealCall {
@@ -251,9 +259,9 @@ jest.mock('@/components/PileView', () => {
   const { Pressable: MockPressable, View: MockView } = require('react-native')
   const { useEffect, useRef } = require('react')
   return {
-    PileView: (props: { cards: Card[]; onPressCard: (card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) => void; drag?: { onDrop: MockDrop } }) => {
+    PileView: (props: { cards: Card[]; onPressCard: (card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) => void; drag?: { onDrop: MockDrop }; hiddenCount?: number }) => {
       const id = useRef(mockPileInstance++).current
-      mockPiles.set(id, { cards: props.cards, drag: props.drag })
+      mockPiles.set(id, { cards: props.cards, drag: props.drag, hiddenCount: props.hiddenCount })
       const key = props.cards.map((c) => c.id).join(',')
       useEffect(() => {
         const ids = key === '' ? [] : key.split(',')
@@ -374,6 +382,7 @@ beforeEach(() => {
   mockLog.cascadeChains = -1
   mockLog.pilesShownAtCascade = -1
   mockLog.dealStarts = 0
+  mockPeel.reset()
   mockDealCalls.length = 0
   mockHoldDeal = false
   mockCommits.length = 0
@@ -1033,5 +1042,66 @@ describe("Yukon screen - the deck placeholder leaves with the last card, on the 
     const second = mockDealCalls[1]
     await takeOff(second, [byDelay(second).at(-1)!.cardId])
     expect(deckShown()).toBe(false)
+  })
+})
+
+// A held Undo used to stall whenever the next undo needed cards the one before it was still flying back: it waited for them
+// to land, then sent them off again (Jay's recording, 2026-10-16). The cards turn back in mid-air instead (ghost.peel), and the
+// rest of that flight lands as before.
+describe('Yukon screen - an undo that needs cards still flying back', () => {
+  const col = (index: number): PileRef => ({ zone: 'tableau', index })
+  /** The 5 of hearts went onto the 6 of spades, then the 6 and 5 together onto the 7 of clubs: undoing both takes the 5 back
+   * off the pair the first undo is still flying in. */
+  const CHAIN = () => {
+    const s0 = board([[card('hearts', 5)], [card('clubs', 7)], [card('spades', 6)]], [[], [], [], []])
+    const s1 = board([[], [card('clubs', 7)], [card('spades', 6), card('hearts', 5)]], [[], [], [], []])
+    const s2 = board([[], [card('clubs', 7), card('spades', 6), card('hearts', 5)], []], [[], [], [], []])
+    const undoStack = [
+      { state: s0, move: { primary: { from: col(0), to: col(2), count: 1, anchorCardId: id('hearts', 5) }, cascaded: [] } },
+      { state: s1, move: { primary: { from: col(2), to: col(1), count: 2, anchorCardId: id('spades', 6) }, cascaded: [] } }
+    ]
+    return { s2, undoStack }
+  }
+  /** The hidden count each column is drawn with (cards still flying in), by column. */
+  const hiddenCounts = () => [...mockPiles.entries()].sort(([a], [b]) => a - b).map(([, p]) => p.hiddenCount ?? 0)
+
+  it('turns them back in mid-air at once, instead of waiting for them to land', async () => {
+    const { s2, undoStack } = CHAIN()
+    await mount(s2, undoStack, 3)
+
+    await undo()
+    await flush(10) // the pair is flying back to the 6's column
+    expect(mockLog.shown).toEqual([`${id('spades', 6)}+${id('hearts', 5)}`])
+    expect(mockLog.inAir).toBe(1)
+    const pairLeft = mockLog.shownAt[0]
+
+    await undo()
+    await flush(10)
+    expect(mockPeel.peeled).toEqual([id('hearts', 5)]) // the 5 turned back out of the pair's flight
+    expect(mockPeel.peeledAt[0] - pairLeft).toBeLessThan(FLIGHT_MS) // while the pair was still in the air
+    expect(mockLog.shown).toHaveLength(1) // no second ghost from where the pair will land
+    expect(mockLog.inAir).toBe(2)
+    expect(hiddenCounts().slice(0, 3)).toEqual([1, 0, 1]) // the 5 flies home to its column; the pair's flight now brings only the 6
+
+    await flushUntil(() => mockLog.inAir === 0)
+    expect(hiddenCounts().slice(0, 3)).toEqual([0, 0, 0])
+    expect(mockPiles.size).toBe(7)
+    expect([...mockPiles.values()].slice(0, 3).map((p) => p.cards.map((c) => c.id))).toEqual([[id('hearts', 5)], [id('clubs', 7)], [id('spades', 6)]])
+  })
+
+  it('still waits for the landing when the cards are not the top of what is in the air', async () => {
+    const { s2, undoStack } = CHAIN()
+    await mount(s2, undoStack, 3)
+    jest.spyOn(mockGhost, 'canPeel').mockReturnValue(false)
+
+    await undo()
+    await flush(10)
+    await undo()
+    await flush(10)
+    expect(mockPeel.peeled).toEqual([])
+    expect(mockLog.shown).toHaveLength(1) // the second undo is waiting for the pair to land
+
+    await flushUntil(() => mockLog.shown.length === 2)
+    expect(mockLog.shownAt[1] - mockLog.shownAt[0]).toBeGreaterThanOrEqual(FLIGHT_MS)
   })
 })

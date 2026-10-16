@@ -129,7 +129,7 @@ function KlondikeScreenInner() {
   // each other - PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`,
   // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
   // unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkFlying, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<KlondikeState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkFlying, shrinkLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<KlondikeState>()
   const [undoStack, setUndoStack, undoStackRef] = useUndoStack<KlondikeUndoEntry>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -771,12 +771,30 @@ function KlondikeScreenInner() {
   // each of those one at a time.
   function undoGate(): UndoGate {
     const entry = undoStackRef.current[undoStackRef.current.length - 1]
-    if (!entry || !stateRef.current) return null
+    const current = stateRef.current
+    if (!entry || !current) return null
     const { primary: move, cascaded } = entry.move
     if (!move || cascaded.length > 0) return 'exclusive'
     if (move.from.zone === 'waste' && move.to.zone === 'stock') return 'exclusive'
     if (move.from.zone === 'stock' && move.to.zone === 'waste' && move.count > 1) return 'exclusive'
-    return { takesFrom: move.from.zone === 'waste' ? [move.to, WASTE] : [move.to] }
+    const lands = move.from.zone === 'waste' ? [WASTE] : []
+    // Cards still flying in to a column or a foundation turn back in mid-air (revertTopUndo's peel):
+    // nothing to wait for there. The waste takes one arrival at a time, so a card flying back to it
+    // is still waited for.
+    if (move.to.zone !== 'waste' && ghost.canPeel(undoGhost(move, current))) return { takesFrom: lands }
+    return { takesFrom: [move.to, ...lands] }
+  }
+
+  // The ghost a plain undo of `move` flies back: the cards it takes off `move.to` as `current` has them.
+  // A foundation pile stacks in place, so an undone foundation move's card is not necessarily its
+  // top in a legacy entry: auto-play cascaded more cards on top of it (they ride along in
+  // `cascaded`, flying back on their own). Look the card up by id then, instead of ghosting
+  // whatever now sits on top.
+  function undoGhost(move: MoveInfo, current: KlondikeState) {
+    const sourcePile = resolvePile(move.to, current)
+    const foundationAt = move.to.zone === 'foundation' && sourcePile ? sourcePile.findIndex((c) => c.id === move.anchorCardId) : -1
+    const cards = sourcePile ? (foundationAt >= 0 ? sourcePile.slice(foundationAt, foundationAt + move.count) : sourcePile.slice(sourcePile.length - move.count)) : []
+    return { cards, offsetStep: move.count > 1 ? faceUpFanOffset(cardWidth) : 0, cardWidth }
   }
 
   async function revertTopUndo() {
@@ -927,19 +945,18 @@ function KlondikeScreenInner() {
       return
     }
 
-    const sourcePile = resolvePile(move.to, current)
-    // A foundation pile stacks in place, so an undone foundation move's card is not necessarily its
-    // top in a legacy entry: auto-play cascaded more cards on top of it (they ride along in
-    // `cascaded`, flying back on their own). Look the card up by id then, instead of ghosting
-    // whatever now sits on top.
-    const foundationAt = move.to.zone === 'foundation' && sourcePile ? sourcePile.findIndex((c) => c.id === move.anchorCardId) : -1
-    const movingCards = sourcePile ? (foundationAt >= 0 ? sourcePile.slice(foundationAt, foundationAt + move.count) : sourcePile.slice(sourcePile.length - move.count)) : []
-    const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
-    // That buried card (and the winning move's own card once the celebration has hidden the real
+    const ghostContent = undoGhost(move, current)
+    const movingCards = ghostContent.cards
+    // Cards the undo before this one is still flying in (a held Undo, where that undo's move put them
+    // on this pile): they turn back in mid-air, the rest of that flight landing as before, instead of
+    // the undo waiting for them to land and then sending them off again. Taken here, before any await,
+    // in the same task the gate saw them (undoGate).
+    const peeled = move.to.zone !== 'waste' && movingCards.length > 0 ? ghost.peel(ghostContent) : null
+    // A buried card (and the winning move's own card once the celebration has hidden the real
     // foundation cards) has no CardRegistry entry, so without a fallback the undo had no origin, took
     // the `else` branch below and the card simply appeared back home. Every card in a foundation pile
     // sits exactly where the pile's own always-present container is, so fly out of that.
-    const origin = movingCards.length > 0 ? ((await ghost.cardRegistry.measure(move.anchorCardId)) ?? (move.to.zone === 'foundation' ? await measureView(foundationSlotRefs.current[move.to.index]) : null)) : null
+    const origin = peeled || movingCards.length === 0 ? null : ((await ghost.cardRegistry.measure(move.anchorCardId)) ?? (move.to.zone === 'foundation' ? await measureView(foundationSlotRefs.current[move.to.index]) : null))
 
     setUndoStack((stack) => stack.slice(0, -1))
     hideCascadeCards(cascaded)
@@ -952,10 +969,12 @@ function KlondikeScreenInner() {
     // entirely independent of whether a cascade exists.
     if (cascadeOrigins) pendingCascadeUndoRef.current = { moves: cascaded, origins: cascadeOrigins, gen }
 
-    if (origin) {
+    const flight = peeled ?? (origin ? ghost.show(ghostContent, { x: origin.x, y: origin.y }) : null)
+    if (flight) {
       playCardSound()
       hapticCard()
-      const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
+      // The flight they were taken out of now reveals only what it still carries when it lands.
+      if (peeled) shrinkLanding(move.to, movingCards.length)
       const flyingId = beginFlying(move.from, move.count)
       commitState(prevState)
       pendingFlightRef.current.push({ cardId: move.anchorCardId, to: move.from, viaStock: move.from.zone === 'stock', gen, flyingId, flight })

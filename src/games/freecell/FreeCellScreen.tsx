@@ -136,7 +136,7 @@ function FreeCellScreenInner() {
   // exclusion with everything else; tap/drag/auto-play can all run concurrently with each other -
   // PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`, `commitState`,
   // `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<FreeCellState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkLanding, isLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<FreeCellState>()
   const [undoStack, setUndoStack, undoStackRef] = useUndoStack<UndoEntry<FreeCellState, FreeCellUndoMove>>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -647,10 +647,20 @@ function FreeCellScreenInner() {
   // several foundations at once - one at a time.
   function undoGate(): UndoGate {
     const entry = undoStackRef.current[undoStackRef.current.length - 1]
-    if (!entry || !stateRef.current) return null
+    const current = stateRef.current
+    if (!entry || !current) return null
     const { primary, cascaded } = entry.move
     if (!primary || cascaded.length > 0) return 'exclusive'
+    // Cards still flying in to that pile turn back in mid-air (revertTopUndo's peel): nothing to wait for.
+    if (ghost.canPeel(undoGhost(primary, current))) return { takesFrom: [] }
     return { takesFrom: [primary.to] }
+  }
+
+  // The ghost a plain undo of `move` flies back: the cards it takes off `move.to` as `current` has them.
+  function undoGhost(move: MoveInfo, current: FreeCellState) {
+    const sourcePile = resolvePile(move.to, current)
+    const cards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : []
+    return { cards, offsetStep: move.count > 1 ? faceUpFanOffset(cardWidth) : 0, cardWidth }
   }
 
   async function revertTopUndo() {
@@ -692,10 +702,14 @@ function FreeCellScreenInner() {
       return
     }
 
-    const sourcePile = resolvePile(primary.to, current)
-    const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - primary.count) : []
-    const offsetStep = primary.count > 1 ? faceUpFanOffset(cardWidth) : 0
-    const origin = movingCards.length > 0 ? await ghost.cardRegistry.measure(primary.anchorCardId) : null
+    const ghostContent = undoGhost(primary, current)
+    const movingCards = ghostContent.cards
+    // Cards the undo before this one is still flying in (a held Undo, where that undo's move put them
+    // on this pile): they turn back in mid-air, the rest of that flight landing as before, instead of
+    // the undo waiting for them to land and then sending them off again. Taken here, before any await,
+    // in the same task the gate saw them (undoGate).
+    const peeled = movingCards.length > 0 ? ghost.peel(ghostContent) : null
+    const origin = peeled || movingCards.length === 0 ? null : await ghost.cardRegistry.measure(primary.anchorCardId)
 
     setUndoStack((stack) => stack.slice(0, -1))
 
@@ -713,10 +727,12 @@ function FreeCellScreenInner() {
       pendingCascadeUndoRef.current = { moves: cascaded, gen }
     }
 
-    if (origin) {
+    const flight = peeled ?? (origin ? ghost.show(ghostContent, { x: origin.x, y: origin.y }) : null)
+    if (flight) {
       playCardSound()
       hapticCard()
-      const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
+      // The flight they were taken out of now reveals only what it still carries when it lands.
+      if (peeled) shrinkLanding(primary.to, movingCards.length)
       const flyingId = beginFlying(primary.from, primary.count)
       commitState(prevState)
       pendingAutoMoveCardIdRef.current.push({ cardId: primary.anchorCardId, to: primary.from, gen, flight, flyingId })
@@ -1032,7 +1048,7 @@ function FreeCellScreenInner() {
               // for a tableau destination (its own hiddenCardIds prop below); FreecellCell has no
               // such prop of its own, so this folds it into the same isFlyingHere-driven hide/freeze
               // this cell already does for the single-ghost `flying` case.
-              const isFlyingHere = flying.some((f) => f.to.zone === 'freecell' && f.to.index === i) || (!!card && dealHiddenIds.has(card.id))
+              const isFlyingHere = flying.some((f) => f.count > 0 && f.to.zone === 'freecell' && f.to.index === i) || (!!card && dealHiddenIds.has(card.id))
               // The far-right freecell doubles as the deal's flight origin while dealing (see
               // dealOriginRef/DECK_PLACEHOLDER_CARD above) - freecells are never touched by the
               // initial deal itself, so `card` is guaranteed still null underneath for the whole

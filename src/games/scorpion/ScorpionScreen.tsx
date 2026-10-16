@@ -135,7 +135,7 @@ function ScorpionScreenInner() {
   // (the assisted stock's multi-card burst uses `dealHiddenIds`, not `flying`, same as the initial
   // deal - see runStockDeal below), so it would have no read site. `activeFlightCount` (the hook's
   // state mirror of the ref) is, though: it is what the win celebration waits on (see `settled`).
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<ScorpionState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<ScorpionState>()
   // Nullable move (Spider's default): an ordinary tableau move always has one, but the assisted
   // stock's one-shot deal lands 3 cards across 3 different columns at once - no single MoveInfo
   // shape for that, so it's recorded as `move: null` and handleUndo detects that case itself (see
@@ -664,9 +664,19 @@ function ScorpionScreenInner() {
   // columns at once - one at a time.
   function undoGate(): UndoGate {
     const entry = undoStackRef.current[undoStackRef.current.length - 1]
-    if (!entry || !stateRef.current) return null
+    const current = stateRef.current
+    if (!entry || !current) return null
     if (!entry.move) return 'exclusive'
+    // A run still flying in to that column turns back in mid-air (revertTopUndo's peel): nothing to wait for.
+    if (ghost.canPeel(undoGhost(entry.move, current))) return { takesFrom: [] }
     return { takesFrom: [entry.move.to] }
+  }
+
+  // The ghost a plain undo of `move` flies back: the run it takes off `move.to` as `current` has it.
+  function undoGhost(move: MoveInfo, current: ScorpionState) {
+    const sourcePile = current.tableau[move.to.index] ?? null
+    const cards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : []
+    return { cards, offsetStep: move.count > 1 ? faceUpFanOffset(cardWidth) : 0, cardWidth }
   }
 
   async function revertTopUndo() {
@@ -711,17 +721,23 @@ function ScorpionScreenInner() {
       return
     }
 
-    const sourcePile = current.tableau[move.to.index] ?? null
-    const movingCards = sourcePile ? sourcePile.slice(sourcePile.length - move.count) : []
-    const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
-    const origin = movingCards.length > 0 ? await ghost.cardRegistry.measure(move.anchorCardId) : null
+    const ghostContent = undoGhost(move, current)
+    const movingCards = ghostContent.cards
+    // Cards the undo before this one is still flying in (a held Undo, where that undo's move put them
+    // on this pile): they turn back in mid-air, the rest of that flight landing as before, instead of
+    // the undo waiting for them to land and then sending them off again. Taken here, before any await,
+    // in the same task the gate saw them (undoGate).
+    const peeled = movingCards.length > 0 ? ghost.peel(ghostContent) : null
+    const origin = peeled || movingCards.length === 0 ? null : await ghost.cardRegistry.measure(move.anchorCardId)
 
     setUndoStack((stack) => stack.slice(0, -1))
 
-    if (origin) {
+    const flight = peeled ?? (origin ? ghost.show(ghostContent, { x: origin.x, y: origin.y }) : null)
+    if (flight) {
       playCardSound()
       hapticCard()
-      const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
+      // The flight they were taken out of now reveals only what it still carries when it lands.
+      if (peeled) shrinkLanding(move.to, movingCards.length)
       const flyingId = beginFlying(move.from, move.count)
       commitState(prevState)
       pendingFlightRef.current.push({ cardId: move.anchorCardId, gen: dealTokenRef.current, flyingId, flight })

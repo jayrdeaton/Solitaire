@@ -10,6 +10,7 @@ import * as klondikeRules from '@/games/klondike/rules'
 import { KlondikeState } from '@/games/klondike/rules'
 
 import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
+import { peelableFlights } from '../../../testUtils/peelableFlights'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for Klondike's win flow and its "a card never moves without its own flight" rule: the REAL
@@ -104,13 +105,20 @@ function mockMakeFlight() {
     }
   }
 }
+/** An undo turning cards back mid-air (ghost.peel): the cards each flight still carries, and every peel. */
+const mockPeel = peelableFlights(() => mockMakeFlight())
 const mockGhost = {
   cardRegistry: mockRegistry,
   show: (spec: { cards: { id: string }[] }) => {
     mockLog.shown.push(spec.cards.map((c) => c.id).join('+'))
     mockLog.shownAt.push(Date.now())
-    return mockMakeFlight()
-  }
+    return mockPeel.track(
+      spec.cards.map((c) => c.id),
+      mockMakeFlight()
+    )
+  },
+  canPeel: mockPeel.canPeel,
+  peel: mockPeel.peel
 }
 const mockDeal = {
   start: (entries: { cardId: string }[], _w: number, onLanded: (id: string) => void, onDone?: () => void) => {
@@ -390,6 +398,7 @@ async function dragFromColumn(cardId: string, to: PileRef) {
 
 beforeEach(() => {
   jest.useFakeTimers()
+  mockPeel.reset()
   mockSettings.autoMove = true
   mockFlight.ms = FLIGHT_MS
   mockMeasureViewMs = 0
@@ -1364,5 +1373,54 @@ describe('hint', () => {
     expect(mockHintGlides).toEqual([])
     await tap('hint')
     expect(mockHintGlides.length).toBe(1)
+  })
+})
+
+// A held Undo used to stall whenever the next undo needed cards the one before it was still flying back: it waited for them to land,
+// then sent them off again (Jay's Yukon recording, 2026-10-16). Cards flying in to a column or a foundation turn back in mid-air
+// instead (ghost.peel); the waste still takes one arrival at a time.
+describe('Klondike screen - an undo that needs cards still flying back', () => {
+  const col = (index: number): PileRef => ({ zone: 'tableau', index })
+  const STOCK: PileRef = { zone: 'stock', index: 0 }
+  const WASTE: PileRef = { zone: 'waste', index: 0 }
+  const entry = (state: KlondikeState, from: PileRef, to: PileRef, count: number, anchorCardId: string) => ({ state, move: { primary: { from, to, count, anchorCardId }, cascaded: [] } })
+
+  it('turns them back in mid-air at once, instead of waiting for them to land', async () => {
+    // The 5 of spades went onto the 6 of hearts, then the 6 and 5 together onto the 7 of clubs.
+    const s0 = board({ tableau: [[card('spades', 5)], [card('clubs', 7)], [card('hearts', 6)]], foundation: foundations({}) })
+    const s1 = board({ tableau: [[], [card('clubs', 7)], [card('hearts', 6), card('spades', 5)]], foundation: foundations({}) })
+    const s2 = board({ tableau: [[], [card('clubs', 7), card('hearts', 6), card('spades', 5)]], foundation: foundations({}) })
+    await mount(s2, 3, [entry(s0, col(0), col(2), 1, id('spades', 5)), entry(s1, col(2), col(1), 2, id('hearts', 6))], 2)
+
+    await tap('undo')
+    await flush(10)
+    expect(mockLog.shown).toEqual([`${id('hearts', 6)}+${id('spades', 5)}`])
+    await tap('undo')
+    await flush(10)
+    expect(mockPeel.peeled).toEqual([id('spades', 5)]) // the 5 turned back out of the pair's flight
+    expect(mockPeel.peeledAt[0] - mockLog.shownAt[0]).toBeLessThan(FLIGHT_MS) // while the pair was still in the air
+    expect(mockLog.shown).toHaveLength(1)
+
+    await flushUntil(() => mockLog.inAir === 0)
+    expect([0, 1, 2].map(pileIds)).toEqual([[id('spades', 5)], [id('clubs', 7)], [id('hearts', 6)]])
+  })
+
+  it('a card flying back to the waste is still waited for: the waste takes one arrival at a time', async () => {
+    // The 6 of hearts was drawn, then played from the waste onto the 7 of clubs.
+    const six = card('hearts', 6)
+    const s0 = board({ tableau: [[card('clubs', 7)]], stock: [{ ...six, faceUp: false }], foundation: foundations({}) })
+    const s1 = board({ tableau: [[card('clubs', 7)]], waste: [six], foundation: foundations({}) })
+    const s2 = board({ tableau: [[card('clubs', 7), six]], foundation: foundations({}) })
+    await mount(s2, 2, [entry(s0, STOCK, WASTE, 1, six.id), entry(s1, WASTE, col(0), 1, six.id)], 2)
+
+    await tap('undo')
+    await flush(10)
+    await tap('undo')
+    await flush(10)
+    expect(mockPeel.peeled).toEqual([])
+    expect(mockLog.shown).toHaveLength(1) // the draw's undo is waiting for the 6 to land on the waste
+
+    await flushUntil(() => mockLog.shown.length === 2)
+    expect(mockLog.shownAt[1] - mockLog.shownAt[0]).toBeGreaterThanOrEqual(FLIGHT_MS)
   })
 })

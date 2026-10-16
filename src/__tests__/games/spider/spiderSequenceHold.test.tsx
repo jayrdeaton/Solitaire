@@ -65,6 +65,9 @@ const mockGhost = {
     },
     measure: async (id: string) => (mockRegistered.has(id) ? { x: 10, y: 10, width: 50, height: 70 } : null)
   },
+  // Undo chains are not what this suite is about: nothing is ever taken back out of a flight.
+  canPeel: () => false,
+  peel: () => null,
   show: (spec: { cards: Card[] }) => {
     // Like the real addFlight: marked synchronously, before the move's own commit renders.
     const release = markGhostPending(spec.cards.filter((c) => c.faceUp).map((c) => c.id))

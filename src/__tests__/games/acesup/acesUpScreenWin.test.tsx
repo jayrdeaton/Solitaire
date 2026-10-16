@@ -1,10 +1,12 @@
-import { act, fireEvent, render, screen } from '@testing-library/react-native'
+import { act, fireEvent, render, screen, within } from '@testing-library/react-native'
 
+import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit } from '@/engine/types'
 import AcesUpScreen from '@/games/acesup/AcesUpScreen'
 import { AcesUpState } from '@/games/acesup/rules'
 
 import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
+import { peelableFlights } from '../../../testUtils/peelableFlights'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for what Aces Up's WINNING discard does: the REAL AcesUpScreen (real rules, real useFlightConcurrency /
@@ -72,12 +74,19 @@ function mockMakeFlight() {
     }
   }
 }
+/** An undo turning cards back mid-air (ghost.peel): the cards each flight still carries, and every peel. */
+const mockPeel = peelableFlights(() => mockMakeFlight())
 const mockGhost = {
   cardRegistry: { register: () => {}, unregister: () => {}, measure: async (id: string) => (mockRegistryMisses.has(id) ? null : (mockRegistered.get(id) ?? null)) },
   show: (spec: { cards: { id: string }[] }) => {
     mockLog.shown.push(spec.cards.map((c) => c.id).join('+'))
-    return mockMakeFlight()
-  }
+    return mockPeel.track(
+      spec.cards.map((c) => c.id),
+      mockMakeFlight()
+    )
+  },
+  canPeel: mockPeel.canPeel,
+  peel: mockPeel.peel
 }
 const mockDeal = { start: () => {}, cancel: () => {} }
 
@@ -160,7 +169,7 @@ jest.mock('@/components/PileView', () => {
         return () => ids.forEach((cardId) => mockRegistered.delete(cardId))
       }, [key, pile])
       return (
-        <MockView>
+        <MockView testID={`pile-${pile}`}>
           {props.cards.map((card, i) => (
             <MockPressable key={card.id} testID={`card-${card.id}`} onPress={() => props.onPressCard(card, props.cards.length - 1 - i, async () => ({ x: 10, y: 10 }))} />
           ))}
@@ -235,6 +244,7 @@ async function tap(cardId: string) {
 
 beforeEach(() => {
   jest.useFakeTimers()
+  mockPeel.reset()
   mockLog.shown = []
   mockLog.inAir = 0
   mockLog.chains = null
@@ -410,5 +420,55 @@ describe('Aces Up screen - the winning discard', () => {
     expect(screen.queryByTestId('fireworks')).toBeNull()
     expect(mockLog.chains).toBeNull()
     expect(cardsOnBoard()).toHaveLength(5)
+  })
+})
+
+// A held Undo used to stall whenever the next undo needed a card the one before it was still flying back (Jay's Yukon recording,
+// 2026-10-16). A card flying back to a pile turns back in mid-air instead (ghost.peel).
+describe('Aces Up screen - an undo that needs a card still flying back', () => {
+  const columnIds = (index: number) =>
+    within(screen.getByTestId(`pile-${index}`))
+      .queryAllByTestId(/^card-/)
+      .map((n) => (n.props.testID as string).slice('card-'.length))
+  async function undo() {
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+  }
+  async function flushUntil(done: () => boolean, maxMs = 2000) {
+    for (let t = 0; !done() && t < maxMs; t += STEP_MS) await flush(STEP_MS)
+  }
+
+  it('a card flying back from the discard turns back to the pile it was moved from at once, instead of landing first', async () => {
+    // The 5 of spades was moved into the empty pile, then discarded (the 9 of spades outranks it).
+    const five = card('spades', 5)
+    const s0 = state([[card('hearts', 2), five], [card('spades', 9)], [card('diamonds', 3)], []])
+    const s1 = state([[card('hearts', 2)], [card('spades', 9)], [card('diamonds', 3)], [five]])
+    const s2 = state([[card('hearts', 2)], [card('spades', 9)], [card('diamonds', 3)], []], [card('hearts', 9), card('clubs', 4), five])
+    const moveTo = (to: PileRef) => ({ from: { zone: 'tableau', index: to.zone === 'discard' ? 3 : 0 } as PileRef, to, count: 1, anchorCardId: five.id })
+    seedGameInProgress('acesup', {
+      state: s2,
+      undoStack: [
+        { state: s0, move: moveTo({ zone: 'tableau', index: 3 }) },
+        { state: s1, move: moveTo({ zone: 'discard', index: 0 }) }
+      ],
+      moves: 2,
+      elapsedSeconds: 0
+    })
+    await render(<AcesUpScreen />)
+    await flush()
+
+    const pressed = Date.now()
+    await undo()
+    await flush(10)
+    expect(mockLog.shown).toEqual([five.id])
+    await undo()
+    await flush(10)
+    expect(mockPeel.peeled).toEqual([five.id]) // turned back out of its flight into the empty pile
+    expect(mockPeel.peeledAt[0] - pressed).toBeLessThan(FLIGHT_MS) // while that flight was still in the air
+    expect(mockLog.shown).toHaveLength(1)
+
+    await flushUntil(() => mockLog.inAir === 0)
+    expect([0, 3].map(columnIds)).toEqual([[id('hearts', 2), five.id], []])
   })
 })

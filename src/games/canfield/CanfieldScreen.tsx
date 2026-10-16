@@ -161,7 +161,7 @@ function CanfieldScreenInner() {
   // each other - PATTERN_OVERLAP_GATE, mirrors KlondikeScreen's identical adoption of this hook).
   // Destructured below so every existing reference to `state`, `commitState`, `flying`,
   // `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkFlying, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<CanfieldState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkFlying, shrinkLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<CanfieldState>()
   const [undoStack, setUndoStack, undoStackRef] = useUndoStack<UndoEntry<CanfieldState>>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -605,11 +605,29 @@ function CanfieldScreenInner() {
   // just reverts) moves the whole waste - each of those one at a time.
   function undoGate(): UndoGate {
     const entry = undoStackRef.current[undoStackRef.current.length - 1]
-    if (!entry || !stateRef.current) return null
+    const current = stateRef.current
+    if (!entry || !current) return null
     const { move } = entry
     if (!move) return 'exclusive'
     if (move.from.zone === 'stock' && move.to.zone === 'waste' && move.count > 1) return 'exclusive'
-    return { takesFrom: move.from.zone === 'waste' ? [move.to, WASTE] : [move.to] }
+    const lands = move.from.zone === 'waste' ? [WASTE] : []
+    // Cards still flying in to a column or a foundation turn back in mid-air (revertTopUndo's peel):
+    // nothing to wait for there. The waste takes one arrival at a time, so a card flying back to it
+    // is still waited for.
+    if (move.to.zone !== 'waste' && ghost.canPeel(undoGhost(move, current))) return { takesFrom: lands }
+    return { takesFrom: [move.to, ...lands] }
+  }
+
+  // The ghost a plain undo of `move` flies back: the cards it takes off `move.to` as `current` has them.
+  // A foundation move's own card can sit BURIED under silent auto-plays that landed on the same
+  // pile after it, in an entry from a save written before auto-plays became their own undo steps
+  // (see applyMove) - so it is found by id, not assumed to be on top, or the ghost would carry the
+  // wrong card.
+  function undoGhost(move: MoveInfo, current: CanfieldState) {
+    const sourcePile = resolvePile(move.to, current)
+    const buriedAt = move.to.zone === 'foundation' && sourcePile ? sourcePile.findIndex((c) => c.id === move.anchorCardId) : -1
+    const cards = sourcePile ? (buriedAt >= 0 ? [sourcePile[buriedAt]] : sourcePile.slice(sourcePile.length - move.count)) : []
+    return { cards, offsetStep: move.count > 1 ? faceUpFanOffset(cardWidth) : 0, cardWidth }
   }
 
   async function revertTopUndo() {
@@ -687,25 +705,26 @@ function CanfieldScreenInner() {
       return
     }
 
-    const sourcePile = resolvePile(move.to, current)
-    // A foundation move's own card can sit BURIED under silent auto-plays that landed on the same
-    // pile after it, in an entry from a save written before auto-plays became their own undo steps
-    // (see applyMove) - so it is found by id, not assumed to be on top, or the ghost would carry the
-    // wrong card.
-    const buriedAt = move.to.zone === 'foundation' && sourcePile ? sourcePile.findIndex((c) => c.id === move.anchorCardId) : -1
-    const movingCards = sourcePile ? (buriedAt >= 0 ? [sourcePile[buriedAt]] : sourcePile.slice(sourcePile.length - move.count)) : []
-    const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
+    const ghostContent = undoGhost(move, current)
+    const movingCards = ghostContent.cards
+    // Cards the undo before this one is still flying in (a held Undo, where that undo's move put them
+    // on this pile): they turn back in mid-air, the rest of that flight landing as before, instead of
+    // the undo waiting for them to land and then sending them off again. Taken here, before any await,
+    // in the same task the gate saw them (undoGate).
+    const peeled = move.to.zone !== 'waste' && movingCards.length > 0 ? ghost.peel(ghostContent) : null
     // A buried card, or any foundation card once the win celebration has hidden the real ones, is not
     // in CardRegistry (only a visible top card is) - the pile's own always-present slot container is
     // where it sits, so it flies from there instead of simply reappearing.
-    const origin = movingCards.length > 0 ? ((await ghost.cardRegistry.measure(move.anchorCardId)) ?? (move.to.zone === 'foundation' ? await measureView(foundationSlotRefs.current[move.to.index]) : null)) : null
+    const origin = peeled || movingCards.length === 0 ? null : ((await ghost.cardRegistry.measure(move.anchorCardId)) ?? (move.to.zone === 'foundation' ? await measureView(foundationSlotRefs.current[move.to.index]) : null))
 
     setUndoStack((stack) => stack.slice(0, -1))
 
-    if (origin) {
+    const flight = peeled ?? (origin ? ghost.show(ghostContent, { x: origin.x, y: origin.y }) : null)
+    if (flight) {
       playCardSound()
       hapticCard()
-      const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
+      // The flight they were taken out of now reveals only what it still carries when it lands.
+      if (peeled) shrinkLanding(move.to, movingCards.length)
       const flyingId = beginFlying(move.from, move.count)
       commitState(prevState)
       pendingFlightRef.current.push({ cardId: move.anchorCardId, to: move.from, viaStock: move.from.zone === 'stock', gen, flyingId, flight })

@@ -1,7 +1,7 @@
 import { Pressable } from '@rific/feedback-press'
 import { CardFace, rankLabel, type TableColors, useCardSize } from '@tastic/cards'
 import React from 'react'
-import { Image, ImageSourcePropType, ImageStyle, StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
+import { Image, ImageSourcePropType, ImageStyle, Platform, StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import { useTheme } from 'react-native-paper'
 import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue } from 'react-native-reanimated'
 
@@ -20,6 +20,11 @@ const SHEEN_SOURCE = require('../../assets/card-sheen.png')
 /** How long a card turned face-up in place may keep showing its back while its new face loads (see `backUntilPainted`) -
  * normally a frame or two; this only bounds a load that never reports. */
 const FLIP_BACK_MAX_MS = 250
+/** Every card is its own compositing layer on the web. Safari (WebKit) does not repaint the part of a card's shadow that
+ * spills outside the card when the card is removed, so each card that left a column kept two faint lines of shadow on
+ * either side of the spot it left, down to its old bottom, until something else repainted there. On its own layer the
+ * card's pixels, shadow included, go with it. Chrome never showed it; native has no such thing. */
+const WEB_OWN_LAYER = Platform.select<ViewStyle>({ web: { willChange: 'transform' } as ViewStyle })
 const sheenStyles = StyleSheet.create({ sheen: { bottom: 0, left: 0, pointerEvents: 'none', position: 'absolute', right: 0, top: 0 }, subtle: { opacity: 0.35 } })
 
 interface PlayingCardProps {
@@ -416,7 +421,8 @@ function makeStyles(colors: TableColors, invertDarkModeColors?: boolean, radius:
       shadowColor: '#000',
       shadowOffset: { width: 0, height: 2 },
       shadowOpacity: 0.3,
-      shadowRadius: 3
+      shadowRadius: 3,
+      ...WEB_OWN_LAYER
     }
   })
 }

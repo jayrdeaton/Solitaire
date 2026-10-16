@@ -1,5 +1,5 @@
 import { FeedbackPressProvider } from '@rific/feedback-press'
-import { act, fireEvent, render, screen } from '@testing-library/react-native'
+import { act, fireEvent, render, screen, within } from '@testing-library/react-native'
 import { useEffect } from 'react'
 import { ScrollView, StyleSheet, View } from 'react-native'
 import * as RNPaper from 'react-native-paper'
@@ -17,6 +17,18 @@ jest.mock('@/components/SettingsDialog', () => ({ SettingsDialog: () => null }))
 jest.mock('@/components/RulesDialog', () => ({ RulesDialog: () => null }))
 jest.mock('@/hooks/useSettings', () => ({ useSettings: () => ({ settings: { ...jest.requireActual('@/redux/settingsSlice').DEFAULT_SETTINGS }, setSettings: jest.fn() }) }))
 jest.mock('@/components/useFontsPreload', () => ({ CARD_FONT_FAMILY: 'TestSerif' }))
+// The window GameChrome lays out for: portrait unless a test turns it sideways (the wide layout).
+let mockWide = false
+jest.mock('@/components/gameLayout', () => {
+  const actual = jest.requireActual('@/components/gameLayout')
+  return {
+    ...actual,
+    useGameLayout: () => {
+      const live = actual.useGameLayout()
+      return mockWide ? actual.computeGameLayout(874, 402, { top: 0, right: 0, bottom: 0, left: 0 }) : live
+    }
+  }
+})
 jest.mock('@/stores/lastActiveGame', () => ({ useLastActiveGame: () => ({ clearLastActiveGame: jest.fn(), setLastActiveGame: jest.fn(), consumeResumeGame: () => null }) }))
 
 const VIEWPORT = 800
@@ -286,5 +298,34 @@ describe('GameChrome', () => {
     await render(<FeedbackPressProvider paper={RNPaper}>{chrome()}</FeedbackPressProvider>)
     const labels = screen.getAllByLabelText(/^(New Game|Undo|Hint|Rules)$/).map((b) => b.props.accessibilityLabel as string)
     expect(labels).toEqual(['New Game', 'Undo', 'Hint'])
+  })
+
+  // Jay, 2026-10-16: his kids had to ask where to start a new game (the icon alone is a fan of cards).
+  it('every control shows its name under its icon, in both layouts', async () => {
+    const onNewGame = jest.fn()
+    const harness = () => (
+      <PaperProvider>
+        <GameChrome title='Yukon' onNewGame={onNewGame} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={jest.fn()} par={{ moves: 100, seconds: 200, score: 300 }} clockRunning={false} movesCount={0} rules={[]}>
+          <Content />
+        </GameChrome>
+      </PaperProvider>
+    )
+    const r = await render(harness())
+    for (const label of ['New Game', 'Undo', 'Hint']) expect(within(screen.getByLabelText(label)).getByText(label)).toBeTruthy()
+    expect(screen.getByLabelText('Undo').props.accessibilityState).toEqual({ disabled: true })
+    await fireEvent.press(screen.getByText('New Game'))
+    expect(onNewGame).toHaveBeenCalledTimes(1)
+
+    // Each portrait button's touch area reaches 20pt above its pill, over the gap and the MOVES/SCORE/TIME line
+    // (66 + 14 - 60): a Hint tap a little high used to tuck the controls away (Jay, 2026-10-16).
+    for (const label of ['New Game', 'Undo', 'Hint']) expect(StyleSheet.flatten(screen.getByLabelText(label).props.style).paddingTop).toBe(20)
+
+    mockWide = true
+    try {
+      await r.rerender(harness())
+      for (const label of ['Undo', 'New Game', 'Hint', 'Rules']) expect(within(screen.getByLabelText(label)).getByText(label)).toBeTruthy()
+    } finally {
+      mockWide = false
+    }
   })
 })

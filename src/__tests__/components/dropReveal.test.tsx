@@ -55,15 +55,20 @@ jest.mock('react-native-reanimated', () => {
       }
     }
   }
-  // The card's own host view, tagged so a test finds it: a ghost (its children are keyed card wrappers) or a board card (its child is a PlayingCard).
+  // The card's own host view, tagged so a test finds it: a ghost (its children are keyed card wrappers) or a board card (its child is a
+  // PlayingCard). A ghost's own card wrappers (animated too: each can be hidden once peeled off) are left untagged.
+  const InGhost = require('react').createContext(false)
   function AnimatedView({ style, children }: { style?: unknown; children?: ReactNode }) {
+    const inGhost = require('react').useContext(InGhost)
     const first = (require('react').Children.toArray(children) as { key?: string; props?: { card?: { id: string } } }[])[0]
-    const testID = first?.props?.card ? `board:${first.props.card.id}` : first?.key != null ? `ghost:${String(first.key).replace(/^\.\$/, '')}` : undefined
-    return (
+    const isGhost = !first?.props?.card && first?.key != null
+    const testID = inGhost ? undefined : first?.props?.card ? `board:${first.props.card.id}` : isGhost ? `ghost:${String(first.key).replace(/^\.\$/, '')}` : undefined
+    const view = (
       <MockView testID={testID} style={style}>
         {children}
       </MockView>
     )
+    return isGhost ? <InGhost.Provider value>{view}</InGhost.Provider> : view
   }
   return {
     __esModule: true,

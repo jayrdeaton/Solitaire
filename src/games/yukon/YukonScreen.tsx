@@ -127,7 +127,7 @@ function YukonScreenInner() {
   // PATTERN_OVERLAP_GATE, same as Klondike's own extraction of this bookkeeping). Destructured
   // below so every existing reference to `state`, `commitState`, `flying`, `startFlights`,
   // `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<YukonState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkLanding, isLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<YukonState>()
   // Every Yukon move (tableau->tableau, tableau->foundation) has a real origin/destination to fly -
   // no stock-draw-shaped move that would need a null MoveInfo, unlike Klondike's undo stack. Mirrors
   // FreeCell's own non-nullable UndoEntry<FreeCellState, MoveInfo>.
@@ -708,13 +708,28 @@ function YukonScreenInner() {
   }
 
   // A plain move's undo takes its cards back off the pile it went to, so it overlaps the undos
-  // before it once nothing is still landing there. A legacy entry's cascade flies back through the
-  // deal layer from several foundations at once - one at a time.
+  // before it once nothing is still landing there - or at once, when its cards are the top of a
+  // flight still landing there: they turn back in mid-air (see revertTopUndo's peel). A legacy
+  // entry's cascade flies back through the deal layer from several foundations at once - one at a time.
   function undoGate(): UndoGate {
     const entry = undoStackRef.current[undoStackRef.current.length - 1]
-    if (!entry || !stateRef.current) return null
+    const current = stateRef.current
+    if (!entry || !current) return null
     if (entry.move.cascaded.length > 0) return 'exclusive'
-    return { takesFrom: [entry.move.primary.to] }
+    const { primary } = entry.move
+    if (ghost.canPeel(undoGhost(primary, current))) return { takesFrom: [] }
+    return { takesFrom: [primary.to] }
+  }
+
+  // The ghost an undo of `primary` flies back: the cards it takes off `primary.to` as `current` has them.
+  // A foundation move's own card can sit BURIED under a legacy entry's cascaded auto-plays that landed
+  // on the same pile after it (they come back via their own flights) - so it is found by id, not
+  // assumed to be on top.
+  function undoGhost(primary: MoveInfo, current: YukonState) {
+    const sourcePile = resolvePile(primary.to, current)
+    const buriedAt = primary.to.zone === 'foundation' && sourcePile ? sourcePile.findIndex((c) => c.id === primary.anchorCardId) : -1
+    const cards = sourcePile ? (buriedAt >= 0 ? [sourcePile[buriedAt]] : sourcePile.slice(sourcePile.length - primary.count)) : []
+    return { cards, offsetStep: primary.count > 1 ? faceUpFanOffset(cardWidth) : 0, cardWidth }
   }
 
   async function revertTopUndo() {
@@ -756,17 +771,17 @@ function YukonScreenInner() {
     const cascadeGroups = groupCascadedByFoundation(current, cascaded)
     startFlights(cascadeGroups.length > 0 ? 2 : 1)
 
-    const sourcePile = resolvePile(primary.to, current)
-    // A foundation move's own card can sit BURIED under a legacy entry's cascaded auto-plays that
-    // landed on the same pile after it (they come back via their own flights below) - so it is found by id, not
-    // assumed to be on top.
-    const buriedAt = primary.to.zone === 'foundation' && sourcePile ? sourcePile.findIndex((c) => c.id === primary.anchorCardId) : -1
-    const movingCards = sourcePile ? (buriedAt >= 0 ? [sourcePile[buriedAt]] : sourcePile.slice(sourcePile.length - primary.count)) : []
-    const offsetStep = primary.count > 1 ? faceUpFanOffset(cardWidth) : 0
+    const ghostContent = undoGhost(primary, current)
+    const movingCards = ghostContent.cards
+    // Cards the undo before this one is still flying in (a held Undo, where that undo's move put them
+    // on this pile): they turn back in mid-air, the rest of that flight landing as before, instead of
+    // the undo waiting for them to land and then sending them off again. Taken here, before any await,
+    // in the same task the gate saw them (undoGate).
+    const peeled = movingCards.length > 0 ? ghost.peel(ghostContent) : null
     // A buried card, or any foundation card once the win celebration has hidden the real ones, is not
     // in CardRegistry (only a visible top card is) - the pile's own always-present slot container is
     // where it sits, so it flies from there instead of simply reappearing.
-    const origin = movingCards.length > 0 ? ((await ghost.cardRegistry.measure(primary.anchorCardId)) ?? (primary.to.zone === 'foundation' ? await measureView(foundationSlotRefs.current[primary.to.index]) : null)) : null
+    const origin = peeled || movingCards.length === 0 ? null : ((await ghost.cardRegistry.measure(primary.anchorCardId)) ?? (primary.to.zone === 'foundation' ? await measureView(foundationSlotRefs.current[primary.to.index]) : null))
 
     setUndoStack((stack) => stack.slice(0, -1))
 
@@ -787,10 +802,12 @@ function YukonScreenInner() {
       })
     }
 
-    if (origin) {
+    const flight = peeled ?? (origin ? ghost.show(ghostContent, { x: origin.x, y: origin.y }) : null)
+    if (flight) {
       playCardSound()
       hapticCard()
-      const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
+      // The flight they were taken out of now reveals only what it still carries when it lands.
+      if (peeled) shrinkLanding(primary.to, movingCards.length)
       const flyingId = beginFlying(primary.from, primary.count)
       commitState(prevState)
       pendingFlightRef.current.push({ cardId: primary.anchorCardId, to: primary.from, gen, flyingId, flight })

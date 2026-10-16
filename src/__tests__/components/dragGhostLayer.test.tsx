@@ -961,6 +961,15 @@ function ghostFan(cards: Card[]): number[] {
   })
 }
 
+/** The animated style of every ghost card wrapper of card `id` (evaluated now), in the order the flights started. */
+function slotStyles(id: string) {
+  return screen.getAllByTestId(`fan:${id}`).map((node) => {
+    const styles = [node.props.style].flat(Infinity) as { __worklet?: () => { opacity?: number; transform?: [{ translateY: number }] } }[]
+    return styles.find((s) => s?.__worklet)!.__worklet!()
+  })
+}
+const slotStyle = (id: string) => slotStyles(id)[0]
+
 // Columns compress their fans to fit the screen (columnTops), so a run's ghost must not fan at the natural step: it stretched the moment a
 // run lifted off a compressed column and snapped shorter as it landed on one. It takes the spacing the run has in the column it leaves and
 // eases to the spacing of the column it lands on, in step with its flight (fanTops.ts).
@@ -1010,7 +1019,8 @@ describe('DragGhostProvider - a run is fanned like the columns it leaves and lan
 
     layOut(source, 300, 16)
     await inAct(() => ghost.show({ cards: RUN, offsetStep: 0, cardWidth: 64 }, { x: 10, y: 300 }))
-    expect(screen.queryAllByTestId(/^fan:/)).toEqual([]) // no fan to animate: every card sits on the first
+    // No fan to animate: every card sits on the first (its wrapper only ever hides a card peeled off the stack, never moves it).
+    RUN.forEach((c) => expect(slotStyle(c.id).transform).toBeUndefined())
   })
 
   it("a run dragged out of a compressed PileView is drawn at that column's own spacing", async () => {
@@ -1024,5 +1034,127 @@ describe('DragGhostProvider - a run is fanned like the columns it leaves and lan
 
     await dragCard(9, { x: 10, y: 400 }, { dx: 30, dy: 60 }, false) // the last three cards
     ghostFan(cards.slice(9)).forEach((y, i) => expect(y).toBeCloseTo(i * step, 6))
+  })
+})
+
+// ------------------------------------------------------------------------------------------------ peeling cards off a flight
+
+// A held Undo in Yukon stalled whenever the next undo needed cards the one before it was still flying back: it waited for them to land,
+// then sent them off again (Jay's recording, 2026-10-16: ~0.5s gaps in a ~0.1s stream). peel() takes the top cards of a flight still in
+// the air and gives them a flight of their own, turning back from exactly where they are drawn, while the rest of the run lands as before.
+describe('DragGhostProvider - peeling cards off a flight still in the air', () => {
+  const RUN = [card('peel-1'), card('peel-2'), card('peel-3')]
+  const run = { cards: RUN, offsetStep: 20, cardWidth: 64 }
+  const single = (c: Card) => ({ cards: [c], offsetStep: 0, cardWidth: 64 })
+  const paintAll = () => mockPaint.waiting.splice(0).forEach((painted) => painted())
+
+  it('only the top cards of a flight that has shown its ghost and not landed yet can be peeled', async () => {
+    await mountProvider()
+    mockPaint.defer = true
+    const flight = await inAct(() => ghost.show(run, { x: 10, y: 20 }))
+    expect(ghost.canPeel(single(RUN[2]))).toBe(false) // nothing on screen to turn back yet
+    await inAct(() => paintAll())
+
+    expect(ghost.canPeel(single(RUN[2]))).toBe(true)
+    expect(ghost.canPeel({ cards: RUN.slice(1), offsetStep: 20, cardWidth: 64 })).toBe(true)
+    expect(ghost.canPeel(run)).toBe(true)
+    expect(ghost.canPeel(single(RUN[1]))).toBe(false) // not the top of the run
+    expect(ghost.canPeel({ cards: [RUN[2], RUN[1]], offsetStep: 20, cardWidth: 64 })).toBe(false)
+    expect(ghost.canPeel(single({ ...RUN[2], faceUp: false }))).toBe(false)
+    expect(ghost.canPeel({ ...single(RUN[2]), cardWidth: 50 })).toBe(false)
+
+    await inAct(() => flight.flyTo(10, 320, () => {}))
+    await advance(springSettleMs(FLIGHT_SPRING))
+    expect(ghost.canPeel(single(RUN[2]))).toBe(false) // landed: the card is on the board now
+  })
+
+  it('a drag can not be peeled', async () => {
+    await mountProvider()
+    await inAct(() => ghost.showLive(single(RUN[2]), persistentValues()))
+    expect(ghost.canPeel(single(RUN[2]))).toBe(false)
+    expect(ghost.peel(single(RUN[2]))).toBeNull()
+  })
+
+  it('a peeled card rides along until its own flight starts, then turns back from exactly where it is drawn while the rest of the run lands as before', async () => {
+    await mountProvider()
+    const flight = await inAct(() => ghost.show(run, { x: 10, y: 20 }))
+    const landed = jest.fn()
+    await inAct(() => flight.flyTo(10, 320, landed))
+    await advance(100)
+
+    const peeled = (await inAct(() => ghost.peel(single(RUN[2]))))!
+    expect(peeled).not.toBeNull()
+    expect(ghost.canPeel(single(RUN[2]))).toBe(false) // taken
+    expect(ghost.canPeel(single(RUN[1]))).toBe(true) // and the card under it is the run's top now
+    // Drawn over the third card of the run (two fan steps down from its first), which the run still draws too.
+    const run0 = ghostAt(RUN[0].id)
+    expect(ghostAt(RUN[2].id)).toEqual({ x: run0.x, y: run0.y + 40 })
+    expect(slotStyles(RUN[2].id).map((style) => style.opacity)).toEqual([1, 1])
+    await advance(30)
+    const riding = ghostAt(RUN[2].id)
+    expect(riding).toEqual({ x: ghostAt(RUN[0].id).x, y: ghostAt(RUN[0].id).y + 40 }) // still with the run, which is still moving
+    expect(riding.y).toBeGreaterThan(run0.y + 40)
+
+    const arrived = jest.fn()
+    await inAct(() => peeled.flyTo(200, 60, arrived))
+    expect(ghostAt(RUN[2].id)).toEqual(riding) // no jump as it takes over
+    expect(slotStyles(RUN[2].id).map((style) => style.opacity)).toEqual([0, 1]) // the run no longer draws it; its own ghost does
+    expect(slotStyle(RUN[1].id).opacity).toBe(1)
+
+    await advance(springSettleMs(FLIGHT_SPRING) - 130)
+    expect(landed).toHaveBeenCalledTimes(1) // the run lands on its own clock
+    expect(arrived).not.toHaveBeenCalled()
+    await advance(128)
+    const end = ghostAt(RUN[2].id)
+    expect(Math.abs(end.x - 200)).toBeLessThan(1)
+    expect(Math.abs(end.y - 60)).toBeLessThan(1) // its lift down the old fan sprang back to 0 on the way
+    await advance(2)
+    expect(arrived).toHaveBeenCalledTimes(1)
+  })
+
+  it('a card peeled off a peeled flight follows that flight where it is now', async () => {
+    await mountProvider()
+    const flight = await inAct(() => ghost.show(run, { x: 10, y: 20 }))
+    await inAct(() => flight.flyTo(10, 320, () => {}))
+    await advance(100)
+    const tail = (await inAct(() => ghost.peel({ cards: RUN.slice(1), offsetStep: 20, cardWidth: 64 })))!
+    expect(ghost.canPeel(single(RUN[2]))).toBe(false) // its flight has not taken over yet: nothing of its own to follow
+    await inAct(() => tail.flyTo(300, 60, () => {}))
+    await advance(50)
+    expect(ghost.canPeel(single(RUN[2]))).toBe(true)
+
+    const last = (await inAct(() => ghost.peel(single(RUN[2]))))!
+    const head = ghostsAt(RUN[1].id)[0]
+    expect(ghostAt(RUN[2].id)).toEqual({ x: head.x, y: head.y + 20 }) // one step down the peeled run, wherever its lift has it
+    await inAct(() => last.flyTo(10, 600, () => {}))
+    expect(slotStyles(RUN[2].id).map((style) => style.opacity)).toEqual([0, 0, 1])
+  })
+
+  it('a peeled flight hidden before it takes over: the run stops drawing its cards all the same', async () => {
+    await mountProvider()
+    const flight = await inAct(() => ghost.show(run, { x: 10, y: 20 }))
+    await inAct(() => flight.flyTo(10, 320, () => {}))
+    await advance(100)
+    const peeled = (await inAct(() => ghost.peel(single(RUN[2]))))!
+    await inAct(() => peeled.hide())
+    expect(slotStyle(RUN[2].id).opacity).toBe(0)
+    expect(screen.queryAllByTestId(`ghost:${RUN[2].id}`)).toEqual([])
+  })
+
+  it('a ghost with cards peeled off is never adopted by a later flight of the whole run', async () => {
+    await mountProvider()
+    const flight = await inAct(() => ghost.show(run, { x: 10, y: 20 }))
+    await inAct(() => flight.flyTo(10, 320, () => {}))
+    await advance(100)
+    const peeled = (await inAct(() => ghost.peel(single(RUN[2]))))!
+    await inAct(() => peeled.flyTo(200, 60, () => {}))
+    const loaded = trackFaceLoad(RUN[0].id) // the run's landing reveals a card whose face is still loading: its landed ghost stays
+    await advance(springSettleMs(FLIGHT_SPRING) - 100)
+    expect(ghostsAt(RUN[0].id)).toHaveLength(1)
+    await inAct(() => ghost.show(run, { x: 10, y: 320 }))
+    // A fresh ghost beside the landed one (and the peeled card's own), not the landed one carrying on with a card missing.
+    expect(ghostsAt(RUN[0].id)).toHaveLength(2)
+    expect(slotStyles(RUN[2].id)).toHaveLength(3)
+    loaded()
   })
 })

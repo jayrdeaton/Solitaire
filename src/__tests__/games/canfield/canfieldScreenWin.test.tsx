@@ -8,6 +8,7 @@ import CanfieldScreen from '@/games/canfield/CanfieldScreen'
 import { CanfieldState } from '@/games/canfield/rules'
 
 import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
+import { peelableFlights } from '../../../testUtils/peelableFlights'
 
 // ---------------------------------------------------------------------------------------------------------------------
 // A screen-level test for Canfield's win and its no-teleport flights: the REAL CanfieldScreen, real rules, real
@@ -94,13 +95,20 @@ function mockMakeFlight() {
     }
   }
 }
+/** An undo turning cards back mid-air (ghost.peel): the cards each flight still carries, and every peel. */
+const mockPeel = peelableFlights(() => mockMakeFlight())
 const mockGhost = {
   cardRegistry: { register: () => {}, unregister: () => {}, measure: async (id: string) => (mockRegistered.has(id) && !mockUnmeasurable.has(id) ? { x: 10, y: 10 } : null) },
   show: (spec: { cards: { id: string }[] }) => {
     mockLog.shown.push(spec.cards.map((c) => c.id).join('+'))
     mockLog.shownAt.push(Date.now())
-    return mockMakeFlight()
-  }
+    return mockPeel.track(
+      spec.cards.map((c) => c.id),
+      mockMakeFlight()
+    )
+  },
+  canPeel: mockPeel.canPeel,
+  peel: mockPeel.peel
 }
 const mockDeal = {
   start: (entries: { cardId: string }[], _w: number, onLanded: (id: string) => void, onDone?: () => void) => {
@@ -380,6 +388,7 @@ async function press(testID: string) {
 
 beforeEach(() => {
   jest.useFakeTimers()
+  mockPeel.reset()
   mockPileInstance = 0
   mockRegistered.clear()
   mockUnmeasurable.clear()
@@ -1126,5 +1135,41 @@ describe("Canfield screen - the player's draw is worked out from the board as it
     expect(screen.queryByTestId(/^waste-/)).toBeNull() // the whole waste went back to the stock
     expect(screen.queryByTestId('stock-pile')).not.toBeNull()
     expect(moves()).toBe(2)
+  })
+})
+
+// A held Undo used to stall whenever the next undo needed cards the one before it was still flying back (Jay's Yukon recording,
+// 2026-10-16). Cards flying in to a column or a foundation turn back in mid-air instead (ghost.peel).
+describe('Canfield screen - an undo that needs cards still flying back', () => {
+  const col = (index: number): PileRef => ({ zone: 'tableau', index })
+  const columnIds = (index: number) =>
+    within(screen.getByTestId(`pile-${index}`))
+      .queryAllByTestId(/^card-/)
+      .map((n) => (n.props.testID as string).slice('card-'.length))
+  async function undo() {
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('undo'))
+    })
+  }
+
+  it('turns them back in mid-air at once, instead of waiting for them to land', async () => {
+    // The 5 of spades went onto the 6 of hearts, then the 6 and 5 together onto the 7 of clubs.
+    const s0 = board({ tableau: [[card('spades', 5)], [card('clubs', 7)], [card('hearts', 6)]], foundation: [[], [], [], []] })
+    const s1 = board({ tableau: [[], [card('clubs', 7)], [card('hearts', 6), card('spades', 5)]], foundation: [[], [], [], []] })
+    const s2 = board({ tableau: [[], [card('clubs', 7), card('hearts', 6), card('spades', 5)]], foundation: [[], [], [], []] })
+    const entry = (state: CanfieldState, from: number, to: number, count: number, anchorCardId: string) => ({ state, move: { from: col(from), to: col(to), count, anchorCardId } })
+    await mount(s2, [entry(s0, 0, 2, 1, id('spades', 5)), entry(s1, 2, 1, 2, id('hearts', 6))], 3)
+
+    await undo()
+    await flush(10)
+    expect(mockLog.shown).toEqual([`${id('hearts', 6)}+${id('spades', 5)}`])
+    await undo()
+    await flush(10)
+    expect(mockPeel.peeled).toEqual([id('spades', 5)]) // the 5 turned back out of the pair's flight
+    expect(mockPeel.peeledAt[0] - mockLog.shownAt[0]).toBeLessThan(FLIGHT_MS) // while the pair was still in the air
+    expect(mockLog.shown).toHaveLength(1)
+
+    await flushUntil(() => mockLog.inAir === 0)
+    expect([0, 1, 2].map(columnIds)).toEqual([[id('spades', 5)], [id('clubs', 7)], [id('hearts', 6)]])
   })
 })
