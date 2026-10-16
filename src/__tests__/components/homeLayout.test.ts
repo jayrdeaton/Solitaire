@@ -128,7 +128,7 @@ describe('computeHomeLayout - a phone held sideways (874x402)', () => {
   })
 
   it('shrinks the hero to the short-window cap of 0.8', () => {
-    // height for the hero = 402 - 0 - 0 - 56 - 16 - 142 = 188 (1.66 heroes), width allows (268 - 16) / 251 = 1.004
+    // height for the hero = 402 - 0 - 0 - 56 - 16 - 126 = 204 (1.66 heroes), width allows (268 - 16) / 251 = 1.004
     expect(computeHomeLayout(874, 402, { top: 0, right: 34, bottom: 0, left: 62 }).heroScale).toBe(0.8)
     expect(computeHomeLayout(874, 402, { top: 0, right: 62, bottom: 0, left: 34 }).heroScale).toBe(0.8)
   })
@@ -171,7 +171,7 @@ describe('computeHomeLayout - exact pane math across devices', () => {
     {
       // usable 812 - 88 = 724, inner 652, content 652; left round(247.76) -> floor 260; right 652 - 16 - 260 = 376;
       // columns floor(388 / 152 = 2.55) = 2; tile floor(364 / 2) = 182; preview 162.
-      // hero: 0.8 cap (height for hero = 375 - 21 - 56 - 16 - 142 = 140 -> 1.14, width 0.972)
+      // hero: 0.8 cap (height for hero = 375 - 21 - 56 - 16 - 126 = 156 -> 1.27, width 0.972)
       name: 'an iPhone X-class phone, 812x375, insets 44/44/21',
       width: 812,
       height: 375,
@@ -188,7 +188,7 @@ describe('computeHomeLayout - exact pane math across devices', () => {
     {
       // usable 1194, inner 1122, content min(1122, 1100) = 1100, slack 11; left round(418) -> ceiling 340; right 1100 - 16 - 340 = 744;
       // columns floor(756 / 152 = 4.97) -> capped 3; tile floor((744 - 24) / 3) = 240; preview 220.
-      // hero: tall -> may reach 1 (height for hero 834 - 24 - 20 - 56 - 16 - 142 = 576 -> 4.7, width 324/251 = 1.29)
+      // hero: tall -> may reach 1 (height for hero 834 - 24 - 20 - 56 - 16 - 126 = 592 -> 4.81, width 324/251 = 1.29)
       name: 'an iPad, 1194x834',
       width: 1194,
       height: 834,
@@ -479,10 +479,10 @@ describe('computeHomeLayout - heroScale', () => {
   })
 
   it('is limited by the available height when that is the tightest bound', () => {
-    // 874x300: 300 - 56 (trophy band) - 16 - 142 = 86 -> 86 / 123 = 0.699 (< the 0.8 cap and the width bound of 1.004)
-    expect(computeHomeLayout(874, 300, { top: 0, right: 34, bottom: 0, left: 62 }).heroScale).toBeCloseTo(86 / HERO_FAN_HEIGHT, 10)
-    // the top/bottom insets eat into that height too: 86 - 5 - 5 = 76 -> 76 / 123 = 0.618
-    expect(computeHomeLayout(874, 300, { top: 5, right: 34, bottom: 5, left: 62 }).heroScale).toBeCloseTo(76 / HERO_FAN_HEIGHT, 10)
+    // 874x280: 280 - 56 (trophy band) - 16 - 126 = 82 -> 82 / 123 = 0.667 (< the 0.8 cap and the width bound of 1.004)
+    expect(computeHomeLayout(874, 280, { top: 0, right: 34, bottom: 0, left: 62 }).heroScale).toBeCloseTo(82 / HERO_FAN_HEIGHT, 10)
+    // the top/bottom insets eat into that height too: 82 - 5 - 5 = 72 -> 72 / 123 = 0.585
+    expect(computeHomeLayout(874, 280, { top: 5, right: 34, bottom: 5, left: 62 }).heroScale).toBeCloseTo(72 / HERO_FAN_HEIGHT, 10)
   })
 
   it('is limited by the left pane width when that is the tightest bound', () => {

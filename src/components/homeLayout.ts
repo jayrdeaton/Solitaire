@@ -58,9 +58,9 @@ export const HOME_WIDE_MAX_FONT_SCALE = 1.3
 // so the game tiles (the point of the screen) get the height.
 const HOME_HERO_SHORT_WINDOW_MAX_SCALE = 0.8
 const HOME_SHORT_WINDOW_HEIGHT = 500
-// Everything else the left pane stacks under the trophy band besides the hero: the profile chip (60), a
-// gap, the title (33) and the subtitle (2 lines, 37).
-const HOME_LEFT_PANE_FIXED_HEIGHT = 142
+// Everything else the left pane stacks under the trophy band besides the hero: the player button (44, a
+// 32pt chip in a pill padded 6pt), a gap, the title (33) and the subtitle (2 lines, 37).
+const HOME_LEFT_PANE_FIXED_HEIGHT = 126
 const HOME_LEFT_PANE_BOTTOM_PADDING = 16
 
 export interface HomeLayout {

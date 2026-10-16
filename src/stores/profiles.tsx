@@ -4,7 +4,7 @@ import { useDispatch, useSelector } from 'react-redux'
 
 import { activeProfileActions } from '@/redux/activeProfileSlice'
 import { type AppDispatch, type RootState } from '@/redux/store'
-import { tableColorActions } from '@/redux/tableColorSlice'
+import { tableColorActions, type TableColorState } from '@/redux/tableColorSlice'
 import { SplashGate } from '@/utils/splashGate'
 
 // Same App Group the whole @tastic fleet (BoxHockey, LightCycles, ...) already declares in
@@ -21,13 +21,13 @@ interface ProfilesContextValue {
   updateProfile: (id: string, patch: Partial<ProfileEditPatch>) => void
   deleteProfile: (id: string) => void
   selectProfile: (profileId: string | null) => void
-  /** Independent, session-scoped table color - null only when no profile is active AND guest has
-   * never picked one (theme.ts's useTableColors() then falls back to DEFAULT_SEED_COLOR, not an
-   * untinted palette - every render is tinted by *some* seed). Resets to the newly-active
-   * selection's own color on every real profile switch; a profile's own override is otherwise
-   * never persisted, matching every other @tastic loadout screen's identical rule. Only guest's
-   * picks are remembered, since guest has no profile record of its own to reset back to. */
+  /** The seed color in effect (the card back, the felt and the Paper theme follow it): the selected
+   * player's pick in Solitaire, else the selected profile's own color. Null only for a guest who has
+   * never picked one (theme.ts's useTableColors() then falls back to DEFAULT_SEED_COLOR - every render
+   * is tinted by *some* seed). See redux/tableColorSlice.ts. */
   tableColorOverride: string | null
+  /** Saves `hex` as the selected player's pick, kept across relaunches. A profile's own color clears
+   * its pick, so it follows that color again. */
   setTableColorOverride: (hex: string) => void
 }
 
@@ -37,16 +37,15 @@ interface Props {
   children: ReactNode
 }
 
-// Resolves what tableColorOverride SHOULD read as for a given active-profile id - the profile's own
-// color if `id` names a profile that's actually in `profiles`, else guest's own remembered color.
-// Shared by the initial reconciliation effect, selectProfile, deleteProfile's own cascade, and the
-// AppState resync's self-heal below - all four "the active selection just changed to `id`" call
-// sites compute the reset target identically, mirroring the pre-Redux version's own single
-// resetTableColorOverrideFor helper.
-function colorFor(id: string | null, profiles: Profile[], guestColor: string | null): string | null {
-  if (!id) return guestColor
-  return (profiles.find((p) => p.id === id) ?? null)?.color ?? guestColor
+// The color in effect for the selection `id`: that profile's pick, else its own color; guest's pick for
+// no selection or an id the roster doesn't have (the self-heal below drops one of those).
+function colorFor(id: string | null, profiles: Profile[], { guestColor, profileColors }: TableColorState): string | null {
+  const profile = id ? profiles.find((p) => p.id === id) : undefined
+  if (!profile) return guestColor
+  return profileColors?.[profile.id] ?? profile.color
 }
+
+const sameColor = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
 
 // Single source of truth for saved player profiles, mounted in _layout.tsx once Redux/PersistGate
 // have (see that file's own comment on why ProfilesProvider now sits inside PersistGate rather than
@@ -60,36 +59,31 @@ function colorFor(id: string | null, profiles: Profile[], guestColor: string | n
 // AirHockey's identically-shaped useProfiles.tsx for that part - but unlike those (all multi-seat,
 // with their own redux/profileSelectionSlice.ts holding a per-seat Record<SeatId, string | null>),
 // Solitaire is single-player: `activeProfileId` is its own tiny redux/activeProfileSlice.ts holding
-// just the one id, and there's a second Solitaire-only concern (`tableColorOverride`/guestColor,
-// redux/tableColorSlice.ts) no other @tastic game has - see that slice's own doc for why it's
-// technically persisted but never actually trusted to survive a reload for a real profile.
+// just the one id, and there's a second Solitaire-only concern (each player's color pick,
+// redux/tableColorSlice.ts) no other @tastic game has.
 export function ProfilesProvider({ children }: Props) {
   const profiles = useSelector((state: RootState) => state.profiles)
   const activeProfileId = useSelector((state: RootState) => state.activeProfile)
-  const { override: tableColorOverride, guestColor } = useSelector((state: RootState) => state.tableColor)
+  const tableColor = useSelector((state: RootState) => state.tableColor)
   const dispatch = useDispatch<AppDispatch>()
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     // PersistGate (an ancestor - see app/_layout.tsx) already blocks this component from mounting
-    // until redux-persist has rehydrated, so `profiles`/`activeProfileId`/`guestColor` here are
+    // until redux-persist has rehydrated, so `profiles`/`activeProfileId` here are
     // already whatever this device last had locally - resolveInitialProfiles reconciles `profiles`
     // against the shared App Group store (if available), seeding the shared store from it on a
     // first sync, or preferring the shared roster once anything has been shared.
     //
-    // Two things beyond @tastic/profile's own helper, specific to Solitaire's extra local state:
+    // One thing beyond @tastic/profile's own helper, specific to Solitaire's extra local state:
     // self-heal activeProfileId if it now points at a profile the resolved roster doesn't have
-    // (the shared roster can differ from what this device persisted), and reset tableColorOverride
-    // to match (the active profile's own color, or guestColor) - the exact color the pre-Redux
-    // version's lazy useState(() => ...) initializer used to compute synchronously before first
-    // paint, now computed here instead, once, before `loaded` flips true and SplashGate below
-    // releases children - so nothing downstream can ever render a stale pre-reconciliation
-    // override (e.g. a redux-persist-restored value left over from a previous session's different
-    // active profile).
+    // (the shared roster can differ from what this device persisted). Done before `loaded` flips
+    // true and SplashGate below releases children, so nothing downstream renders the dropped
+    // selection (or its color, which is worked out from the selection) first.
     //
     // A one-time reconciliation against the mount-time snapshot, deliberately not a resync whenever
-    // `profiles`/`activeProfileId`/`guestColor` change afterward (the empty deps array below is
+    // `profiles`/`activeProfileId` change afterward (the empty deps array below is
     // intentional, not a missed dependency - the dispatches inside would otherwise re-trigger this
     // effect).
     resolveInitialProfiles(SHARED_GROUP_ID, profiles).then((resolved) => {
@@ -97,7 +91,6 @@ export function ProfilesProvider({ children }: Props) {
       dispatch(profilesActions.setAll(resolved))
       const stillActive = activeProfileId && resolved.some((p) => p.id === activeProfileId) ? activeProfileId : null
       if (stillActive !== activeProfileId) dispatch(activeProfileActions.select(stillActive))
-      dispatch(tableColorActions.setOverride(colorFor(stillActive, resolved, guestColor)))
       setLoaded(true)
     })
     return () => {
@@ -123,15 +116,11 @@ export function ProfilesProvider({ children }: Props) {
           dispatch(profilesActions.setAll(remote))
         }
         // Self-heal: clears activeProfileId if the profile it pointed at was deleted elsewhere,
-        // rather than holding a dangling id, and resets tableColorOverride the same way the initial
-        // reconciliation effect above does.
+        // rather than holding a dangling id, the same way the initial reconciliation effect above does.
         const cleared = activeProfileId && !remote.some((p) => p.id === activeProfileId) ? null : activeProfileId
-        if (cleared !== activeProfileId) {
-          dispatch(activeProfileActions.select(cleared))
-          dispatch(tableColorActions.setOverride(colorFor(cleared, remote, guestColor)))
-        }
+        if (cleared !== activeProfileId) dispatch(activeProfileActions.select(cleared))
       },
-      [dispatch, profiles, activeProfileId, guestColor]
+      [dispatch, profiles, activeProfileId]
     )
   })
 
@@ -147,21 +136,21 @@ export function ProfilesProvider({ children }: Props) {
 
   const updateProfile = useCallback(
     (id: string, patch: Partial<ProfileEditPatch>) => {
+      // A new color for the profile itself (the Profiles screen) replaces its pick in Solitaire, or the
+      // change would be hidden here. A save that keeps the color (a rename) leaves the pick alone.
+      const current = profiles.find((p) => p.id === id)
+      if (patch.color !== undefined && current && !sameColor(patch.color, current.color)) dispatch(tableColorActions.setColor({ id, color: null }))
       dispatch(profilesActions.update({ id, patch }))
       syncToShared(profiles.map((p) => (p.id === id ? { ...p, ...patch, updatedAt: Date.now() } : p)))
     },
     [profiles, dispatch, syncToShared]
   )
 
-  // Also resets tableColorOverride back to guest's own remembered color whenever the id being
-  // selected differs from what's currently active - mirrors the pre-Redux version's
-  // resetTableColorOverrideFor, called from both here and deleteProfile's own cascade below.
   const selectProfile = useCallback(
     (profileId: string | null) => {
-      if (profileId !== activeProfileId) dispatch(tableColorActions.setOverride(colorFor(profileId, profiles, guestColor)))
       dispatch(activeProfileActions.select(profileId))
     },
-    [dispatch, activeProfileId, profiles, guestColor]
+    [dispatch]
   )
 
   const deleteProfile = useCallback(
@@ -173,21 +162,16 @@ export function ProfilesProvider({ children }: Props) {
     [profiles, dispatch, syncToShared, activeProfileId, selectProfile]
   )
 
+  const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? null
+  const tableColorOverride = useMemo(() => colorFor(activeProfileId, profiles, tableColor), [activeProfileId, profiles, tableColor])
+
   const setTableColorOverride = useCallback(
     (hex: string) => {
-      // Only guest has nothing of its own to reset back to - a profile's own recolor here is
-      // deliberately ephemeral (see colorFor/the reconciliation effect above), only guest's picks
-      // are worth remembering.
-      if (activeProfileId === null) {
-        dispatch(tableColorActions.setGuestColor(hex))
-      } else {
-        dispatch(tableColorActions.setOverride(hex))
-      }
+      if (!activeProfile) dispatch(tableColorActions.setColor({ id: null, color: hex }))
+      else dispatch(tableColorActions.setColor({ id: activeProfile.id, color: sameColor(hex, activeProfile.color) ? null : hex }))
     },
-    [dispatch, activeProfileId]
+    [dispatch, activeProfile]
   )
-
-  const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? null
 
   // Memoized so a ProfilesProvider re-render whose actual context content is unchanged (e.g. a
   // parent re-rendering for an unrelated reason) doesn't force every useProfiles() consumer - every

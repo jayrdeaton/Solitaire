@@ -3,6 +3,7 @@ import { useDispatch } from 'react-redux'
 
 import { playerSettingsActions } from '@/redux/playerSettingsSlice'
 import type { AppDispatch } from '@/redux/store'
+import { tableColorActions } from '@/redux/tableColorSlice'
 
 import { clearProfileGamesInProgress } from './gameInProgress'
 import { useGameStats } from './gameStats'
@@ -20,11 +21,12 @@ export function usePlayerData(): { resetPlayer: (profileId: string) => void; for
     }
     return {
       resetPlayer,
-      // A deleted profile: all of the above plus their settings, since nothing could ever use any of it again. A
-      // profile deleted in a sibling app leaves its data behind.
+      // A deleted profile: all of the above plus their settings and their color pick, since nothing could ever use
+      // any of it again. A profile deleted in a sibling app leaves its data behind.
       forgetPlayer: (profileId: string) => {
         resetPlayer(profileId)
         dispatch(playerSettingsActions.remove(profileId))
+        dispatch(tableColorActions.forget(profileId))
       }
     }
   }, [removeProfileStats, dispatch])
