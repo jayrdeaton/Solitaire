@@ -34,7 +34,7 @@
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "favicon": "./assets/images/icon-dark.png",
+      "favicon": "./assets/images/splash-dark.png",
       "bundler": "metro",
       "output": "static"
     },
