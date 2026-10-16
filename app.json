@@ -2,7 +2,7 @@
   "expo": {
     "name": "Solitaire",
     "slug": "Solitaire",
-    "scheme": "solitairesuite",
+    "scheme": "solitaire",
     "version": "1.0.0",
     "runtimeVersion": {
       "policy": "fingerprint"
