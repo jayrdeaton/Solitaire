@@ -16,6 +16,9 @@ import { AUTO_PLAY_STAGGER_MS, dropSpringFor, FLIGHT_SPRING, FLIGHT_SPRING_MASS,
 // ---------------------------------------------------------------------------------------------------------------------
 
 jest.mock('react-native-worklets', () => ({
+  // worklets' own mock (so new APIs Reanimated starts calling, like 0.13's createSynchronizable and createShareable under Expo SDK 58, are covered), with
+  // the pieces this test depends on pinned: values pass straight through and UI work runs inline.
+  ...jest.requireActual('react-native-worklets/src/mock'),
   createSerializable: (value: unknown) => value,
   isWorkletFunction: () => false,
   RuntimeKind: { ReactNative: 1, UI: 2, Worker: 3 },
@@ -28,7 +31,13 @@ interface SpringAnimation {
   onStart(animation: SpringAnimation, value: number, now: number, previous: undefined): void
   onFrame(animation: SpringAnimation, now: number): boolean
 }
-const { withSpring } = jest.requireActual('react-native-reanimated/src/animation/spring/spring') as { withSpring: (toValue: number, config: WithSpringConfig) => unknown }
+const { withSpring: reanimatedWithSpring } = jest.requireActual('react-native-reanimated/src/animation/spring/spring') as { withSpring: (toValue: number, config: WithSpringConfig) => unknown }
+// Reanimated 4.7 (Expo SDK 58) returns an animation definition, a worklet that builds the animation when the UI thread runs it; older versions returned the
+// animation itself. Calling the definition gives the same object either way.
+const withSpring = (toValue: number, config: WithSpringConfig): unknown => {
+  const definition = reanimatedWithSpring(toValue, config)
+  return typeof definition === 'function' ? (definition as () => unknown)() : definition
+}
 
 const FRAME_MS = 1000 / 60
 /** The UI thread receives the withSpring assignment up to one frame after the JS timer that covers it starts, and then starts the spring on its NEXT frame - so the

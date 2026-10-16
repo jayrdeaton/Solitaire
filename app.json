@@ -62,8 +62,7 @@
         }
       ],
       "expo-asset",
-      "@tastic/core",
-      "./plugins/withSceneDelegate"
+      "@tastic/core"
     ],
     "extra": {
       "router": {},

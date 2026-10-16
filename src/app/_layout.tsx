@@ -214,7 +214,8 @@ export default function RootLayout() {
   const fontsLoaded = useFontsPreload()
   const { playCardSound, playInvalidSound } = useCardSoundPlayers()
 
-  // The web tab title, rendered before the fonts gate so the static export's HTML has it too. Web only: on
+  // The web tab title, rendered before the fonts gate. Since SDK 58, Head only sets it after hydration; the
+  // static export's HTML no longer carries it (see TODO.md, generateMetadata). Web only: on
   // iOS, expo-router's Head is Handoff/Spotlight metadata that needs the plugin's `origin` set, and without
   // it every launch throws (a dev build) or shows a system alert (a production build).
   const title =
