@@ -2,7 +2,7 @@
   "name": "solitaire-app",
   "version": "1.0.0",
   "private": true,
-  "description": "An ad-free, self-contained solitaire suite (Klondike, Spider, FreeCell, Pyramid) built with Expo.",
+  "description": "Eleven classic solitaire games in one app (Klondike, Spider, FreeCell, Pyramid and more), ad-free, built with Expo.",
   "type": "commonjs",
   "main": "expo-router/entry",
   "scripts": {
