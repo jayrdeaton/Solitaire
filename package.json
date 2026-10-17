@@ -105,5 +105,10 @@
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.65.0",
     "upng-js": "^2.1.0"
+  },
+  "reanimated": {
+    "staticFeatureFlags": {
+      "IOS_SYNCHRONOUSLY_UPDATE_UI_PROPS": true
+    }
   }
 }

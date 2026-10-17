@@ -287,6 +287,42 @@ describe('GameChrome', () => {
     expect(footerPointerEvents()).toBe('box-none')
   })
 
+  // 2026-10-17: the scoreboard brings the controls back as the finger lifts and is off that spot ~35ms later, so the
+  // second tap of a double tap on the lowered scoreboard pressed whichever button had come up under it (Undo undid a move).
+  it('a second tap right after the scoreboard brings the controls back presses none of them', async () => {
+    const onUndo = jest.fn()
+    const onNewGame = jest.fn()
+    const onHint = jest.fn()
+    await render(
+      <PaperProvider>
+        <GameChrome title='Yukon' onNewGame={onNewGame} onUndo={onUndo} undoDisabled={false} onHint={onHint} autoHintKey={null} hintShowing={false} won={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={jest.fn()} par={{ moves: 100, seconds: 200, score: 300 }} clockRunning={false} movesCount={3} rules={[]}>
+          <Content />
+        </GameChrome>
+      </PaperProvider>
+    )
+    await fireEvent.press(screen.getByLabelText('Hide controls'))
+    await fireEvent.press(screen.getByLabelText('Show controls'))
+    for (const label of ['New Game', 'Undo', 'Hint']) await fireEvent.press(screen.getByLabelText(label))
+    await act(async () => jest.advanceTimersByTime(299))
+    for (const label of ['New Game', 'Undo', 'Hint']) await fireEvent.press(screen.getByLabelText(label))
+    expect([onNewGame, onUndo, onHint].map((f) => f.mock.calls.length)).toEqual([0, 0, 0])
+    // Not dimmed meanwhile: they come up looking as live as they are a moment later.
+    const dimmed: unknown[] = []
+    const walk = (node: unknown) => {
+      if (!node || typeof node !== 'object') return
+      if (Array.isArray(node)) return node.forEach(walk)
+      const n = node as { props?: { style?: unknown }; children?: unknown[] }
+      if ((StyleSheet.flatten(n.props?.style as never) as { opacity?: number } | undefined)?.opacity === 0.38) dimmed.push(n)
+      ;(n.children ?? []).forEach(walk)
+    }
+    walk(screen.toJSON())
+    expect(dimmed).toHaveLength(0)
+
+    await act(async () => jest.advanceTimersByTime(1))
+    for (const label of ['New Game', 'Undo', 'Hint']) await fireEvent.press(screen.getByLabelText(label))
+    expect([onNewGame, onUndo, onHint].map((f) => f.mock.calls.length)).toEqual([1, 1, 1])
+  })
+
   it('a tap on the felt leaves the footer alone (a tap that just missed a card used to hide it)', async () => {
     await render(chrome())
     await press({ x: 200, y: 500 }, { x: 200, y: 500 })

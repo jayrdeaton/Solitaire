@@ -10,7 +10,12 @@ achievements, and saved games for the gameplay shots. See store/README.md.
 
 The store is redux-persist on @react-native-async-storage: on iOS, Library/Application Support/<bundle
 id>/RCTAsyncLocalStorage_V1, with values over 1024 characters in a file named by the MD5 of the key.
-Slices left out of persist:root keep their initial state.
+Slices left out of solitaire:root keep their initial state.
+
+Every key is KEY_PREFIX + redux-persist key. The prefix is the keyPrefix in src/redux/store.ts (the root) and
+src/redux/gameInProgressSlice.ts (one key per game): it was redux-persist's default 'persist:' until 2026-10-17,
+when every Tastic game started sharing one web origin. Keep it in step with those two files, or the app
+ignores everything this writes.
 """
 import hashlib
 import json
@@ -20,6 +25,7 @@ import subprocess
 import sys
 
 BUNDLE = 'com.infinitetoken.solitaire'
+KEY_PREFIX = 'solitaire:'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 udid = sys.argv[1]
@@ -50,7 +56,7 @@ if style:
     root['settings'] = json.dumps({'cardStyle': 'decorated', 'cardBackStyle': 'ornate'})
     root['tableColor'] = json.dumps({'guestColor': style, 'profileColors': {}})
 root['_persist'] = persisted
-write('persist:root', json.dumps(root))
+write(KEY_PREFIX + 'root', json.dumps(root))
 
 
 # Saved games are Guest's (each game's slot is keyed by owner), at a human pace of about 3 seconds a move.
@@ -58,7 +64,7 @@ def save_game(game, board, elapsed, config=None):
     saved = {'state': board['state'], 'undoStack': [], 'moves': board['moves'], 'elapsedSeconds': elapsed}
     if config is not None:
         saved['config'] = config
-    write('persist:gameInProgress.' + game, json.dumps({'guest': json.dumps(saved), '_persist': persisted}))
+    write(KEY_PREFIX + 'gameInProgress.' + game, json.dumps({'guest': json.dumps(saved), '_persist': persisted}))
 
 
 save_game('freecell', seed['finish'], round(seed['finish']['decisions'] * 2.6))

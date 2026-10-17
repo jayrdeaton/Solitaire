@@ -3,7 +3,7 @@ import { Pressable, withFeedback } from '@rific/feedback-press'
 import { rotateInsets, useRotation } from '@tastic/core'
 import { ConfirmDialog, CornerActionButtons } from '@tastic/hud'
 import { useRouter } from 'expo-router'
-import { ReactNode, useEffect, useState } from 'react'
+import { ReactNode, useEffect, useRef, useState } from 'react'
 import { Platform, Pressable as RNPressable, PressableProps, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { Icon, Portal } from 'react-native-paper'
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
@@ -150,6 +150,22 @@ const SCOREBOARD_TOP_SLOP = 6
 // the scoreboard, so while it is up it wins that line; tucked away it takes no touches (and the scoreboard is
 // stacked above it), so the whole scoreboard is the toggle again.
 const FOOTER_TOUCH_REACH = MOVES_TIMER_BOTTOM + STAT_LABEL_LINE - (FOOTER_BOTTOM + FOOTER_BUTTON_HEIGHT)
+// How far the footer slides down as it fades out of the way.
+const FOOTER_DROP = 24
+// RN's Pressable decides whether a press that moves is still on its button from where `measure` put the button when the
+// press began, plus 20pt (30 below). `measure` reads the shadow tree, and with Reanimated's
+// IOS_SYNCHRONOUSLY_UPDATE_UI_PROPS on (package.json) a slide's transform reaches the screen without it: the shadow tree
+// only learns where the scoreboard went at the next React commit or Reanimated's settled-value sync, 0.3-1.6s after the
+// slide on the Simulator, and until then puts it where it was. A finger that moved a little then lost the press, so
+// "Show controls" right after hiding them did nothing. Each side the slide can lag on is widened by the slide.
+const SCOREBOARD_PRESS_RETENTION = { top: 20 + SCOREBOARD_DROP, bottom: 30 + SCOREBOARD_DROP }
+const FOOTER_PRESS_RETENTION = { top: 20 + FOOTER_DROP }
+// How long the footer buttons ignore presses after the scoreboard brings them back. The scoreboard shows them as the
+// finger lifts and has slid off the spot under it ~35ms later, so the second tap of a double tap on the lowered
+// scoreboard landed on whichever button had come up there: Undo, New Game or Hint (2026-10-17, on the Simulator). 300ms
+// is Android's double-tap window, and too soon to see a button arrive and mean to press it. A second tap later than
+// that still presses the button, on purpose: it comes up right under the finger.
+const FOOTER_SHOW_GUARD_MS = 300
 
 // Wide (landscape) layout only - the footer and the readout live in the side gutters GameLayout
 // reserves (see gameLayout.ts), never over the board. The 8pt margin keeps the readout off the
@@ -297,6 +313,10 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   const [rulesOpen, setRulesOpen] = useState(false)
   const [confirmNewGameVisible, setConfirmNewGameVisible] = useState(false)
   const [footerVisible, setFooterVisible] = useState(true)
+  // True for FOOTER_SHOW_GUARD_MS after the scoreboard brings the footer back: its buttons take no presses yet.
+  const [footerSettling, setFooterSettling] = useState(false)
+  const footerSettleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => clearTimeout(footerSettleTimerRef.current), [])
   const { clearLastActiveGame } = useLastActiveGame()
   const undoHold = useUndoHold(onUndo, UNDO_HOLD_REPEAT_MS)
   // Each hint a hold shows clicks, as each tap on Hint does (a tap's click is its press's own, at touch-down).
@@ -342,12 +362,15 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   function toggleFooter() {
     const next = !footerVisible
     setFooterVisible(next)
+    clearTimeout(footerSettleTimerRef.current)
+    setFooterSettling(next)
+    if (next) footerSettleTimerRef.current = setTimeout(() => setFooterSettling(false), FOOTER_SHOW_GUARD_MS)
     // react-hooks/immutability has no model of Reanimated SharedValues as a side-channel that
     // deliberately lives outside React's render/memoization system - mutating `.value` here never
     // re-renders anything itself (see the identical, fuller explanation in DragGhostLayer.tsx).
     /* eslint-disable react-hooks/immutability */
     footerOpacity.value = withTiming(next ? 1 : 0, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
-    footerTranslateY.value = withTiming(next ? 0 : 24, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
+    footerTranslateY.value = withTiming(next ? 0 : FOOTER_DROP, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
     movesTimerTranslateY.value = withTiming(next ? 0 : SCOREBOARD_DROP, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
     labelOpacity.value = withTiming(next ? 1 : 0, { duration: 180, easing: next ? Easing.out(Easing.quad) : Easing.in(Easing.quad) })
     /* eslint-enable react-hooks/immutability */
@@ -357,13 +380,14 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   // button wide (see WIDE_FOOTER_BUTTON_WIDTH).
   const footerLayout = isWide ? WIDE_FOOTER_BUTTON_LAYOUT : FOOTER_BUTTON_LAYOUT
 
-  const undoButton = <FooterButton icon='undo' label='Undo' layout={footerLayout} disabled={undoDisabled} onPress={() => void onUndo()} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={HOLD_LONG_PRESS_MS} />
+  const undoButton = <FooterButton icon='undo' label='Undo' layout={footerLayout} disabled={undoDisabled} inert={footerSettling} onPress={() => void onUndo()} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={HOLD_LONG_PRESS_MS} />
 
   const newGameButton = (
     <FooterButton
       icon='cards-playing-outline'
       label='New Game'
       layout={footerLayout}
+      inert={footerSettling}
       onPress={() => {
         // Nothing to lose yet - deal immediately, no warning. Otherwise, dealing a new game
         // abandons the one in progress (counted as a loss - see stores/gameStats.tsx), so confirm
@@ -378,7 +402,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
     />
   )
 
-  const hintButton = <FooterButton icon='lightbulb-on-outline' label='Hint' layout={footerLayout} disabled={hintDisabled} onPress={() => onHint()} onLongPress={hintHold.onLongPress} onPressOut={hintHold.onPressOut} delayLongPress={HOLD_LONG_PRESS_MS} />
+  const hintButton = <FooterButton icon='lightbulb-on-outline' label='Hint' layout={footerLayout} disabled={hintDisabled} inert={footerSettling} onPress={() => onHint()} onLongPress={hintHold.onLongPress} onPressOut={hintHold.onPressOut} delayLongPress={HOLD_LONG_PRESS_MS} />
 
   // The dialogs below (Settings, Rules, the New Game confirm) portal into the Portal.Host that
   // withGameProviders mounts INSIDE the rotated frame - so they lay out against the rotated size and
@@ -510,7 +534,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
             // Above the footer while it is hidden: the lowered readout then sits under the hidden buttons, and on
             // the web a child's own pointer-events beat a parent's pointerEvents='none', so they would take its tap.
             <Animated.View style={[styles.movesTimerWrap, { bottom: MOVES_TIMER_BOTTOM + insets.bottom }, !footerVisible && styles.movesTimerAboveFooter, movesTimerAnimatedStyle]} pointerEvents='box-none'>
-              <Pressable onPress={toggleFooter} style={styles.scoreboardButton} accessibilityRole='button' accessibilityLabel={footerVisible ? 'Hide controls' : 'Show controls'}>
+              <Pressable onPress={toggleFooter} pressRetentionOffset={SCOREBOARD_PRESS_RETENTION} style={styles.scoreboardButton} accessibilityRole='button' accessibilityLabel={footerVisible ? 'Hide controls' : 'Show controls'}>
                 <Animated.View style={[styles.chevron, chevronAnimatedStyle]} accessibilityElementsHidden importantForAccessibility='no-hide-descendants'>
                   <Icon source='chevron-down' size={CHEVRON_SIZE} color={STAT_LABEL_COLOR} />
                 </Animated.View>
@@ -604,6 +628,9 @@ interface FooterButtonProps {
   label: string
   layout: FooterButtonLayout
   disabled?: boolean
+  /** Takes no presses for now, without dimming (see FOOTER_SHOW_GUARD_MS). A screen reader hears it as disabled meanwhile:
+   * RN's Pressable reports its `disabled` prop. */
+  inert?: boolean
   onPress: () => void
   onLongPress?: () => void
   onPressOut?: () => void
@@ -615,9 +642,9 @@ interface FooterButtonProps {
  * Paper IconButton, which has no room for a caption. The touch area is the pill plus `layout.reach` above it
  * (see FOOTER_TOUCH_REACH); the pressed highlight is drawn on the pill alone, on every platform (an Android
  * ripple would fill the whole touch area). */
-function FooterButton({ icon, label, layout, disabled, onPress, onLongPress, onPressOut, delayLongPress }: FooterButtonProps) {
+function FooterButton({ icon, label, layout, disabled, inert, onPress, onLongPress, onPressOut, delayLongPress }: FooterButtonProps) {
   return (
-    <FooterPressable accessibilityRole='button' accessibilityLabel={label} accessibilityState={{ disabled: !!disabled }} disabled={disabled} onPress={onPress} onLongPress={onLongPress} onPressOut={onPressOut} delayLongPress={delayLongPress} hitSlop={layout.hitSlop} style={{ paddingTop: layout.reach, width: layout.width }}>
+    <FooterPressable accessibilityRole='button' accessibilityLabel={label} accessibilityState={{ disabled: !!disabled }} disabled={disabled || inert} onPress={onPress} onLongPress={onLongPress} onPressOut={onPressOut} delayLongPress={delayLongPress} hitSlop={layout.hitSlop} pressRetentionOffset={FOOTER_PRESS_RETENTION} style={{ paddingTop: layout.reach, width: layout.width }}>
       {({ pressed }) => (
         <View style={[styles.footerButton, pressed && styles.footerButtonPressed]}>
           <View style={[styles.footerContent, disabled && styles.footerContentDisabled]}>

@@ -14,6 +14,12 @@
       "permanent": false
     },
     {
+      "source": "/",
+      "has": [{ "type": "host", "value": "(?<game>snake|hangman|solitaire|lightcycles)\\.infinitetoken\\.com" }],
+      "destination": "https://games.infinitetoken.com/:game/",
+      "permanent": false
+    },
+    {
       "source": "/:path*",
       "has": [{ "type": "host", "value": "(?<game>snake|hangman|solitaire|lightcycles)\\.infinitetoken\\.com" }],
       "destination": "https://games.infinitetoken.com/:game/:path*",

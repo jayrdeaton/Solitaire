@@ -210,11 +210,12 @@ function HeldDimScrim({ hold, initialWasHeld, style }: { hold: boolean; initialW
 /** The animated scrim itself: mounts fully transparent (so the frame it first appears in is still the ghost's look) and
  * fades to opaque (fadeInDimScrim). Only ever mounted at the moment a held card is released, and only until its fade has
  * finished: `onDone` then swaps it for the plain scrim in one commit (same colour, same frame, so nothing visibly
- * changes). The finished, fully-dim state must be React's own prop, not a value Reanimated last wrote: on iOS this
- * build commits animated props through the shadow tree (IOS_SYNCHRONOUSLY_UPDATE_UI_PROPS is off), where they race
- * React's own commits, and the final opacity was measurably lost - a whole deal's first row of buried cards stayed
- * undimmed (pixel-checked on the Simulator) while JS had rendered them dimmed and every fade reported `finished`. The
- * plain scrim is what a resumed board draws, and that never failed. `DIM_FADE_BACKSTOP_MS` hands over even if the
+ * changes). The finished, fully-dim state must be React's own prop, not a value Reanimated last wrote: while iOS
+ * committed animated props through the shadow tree (until IOS_SYNCHRONOUSLY_UPDATE_UI_PROPS was turned on, 2026-10-17),
+ * they raced React's own commits, and the final opacity was measurably lost - a whole deal's first row of buried cards
+ * stayed undimmed (pixel-checked on the Simulator) while JS had rendered them dimmed and every fade reported `finished`.
+ * The flag writes the fade straight to the view now, and the hand-over stays: the plain scrim is what a resumed board
+ * draws, and that never failed. `DIM_FADE_BACKSTOP_MS` hands over even if the
  * completion callback never arrives. */
 function FadingDimScrim({ style, onDone }: { style: StyleProp<ViewStyle>; onDone: () => void }) {
   const opacity = useSharedValue(0)
