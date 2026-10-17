@@ -1201,6 +1201,6 @@ describe('DragGhostProvider - peeling cards off a flight still in the air', () =
     // A fresh ghost beside the landed one (and the peeled card's own), not the landed one carrying on with a card missing.
     expect(ghostsAt(RUN[0].id)).toHaveLength(2)
     expect(slotStyles(RUN[2].id)).toHaveLength(3)
-    loaded()
+    await inAct(() => loaded())
   })
 })
