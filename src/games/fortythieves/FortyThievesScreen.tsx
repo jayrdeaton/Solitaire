@@ -384,7 +384,8 @@ function FortyThievesScreenInner() {
     computeNextStep,
     firePlay,
     fireDraw: handleDrawStock,
-    fireDrawAndPlay
+    fireDrawAndPlay,
+    beat: cascadeFeedback
   })
   // The finish: once the board is solved (the stock and waste empty, every card able to go up - rules.ts's canAutoFinish),
   // the rest files away on its own, at a pace that ramps up - after the player's play of a card to a foundation that leaves it
@@ -397,7 +398,8 @@ function FortyThievesScreenInner() {
     canFinish: (s) => canAutoFinish(controllerRef.current, s),
     nextMove: (s) => nextFinishMove(controllerRef.current, s),
     isLanding,
-    firePlay
+    firePlay,
+    beat: cascadeFeedback
   })
 
   useEffect(() => {
@@ -619,7 +621,6 @@ function FortyThievesScreenInner() {
       settleFlight()
       return false
     }
-    cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true })) {
       flight.hide()
@@ -651,7 +652,6 @@ function FortyThievesScreenInner() {
       return
     }
 
-    cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying(to, 1)
     pushUndo(current, { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: 1, anchorCardId: entry.card.id })
@@ -737,7 +737,6 @@ function FortyThievesScreenInner() {
     if (opts?.sweep) cascadeFeedback()
     else {
       playCardSound()
-      hapticCard()
     }
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
@@ -785,8 +784,8 @@ function FortyThievesScreenInner() {
       return
     }
 
+    // No buzz here: a tap's is its press's own, at touch-down (every card is a feedback-press Pressable).
     playCardSound()
-    hapticCard()
     if (!completeMove(move.from, move.to, move.count, cardId, takeOff.flight, { inAir: takeOff.inAir })) {
       takeOff.flight.hide()
       settleFlight()

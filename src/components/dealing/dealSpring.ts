@@ -29,9 +29,9 @@ export function dealStaggerMs(cardCount: number): number {
 /** The stagger a FACE-UP card flight is given once it is paced by paceFaceUpDeal (never tighter than the flight it follows).
  * The compressed initial-deal stagger (dealStaggerMs, ~18ms for 52 cards) is fine for face-down backs, which are all
  * identical, but a face-up ghost is a distinct, readable card: at ~18ms apart the flights blur into a smear of faces.
- * 44 rather than a rounder 40 on purpose: the per-card click and buzz are each throttled to one per 40ms (PLAY_THROTTLE_MS,
- * HAPTIC_MIN_GAP_MS), and a stagger sitting exactly ON that boundary lets timer jitter drop a click here and a buzz there,
- * an irregular riffle; 44 leaves a few ms of margin, so every card gets both. */
+ * 44 rather than a rounder 40 was picked when every card clicked and buzzed, each throttled to one per 40ms: a stagger exactly ON
+ * that boundary let timer jitter drop a click here and a buzz there. A deal now clicks and buzzes on its own beat instead
+ * (DealLayer.tsx's dealBeatTicks: every second face-up card at this pace). */
 export const FACE_UP_STAGGER_MS = 44
 /** How long a deal made of face-up flights may take, first card leaving to last card landing - deliberately longer than
  * DEAL_TARGET_TOTAL_MS, since a face-up card is worth seeing land. paceFaceUpDeal spends up to this much, and no more.

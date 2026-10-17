@@ -786,8 +786,8 @@ function ScorpionScreenInner() {
       return
     }
 
+    // No buzz here: a tap's is its press's own, at touch-down (every card is a feedback-press Pressable).
     playCardSound()
-    hapticCard()
     if (!completeMove(move.from, move.to, move.count, card.id, takeOff.flight, { inAir: takeOff.inAir })) {
       takeOff.flight.hide()
       settleFlight()

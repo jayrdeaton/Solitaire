@@ -42,7 +42,8 @@ export interface DragFlightHandle {
   originY: SharedValue<number>
   dx: SharedValue<number>
   dy: SharedValue<number>
-  /** Animate back to the origin, then hide and invoke onSettled (used to restore the source card). */
+  /** Animate back to the origin, then hide and invoke onSettled (used to restore the source card). The refused drop's
+   * invalid sound and buzz play as it starts - at the drag's release - not when the card is back. */
   snapBack(onSettled: () => void): void
   /** Animate to an arbitrary screen point, then hide and invoke onArrived (used for tap-to-move:
    * flies from where the card was tapped to wherever it actually landed). A flight started by
@@ -732,12 +733,14 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
           release()
           // A drag that picks the same source up again ends this return at once (see liveOwnersRef).
           if (source) liveOwnersRef.current.set(source, handle)
+          // The refusal is felt and heard as the finger lets go (Jay, 2026-10-17: a card's buzz is when it's played or released,
+          // never when it lands), not ~240ms later when the card is back.
+          playInvalidSound()
+          hapticInvalid()
           settleAfter(
             SNAP_BACK_SPRING,
             () => {
               unregisterOwner()
-              playInvalidSound()
-              hapticInvalid()
               onSettled()
             },
             () => {
@@ -756,10 +759,9 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
           // A run respaces to the column it lands on as it flies there (FlightEntry.step): that column has laid it out by now,
           // since a caller only flies once it has measured the run's destination there.
           const landingStep = content.offsetStep > 0 ? fanStep(content.cards.map((c) => c.id)) : null
-          // No hapticCard() here (unlike snapBack's own hapticInvalid above) - a successful flight's
-          // sound+haptic pair now fires together the instant the move was confirmed (see
-          // useCardSounds.ts), not on arrival, so there's nothing left for this settle to trigger
-          // beyond the caller's own onArrived.
+          // No sound or haptic here - a card's click and buzz are when it is played (a press, a drag's
+          // release, a deal's or an auto-play's beat - see useCardSounds.ts), never on arrival, so
+          // there's nothing left for this settle to trigger beyond the caller's own onArrived.
           settleAfter(
             config,
             onArrived,

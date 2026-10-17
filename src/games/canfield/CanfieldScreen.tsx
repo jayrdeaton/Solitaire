@@ -520,7 +520,8 @@ function CanfieldScreenInner() {
     computeNextStep,
     firePlay,
     fireDraw: handleDrawStock,
-    fireDrawAndPlay
+    fireDrawAndPlay,
+    beat: cascadeFeedback
   })
   // The finish: once the board is solved (rules.ts's canAutoFinish - reserve, stock and waste empty, nothing hidden, no
   // choice left), every remaining card files away on its own, at a pace that ramps up - after the player's play of a
@@ -534,7 +535,8 @@ function CanfieldScreenInner() {
     canFinish: (s) => canAutoFinish(controllerRef.current, s),
     nextMove: (s) => nextFinishMove(controllerRef.current, s),
     isLanding,
-    firePlay
+    firePlay,
+    beat: cascadeFeedback
   })
 
   // Resumes a saved board if one exists, otherwise deals fresh - either way, this screen becomes
@@ -843,7 +845,6 @@ function CanfieldScreenInner() {
       settleFlight()
       return false
     }
-    cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true })) {
       flight.hide()
@@ -879,7 +880,6 @@ function CanfieldScreenInner() {
       return
     }
 
-    cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying(to, 1)
     pushUndo(current, { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: afterDraw.waste.length - current.waste.length, anchorCardId: drawnTop.id })
@@ -1001,8 +1001,9 @@ function CanfieldScreenInner() {
 
     if (opts?.sweep) cascadeFeedback()
     else {
+      // A tap's buzz is its press's own, at touch-down; a held stock's repeat draws have no press of their own.
       playCardSound()
-      hapticCard()
+      if (opts?.repeat) hapticCard()
     }
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying(WASTE, 1)
@@ -1079,8 +1080,8 @@ function CanfieldScreenInner() {
       return
     }
 
+    // No buzz here: a tap's is its press's own, at touch-down (every card is a feedback-press Pressable).
     playCardSound()
-    hapticCard()
     if (!completeMove(move.from, move.to, move.count, cardId, takeOff.flight, { inAir: takeOff.inAir })) {
       takeOff.flight.hide()
       settleFlight()

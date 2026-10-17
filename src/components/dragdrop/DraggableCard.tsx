@@ -96,7 +96,7 @@ interface DraggableCardProps {
 export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHold, onPress, onDrop, hidden, emptyFallback, underCard, shakeToken, registryId, style, testID }: DraggableCardProps) {
   const viewRef = useAnimatedRef<Animated.View>()
   const ghost = useDragGhost()
-  const { playCardSound } = useCardSoundEffects()
+  const { playCardSound, hapticCard } = useCardSoundEffects()
   const { width: cardWidth } = useCardSize()
   const [dragging, setDragging] = useState(false)
   // The drag (by its token) whose applied drop is waiting to reveal the slot again - see the effect below.
@@ -159,33 +159,39 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const handleRelease = useCallback((absoluteX: number, absoluteY: number) => {
-    ;(async () => {
-      const dropFn = latest.current.onDrop
-      const flight = flightRef.current
-      const dragged = draggedRef.current
-      const token = dragTokenRef.current
-      // Before anything awaits: from the moment the drag ends this ghost runs on values of its own,
-      // so a quick next drag from this same card can never hijack it while the drop is still being
-      // resolved (see DragFlightHandle.release).
-      flight?.release()
-      const applied = dropFn && flight && dragged ? await dropFn(absoluteX, absoluteY, flight, dragged) : false
-      if (applied) {
-        // Don't hide the ghost here - the caller's onDrop (mirroring handleCardTap) has already
-        // marked this card's destination "incoming" and will measure its real landed position
-        // and fly this same flight the rest of the way there, instead of it just vanishing
-        // mid-air. The slot shows the next card now, but not until its face has painted (see revealToken).
-        if (dragTokenRef.current === token) setRevealToken(token)
-      } else {
-        flight?.snapBack(() => {
-          if (dragTokenRef.current === token) setDragging(false)
-        })
-      }
-    })()
-    setTimeout(() => {
-      wasDraggingRef.current = false
-    }, 0)
-  }, [])
+  const handleRelease = useCallback(
+    (absoluteX: number, absoluteY: number) => {
+      ;(async () => {
+        const dropFn = latest.current.onDrop
+        const flight = flightRef.current
+        const dragged = draggedRef.current
+        const token = dragTokenRef.current
+        // Before anything awaits: from the moment the drag ends this ghost runs on values of its own,
+        // so a quick next drag from this same card can never hijack it while the drop is still being
+        // resolved (see DragFlightHandle.release).
+        flight?.release()
+        const applied = dropFn && flight && dragged ? await dropFn(absoluteX, absoluteY, flight, dragged) : false
+        if (applied) {
+          // The release is when a dragged card is played: its buzz is here (the pickup's was the press's, at touch-down), once the
+          // drop is known to stand. A refused one buzzes as invalid instead (snapBack).
+          hapticCard()
+          // Don't hide the ghost here - the caller's onDrop (mirroring handleCardTap) has already
+          // marked this card's destination "incoming" and will measure its real landed position
+          // and fly this same flight the rest of the way there, instead of it just vanishing
+          // mid-air. The slot shows the next card now, but not until its face has painted (see revealToken).
+          if (dragTokenRef.current === token) setRevealToken(token)
+        } else {
+          flight?.snapBack(() => {
+            if (dragTokenRef.current === token) setDragging(false)
+          })
+        }
+      })()
+      setTimeout(() => {
+        wasDraggingRef.current = false
+      }, 0)
+    },
+    [hapticCard]
+  )
 
   // react-hooks/refs and react-hooks/immutability both assume ordinary render-time JS: a ref
   // "passed into a function" or a value "returned from a hook" might get read/written synchronously

@@ -82,6 +82,9 @@ export function useAutoFinish<TState>(config: {
   firePlay: (entry: AccessibleCard, to: PileRef, stillWanted: () => boolean) => Promise<boolean>
   /** The gap in front of the finish's `index`th card (0 = the first). finishGapMs by default. */
   gapMs?: (index: number) => number
+  /** One card's click and buzz, played the moment it leaves on the finish's clock (so the ramp is heard and felt as it is
+   * seen), not after its measurement. firePlay plays none. */
+  beat?: () => void
 }): AutoFinish {
   const allowedRef = useRef(false)
   const runningRef = useRef(false)
@@ -132,7 +135,9 @@ export function useAutoFinish<TState>(config: {
         if (!step) return
         lastLeftAt = Date.now()
         // A pile still landing after the whole wait counts as a miss, like a failed measurement.
-        const fired = !latestRef.current.isLanding(step.entry.ref) && (await latestRef.current.firePlay(step.entry, step.to, isAllowed))
+        const landing = latestRef.current.isLanding(step.entry.ref)
+        if (!landing) latestRef.current.beat?.()
+        const fired = !landing && (await latestRef.current.firePlay(step.entry, step.to, isAllowed))
         if (fired) {
           misses = 0
           sent += 1

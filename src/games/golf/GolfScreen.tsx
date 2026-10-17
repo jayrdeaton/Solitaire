@@ -569,7 +569,6 @@ function GolfScreenInner() {
     }
 
     playCardSound()
-    hapticCard()
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
 
@@ -608,8 +607,8 @@ function GolfScreenInner() {
       return
     }
 
+    // No buzz here: a tap's is its press's own, at touch-down (every card is a feedback-press Pressable).
     playCardSound()
-    hapticCard()
     const flight = ghost.show({ cards: [card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
 
     if (!completeMove(move.from, move.to, cardId, flight)) {

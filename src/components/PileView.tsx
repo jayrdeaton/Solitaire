@@ -369,7 +369,7 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
   const held = nextDeparting.filter((d) => pendingIds.has(d.card.id))
   if (held.length !== departing.length || held.some((d, i) => d !== departing[i])) setDeparting(held.length === 0 ? NO_DEPARTING : held)
   const ghost = useDragGhost()
-  const { playCardSound } = useCardSoundEffects()
+  const { playCardSound, hapticCard } = useCardSoundEffects()
   // The cards a drag in progress has picked up, by id (not by position: the commit that moves them and the one that ends
   // the drag are not always the same, and a stale position range would hide whatever cards slid into it).
   const [activeDrag, setActiveDrag] = useState<ReadonlySet<string> | null>(null)
@@ -422,32 +422,38 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
     [ghost, playCardSound, originX, originY, dx, dy]
   )
 
-  const handleDragEnd = useCallback((absoluteX: number, absoluteY: number, count: number, anchorCardId: string) => {
-    ;(async () => {
-      const { drag: currentDrag } = latest.current
-      // Taken BEFORE the hit test awaits: this drag's own flight (a quick next drag from this column
-      // replaces flightRef while the hit test is still resolving, and the drop would then be applied
-      // with - and fly - the wrong ghost), released at once so that next drag cannot hijack its values
-      // either (see DragFlightHandle.release).
-      const flight = flightRef.current
-      const token = dragTokenRef.current
-      flight?.release()
-      const target = currentDrag ? await currentDrag.registry.hitTest(absoluteX, absoluteY) : null
-      const applied = target && currentDrag && flight ? await currentDrag.onDrop(target, count, anchorCardId, flight) : false
-      if (applied) {
-        // Don't hide the ghost here - it's still sitting wherever the pointer released it, not
-        // yet at the destination's exact fanned position. The caller's onDrop (mirroring
-        // handleCardTap) has already marked that destination "incoming" and will measure its real
-        // landed position and fly this same flight the rest of the way there, same as a
-        // tap-to-move.
-        if (dragTokenRef.current === token) setActiveDrag(null)
-      } else {
-        flight?.snapBack(() => {
+  const handleDragEnd = useCallback(
+    (absoluteX: number, absoluteY: number, count: number, anchorCardId: string) => {
+      ;(async () => {
+        const { drag: currentDrag } = latest.current
+        // Taken BEFORE the hit test awaits: this drag's own flight (a quick next drag from this column
+        // replaces flightRef while the hit test is still resolving, and the drop would then be applied
+        // with - and fly - the wrong ghost), released at once so that next drag cannot hijack its values
+        // either (see DragFlightHandle.release).
+        const flight = flightRef.current
+        const token = dragTokenRef.current
+        flight?.release()
+        const target = currentDrag ? await currentDrag.registry.hitTest(absoluteX, absoluteY) : null
+        const applied = target && currentDrag && flight ? await currentDrag.onDrop(target, count, anchorCardId, flight) : false
+        if (applied) {
+          // The release is when a dragged card is played: its buzz is here (the pickup's was the press's, at touch-down), once the
+          // drop is known to stand. A refused one buzzes as invalid instead (snapBack).
+          hapticCard()
+          // Don't hide the ghost here - it's still sitting wherever the pointer released it, not
+          // yet at the destination's exact fanned position. The caller's onDrop (mirroring
+          // handleCardTap) has already marked that destination "incoming" and will measure its real
+          // landed position and fly this same flight the rest of the way there, same as a
+          // tap-to-move.
           if (dragTokenRef.current === token) setActiveDrag(null)
-        })
-      }
-    })()
-  }, [])
+        } else {
+          flight?.snapBack(() => {
+            if (dragTokenRef.current === token) setActiveDrag(null)
+          })
+        }
+      })()
+    },
+    [hapticCard]
+  )
 
   const handleCardPress = useCallback((card: Card, indexFromTop: number, measureOrigin: () => Promise<{ x: number; y: number }>) => latest.current.onPressCard?.(card, indexFromTop, measureOrigin), [])
   // Only pressable at all when the screen gave this column a press handler (a Pressable with none would still

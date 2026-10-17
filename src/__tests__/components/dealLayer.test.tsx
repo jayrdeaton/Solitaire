@@ -4,7 +4,7 @@ import { StyleSheet, type ViewStyle } from 'react-native'
 import { cancelAnimation, withSpring } from 'react-native-reanimated'
 
 import { trackFaceLoad } from '@/components/cardFacePaint'
-import { DEAL_LANDED_MAX_MS, type DealAnimator, type DealCardSpec, dealPoolSize, DealProvider, ghostPoolSize, TAKE_OFF_RELEASE_LAG_MS, useDealAnimator } from '@/components/dealing/DealLayer'
+import { DEAL_BEAT_MIN_GAP_MS, DEAL_LANDED_MAX_MS, type DealAnimator, dealBeatTicks, type DealCardSpec, dealPoolSize, DealProvider, ghostPoolSize, TAKE_OFF_RELEASE_LAG_MS, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_SPRING, DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { FLIGHT_SPRING } from '@/components/dragdrop/dragSpring'
 import type { Card } from '@/engine/types'
@@ -193,6 +193,30 @@ describe('ghostPoolSize', () => {
   })
 })
 
+describe('dealBeatTicks', () => {
+  const grid = (count: number, stagger: number) => Array.from({ length: count }, (_, i) => i * stagger)
+
+  it('beats on every Nth card of a regular deal, the first card included', () => {
+    // A 28-card deal (dealStaggerMs: ~34.07ms): every second card, a fractional stagger included.
+    expect(dealBeatTicks(grid(28, 920 / 27))).toEqual(grid(14, (2 * 920) / 27))
+    // A compressed 52-card deal (~18ms): every fourth card.
+    expect(dealBeatTicks(grid(52, 18))).toEqual(grid(13, 72))
+    // A face-up deal (44ms): every second card.
+    expect(dealBeatTicks(grid(10, 44))).toEqual(grid(5, 88))
+  })
+
+  it('never beats closer than the minimum gap', () => {
+    const beats = dealBeatTicks([0, 5, 20, 59.6, 61, 100, 130, 200])
+    expect(beats).toEqual([0, 59.6, 130, 200])
+    for (let i = 1; i < beats.length; i++) expect(beats[i] - beats[i - 1]).toBeGreaterThanOrEqual(DEAL_BEAT_MIN_GAP_MS - 0.5)
+  })
+
+  it('makes cards that leave together one beat, whatever order the delays come in', () => {
+    expect(dealBeatTicks([140, 0, 70, 0, 70, 140])).toEqual([0, 70, 140])
+    expect(dealBeatTicks([])).toEqual([])
+  })
+})
+
 describe('DealProvider ghost pool', () => {
   beforeEach(() => {
     jest.useFakeTimers()
@@ -325,6 +349,7 @@ describe('DealProvider ghost pool', () => {
     await act(async () => controller.start(makeEntries(54), CARD_WIDTH, (id) => landed.push(id), onAllLanded))
     await advance(300)
     expect(landed.length).toBeLessThan(54)
+    const beatsBeforeSkip = mockHapticCard.mock.calls.length
 
     await fireEvent.press(screen.getByTestId('deal-skip-layer'))
 
@@ -333,8 +358,9 @@ describe('DealProvider ghost pool', () => {
     expect(onAllLanded).toHaveBeenCalledTimes(1)
     expect(ghosts().length).toBe(0)
     expect(screen.queryByTestId('deal-skip-layer')).toBeNull()
-    // Every card still gets its one sound (throttled downstream), including ones that never launched.
-    expect(mockPlayCardSound.mock.calls.length).toBeGreaterThanOrEqual(54)
+    // The skip is one more beat for everything it dealt at once - and the click and buzz stay paired.
+    expect(mockHapticCard.mock.calls.length).toBe(beatsBeforeSkip + 1)
+    expect(mockPlayCardSound.mock.calls.length).toBe(mockHapticCard.mock.calls.length)
 
     // ...and nothing fires late once the timers run out.
     await advance(5000)
@@ -342,15 +368,35 @@ describe('DealProvider ghost pool', () => {
     expect(onAllLanded).toHaveBeenCalledTimes(1)
   })
 
-  it('caps haptics at one per 40ms even when cards are dealt every 18ms (sound is capped downstream)', async () => {
+  // Every card used to click and buzz from its own take-off timer (buzz throttled to one per 40ms): every second or third card
+  // at uneven gaps. The deal now plays both together on one steady beat.
+  it('clicks and buzzes together on a steady beat, not once per card', async () => {
+    const beats: number[] = []
+    mockHapticCard.mockImplementation(() => beats.push(Date.now()))
     await renderProvider()
     await act(async () => controller.start(makeEntries(52, 'c', true, 18), CARD_WIDTH, jest.fn(), jest.fn()))
 
     await advance(totalMs(52, 18))
 
-    expect(mockPlayCardSound).toHaveBeenCalledTimes(52)
-    expect(mockHapticCard.mock.calls.length).toBeLessThan(30)
-    expect(mockHapticCard.mock.calls.length).toBeGreaterThan(10)
+    // 18ms apart: every fourth card (72ms), the first card's included - 13 beats for 52 cards.
+    expect(beats).toHaveLength(13)
+    expect(mockPlayCardSound).toHaveBeenCalledTimes(13)
+    for (let i = 1; i < beats.length; i++) expect(beats[i] - beats[i - 1]).toBe(72)
+  })
+
+  it('a stall costs the beat a beat or two, never a burst', async () => {
+    const beats: number[] = []
+    mockHapticCard.mockImplementation(() => beats.push(Date.now()))
+    await renderProvider()
+    await act(async () => controller.start(makeEntries(52, 'c', true, 18), CARD_WIDTH, jest.fn(), jest.fn()))
+    await advance(250)
+
+    // The clock jumps 400ms but no timer fires early - exactly what a long JS stall looks like to the deal.
+    jest.setSystemTime(Date.now() + 400)
+    await advance(totalMs(52, 18))
+
+    expect(beats.length).toBeGreaterThan(5)
+    for (let i = 1; i < beats.length; i++) expect(beats[i] - beats[i - 1]).toBeGreaterThanOrEqual(DEAL_BEAT_MIN_GAP_MS / 2)
   })
 
   it('shows the skip layer only while a deal is in flight', async () => {
@@ -651,11 +697,10 @@ describe('DealProvider ghost pool', () => {
   // must delay every departure, not spend the first cards' delays and send them all off in the same frame.
   it('keeps the first cards staggered even when mounting the pool is slow', async () => {
     const departures: number[] = []
-    mockPlayCardSound.mockImplementation(() => departures.push(Date.now()))
     await renderProvider()
 
     await act(async () => {
-      controller.start(makeEntries(52, 'c', true, 18), CARD_WIDTH, jest.fn(), jest.fn())
+      controller.start(makeEntries(52, 'c', true, 18), CARD_WIDTH, jest.fn(), jest.fn(), () => departures.push(Date.now()))
       jest.advanceTimersByTime(150) // the mount takes 150ms before any slot can be launched
     })
     await advance(totalMs(52, 18))
@@ -668,9 +713,8 @@ describe('DealProvider ghost pool', () => {
   // A JS stall makes every card that came due meanwhile launch at once; late cards must stream out, not leave as one blob.
   it('spaces out cards that are late after a stall instead of launching them together', async () => {
     const departures: number[] = []
-    mockPlayCardSound.mockImplementation(() => departures.push(Date.now()))
     await renderProvider()
-    await act(async () => controller.start(makeEntries(52, 'c', true, 18), CARD_WIDTH, jest.fn(), jest.fn()))
+    await act(async () => controller.start(makeEntries(52, 'c', true, 18), CARD_WIDTH, jest.fn(), jest.fn(), () => departures.push(Date.now())))
     await advance(250)
 
     // The clock jumps 600ms but no timer fires early - exactly what a long JS stall looks like to the deal.
@@ -1415,7 +1459,7 @@ describe('DealProvider reduceMotion', () => {
     expect(screen.queryByTestId('deal-skip-layer')).toBeNull() // dealing never becomes true
   })
 
-  it("still fires onCardDealt once per card - playCardSound too (it throttles internally, invisible to this mock - handleDealt calls it unconditionally, matching a real deal's per-card click), and hapticCard throttled down to one for the whole deal (that gate lives in handleDealt itself, and every call lands in the same fake-timers tick)", async () => {
+  it('still fires onCardDealt once per card, with one click and one buzz for the whole deal', async () => {
     await renderProvider()
     const entries = makeEntries(20, 'c', true)
     const dealt: string[] = []
@@ -1423,7 +1467,7 @@ describe('DealProvider reduceMotion', () => {
     await act(async () => controller.start(entries, CARD_WIDTH, jest.fn(), jest.fn(), (id) => dealt.push(id)))
 
     expect(dealt).toEqual(entries.map((e) => e.cardId))
-    expect(mockPlayCardSound).toHaveBeenCalledTimes(20)
+    expect(mockPlayCardSound).toHaveBeenCalledTimes(1)
     expect(mockHapticCard).toHaveBeenCalledTimes(1)
   })
 

@@ -169,6 +169,77 @@ describe('useAutoFoundationCascade', () => {
     await unmount()
   })
 
+  // Jay, 2026-10-17: the auto-play's haptic should be rhythmic. The gap used to be counted from each card's COMMIT, after its
+  // measurement (a different time every card), and the click and buzz played there too.
+  it("keeps a fixed clock and plays each card's beat as it leaves - a card slow to measure doesn't push the next one back", async () => {
+    const { board, commit, playerMove, computeNextStep } = setup()
+    computeNextStep.mockImplementation(() => (board.n < 5 ? STEP_PLAY : null))
+    const left: number[] = []
+    const beats: number[] = []
+    const firePlay = jest.fn(async (_entry: AccessibleCard, to: PileRef) => {
+      left.push(Date.now())
+      await new Promise((resolve) => setTimeout(resolve, 30)) // the measurement round trip
+      commit(to)
+      return true
+    })
+    const beat = jest.fn(() => beats.push(Date.now()))
+    const { result, rerender, unmount } = await renderHook(
+      ({ state }: Props) =>
+        useAutoFoundationCascade<string>({
+          state,
+          isLanding: () => false,
+          getState: () => board.current,
+          enabled: () => true,
+          isBusy: () => false,
+          computeNextStep,
+          firePlay,
+          beat
+        }),
+      { initialProps: { state: 'board-0' } as Props }
+    )
+    const t0 = Date.now()
+
+    await playerMove(rerender, result.current)
+    await advance(AUTO_PLAY_STAGGER_MS * 5)
+    const gaps = [1, 2, 3, 4].map((i) => AUTO_PLAY_STAGGER_MS * i)
+    expect(left.map((t) => t - t0)).toEqual(gaps)
+    expect(beats.map((t) => t - t0)).toEqual(gaps)
+    await unmount()
+  })
+
+  it('a plain draw plays no beat of its own here (fireDraw plays its own); a draw-and-play does', async () => {
+    const { board, playerMove, computeNextStep } = setup()
+    const beat = jest.fn()
+    computeNextStep.mockImplementation(() => (board.n === 1 ? { kind: 'draw' } : board.n === 2 ? { kind: 'drawAndPlay', entry: ACE_ENTRY, to: ACE_TO } : null))
+    const { result, rerender, unmount } = await renderHook(
+      ({ state }: Props) =>
+        useAutoFoundationCascade<string>({
+          state,
+          isLanding: () => false,
+          getState: () => board.current,
+          enabled: () => true,
+          isBusy: () => false,
+          computeNextStep,
+          firePlay: jest.fn(async () => true),
+          fireDraw: jest.fn(async () => {
+            board.n += 1
+            board.current = `board-${board.n}`
+          }),
+          fireDrawAndPlay: jest.fn(async () => {
+            board.n += 1
+            board.current = `board-${board.n}`
+          }),
+          beat
+        }),
+      { initialProps: { state: 'board-0' } as Props }
+    )
+
+    await playerMove(rerender, result.current)
+    await advance(AUTO_PLAY_STAGGER_MS * 4)
+    expect(beat).toHaveBeenCalledTimes(1)
+    await unmount()
+  })
+
   it('a card still flying in to its own pile (one the sweep just drew) waits for it to land, then goes at once', async () => {
     const { board, playerMove, firePlay, fireDraw, computeNextStep, render } = setup()
     // the player's move, the sweep's draw, then a play of the drawn card off the waste

@@ -641,7 +641,8 @@ function KlondikeScreenInner() {
     computeNextStep,
     firePlay,
     fireDraw: handleDrawStock,
-    fireDrawAndPlay
+    fireDrawAndPlay,
+    beat: cascadeFeedback
   })
   // The finish: once the board is solved (nothing face-down, the stock and waste empty, every card able
   // to go up), the rest files away on its own, at a pace that ramps up - after the player's play of a
@@ -655,7 +656,8 @@ function KlondikeScreenInner() {
     canFinish: (s) => canAutoFinish(controllerRef.current, s),
     nextMove: (s) => nextFinishMove(controllerRef.current, s),
     isLanding,
-    firePlay
+    firePlay,
+    beat: cascadeFeedback
   })
 
   // Resumes a saved board if one exists, otherwise deals fresh - either way, this screen becomes
@@ -1086,7 +1088,6 @@ function KlondikeScreenInner() {
       settleFlight()
       return false
     }
-    cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true })) {
       flight.hide()
@@ -1125,7 +1126,6 @@ function KlondikeScreenInner() {
       return
     }
 
-    cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     const flyingId = beginFlying(to, 1)
 
@@ -1258,8 +1258,9 @@ function KlondikeScreenInner() {
 
     if (opts?.sweep) cascadeFeedback()
     else {
+      // A tap's buzz is its press's own, at touch-down; a held stock's repeat draws have no press of their own.
       playCardSound()
-      hapticCard()
+      if (opts?.repeat) hapticCard()
     }
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: stockPos.x, y: stockPos.y })
     const flyingId = beginFlying(WASTE, 1)
@@ -1328,7 +1329,6 @@ function KlondikeScreenInner() {
     if (sweep) cascadeFeedback()
     else {
       playCardSound()
-      hapticCard()
     }
     const gen = dealTokenRef.current
     // Landing on the STOCK (Pyramid's recycle too). Counted as landing on the waste, it froze the waste on the card that
@@ -1435,8 +1435,8 @@ function KlondikeScreenInner() {
       return
     }
 
+    // No buzz here: a tap's is its press's own, at touch-down (every card is a feedback-press Pressable).
     playCardSound()
-    hapticCard()
     if (!completeMove(move.from, move.to, move.count, cardId, takeOff.flight, { inAir: takeOff.inAir })) {
       takeOff.flight.hide()
       settleFlight()

@@ -1481,7 +1481,6 @@ function PyramidScreenInner() {
     if (inAir.length > 0) markDiscardInAir(inAir)
     commitState(next)
     playCardSound()
-    hapticCard()
     if (PyramidController.isWon(next)) beginWinSweep(prev, next, removedCards, inAir.length > 0)
   }
 
@@ -1751,8 +1750,9 @@ function PyramidScreenInner() {
         settle()
         return true
       }
+      // A tap's buzz is its press's own, at touch-down; a held stock's repeat draws have no press of their own.
       playCardSound()
-      hapticCard()
+      if (opts?.repeat) hapticCard()
       const flight = trackFlight(ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth }, { x: wastePos.x, y: wastePos.y }))
       const flyingId = beginFlying({ zone: 'stock', index: 0 }, recycledCards.length)
       setStockHidden(true)
@@ -1779,8 +1779,9 @@ function PyramidScreenInner() {
       return true
     }
 
+    // A tap's buzz is its press's own, at touch-down; a held stock's repeat draws have no press of their own.
     playCardSound()
-    hapticCard()
+    if (opts?.repeat) hapticCard()
     const flight = trackFlight(ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: stockPos.x, y: stockPos.y }))
     const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
     markWasteInAir(drawnCard.id)

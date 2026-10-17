@@ -48,7 +48,10 @@ function sleep(ms: number): Promise<void> {
  * foundation play in front of it.
  *
  * Once armed it sends its cards up one after another, AUTO_PLAY_STAGGER_MS apart, the first one
- * that long after the player's own card - none of them waits for the one before it to land. Flights
+ * that long after the player's own card - none of them waits for the one before it to land. The gap
+ * is a fixed clock, like useAutoFinish's: each card leaves AUTO_PLAY_STAGGER_MS after the card before
+ * it LEFT, not after that card's measurement and commit, and its click and buzz (`beat`) play as it
+ * leaves, so the stream keeps a steady rhythm (Jay, 2026-10-17). Flights
  * are purely cosmetic overlays on a board that already committed (see useFlightConcurrency), and
  * every card flight takes the same time (dragSpring.ts's FLIGHT_SPRING), so they overlap freely and
  * still land in the order they left: two cards headed to the same foundation never overtake each
@@ -80,6 +83,10 @@ export function useAutoFoundationCascade<TState>(config: {
    * (no move counted, the cascade's throttled sound/haptic). */
   fireDraw?: (opts: { sweep: boolean }) => unknown
   fireDrawAndPlay?: (entry: AccessibleCard, to: PileRef) => unknown
+  /** One auto-played card's click and buzz, played the moment it leaves - on the cascade's own clock, so they keep its
+   * rhythm, rather than after the card's measurement (which takes a different time every card). firePlay and fireDrawAndPlay
+   * play none; fireDraw plays its own (a draw-3 fan's are the deal layer's). */
+  beat?: () => void
 }): AutoFoundationCascade {
   const armedRef = useRef(false)
   const runningRef = useRef(false)
@@ -114,10 +121,13 @@ export function useAutoFoundationCascade<TState>(config: {
     runningRef.current = true
     try {
       let misses = 0
+      // When the card before this one left: the player's own move for the first (this runs in the effect of its commit).
+      let lastLeftAt = Date.now()
       // Whether the next card still owes its gap after the one before (a wait for a landing already spaced it out).
       let gap = true
       while (armedRef.current) {
-        if (gap) await sleep(AUTO_PLAY_STAGGER_MS)
+        const wait = gap ? lastLeftAt + AUTO_PLAY_STAGGER_MS - Date.now() : 0
+        if (wait > 0) await sleep(wait) // a card already late (its predecessor was slow to measure) goes at once
         gap = true
         if (!armedRef.current) return
         const c = latestRef.current
@@ -132,6 +142,9 @@ export function useAutoFoundationCascade<TState>(config: {
           gap = false
           continue // start over from the board as it is now - the step may be a different one
         }
+        lastLeftAt = Date.now()
+        // A plain draw plays its own (fireDraw): a draw-3 fan clicks and buzzes on the deal layer's beat.
+        if (step.kind !== 'draw') c.beat?.()
         let fired: boolean
         if (step.kind === 'play') {
           fired = await c.firePlay(step.entry, step.to)

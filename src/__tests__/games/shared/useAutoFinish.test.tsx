@@ -422,6 +422,29 @@ describe('useAutoFinish', () => {
     await unmount()
   })
 
+  it("plays each card's click and buzz (beat) as it leaves on the clock, before its measurement - not after", async () => {
+    const { board } = setup()
+    board.remaining = 10
+    const beats: number[] = []
+    const committed: number[] = []
+    const firePlay = jest.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20)) // the measurement round trip
+      committed.push(Date.now())
+      board.remaining -= 1
+      board.current = `board-${10 - board.remaining}`
+      return true
+    })
+    const beat = jest.fn(() => beats.push(Date.now()))
+    const { result, rerender, unmount } = await renderHook(({ state }: Props) => useAutoFinish<string>({ state, enabled: () => true, isBusy: () => false, getState: () => board.current, canFinish: () => board.remaining > 0, nextMove: () => moveFor(board.remaining), isLanding: () => false, firePlay, gapMs: () => STAGGER_MS, beat }), { initialProps: { state: 'board-0' } as Props })
+    const t0 = Date.now()
+
+    await playerMove(result.current, rerender)
+    await advance(STAGGER_MS * 4)
+    expect(beats.map((t) => t - t0)).toEqual([STAGGER_MS, STAGGER_MS * 2, STAGGER_MS * 3, STAGGER_MS * 4])
+    expect(committed.map((t) => t - t0)).toEqual([STAGGER_MS + 20, STAGGER_MS * 2 + 20, STAGGER_MS * 3 + 20])
+    await unmount()
+  })
+
   it('a card slower to measure than the whole gap is followed at once, not one more gap later', async () => {
     const { board } = setup()
     board.remaining = 10

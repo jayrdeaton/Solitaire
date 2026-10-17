@@ -597,7 +597,6 @@ function YukonScreenInner() {
       settleFlight()
       return false
     }
-    cascadeFeedback()
     const flight = ghost.show({ cards: [entry.card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     if (!completeMove(entry.ref, to, 1, entry.card.id, flight, { silent: true })) {
       flight.hide()
@@ -614,7 +613,8 @@ function YukonScreenInner() {
     enabled: () => settings.autoMoveToFoundation,
     isBusy: () => undoBusyRef.current,
     computeNextStep,
-    firePlay
+    firePlay,
+    beat: cascadeFeedback
   })
   // The finish: once the board is solved (every card face up and able to go up by foundation moves alone), every
   // remaining card files away on its own, at a pace that ramps up - after the player's play of a card to a foundation
@@ -628,7 +628,8 @@ function YukonScreenInner() {
     canFinish: (s) => canAutoFinish(controller, s),
     nextMove: (s) => nextFinishMove(controller, s),
     isLanding,
-    firePlay
+    firePlay,
+    beat: cascadeFeedback
   })
 
   // Resumes a saved board if one exists, otherwise deals fresh - either way, this screen becomes
@@ -960,8 +961,8 @@ function YukonScreenInner() {
       return
     }
 
+    // No buzz here: a tap's is its press's own, at touch-down (every card is a feedback-press Pressable).
     playCardSound()
-    hapticCard()
     if (!completeMove(move.from, move.to, move.count, cardId, takeOff.flight, { inAir: takeOff.inAir })) {
       takeOff.flight.hide()
       settleFlight()

@@ -35,28 +35,22 @@ export function useCardSoundEffects() {
     latest.current = { selection, notification, enabled, vibration }
   })
 
-  // playCardSound/hapticCard are always fired together, the instant a move is confirmed - a
-  // drag's pickup, a tap that resolves to a valid auto-move, an Undo, a stock draw, or (in
-  // DealLayer.tsx) the moment each dealt card leaves the stock - rather than waiting for that
-  // card's flight to land (see DragGhostLayer.tsx's flyTo, which no longer plays either on
-  // arrival). Landing-synced timing read as sluggish and left the two senses out of sync with
-  // each other: the click/buzz trailed the animation by however long the flight took, instead of
-  // responding together to the input that caused it.
+  // When a card clicks and buzzes (Jay, 2026-10-17: a card's buzz is when it is PLAYED, never when it lands):
+  // - A press: every card (and the stock) is a feedback-press Pressable, which buzzes at touch-down. That is a tap's whole buzz;
+  //   the move it makes only clicks (playCardSound) as the card takes off. A drag's pickup clicks too.
+  // - A drag's release (PileView/DraggableCard): hapticCard once the drop stands, or hapticInvalid with the invalid sound as a
+  //   refused card starts back (DragGhostLayer's snapBack).
+  // - A deal: click and buzz together on the deal's steady beat (DealLayer.tsx's dealBeatTicks), not once per card.
+  // - Auto-play: click and buzz together as each card leaves on the cascade's or finish's own clock (their `beat`), throttled by
+  //   games/shared/cascadeFeedback.ts.
+  // - A held Undo or stock: each undo, and each repeat draw, clicks and buzzes - nothing pressed it.
+  // Nothing plays on arrival (DragGhostLayer's flyTo). Landing-synced feedback read as sluggish, trailing the input that caused it.
   const playCardSound = useCallback(() => {
     if (latest.current.enabled) latest.current.selection?.()
   }, [])
   const playInvalidSound = useCallback(() => {
     if (latest.current.enabled) latest.current.notification?.()
   }, [])
-  // hapticCard is deliberately NOT called from a drag's own pick-up handler (DraggableCard.tsx/
-  // PileView.tsx) even though playCardSound is - every card is already a Pressable (see
-  // PlayingCard.tsx), so picking one up already fires a touch haptic for free via onPressIn,
-  // before the pan gesture even claims the gesture as a drag; an explicit hapticCard call there
-  // too would double up on that same instant. Sound doesn't have this constraint (soundDisabled
-  // already silences the generic press sound on every card), which is why playCardSound can fire
-  // from pick-up without doubling anything - hapticCard instead fires alongside it from every
-  // OTHER move site (tap-to-move, undo, stock draw, auto-play, deal), none of which already have
-  // a free haptic of their own to double up against.
   const hapticCard = useCallback(() => {
     latest.current.vibration.selection()
   }, [])

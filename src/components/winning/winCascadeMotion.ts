@@ -216,8 +216,10 @@ export function cardYAtElapsed(path: ChainPath, elapsedMs: number, offsetY: numb
  * (one CHAIN_SEGMENT_DELAY_MS before their own start): the pile peels off one card at a time with
  * no gap, instead of a dozen shadowed cards stacked on one point darkening it. `segmentDelayMs` is the chain's
  * own per-card delay (ChainSpec.segmentDelayMs; CHAIN_SEGMENT_DELAY_MS when it has none) - "the card ahead has left" is one of THOSE
- * before this card's start, whatever the chain's spacing is. */
-export function isGhostVisible(elapsedMs: number, alwaysVisible: boolean, segmentDelayMs: number = CHAIN_SEGMENT_DELAY_MS): boolean {
+ * before this card's start, whatever the chain's spacing is. The default is applied in the body, never the parameter list: a worklet unpacks
+ * the module constants it uses at the top of its body, so a default parameter naming one throws on the UI thread (it crashed @rific/toaster's
+ * swipe in release builds). */
+export function isGhostVisible(elapsedMs: number, alwaysVisible: boolean, segmentDelayMs?: number): boolean {
   'worklet'
-  return alwaysVisible || elapsedMs + segmentDelayMs > 0
+  return alwaysVisible || elapsedMs + (segmentDelayMs ?? CHAIN_SEGMENT_DELAY_MS) > 0
 }

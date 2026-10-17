@@ -101,9 +101,26 @@ const SETTLE_POLL_MS = 16
 // giving up and revealing the real card anyway - a genuinely stuck ghost (UI thread starved far
 // longer than one busy commit) must still resolve, not stall forever.
 const SETTLE_MAX_EXTRA_MS = 1000
-// Haptics are capped like the sound pool already is (PLAY_THROTTLE_MS = 40) - at any pace: a card dealt every ~18ms
-// (compressed deals) or ~35ms (the rest) would otherwise be a buzz, not a riffle, and the click and buzz stay paired.
-const HAPTIC_MIN_GAP_MS = 40
+/**
+ * The shortest gap between two beats of a deal's click-and-buzz (dealBeatTicks). A deal plays its click and haptic on a steady
+ * beat, not once per card (Jay, 2026-10-17: the deal should have a rhythmic haptic): every card used to fire both from its own
+ * take-off timer, throttled to one per 40ms, so they came every second or third card at uneven gaps that followed every JS
+ * hiccup, ~25 a second, and each iOS haptic is a call on the main thread, where the flights are drawn. 60ms makes the beat
+ * every second card of a 28-card deal (68ms), every fourth of a compressed 52-card one (72ms), every second face-up card (67-88ms).
+ */
+export const DEAL_BEAT_MIN_GAP_MS = 60
+
+/** The deal's beat: the take-off times (`delays`, ms on the deal's own clock) the click and buzz fire at - the first card's, then
+ * the next card's at least `minGapMs` after the last beat. A deal's delays are a regular grid (a stagger per card), so the beats
+ * are too: every Nth card. Cards that leave together are one beat. Ascending, whatever order `delays` is in. */
+export function dealBeatTicks(delays: number[], minGapMs: number = DEAL_BEAT_MIN_GAP_MS): number[] {
+  const beats: number[] = []
+  for (const delay of [...delays].sort((a, b) => a - b)) {
+    // Half a millisecond of slack: a fractional stagger (34.07ms) times two must not round down below the gap.
+    if (beats.length === 0 || delay - beats[beats.length - 1] >= minGapMs - 0.5) beats.push(delay)
+  }
+  return beats
+}
 /**
  * How long after a card takes off its source is told to let go of it (DealCardSpec.releasePending) - not in the take-off
  * itself. The ghost turns visible on the UI thread (takeOff's `withDelay(wait, ...)` opacity), whose delay only starts
@@ -166,9 +183,9 @@ interface GhostSlotProps {
   /** Which deal this slot belongs to (DealProvider's generation). Every callback carries it back so a slot that outlives
    * its deal - replaced by a new start() but not yet unmounted - can never report into the new one. */
   deal: number
-  /** Fires once a card's own flight actually begins (its delayMs elapses) - see DealProvider's handleDealt, which
-   * plays this card's sound/haptic right as it's dealt out rather than waiting for it to land, and tells the caller
-   * (DealAnimator.start's onCardDealt) that this card has taken off. */
+  /** Fires once a card's own flight actually begins (its delayMs elapses) - see DealProvider's handleDealt, which tells
+   * the caller (DealAnimator.start's onCardDealt) that this card has taken off. The click and buzz are not per card: they
+   * follow the deal's beat (dealBeatTicks). */
   onDealt: (cardId: string, deal: number) => void
   /** The card has landed (naturally or via skip). */
   onLanded: (cardId: string, deal: number) => void
@@ -330,7 +347,7 @@ const GhostSlot = memo(function GhostSlot({ slot, deal, onDealt, onLanded, onIdl
     release?.()
   }, [])
 
-  // Fires this card's own sound/haptic the moment it's dealt out (see DealProvider's handleDealt) - guarded the same
+  // Reports this card's take-off the moment it's dealt out (see DealProvider's handleDealt) - guarded the same
   // way notify() below is, so completeNow's forced path doesn't double-fire it for a card whose delay had already
   // elapsed naturally before the skip. It is also where the card's source is told to let go of it (spec.releasePending -
   // see DealCardSpec): TAKE_OFF_RELEASE_LAG_MS after this, its ghost having been set to turn visible over that very spot in
@@ -657,7 +674,11 @@ export function DealProvider({ children }: { children: ReactNode }) {
   // backstop - over a fresh board).
   const pendingReleasesRef = useRef(new Set<() => void>())
   const totalRef = useRef(0)
-  const lastHapticAt = useRef(0)
+  // The deal's click-and-buzz beats still to come (dealBeatTicks: ms on the deal's clock, ascending) and the timer for the next.
+  const beatRef = useRef<number[]>([])
+  const beatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // When the last beat played (epoch ms) - see runBeat.
+  const lastBeatAtRef = useRef(0)
   // Card ids repeat across every deal (same 52 cards, just reshuffled - see deck.ts), and slot numbers repeat across
   // deals too, so keying slots by index alone would let React reuse a still-mounted slot from an overlapping prior deal
   // if start() is ever called again before the previous one finished. A reused instance wouldn't reset its shared-value
@@ -681,46 +702,65 @@ export function DealProvider({ children }: { children: ReactNode }) {
   // it mounts (and again on resize/rotation) and toLocal converts each ghost's position - see
   // overlayFrame.ts.
 
-  // Each card's own click+buzz, fired the instant it's dealt out (see GhostSlot's onDealt) -
-  // deliberately not per-card-gated here the way handleLanded is below, since GhostSlot's own
-  // dealtNotify guard already ensures this fires exactly once per card regardless of a mid-deal
-  // skip. playCardSound's own PLAY_THROTTLE_MS still caps how many of these can actually audibly
-  // fire in one tick, same as it always has for this riffle; haptics get the equivalent cap here.
-  const handleDealt = useCallback(
-    (cardId: string, deal: number) => {
-      if (deal !== generationRef.current) return
-      playCardSound()
+  // One beat of the deal: a click and a buzz together, as every other card move plays them.
+  const playBeat = useCallback(() => {
+    playCardSound()
+    hapticCard()
+  }, [playCardSound, hapticCard])
+
+  // Plays the beat that is due and waits for the next, on the deal's own clock (startedAtRef): each beat is timed from the clock,
+  // not from the beat before, so a late timer never pushes the rest back. Beats a JS stall made overdue are ONE beat when it
+  // ends, not a burst, and the next beat on the clock is dropped if it would follow that one within half a gap - the rhythm
+  // skips a beat rather than bunching two up.
+  const runBeat = useCallback(
+    function runBeat() {
+      if (beatTimerRef.current) clearTimeout(beatTimerRef.current)
+      beatTimerRef.current = null
+      const beats = beatRef.current
       const now = Date.now()
-      if (now - lastHapticAt.current >= HAPTIC_MIN_GAP_MS) {
-        lastHapticAt.current = now
-        hapticCard()
+      const elapsed = now - startedAtRef.current
+      let due = false
+      while (beats.length > 0 && beats[0] <= elapsed) {
+        beats.shift()
+        due = true
       }
-      // Reported to the caller after the generation check (so a cancelled/replaced deal is silent, like onCardLanded) and
-      // once per card: a duplicated id in the entries takes off twice but is one card to the caller.
-      if (dealtIds.current.has(cardId)) return
-      dealtIds.current.add(cardId)
-      try {
-        callbacksRef.current?.onCardDealt?.(cardId)
-      } catch (error) {
-        // The caller's take-off hook is cosmetic and must not be able to strand the deal: a throw here would abort a skip's
-        // landing loop (and leave the skip layer up for good). Re-thrown from a timer instead, so it still surfaces.
-        setTimeout(() => {
-          throw error
-        }, 0)
+      if (due && now - lastBeatAtRef.current >= DEAL_BEAT_MIN_GAP_MS / 2) {
+        lastBeatAtRef.current = now
+        playBeat()
       }
+      if (beats.length > 0) beatTimerRef.current = setTimeout(runBeat, beats[0] - elapsed)
     },
-    [playCardSound, hapticCard]
+    [playBeat]
   )
-  // handleDealt isn't unconditionally stable (its own deps are playCardSound/hapticCard), but
-  // `controller` below is memoized at `[]` forever - so start()'s reduceMotion fast path reads it
-  // through a ref, the same reason reduceMotionRef exists above, rather than adding it (and
-  // therefore controller itself) to a dependency array. handleLanded needs no such ref: its own
-  // deps are already `[]`, so the closure `controller` captures at mount stays the only one there
-  // ever is.
-  const handleDealtRef = useRef(handleDealt)
-  useEffect(() => {
-    handleDealtRef.current = handleDealt
-  }, [handleDealt])
+
+  // Ends the beat. True if it had beats left (a skip then plays one for every card it deals at once).
+  const stopBeat = useCallback(() => {
+    if (beatTimerRef.current) clearTimeout(beatTimerRef.current)
+    beatTimerRef.current = null
+    const unplayed = beatRef.current.length > 0
+    beatRef.current = []
+    lastBeatAtRef.current = 0
+    return unplayed
+  }, [])
+
+  // A card has been dealt out (see GhostSlot's onDealt) - deliberately not per-card-gated here the way handleLanded is below,
+  // since GhostSlot's own dealtNotify guard already ensures this fires exactly once per card regardless of a mid-deal skip.
+  const handleDealt = useCallback((cardId: string, deal: number) => {
+    if (deal !== generationRef.current) return
+    // Reported to the caller after the generation check (so a cancelled/replaced deal is silent, like onCardLanded) and
+    // once per card: a duplicated id in the entries takes off twice but is one card to the caller.
+    if (dealtIds.current.has(cardId)) return
+    dealtIds.current.add(cardId)
+    try {
+      callbacksRef.current?.onCardDealt?.(cardId)
+    } catch (error) {
+      // The caller's take-off hook is cosmetic and must not be able to strand the deal: a throw here would abort a skip's
+      // landing loop (and leave the skip layer up for good). Re-thrown from a timer instead, so it still surfaces.
+      setTimeout(() => {
+        throw error
+      }, 0)
+    }
+  }, [])
 
   // Hands every queued card whose flight starts within LOOKAHEAD_MS to a free slot (with its delay re-based onto its own
   // launch time - a slot's timers/springs all start when it is launched), then reschedules itself while any remain. A
@@ -848,11 +888,13 @@ export function DealProvider({ children }: { children: ReactNode }) {
     if (generation === 0 || !frameReady) return
     startedAtRef.current = Date.now()
     launchDue()
-  }, [generation, frameReady, launchDue])
+    runBeat()
+  }, [generation, frameReady, launchDue, runBeat])
 
   useEffect(
     () => () => {
       if (launchTimerRef.current) clearTimeout(launchTimerRef.current)
+      if (beatTimerRef.current) clearTimeout(beatTimerRef.current)
     },
     []
   )
@@ -896,6 +938,7 @@ export function DealProvider({ children }: { children: ReactNode }) {
         setCardWidth(width)
         if (launchTimerRef.current) clearTimeout(launchTimerRef.current)
         launchTimerRef.current = null
+        stopBeat()
         queueRef.current = []
         freeSlots.current = []
         slotHandles.current = []
@@ -914,22 +957,24 @@ export function DealProvider({ children }: { children: ReactNode }) {
           // same instant-land outcome handleSkipTap already gives an unlaunched card, just reached
           // without a tap. onCardDealt/onCardLanded still fire once per card in entries order (via
           // the same guarded functions a real flight uses, so a duplicated id in entries still only
-          // reaches the caller once each) - sound/haptic still fire too, throttled by their own
-          // existing PLAY_THROTTLE_MS/HAPTIC_MIN_GAP_MS to essentially one of each for the whole
-          // deal, not 52 - and a caller's own take-off-driven side effects (e.g. FreeCell/Yukon's
+          // reaches the caller once each) - with one click and buzz for the whole deal, not one a
+          // card - and a caller's own take-off-driven side effects (e.g. FreeCell/Yukon's
           // deck placeholder, keyed on the max-delay card's own id) resolve exactly as they would at
           // the end of a real flight, just immediately. A card's take-off hold goes with its take-off, as in flight.
           setPoolSize(0)
           setDealing(false)
+          playBeat()
           entries.forEach((entry) => {
             entry.releasePending?.()
-            handleDealtRef.current(entry.cardId, generationRef.current)
+            handleDealt(entry.cardId, generationRef.current)
             handleLanded(entry.cardId, generationRef.current)
           })
           return
         }
         const sorted = [...entries].sort((a, b) => a.delayMs - b.delayMs)
         queueRef.current = sorted.map((spec, order) => ({ spec, order }))
+        // Played from the deal's clock once it starts (the [generation] effect's runBeat).
+        beatRef.current = dealBeatTicks(sorted.map((entry) => entry.delayMs))
         const size = dealPoolSize(
           sorted.map((entry) => entry.delayMs),
           spring.duration ?? 0
@@ -943,17 +988,18 @@ export function DealProvider({ children }: { children: ReactNode }) {
         setDealing(true)
       }
     }),
-    // handleLanded's own deps are `[]` (see its definition above), so it never actually changes -
-    // listing it here costs nothing (this memo still only ever runs once) and satisfies the linter
-    // honestly, rather than disabling the rule for a dependency that genuinely is being read.
-    [handleLanded]
+    // handleLanded's, handleDealt's and stopBeat's own deps are `[]` and playBeat's are useCardSoundEffects' stable functions
+    // (see their definitions above), so none of them ever changes - listing them here costs nothing (this memo still only
+    // ever runs once) and satisfies the linter honestly, rather than disabling the rule for dependencies that genuinely are read.
+    [handleLanded, handleDealt, playBeat, stopBeat]
   )
 
   function handleSkipTap() {
-    // Cards still queued never got a slot, so there is nothing to fast-forward - just land them, with the same one
-    // sound/haptic each that a slot's completeNow gives a card whose turn hadn't come yet.
+    // Cards still queued never got a slot, so there is nothing to fast-forward - just land them. Everything the skip deals at
+    // once is one beat (if the beat had any left).
     if (launchTimerRef.current) clearTimeout(launchTimerRef.current)
     launchTimerRef.current = null
+    if (stopBeat()) playBeat()
     const unlaunched = queueRef.current
     queueRef.current = []
     // A flying card's completeNow gives its take-off hold back (its dealtNotify, or its notify for one still in its lag); an

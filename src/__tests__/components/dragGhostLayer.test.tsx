@@ -332,7 +332,7 @@ describe('DragGhostProvider - when a flight is settled', () => {
     expect(arrived).toHaveBeenCalledTimes(1)
   })
 
-  it('a snap-back settles at springSettleMs of SNAP_BACK_SPRING, then plays the invalid feedback once and reveals the source', async () => {
+  it('a snap-back plays the invalid feedback once as it starts (at the release, not when the card is back), settles at springSettleMs of SNAP_BACK_SPRING and reveals the source', async () => {
     await mountProvider()
     const values = persistentValues()
     const flight = await inAct(() => ghost.showLive(contentOf(A), values))
@@ -342,6 +342,8 @@ describe('DragGhostProvider - when a flight is settled', () => {
     values.dy.value = 120
     const settled = jest.fn()
     await inAct(() => flight.snapBack(settled))
+    expect(mockFeedback.playInvalidSound).toHaveBeenCalledTimes(1)
+    expect(mockFeedback.hapticInvalid).toHaveBeenCalledTimes(1)
 
     await advance((SNAP_BACK_SPRING.duration ?? 0) + 1)
     expect(settled).not.toHaveBeenCalled()
@@ -843,15 +845,22 @@ describe('PileView - rapid drags from one column', () => {
     })
     await advance(HIT_MS)
     expect(drops).toHaveLength(0) // no target
+    // The refusal is felt as the finger lets go, before the card is back - and a refused drop is no card played.
+    expect(mockFeedback.hapticInvalid).toHaveBeenCalledTimes(1)
+    expect(mockFeedback.hapticCard).not.toHaveBeenCalled()
     await advance(springSettleMs(SNAP_BACK_SPRING))
     expect(ghostIds()).toEqual([])
     expect(boardHidden(TOP.id)).toBe(false) // snapped back, source revealed
     expect(mockFeedback.playInvalidSound).toHaveBeenCalledTimes(1)
+    expect(mockFeedback.hapticInvalid).toHaveBeenCalledTimes(1)
 
     target = { zone: 'tableau', index: 2 }
     await dragCard(4, { x: 10, y: 400 }, { dx: 30, dy: 60 })
     await advance(HIT_MS)
     expect(drops).toHaveLength(1)
+    // The release is when a dragged card is played: one buzz, once the drop stands.
+    expect(mockFeedback.hapticCard).toHaveBeenCalledTimes(1)
+    expect(mockFeedback.hapticInvalid).toHaveBeenCalledTimes(1)
     expect(drops[0].flight.originX.value + drops[0].flight.dx.value).toBe(40)
     expect(boardHidden(TOP.id)).toBe(false) // an applied drop lets the column reveal (the screen's own move takes the card away)
     expect(ghostIds()).toEqual([TOP.id]) // ...while the ghost stays up for the screen to fly

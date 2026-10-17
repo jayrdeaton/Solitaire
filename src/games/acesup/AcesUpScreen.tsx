@@ -668,8 +668,8 @@ function AcesUpScreenInner() {
       settleFlight()
       return
     }
+    // No buzz here: a tap's is its press's own, at touch-down (every card is a feedback-press Pressable).
     playCardSound()
-    hapticCard()
     const flight = ghost.show({ cards: [card], offsetStep: 0, cardWidth }, { x: origin.x, y: origin.y })
     if (!applyMove(move.from, move.to, card, flight)) {
       flight.hide()
