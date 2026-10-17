@@ -1,9 +1,10 @@
-import { Pressable } from '@rific/feedback-press'
+import { useKeepAwake } from '@rific/core'
+import { Pressable, withFeedback } from '@rific/feedback-press'
 import { rotateInsets, useRotation } from '@tastic/core'
 import { ConfirmDialog, CornerActionButtons } from '@tastic/hud'
 import { useRouter } from 'expo-router'
 import { ReactNode, useEffect, useState } from 'react'
-import { ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Platform, Pressable as RNPressable, PressableProps, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { Icon, Portal } from 'react-native-paper'
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -17,11 +18,14 @@ import { HintHandler, useAutoHint } from './autoHint'
 import { useBoardScroll } from './boardScroll'
 import { AUTO_PLAY_STAGGER_MS } from './dragdrop/dragSpring'
 import { GAME_CONTENT_BOTTOM_PADDING, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_PADDING, GAME_CONTENT_TOP_PADDING, useGameLayout } from './gameLayout'
+import { useHintHold } from './hintHold'
+import { HINT_GLIDE_LANDED_MS } from './hinting/HintGlideLayer'
 import { RotatedContentGutter } from './RotatedContentGutter'
 import { RulesDialog } from './RulesDialog'
 import { SettingsDialog } from './SettingsDialog'
 import { CHROME_FG } from './theme'
 import { UndoHandler, useUndoHold } from './undoHold'
+import { useCardSoundEffects } from './useCardSounds'
 import { CARD_FONT_FAMILY } from './useFontsPreload'
 
 export function formatTime(totalSeconds: number): string {
@@ -95,8 +99,11 @@ export const GAME_DIALOG_Z_INDEX = 9999
 // ones before it are still flying - the hold is the auto-play run backwards. A screen whose next undo
 // can't share the air yet (the same card still landing, a deal-layer revert) makes it wait rather than
 // dropping it, so every repeat is one undo.
-const UNDO_LONG_PRESS_MS = 400
+const HOLD_LONG_PRESS_MS = 400
 const UNDO_HOLD_REPEAT_MS = AUTO_PLAY_STAGGER_MS
+// Press-and-hold Hint steps through the hints one tap at a time would (see useHintHold): the next one shows as the last
+// one's glide has landed and had its beat, replacing it as it would start to fade.
+const HINT_HOLD_REPEAT_MS = HINT_GLIDE_LANDED_MS
 
 // Vertical rhythm shared by the footer and the moves/timer row that sits just above it - single
 // source for both their JSX bottom offsets and how far the moves/timer row slides down to fill the
@@ -292,8 +299,21 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   const [footerVisible, setFooterVisible] = useState(true)
   const { clearLastActiveGame } = useLastActiveGame()
   const undoHold = useUndoHold(onUndo, UNDO_HOLD_REPEAT_MS)
+  // Each hint a hold shows clicks, as each tap on Hint does (a tap's click is its press's own, at touch-down).
+  const { playCardSound, hapticCard } = useCardSoundEffects()
+  const hintHold = useHintHold(() => {
+    playCardSound()
+    hapticCard()
+    return onHint()
+  }, HINT_HOLD_REPEAT_MS)
   const { scrollProps, holdHeight, boardKey } = useBoardScroll(movesCount)
   const { settings } = useSettings()
+  // Keeps the screen from dimming and locking while a match is up, unless Keep Awake is off in
+  // Settings (read live, so the toggle applies mid-match). Expo only does this by itself in
+  // development builds, and the OS auto-lock only counts screen touches, so a long think on a turn
+  // could let a release build lock mid-match. The setting and the expo-keep-awake module are
+  // @rific/core's, from _layout.tsx's KeepAwakeBridge.
+  useKeepAwake('game')
   const dialogOpen = settingsOpen || rulesOpen
   useEffect(() => {
     pauseClock('dialog', dialogOpen)
@@ -337,7 +357,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   // button wide (see WIDE_FOOTER_BUTTON_WIDTH).
   const footerLayout = isWide ? WIDE_FOOTER_BUTTON_LAYOUT : FOOTER_BUTTON_LAYOUT
 
-  const undoButton = <FooterButton icon='undo' label='Undo' layout={footerLayout} disabled={undoDisabled} onPress={() => void onUndo()} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={UNDO_LONG_PRESS_MS} />
+  const undoButton = <FooterButton icon='undo' label='Undo' layout={footerLayout} disabled={undoDisabled} onPress={() => void onUndo()} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={HOLD_LONG_PRESS_MS} />
 
   const newGameButton = (
     <FooterButton
@@ -358,7 +378,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
     />
   )
 
-  const hintButton = <FooterButton icon='lightbulb-on-outline' label='Hint' layout={footerLayout} disabled={hintDisabled} onPress={() => onHint()} />
+  const hintButton = <FooterButton icon='lightbulb-on-outline' label='Hint' layout={footerLayout} disabled={hintDisabled} onPress={() => onHint()} onLongPress={hintHold.onLongPress} onPressOut={hintHold.onPressOut} delayLongPress={HOLD_LONG_PRESS_MS} />
 
   // The dialogs below (Settings, Rules, the New Game confirm) portal into the Portal.Host that
   // withGameProviders mounts INSIDE the rotated frame - so they lay out against the rotated size and
@@ -366,7 +386,11 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   return (
     <View style={styles.screen}>
       <RotatedContentGutter maxContentWidth={GAME_CONTENT_MAX_WIDTH} style={styles.gutterRow}>
-        <ScrollView key={boardKey} {...scrollProps} testID='game-board-scroll' style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: (isWide ? topPadding : GAME_CONTENT_TOP_PADDING) + insets.top }, holdHeight > 0 && { minHeight: holdHeight }]}>
+        {/* No scrollbar on web (Jay, 2026-10-16): the board's scroller ends at the control column, so a scrollbar
+        sat mid-window, left of the column and the Settings button, and a classic one also took ~15pt the board was
+        sized for, cutting off the last column. The wheel and trackpad still scroll it, and Achievements/Profiles
+        hide theirs too. Native keeps its scroll indicator. */}
+        <ScrollView key={boardKey} {...scrollProps} testID='game-board-scroll' showsVerticalScrollIndicator={Platform.OS !== 'web'} style={styles.scroll} contentContainerStyle={[styles.content, { paddingTop: (isWide ? topPadding : GAME_CONTENT_TOP_PADDING) + insets.top }, holdHeight > 0 && { minHeight: holdHeight }]}>
           {/* The bottom reserve (GAME_CONTENT_BOTTOM_PADDING, where the moves/timer row and footer float)
           is this wrapper's own paddingBottom. alignItems: 'center' lays out a board narrower than the
           available width the same way `content` does (Spider's board is several top-level siblings). The
@@ -569,6 +593,11 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   )
 }
 
+// A footer button clicks at touch-down like every other press, but its long press (Undo's and Hint's hold) adds nothing
+// of its own: feedback-press's default wiring plays its 'notification' feedback there, which this app maps to the
+// invalid-move sound. Each undo or hint the hold brings clicks instead.
+const FooterPressable = withFeedback<PressableProps>(RNPressable, { onPressIn: { event: 'selection', activeWhen: ['onPress', 'onLongPress'] } })
+
 interface FooterButtonProps {
   icon: string
   /** The caption under the icon, and the button's screen-reader label. */
@@ -582,13 +611,13 @@ interface FooterButtonProps {
 }
 
 /** One of the game's controls (New Game, Undo, Hint, and in the wide layout Rules): its icon over a caption,
- * one touch target. feedback-press's Pressable (the same press sound/haptic an IconButton plays) rather than a
+ * one touch target. feedback-press's press sound/haptic (FooterPressable, the click an IconButton plays) rather than a
  * Paper IconButton, which has no room for a caption. The touch area is the pill plus `layout.reach` above it
  * (see FOOTER_TOUCH_REACH); the pressed highlight is drawn on the pill alone, on every platform (an Android
  * ripple would fill the whole touch area). */
 function FooterButton({ icon, label, layout, disabled, onPress, onLongPress, onPressOut, delayLongPress }: FooterButtonProps) {
   return (
-    <Pressable accessibilityRole='button' accessibilityLabel={label} accessibilityState={{ disabled: !!disabled }} disabled={disabled} onPress={onPress} onLongPress={onLongPress} onPressOut={onPressOut} delayLongPress={delayLongPress} hitSlop={layout.hitSlop} style={{ paddingTop: layout.reach, width: layout.width }}>
+    <FooterPressable accessibilityRole='button' accessibilityLabel={label} accessibilityState={{ disabled: !!disabled }} disabled={disabled} onPress={onPress} onLongPress={onLongPress} onPressOut={onPressOut} delayLongPress={delayLongPress} hitSlop={layout.hitSlop} style={{ paddingTop: layout.reach, width: layout.width }}>
       {({ pressed }) => (
         <View style={[styles.footerButton, pressed && styles.footerButtonPressed]}>
           <View style={[styles.footerContent, disabled && styles.footerContentDisabled]}>
@@ -597,7 +626,7 @@ function FooterButton({ icon, label, layout, disabled, onPress, onLongPress, onP
           </View>
         </View>
       )}
-    </Pressable>
+    </FooterPressable>
   )
 }
 

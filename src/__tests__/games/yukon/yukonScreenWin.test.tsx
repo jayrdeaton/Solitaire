@@ -197,9 +197,9 @@ jest.mock('@/components/dealing/measureView', () => ({ measureView: async (view:
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => {}, hapticCard: () => {}, hapticInvalid: () => {} }) }))
 jest.mock('@rific/feedback-press', () => ({ useVibration: () => ({ short: () => {}, selection: () => {} }) }))
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))
-jest.mock('@tastic/sprites/fireworks', () => {
+jest.mock('@/components/winning/PipFireworks', () => {
   const { View: MockView } = require('react-native')
-  return { Fireworks: () => <MockView testID='fireworks' /> }
+  return { PipFireworks: () => <MockView testID='fireworks' /> }
 })
 jest.mock('@/games/shared/WinBanner', () => {
   const { Text: MockText } = require('react-native')
@@ -1103,5 +1103,68 @@ describe('Yukon screen - an undo that needs cards still flying back', () => {
 
     await flushUntil(() => mockLog.shown.length === 2)
     expect(mockLog.shownAt[1] - mockLog.shownAt[0]).toBeGreaterThanOrEqual(FLIGHT_MS)
+  })
+})
+
+// Jay's recording, 2026-10-16: a run tapped onto the 9C, then the QH above that 9C tapped before the run had landed. The QH's
+// run took the cards still in the air along as if they were on the column: they were drawn twice (the first ghost still landing
+// them, the new ghost carrying them off), and the column's landing count, still waiting for them, hid every card left in it (the
+// face-down card, turned up by the move) until the first flight landed. The cards in the air now go on from mid-air (ghost.peel).
+describe('Yukon screen - a tapped run that reaches into cards still flying in to its column', () => {
+  const down = (suit: Suit, rank: number): Card => ({ ...card(suit, rank), faceUp: false })
+  /** The 8D and 7C go onto the 9C (the only place they can), then the QH, the 9C and them onto the KC. */
+  const QUICK = () =>
+    board(
+      [
+        [card('clubs', 13), card('diamonds', 8), card('clubs', 7)],
+        [down('spades', 2), card('hearts', 12), card('clubs', 9)]
+      ],
+      [[], [], [], []]
+    )
+  /** The hidden count each column is drawn with (cards still flying in), by column. */
+  const hiddenCounts = () => [...mockPiles.entries()].sort(([a], [b]) => a - b).map(([, p]) => p.hiddenCount ?? 0)
+  const columns = () => [...mockPiles.entries()].sort(([a], [b]) => a - b).map(([, p]) => p.cards.map((c) => `${c.id}${c.faceUp ? '' : ' down'}`))
+
+  it('sends them on from mid-air, and the cards left in their column show at once', async () => {
+    await mount(QUICK(), [], 6)
+
+    await tap(id('diamonds', 8))
+    await flush(10) // the 8D and 7C are flying to the 9C
+    expect(mockLog.shown).toEqual([`${id('diamonds', 8)}+${id('clubs', 7)}`])
+    expect(mockLog.inAir).toBe(1)
+    const runLeft = mockLog.shownAt[0]
+
+    await tap(id('hearts', 12))
+    await flush(10)
+    expect(mockLog.shown[1]).toBe(`${id('hearts', 12)}+${id('clubs', 9)}`) // only the cards on the column lift off it
+    expect(mockPeel.peeled).toEqual([`${id('diamonds', 8)}+${id('clubs', 7)}`]) // the cards in the air turn toward the KC
+    expect(mockPeel.peeledAt[0] - runLeft).toBeLessThan(FLIGHT_MS) // while they were still in the air
+    expect(mockLog.shown).toHaveLength(2)
+    expect(hiddenCounts().slice(0, 2)).toEqual([4, 0]) // the column they left hides nothing: its turned-up 2S shows
+    expect(columns()[1]).toEqual([id('spades', 2)])
+
+    await flushUntil(() => mockLog.inAir === 0)
+    expect(hiddenCounts().slice(0, 2)).toEqual([0, 0])
+    expect(columns().slice(0, 2)).toEqual([[id('clubs', 13), id('hearts', 12), id('clubs', 9), id('diamonds', 8), id('clubs', 7)], [id('spades', 2)]])
+  })
+
+  it("waits for them to land when they can't be taken out of the air yet", async () => {
+    await mount(QUICK(), [], 6)
+    jest.spyOn(mockGhost, 'canPeel').mockReturnValue(false)
+
+    await tap(id('diamonds', 8))
+    await flush(10)
+    await tap(id('hearts', 12))
+    await flush(10)
+    expect(mockLog.shown).toHaveLength(1) // the QH waits for the 8D and 7C to land
+    expect(hiddenCounts().slice(0, 2)).toEqual([0, 2])
+
+    await flushUntil(() => mockLog.shown.length === 2)
+    expect(mockLog.shown[1]).toBe(`${id('hearts', 12)}+${id('clubs', 9)}+${id('diamonds', 8)}+${id('clubs', 7)}`)
+    expect(mockLog.shownAt[1] - mockLog.shownAt[0]).toBeGreaterThanOrEqual(FLIGHT_MS)
+    expect(hiddenCounts().slice(0, 2)).toEqual([4, 0])
+
+    await flushUntil(() => mockLog.inAir === 0)
+    expect(columns().slice(0, 2)).toEqual([[id('clubs', 13), id('hearts', 12), id('clubs', 9), id('diamonds', 8), id('clubs', 7)], [id('spades', 2)]])
   })
 })

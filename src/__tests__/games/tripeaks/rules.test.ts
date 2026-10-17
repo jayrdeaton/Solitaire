@@ -296,7 +296,7 @@ describe('TriPeaks scoreHintMove', () => {
     const move = { from: { zone: 'tableau', index: flatIndex(0, 0) }, to: { zone: 'waste', index: 0 }, count: 1 }
 
     expect(TriPeaksController.scoreHintMove!(s, move)).toBeGreaterThan(0)
-    expect(findHint(TriPeaksController, s)).toEqual({ kind: 'move', move })
+    expect(findHint(TriPeaksController, s)).toEqual({ kind: 'move', move, choices: 1 })
   })
 
   it('findHint recommends the higher-exposure move over an earlier no-gain move in raw scan order', () => {
@@ -310,7 +310,8 @@ describe('TriPeaks scoreHintMove', () => {
     const hint = findHint(TriPeaksController, s)
     expect(hint).toEqual({
       kind: 'move',
-      move: { from: { zone: 'tableau', index: flatIndex(2, 3) }, to: { zone: 'waste', index: 0 }, count: 1 }
+      move: { from: { zone: 'tableau', index: flatIndex(2, 3) }, to: { zone: 'waste', index: 0 }, count: 1 },
+      choices: 2
     })
   })
 })

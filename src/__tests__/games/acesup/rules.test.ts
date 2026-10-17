@@ -276,7 +276,7 @@ describe('Aces Up legalMoves / Hint agreement with autoMoveHint', () => {
     const state: AcesUpState = { piles: [[hearts5], [diamonds4], [], [diamonds9]], stock: [], discard: [] }
 
     const hint = findHint(AcesUpController, state, 0)
-    expect(hint).toEqual({ kind: 'move', move: { from: { zone: 'tableau', index: 1 }, to: { zone: 'discard', index: 0 }, count: 1 } })
+    expect(hint).toEqual({ kind: 'move', move: { from: { zone: 'tableau', index: 1 }, to: { zone: 'discard', index: 0 }, count: 1 }, choices: 1 })
   })
 
   // Hint used to offer moving a pile's only card into the empty pile, then moving it straight back,
@@ -311,6 +311,6 @@ describe('Aces Up legalMoves / Hint agreement with autoMoveHint', () => {
     }
     const expose = { from: { zone: 'tableau', index: 0 }, to: { zone: 'tableau', index: 1 }, count: 1 }
     expect(AcesUpController.scoreHintMove!(state, expose)).toBeGreaterThan(0)
-    expect(findHint(AcesUpController, state)).toEqual({ kind: 'move', move: expose })
+    expect(findHint(AcesUpController, state)).toEqual({ kind: 'move', move: expose, choices: 1 })
   })
 })

@@ -2,11 +2,11 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
-import { Fireworks } from '@tastic/sprites/fireworks'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
 import { HintRequest } from '@/components/autoHint'
+import { isGhostPending, subscribeGhostPending } from '@/components/cardFacePaint'
 import { cardLayoutForRow } from '@/components/cardLayout'
 import { DealCardSpec, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_STAGGER_MS, dealStaggerMs } from '@/components/dealing/dealSpring'
@@ -19,14 +19,14 @@ import { useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { wasteFanScreenShift } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
+import type { StockRequestOptions } from '@/components/stockHold'
 import { StockWaste } from '@/components/StockWaste'
-import { fireworksColors } from '@/components/theme'
 import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
 import { wasteFanStepFor } from '@/components/wasteFan'
+import { PipFireworks } from '@/components/winning/PipFireworks'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
-import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { KLONDIKE_RULES } from '@/constants/gameRules'
 import { AutoCompleteStep, findSafeAutoPlay, isFullyAutoCompletableWithDraws, nextAutoCompleteMoveWithDraws } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
@@ -40,6 +40,8 @@ import { klondikeVariant } from '@/engine/variants'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { showNoHintToast } from '@/games/shared/gameToasts'
+import { liftTappedRun, peelInAir } from '@/games/shared/inAirRun'
+import { createStockQueue, startStockWait, stockWaitTick } from '@/games/shared/stockWait'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFinish } from '@/games/shared/useAutoFinish'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
@@ -62,6 +64,7 @@ import { KlondikeSettingsSection } from './KlondikeSettingsSection'
 import { canAutoFinish, createKlondikeController, KlondikeState, nextFinishMove } from './rules'
 const TABLEAU_COLUMNS = 7
 const WASTE: PileRef = { zone: 'waste', index: 0 }
+const STOCK: PileRef = { zone: 'stock', index: 0 }
 
 /** This game's own undo-move shape (see undoTypes.ts's TMove generic): `primary` is the move that
  * produced the very next state (same as every other game's plain MoveInfo|null). Every step, an
@@ -111,7 +114,7 @@ function normalizeUndoEntry(e: KlondikeUndoEntry | LegacyKlondikeUndoEntry): Klo
 export default withGameProviders(KlondikeScreenInner)
 
 function KlondikeScreenInner() {
-  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   const controllerRef = useRef(createKlondikeController(settings.klondikeDraw))
@@ -129,7 +132,7 @@ function KlondikeScreenInner() {
   // each other - PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`,
   // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
   // unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkFlying, shrinkLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<KlondikeState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkFlying, shrinkLanding, landingCount, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<KlondikeState>()
   const [undoStack, setUndoStack, undoStackRef] = useUndoStack<KlondikeUndoEntry>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -165,6 +168,11 @@ function KlondikeScreenInner() {
   // frozen on its outgoing look rather than reveal the incoming one early - see StockWaste's own
   // `stockHidden` prop doc comment.
   const [stockHidden, setStockHidden] = useState(false)
+  // Paces the stock taps that had to wait for a flight (see createStockQueue and handleDrawStock).
+  const [stockQueue] = useState(createStockQueue)
+  // The waste's top card while a turn-over's clump of landed cards takes off with others still in the air (holdWasteTop) - the
+  // waste keeps drawing it until the clump's ghost is on screen. Null the rest of the time.
+  const [wasteTakeOff, setWasteTakeOff] = useState<Card | null>(null)
   // Extra waste-slot hidden count contributed by a legacy save's cascaded auto-play cards flying
   // back onto the waste during an undo (see PATTERN_CASCADE_UNDO) - added on top of `flying`'s own
   // waste count in the StockWaste wasteHiddenCount prop below, since the two can be simultaneously
@@ -264,6 +272,7 @@ function KlondikeScreenInner() {
     pendingDealDrawRef.current = []
     pendingCascadeUndoRef.current = null
     setStockHidden(false)
+    setWasteTakeOff(null)
     setCascadeWasteHiddenCount(0)
     setWinCascadeFallbackSuits(new Set())
     session.reset()
@@ -304,6 +313,7 @@ function KlondikeScreenInner() {
     pendingDealDrawRef.current = []
     pendingCascadeUndoRef.current = null
     setStockHidden(false)
+    setWasteTakeOff(null)
     setCascadeWasteHiddenCount(0)
     setWinCascadeFallbackSuits(new Set())
     session.restore(saved.moves, saved.elapsedSeconds)
@@ -406,7 +416,7 @@ function KlondikeScreenInner() {
         fallbackSuits.add(suit)
         return
       }
-      chains.push({ cards: pile.slice().reverse(), origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
+      chains.push({ cards: pile.slice().reverse(), origin })
     })
     if (fallbackSuits.size > 0) setWinCascadeFallbackSuits(fallbackSuits)
     // A pile with no chain to take over from it is in fallbackSuits above and stays up regardless, so this hand-off
@@ -683,13 +693,13 @@ function KlondikeScreenInner() {
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
   // the player still taps/drags the suggested card through the normal tap-to-move/drag flow.
-  function handleHint(request?: HintRequest) {
-    if (!state) return
+  function handleHint(request?: HintRequest): boolean {
+    if (!state) return false
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(controllerRef.current, state, skip)
     if (result.kind === 'none') {
       if (!request?.auto) showNoHintToast(infoToast)
-      return
+      return false
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
@@ -700,6 +710,8 @@ function KlondikeScreenInner() {
       const source = resolvePile(from) ?? []
       void playHintGlide({ moving: source.slice(source.length - count), dest: resolvePile(to) ?? [], destFanned: to.zone === 'tableau', slot: to, cardWidth })
     }
+    // True when pressing Hint again shows a different move: a held Hint button steps on while it is (hintHold.ts).
+    return result.kind === 'move' && result.choices > 1
   }
 
   // Every step gets its own undo entry, an auto-played one included (a silent foundation play, a
@@ -1023,10 +1035,21 @@ function KlondikeScreenInner() {
   // drop, or an auto-play) - applies the move, then marks the destination "incoming" and stashes
   // the anchor card id for the pendingFlightRef effect above to measure and fly the ghost onto,
   // instead of it just vanishing/appearing at the destination instantly.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean }): boolean {
+  //
+  // `inAir`: a tapped run's cards still flying in to `from` (inAirRun.ts) - `flight` carries only the cards on the board, and each piece
+  // goes on from mid-air in a flight of its own, landing on top of them.
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; inAir?: Card[][] }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
-    const flyingId = beginFlying(to, count)
-    pendingFlightRef.current.push({ cardId: anchorCardId, to, gen: dealTokenRef.current, flyingId, flight })
+    const gen = dealTokenRef.current
+    const inAirCount = (opts?.inAir ?? []).reduce((n, piece) => n + piece.length, 0)
+    pendingFlightRef.current.push({ cardId: anchorCardId, to, gen, flyingId: beginFlying(to, count - inAirCount), flight })
+    if (inAirCount > 0) {
+      // Out of `from`'s landing count, so the cards left there show at once.
+      shrinkLanding(from, inAirCount)
+      const pieces = peelInAir(ghost, opts?.inAir ?? [], cardWidth)
+      startFlights(pieces.length)
+      for (const p of pieces) pendingFlightRef.current.push({ cardId: p.anchorCardId, to, gen, flyingId: beginFlying(to, p.count), flight: p.flight })
+    }
     return true
   }
 
@@ -1154,119 +1177,83 @@ function KlondikeScreenInner() {
   // `opts.sweep` marks this as an automatic step of the win-completing sweep (see fireDraw, passed
   // as the shared cascade hook's own fireDraw callback) rather than a genuine player tap. It counts as a
   // move and is its own undo step, like a player's draw (see pushUndo); only the feedback and the
-  // cascade's disarm differ.
-  async function handleDrawStock(opts?: { sweep?: boolean }) {
+  // cascade's disarm differ. `repeat`/`cancelled` come from a held stock (StockWaste's useStockHold).
+  // Resolves true once a draw or turn-over has committed.
+  async function handleDrawStock(opts?: { sweep?: boolean } & StockRequestOptions): Promise<boolean> {
     // Reads via stateRef.current, not the closure `state` - see applyMove's identical comment.
     // Without this, rapid-clicking the stock pile several times before React re-renders drew the
     // SAME card repeatedly (every call computing drawStock() against the same stale board) instead
     // of drawing several different ones in a row.
     const current = stateRef.current
-    if (!current || !controllerRef.current.drawStock) return
-    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
-    const planned = controllerRef.current.drawStock(current)
-    if (!planned) return
+    if (!current || !controllerRef.current.drawStock) return false
+    if (undoBusyRef.current) return false // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
+    if (heldAtEmptyStock(current, opts) || !controllerRef.current.drawStock(current)) return false
     startFlights(1)
     // A draw is the player's, but it is not a play: it never sets auto-play off, and it stops a cascade
     // still running from their last play, so a card they just drew is theirs to find and play. Stopped
     // at the tap, before the measurement below, so no auto-played card can go up in between.
     if (!opts?.sweep) cascade.disarm()
 
-    // A draw-3 fan has nothing to measure first (its deal-style flight measures once it has committed -
-    // see the [state]-effect above), so it commits right here, on the board as tapped. A single card or
-    // a recycle flies from a container measured first, and what it actually draws - or recycles - is
-    // worked out from the board as it is once the measurements are back (Pyramid's handleDrawStock
-    // does the same): computed before the await and committed after it, two quick taps both drew the
-    // SAME card (two moves and two undo entries for it), and a tap-to-move committed meanwhile was
-    // undone in state while its ghost flew on.
-    const fan = !!top(planned.waste) && planned.waste.length - current.waste.length > 1
-    let board = current
-    let result = planned
-    let stockPos: ScreenPoint | null = null
-    let wastePos: ScreenPoint | null = null
-    if (!fan) {
-      const gen = dealTokenRef.current
-      // Both containers are always mounted and card-sized, so both are measured whichever branch the
-      // re-read draw below turns out to be.
-      ;[stockPos, wastePos] = await Promise.all([measureView(stockViewRef.current), measureView(wasteViewRef.current)])
-      // A New Game or restore mid-measurement replaced the board and already dropped this claim
-      // (resetFlightConcurrency) - drop the draw too, rather than draw from the new deal.
-      if (dealTokenRef.current !== gen) return
-      // The cascade's own draw (a sweep) must not commit once the player's move has ended the cascade, or over a board that
-      // moved on while it was measuring (its step was worked out for the board it started from).
-      if (opts?.sweep && (!cascade.isArmed() || stateRef.current !== current)) {
-        settleFlight()
-        return
-      }
-      // Re-read and committed below in one synchronous stretch, so nothing can commit in between.
-      const latest = stateRef.current
-      const redrawn = latest && controllerRef.current.drawStock(latest)
-      if (!latest || !redrawn) {
-        settleFlight()
-        return
-      }
-      board = latest
-      result = redrawn
+    // What the tap draws - a card, a draw-3 fan or a turn-over - is worked out from the board as it is once the measurements
+    // (and any wait, below) are over, and committed in the same synchronous stretch (Pyramid's handleDrawStock does the same):
+    // computed at the tap and committed after an await, two quick taps both drew the SAME card (two moves and two undo entries
+    // for it), and a tap-to-move committed meanwhile was undone in state while its ghost flew on. Both containers are always
+    // mounted and card-sized, so both are measured whichever it turns out to be (a fan measures again once it has committed -
+    // see the [state]-effect above).
+    const gen = dealTokenRef.current
+    const [stockPos, wastePos] = await Promise.all([measureView(stockViewRef.current), measureView(wasteViewRef.current)])
+    // A flight in the way (drawCanGo) makes the tap wait rather than dropping it - every tap is one draw - and taps that waited go
+    // one after another at a held stock's pace (createStockQueue). A LOOP, re-checked in the same synchronous stretch as the commit
+    // below (see stockWait.ts).
+    const wait = startStockWait()
+    let waited = false
+    while (dealTokenRef.current === gen && !(drawCanGo() && (!waited || stockQueue.ready())) && wait.left() > 0 && !opts?.cancelled?.()) {
+      waited = true
+      await stockWaitTick()
+    }
+    // A New Game or restore mid-measurement replaced the board and already dropped this claim
+    // (resetFlightConcurrency) - drop the draw too, rather than draw from the new deal.
+    if (dealTokenRef.current !== gen) return false
+    // Re-read and committed below in one synchronous stretch, so nothing can commit in between. Dropped when the wait ran out or
+    // a hold let go (opts.cancelled) - and the cascade's own draw (a sweep) once the player's move has ended the cascade, or over a
+    // board that moved on while it was measuring (its step was worked out for the board it started from).
+    const board = stateRef.current
+    const stale = opts?.cancelled?.() || !drawCanGo() || (waited && !stockQueue.ready()) || (opts?.sweep && (!cascade.isArmed() || board !== current))
+    const result = board && !stale && !heldAtEmptyStock(board, opts) ? controllerRef.current.drawStock(board) : null
+    if (!board || !result) {
+      settleFlight()
+      return false
     }
     // Counted here, with the draw that really happens - not at the tap, whose draw may have been dropped.
     session.registerMove() // a sweep\'s own draw counts too, as the player\'s would with Auto-Move off
+    if (waited) stockQueue.went()
 
     const drawnCard = top(result.waste)
     if (!drawnCard) {
-      // Recycling the waste back into the stock (see PATTERN_RECYCLE) - the whole waste flies as
-      // one clump, from the waste slot to the stock slot, both content-independent container refs
-      // (no post-commit deferral needed for either end). cardIds records the full group
-      // (oldest-to-newest) - a legacy save's cascaded-undo reversal needed it to reconstruct exactly
-      // this move's own cards even after other moves happened on top of it (see undoTypes.ts).
-      const recycledCards = board.waste.slice()
-      const move: MoveInfo = { from: { zone: 'waste', index: 0 }, to: { zone: 'stock', index: 0 }, count: recycledCards.length, anchorCardId: recycledCards[0]?.id ?? '', cardIds: recycledCards.map((c) => c.id) }
-      pushUndo(board, move)
-
-      if (wastePos && stockPos && recycledCards.length > 0) {
-        if (opts?.sweep) cascadeFeedback()
-        else {
-          playCardSound()
-          hapticCard()
-        }
-        const flight = ghost.show({ cards: recycledCards, offsetStep: 0, cardWidth }, { x: wastePos.x, y: wastePos.y })
-        // Landing on the STOCK (Pyramid's recycle too). Counted as landing on the waste, it froze the waste on the card that
-        // had just left it, so that card showed twice for the whole flight: on the waste and as the ghost.
-        const flyingId = beginFlying({ zone: 'stock', index: 0 }, recycledCards.length)
-        setStockHidden(true)
-        commitState(result)
-        flight.flyTo(stockPos.x, stockPos.y, () => {
-          endFlying(flyingId)
-          setStockHidden(false)
-          settleFlight()
-        })
-      } else {
-        commitState(result)
-        settleFlight()
-      }
-      return
+      recycleWaste(board, result, stockPos, wastePos, opts?.sweep)
+      return true
     }
 
     // How many cards this draw actually added - normally klondikeDraw, but fewer once the stock
     // runs low (rules.ts's drawStock clamps to what's left).
     const drawnCount = result.waste.length - board.waste.length
-    const move: MoveInfo = { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: drawnCount, anchorCardId: drawnCard.id }
+    const move: MoveInfo = { from: STOCK, to: WASTE, count: drawnCount, anchorCardId: drawnCard.id }
 
-    // A fan - drawn at the tap, or (rarely) by a tap that was measuring for a single card or a
-    // recycle when a recycle committed ahead of it and refilled the stock.
     if (drawnCount > 1) {
       const drawnCards = result.waste.slice(result.waste.length - drawnCount) // oldest -> newest/top
       const moveWithIds: MoveInfo = { ...move, cardIds: drawnCards.map((c) => c.id) }
       pushUndo(board, moveWithIds)
-      const flyingId = beginFlying({ zone: 'waste', index: 0 }, drawnCount)
+      const flyingId = beginFlying(WASTE, drawnCount)
       pendingDealDrawRef.current.push({ topCardId: drawnCard.id, drawnCards, gen: dealTokenRef.current, flyingId })
       commitState(result)
-      return
+      return true
     }
 
     if (!stockPos) {
       pushUndo(board, move)
       commitState(result)
       settleFlight()
-      return
+      return true
     }
 
     if (opts?.sweep) cascadeFeedback()
@@ -1275,11 +1262,117 @@ function KlondikeScreenInner() {
       hapticCard()
     }
     const flight = ghost.show({ cards: [drawnCard], offsetStep: 0, cardWidth }, { x: stockPos.x, y: stockPos.y })
-    const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
+    const flyingId = beginFlying(WASTE, 1)
 
     pushUndo(board, move)
     commitState(result)
-    pendingFlightRef.current.push({ cardId: drawnCard.id, to: { zone: 'waste', index: 0 }, gen: dealTokenRef.current, flyingId, flight })
+    pendingFlightRef.current.push({ cardId: drawnCard.id, to: WASTE, gen: dealTokenRef.current, flyingId, flight })
+    return true
+  }
+
+  // A held stock's repeat at an empty stock: the hold never turns the waste over (see StockRequestOptions).
+  function heldAtEmptyStock(board: KlondikeState, opts?: StockRequestOptions): boolean {
+    return !!opts?.repeat && board.stock.length === 0
+  }
+
+  // Whether a stock tap can go right now - the board as it is now decides what it will draw. Otherwise it waits (handleDrawStock):
+  //   - anything, while a turn-over's cards are still flying into the stock: the stock is drawn as it was before them (empty,
+  //     stockHidden) until they land, so a card drawn now would come out of an empty slot (Pyramid's draws wait the same way);
+  //   - a draw-3 draw, while anything is still landing on the waste: the deal layer flies one fan at a time - a second start()
+  //     cancelled the first, whose cards then never reported landing, so two quick taps left the waste frozen and Undo waiting for
+  //     good - and the waste freezes its fan slot by slot for one fan;
+  //   - a turn-over, while a card it would take is still flying to the waste, unless every such card can turn back toward the
+  //     stock in mid-air (wasteInAirToTurnBack): taken as they were, each was drawn twice - flying in to the waste, and on top of
+  //     the clump flying out.
+  // Draw-1 draws overlap each other freely.
+  function drawCanGo(): boolean {
+    const board = stateRef.current
+    if (!board) return true
+    if (isLanding(STOCK)) return false
+    const inAir = landingCount(WASTE)
+    if (inAir === 0) return true
+    if (board.stock.length === 0) return wasteInAirToTurnBack(board, inAir) !== null
+    return klondikeDraw === 1
+  }
+
+  // The waste's top `inAir` cards - still flying in to it - when every one of them can turn back in mid-air: a draw-1 card whose
+  // ghost is on screen (DragGhostController.canPeel). Null when any can't (a draw-3 fan flies through the deal layer, which can't
+  // hand a card over; a ghost not shown yet): the turn-over then waits for them to land.
+  function wasteInAirToTurnBack(board: KlondikeState, inAir: number): Card[] | null {
+    if (inAir > board.waste.length) return null
+    const cards = board.waste.slice(board.waste.length - inAir)
+    return cards.every((c) => ghost.canPeel({ cards: [c], offsetStep: 0, cardWidth })) ? cards : null
+  }
+
+  // Turning the waste back over into the stock (see PATTERN_RECYCLE) - the whole waste flies as one clump, from the waste slot to
+  // the stock slot, both content-independent container refs (no post-commit deferral needed for either end). cardIds records the
+  // full group (oldest-to-newest) - a legacy save's cascaded-undo reversal needed it to reconstruct exactly this move's own cards
+  // even after other moves happened on top of it (see undoTypes.ts).
+  //
+  // A card a quick player drew last that is still flying in to the waste (drawCanGo lets the turn-over go only if it can) turns
+  // back in mid-air instead, like a held Undo's cards (DragGhostController.peel): the clump is the cards that have landed, and each
+  // card in the air goes to the stock from wherever it is, in a flight of its own. Until the clump's ghost is on screen the waste
+  // keeps drawing its top card (holdWasteTop): its own take-off hold is for the card it drew last - the one in the air.
+  function recycleWaste(board: KlondikeState, result: KlondikeState, stockPos: ScreenPoint | null, wastePos: ScreenPoint | null, sweep: boolean | undefined) {
+    const recycledCards = board.waste.slice()
+    const move: MoveInfo = { from: WASTE, to: STOCK, count: recycledCards.length, anchorCardId: recycledCards[0]?.id ?? '', cardIds: recycledCards.map((c) => c.id) }
+    pushUndo(board, move)
+    if (!wastePos || !stockPos || recycledCards.length === 0) {
+      commitState(result)
+      settleFlight()
+      return
+    }
+    // drawCanGo found them all able to turn back, in this same synchronous stretch.
+    const inAir = wasteInAirToTurnBack(board, landingCount(WASTE)) ?? []
+    const landed = recycledCards.slice(0, recycledCards.length - inAir.length)
+    if (sweep) cascadeFeedback()
+    else {
+      playCardSound()
+      hapticCard()
+    }
+    const gen = dealTokenRef.current
+    // Landing on the STOCK (Pyramid's recycle too). Counted as landing on the waste, it froze the waste on the card that
+    // had just left it, so that card showed twice for the whole flight: on the waste and as the ghost.
+    const flyingId = beginFlying(STOCK, recycledCards.length)
+    setStockHidden(true)
+    const clump = landed.length > 0 ? ghost.show({ cards: landed, offsetStep: 0, cardWidth }, { x: wastePos.x, y: wastePos.y }) : null
+    // After the clump's ghost, bottom to top, so they start - and, every flight taking the same time, land - in stacking order.
+    const turnedBack = peelInAir(
+      ghost,
+      inAir.map((c) => [c]),
+      cardWidth
+    )
+    if (turnedBack.length > 0) {
+      // Out of the waste's landing count: they aren't coming.
+      shrinkLanding(WASTE, turnedBack.length)
+      if (clump) holdWasteTop(landed[landed.length - 1])
+    }
+    commitState(result)
+    let flightsLeft = (clump ? 1 : 0) + turnedBack.length
+    const onLanded = () => {
+      flightsLeft -= 1
+      // A New Game or restore meanwhile already reset all of this.
+      if (flightsLeft > 0 || dealTokenRef.current !== gen) return
+      endFlying(flyingId)
+      setStockHidden(false)
+      settleFlight()
+    }
+    clump?.flyTo(stockPos.x, stockPos.y, onLanded)
+    turnedBack.forEach((p) => p.flight.flyTo(stockPos.x, stockPos.y, onLanded))
+  }
+
+  // The waste's top card, drawn by the waste (over its own empty slot) while a turn-over's clump has not shown its ghost yet (see
+  // recycleWaste): held until that card's ghost is on screen - cardFacePaint.ts's ghost pending, which the clump's show() marked
+  // (and lets go of by itself after GHOST_PENDING_MAX_MS). A clump that took over a ghost already on screen marks nothing: no hold.
+  function holdWasteTop(card: Card) {
+    if (!isGhostPending(card.id)) return
+    setWasteTakeOff(card)
+    let unsubscribe = () => {}
+    unsubscribe = subscribeGhostPending(() => {
+      if (isGhostPending(card.id)) return
+      unsubscribe()
+      setWasteTakeOff((held) => (held === card ? null : held))
+    })
   }
 
   // `s` defaults to the closure's own live `state` (every pre-existing call site) - runCascadeReturn
@@ -1334,21 +1427,18 @@ function KlondikeScreenInner() {
     // thing that still waits on activeFlightCountRef) sees this tap as in-flight for its whole
     // duration, not just once completeMove lands one.
     startFlights(1)
-    const origin = await measure()
-    const sourcePile = resolvePile(move.from)
-    if (!sourcePile || undoBusyRef.current) {
+    // Part of the run may still be flying in to this column (a quick tap right after a move put it there): it goes on from mid-air
+    // (inAirRun.ts).
+    const takeOff = await liftTappedRun({ ghost, from: move.from, count: move.count, measure, pile: () => resolvePile(move.from, stateRef.current), landingCount, cancelled: () => undoBusyRef.current, cardWidth })
+    if (!takeOff) {
       settleFlight()
       return
     }
-    const movingCards = sourcePile.slice(sourcePile.length - move.count)
-    const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
     playCardSound()
     hapticCard()
-    const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
-
-    if (!completeMove(move.from, move.to, move.count, cardId, flight)) {
-      flight.hide()
+    if (!completeMove(move.from, move.to, move.count, cardId, takeOff.flight, { inAir: takeOff.inAir })) {
+      takeOff.flight.hide()
       settleFlight()
     }
   }
@@ -1361,6 +1451,12 @@ function KlondikeScreenInner() {
   // StockWaste), so the slice below (oldest-visible -> wasteTop) is reversed.
   const visibleWasteCount = klondikeDraw === 3 ? Math.min(3, state.waste.length) : Math.min(1, state.waste.length)
   const wasteBehind = state.waste.slice(Math.max(0, state.waste.length - visibleWasteCount), state.waste.length - 1).reverse()
+  // The waste's top cards still flying in to it. A quick player's draw-1 cards overlap, and the waste shows the top card that has
+  // LANDED under them (StockWaste's settledWasteTop, as Pyramid's does): its frozen copy of the top from before the whole stream
+  // was never refreshed while they kept coming, so each landing card vanished onto that older card until the next one landed. A
+  // draw-3 fan keeps its slot-by-slot freeze.
+  const wasteLanding = flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0) + cascadeWasteHiddenCount
+  const settledWasteTop = wasteTakeOff ?? (klondikeDraw === 1 && wasteLanding > 0 ? (state.waste[state.waste.length - 1 - wasteLanding] ?? null) : undefined)
 
   return (
     <CardSizeProvider width={cardWidth}>
@@ -1396,7 +1492,7 @@ function KlondikeScreenInner() {
             })}
           </View>
 
-          <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteUnder={state.waste[state.waste.length - 2]} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0) + cascadeWasteHiddenCount} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight, dragged) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, dragged.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
+          <StockWaste dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteBehind={wasteBehind} wasteUnder={state.waste[state.waste.length - 2]} wasteHiddenCount={wasteLanding + (wasteTakeOff ? 1 : 0)} settledWasteTop={settledWasteTop} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={gap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight, dragged) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, dragged.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} stockHidden={stockHidden} />
         </View>
 
         <View style={[styles.tableauRow, { gap }]}>
@@ -1433,7 +1529,7 @@ function KlondikeScreenInner() {
     (see WinCascadeGhosts' own doc comment for why nesting depth alone can't do this) - the win
     banner comes last of all three so it's the one thing guaranteed to sit on top of the animation,
     not buried under it. */}
-      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <PipFireworks />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor(variant)} onNewGame={startNewGame} />}
     </CardSizeProvider>

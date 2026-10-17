@@ -1,11 +1,12 @@
+import { FadingScrollView } from '@rific/auto-paper'
 import { IconButton, Pressable } from '@rific/feedback-press'
 import { type TableColors } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
-import { PressAwayOverlay, usePopoverHost } from '@tastic/hud'
+import { PressAwayOverlay, usePopoverHost, WELL_SHADOW } from '@tastic/hud'
 import { useAutoShowGuide } from '@tastic/hud/guide'
 import { Link, Redirect, useIsFocused, useRouter } from 'expo-router'
 import { useEffect, useMemo, useState } from 'react'
-import { ScrollView, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
+import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
 import { Icon, MD3Theme, useTheme } from 'react-native-paper'
 
 import { GamePreview, type PreviewCardPlacement } from '@/components/GamePreview'
@@ -108,8 +109,8 @@ function HomeContent() {
   const focused = useIsFocused()
   const isWide = useFrozenWhileHidden(layout.isWide, !focused)
   const colors = useTableColors()
-  const { dark, colors: paperColors } = useTheme()
-  const styles = useMemo(() => makeStyles(colors, dark, paperColors), [colors, dark, paperColors])
+  const { colors: paperColors } = useTheme()
+  const styles = useMemo(() => makeStyles(colors, paperColors), [colors, paperColors])
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [rulesFor, setRulesFor] = useState<GameEntry | null>(null)
   // Owns the profile row's popover state so a full-screen @tastic/hud PressAwayOverlay can be
@@ -141,7 +142,7 @@ function HomeContent() {
     return () => cancelAnimationFrame(id)
   }, [])
 
-  const infoIconColor = dark ? paperColors.onSurfaceVariant : '#888'
+  const infoIconColor = paperColors.onSurfaceVariant
 
   // One rules button per tile, shared by both layouts' tile shapes. Both calls are needed on web: Link
   // asChild renders a real <a href>, so stopPropagation alone leaves the anchor's own native navigation
@@ -216,10 +217,14 @@ function HomeContent() {
       {isWide ? (
         <>
           {pressAway}
-          {/* Right pane: the game grid, scrolling on its own between the left pane and the cog's gutter. */}
-          <ScrollView style={[styles.wideRightPane, { left: layout.paddingLeft + layout.leftPaneWidth + HOME_WIDE_PANE_GAP, right: layout.paddingRight }]} contentContainerStyle={[styles.wideGrid, { paddingTop: 16 + insets.top, paddingBottom: 16 + insets.bottom }]}>
-            {tiles}
-          </ScrollView>
+          {/* Right pane: the game grid, scrolling on its own beside the left pane. The scroller runs to the frame's
+          right edge and the cog's gutter is its content's padding, so a web scrollbar sits at the window's edge
+          (it used to sit left of the cog). The grid has its own width: a classic web scrollbar narrows the content
+          by its width, and a grid sized to fill that dropped its last column; this one runs into the padding. Like
+          portrait's, it fades out at an edge while there is more past it (see FadingScrollView below). */}
+          <FadingScrollView style={[styles.wideRightPane, { left: layout.paddingLeft + layout.leftPaneWidth + HOME_WIDE_PANE_GAP }]} contentContainerStyle={{ paddingTop: 16 + insets.top, paddingBottom: 16 + insets.bottom, paddingRight: layout.paddingRight }}>
+            <View style={[styles.wideGrid, { width: layout.rightPaneWidth }]}>{tiles}</View>
+          </FadingScrollView>
           {/* Left pane: the hero, title and subtitle, then the player chip - the same order as portrait - centred as
           one group in the space under the corner-button band.
           A screen-level sibling of the overlay (not something inside a scroller) so its zIndex really does
@@ -244,7 +249,10 @@ function HomeContent() {
           </View>
         </>
       ) : (
-        <ScrollView contentContainerStyle={[styles.container, { paddingTop: 56 + insets.top }]}>
+        // auto-paper's FadingScrollView: the content fades out at an edge while there is more past it, the cue the
+        // Settings and Rules sheets, the player dropdown, Achievements and Profiles all give (Jay, 2026-10-16: every
+        // scrolling screen alike). A mask, so the felt behind shows through.
+        <FadingScrollView contentContainerStyle={[styles.container, { paddingTop: 56 + insets.top }]}>
           {pressAway}
           <HeroCards />
           <Text style={styles.heading}>Solitaire</Text>
@@ -255,7 +263,7 @@ function HomeContent() {
           </View>
 
           <View style={styles.grid}>{tiles}</View>
-        </ScrollView>
+        </FadingScrollView>
       )}
 
       {/* Trophy (top-left) and cog (top-right), inside ONE plain View that carries the stacking.
@@ -280,22 +288,23 @@ function HomeContent() {
   )
 }
 
-function makeStyles(colors: TableColors, dark: boolean, paperColors: MD3Theme['colors']) {
+function makeStyles(colors: TableColors, paperColors: MD3Theme['colors']) {
   return StyleSheet.create({
     card: {
       alignItems: 'center',
-      // The opaque near-white "index card" look is deliberate in light mode (bright, readable
-      // against the felt) - but the same fixed light color in dark mode read as a light-mode
-      // island stranded in an otherwise dark UI, so dark mode switches to Paper's own surface
-      // color instead (matching the achievements screen / settings dialog's dark surfaces).
-      backgroundColor: dark ? paperColors.surface : '#ffffffee',
+      // A well (hud's wellSurface.ts): the theme's surface on MD3's level-1 shadow, with the surface's own text
+      // roles - the same surface as every dialog (hud's OverlayCard) and the Achievements screen's wells, so
+      // every raised card in the app is one surface (Jay, 2026-10-17). It was a fixed near-white #ffffffee in
+      // light mode.
+      backgroundColor: paperColors.surface,
       borderRadius: 12,
+      boxShadow: WELL_SHADOW,
       flexDirection: 'row',
       gap: 14,
       padding: 14
     },
     cardBlurb: {
-      color: dark ? paperColors.onSurfaceVariant : '#444',
+      color: paperColors.onSurfaceVariant,
       fontFamily: CARD_FONT_FAMILY,
       fontSize: 13,
       marginTop: 4
@@ -304,7 +313,7 @@ function makeStyles(colors: TableColors, dark: boolean, paperColors: MD3Theme['c
       flex: 1
     },
     cardTitle: {
-      color: dark ? paperColors.onSurface : colors.tableFeltDark,
+      color: paperColors.onSurface,
       fontFamily: CARD_FONT_FAMILY,
       fontSize: 20,
       fontWeight: '700'
@@ -377,15 +386,16 @@ function makeStyles(colors: TableColors, dark: boolean, paperColors: MD3Theme['c
       marginTop: 4
     },
     // Wide layout tile: the portrait row turned on its side - preview on top, text under it. Same surface
-    // as `card` (opaque near-white in light mode, Paper's surface in dark).
+    // as `card`.
     tile: {
-      backgroundColor: dark ? paperColors.surface : '#ffffffee',
+      backgroundColor: paperColors.surface,
       borderRadius: 12,
+      boxShadow: WELL_SHADOW,
       gap: 6,
       padding: HOME_TILE_PADDING
     },
     tileBlurb: {
-      color: dark ? paperColors.onSurfaceVariant : '#444',
+      color: paperColors.onSurfaceVariant,
       fontFamily: CARD_FONT_FAMILY,
       fontSize: 12
     },
@@ -408,7 +418,7 @@ function makeStyles(colors: TableColors, dark: boolean, paperColors: MD3Theme['c
       borderRadius: 8
     },
     tileTitle: {
-      color: dark ? paperColors.onSurface : colors.tableFeltDark,
+      color: paperColors.onSurface,
       fontFamily: CARD_FONT_FAMILY,
       fontSize: 18,
       fontWeight: '700'
@@ -445,6 +455,7 @@ function makeStyles(colors: TableColors, dark: boolean, paperColors: MD3Theme['c
     wideRightPane: {
       bottom: 0,
       position: 'absolute',
+      right: 0,
       top: 0
     },
     wideSubheading: {

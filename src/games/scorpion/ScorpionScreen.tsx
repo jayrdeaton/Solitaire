@@ -11,7 +11,6 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
-import { Fireworks } from '@tastic/sprites/fireworks'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
@@ -28,12 +27,11 @@ import { useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
-import { fireworksColors } from '@/components/theme'
 import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
+import { PipFireworks } from '@/components/winning/PipFireworks'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
-import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { SCORPION_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
@@ -44,6 +42,7 @@ import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
 import { scorpionVariant } from '@/engine/variants'
 import { showNoHintToast } from '@/games/shared/gameToasts'
+import { liftTappedRun, peelInAir } from '@/games/shared/inAirRun'
 import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
@@ -102,7 +101,7 @@ function StockPacket({ onPress, highlighted }: { onPress: () => void; highlighte
 export default withGameProviders(ScorpionScreenInner)
 
 function ScorpionScreenInner() {
-  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   // The stock variant the in-progress deal was actually dealt with - deliberately not re-derived
@@ -135,7 +134,7 @@ function ScorpionScreenInner() {
   // (the assisted stock's multi-card burst uses `dealHiddenIds`, not `flying`, same as the initial
   // deal - see runStockDeal below), so it would have no read site. `activeFlightCount` (the hook's
   // state mirror of the ref) is, though: it is what the win celebration waits on (see `settled`).
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<ScorpionState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkLanding, landingCount, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<ScorpionState>()
   // Nullable move (Spider's default): an ordinary tableau move always has one, but the assisted
   // stock's one-shot deal lands 3 cards across 3 different columns at once - no single MoveInfo
   // shape for that, so it's recorded as `move: null` and handleUndo detects that case itself (see
@@ -380,7 +379,7 @@ function ScorpionScreenInner() {
       const origin = origins[i]
       if (!origin) return
       const rects = cardRects[i].slice().reverse()
-      chains.push({ cards: col.slice().reverse(), origin, cardOrigins: rects.map((rect) => (rect ? { x: rect.x, y: rect.y } : origin)), entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
+      chains.push({ cards: col.slice().reverse(), origin, cardOrigins: rects.map((rect) => (rect ? { x: rect.x, y: rect.y } : origin)) })
     })
     winCascade.startChains(chains, cardWidth, () => setCascadeHandoffFor(s))
   }
@@ -565,13 +564,13 @@ function ScorpionScreenInner() {
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
   // the player still taps/drags the suggested card through the normal tap-to-move/drag flow.
-  function handleHint(request?: HintRequest) {
-    if (!state) return
+  function handleHint(request?: HintRequest): boolean {
+    if (!state) return false
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(controller, state, skip)
     if (result.kind === 'none') {
       if (!request?.auto) showNoHintToast(infoToast)
-      return
+      return false
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
@@ -582,6 +581,8 @@ function ScorpionScreenInner() {
       const source = state.tableau[from.index]
       void playHintGlide({ moving: source.slice(source.length - count), dest: state.tableau[to.index], destFanned: true, slot: to, cardWidth })
     }
+    // True when pressing Hint again shows a different move: a held Hint button steps on while it is (hintHold.ts).
+    return result.kind === 'move' && result.choices > 1
   }
 
   function pushUndo(prev: ScorpionState, move: MoveInfo | null) {
@@ -617,10 +618,21 @@ function ScorpionScreenInner() {
   // caller (handleCardTap, the tableau onDrop below) is the one that claims the activeFlightCount
   // slot via startFlights(1) before calling this, and settles it either immediately on failure or
   // via the pendingFlightRef effect once this entry's flight actually lands.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle): boolean {
+  //
+  // `inAir`: a tapped run's cards still flying in to `from` (inAirRun.ts) - `flight` carries only the cards on the board, and each piece
+  // goes on from mid-air in a flight of its own, landing on top of them.
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { inAir?: Card[][] }): boolean {
     if (!applyMove(from, to, count, anchorCardId)) return false
-    const flyingId = beginFlying(to, count)
-    pendingFlightRef.current.push({ cardId: anchorCardId, gen: dealTokenRef.current, flyingId, flight })
+    const gen = dealTokenRef.current
+    const inAirCount = (opts?.inAir ?? []).reduce((n, piece) => n + piece.length, 0)
+    pendingFlightRef.current.push({ cardId: anchorCardId, gen, flyingId: beginFlying(to, count - inAirCount), flight })
+    if (inAirCount > 0) {
+      // Out of `from`'s landing count, so the cards left there show at once.
+      shrinkLanding(from, inAirCount)
+      const pieces = peelInAir(ghost, opts?.inAir ?? [], cardWidth)
+      startFlights(pieces.length)
+      for (const p of pieces) pendingFlightRef.current.push({ cardId: p.anchorCardId, gen, flyingId: beginFlying(to, p.count), flight: p.flight })
+    }
     return true
   }
 
@@ -766,21 +778,18 @@ function ScorpionScreenInner() {
     // thing that still waits on activeFlightCountRef) sees this tap as in-flight for its whole
     // duration, not just once completeMove lands one.
     startFlights(1)
-    const origin = await measure()
-    const sourcePile = stateRef.current?.tableau[move.from.index] ?? null
-    if (!sourcePile || undoBusyRef.current) {
+    // Part of the run may still be flying in to this column (a quick tap right after a move put it there): it goes on from mid-air
+    // (inAirRun.ts).
+    const takeOff = await liftTappedRun({ ghost, from: move.from, count: move.count, measure, pile: () => stateRef.current?.tableau[move.from.index] ?? null, landingCount, cancelled: () => undoBusyRef.current, cardWidth })
+    if (!takeOff) {
       settleFlight()
       return
     }
-    const movingCards = sourcePile.slice(sourcePile.length - move.count)
-    const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
     playCardSound()
     hapticCard()
-    const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
-
-    if (!completeMove(move.from, move.to, move.count, card.id, flight)) {
-      flight.hide()
+    if (!completeMove(move.from, move.to, move.count, card.id, takeOff.flight, { inAir: takeOff.inAir })) {
+      takeOff.flight.hide()
       settleFlight()
     }
   }
@@ -854,7 +863,7 @@ function ScorpionScreenInner() {
           </View>
         </View>
       </GameChrome>
-      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <PipFireworks />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor(variant)} onNewGame={handleNewGame} />}
       {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}

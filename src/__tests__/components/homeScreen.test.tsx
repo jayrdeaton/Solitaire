@@ -32,6 +32,8 @@ const mockRouter = { push: jest.fn(), replace: jest.fn(), back: jest.fn(), dismi
 const mockConsumeResumeGame = jest.fn(() => mockResume)
 const mockHeroCards = jest.fn((_props: { scale?: number }) => null)
 const mockSettingsDialog = jest.fn((_props: { visible: boolean; onDismiss: () => void; rotation?: number }) => null)
+/** Every render's props of auto-paper's FadingScrollView, which still renders for real (see the mock below). */
+const mockFadingScrollView = jest.fn()
 const mockRulesDialog = jest.fn((_props: { visible: boolean; onDismiss: () => void; title: string; rules: string[] }) => null)
 /** The popover host the Home screen hands its ProfilePanel - the test opens a popover through it. */
 const mockHostRef: { current: { openId: string | null; toggle: (id: string) => void; close: () => void } | null } = { current: null }
@@ -79,6 +81,18 @@ jest.mock('@rific/feedback-press', () => {
     },
     Pressable: (props: object) => <RNPressable {...props} />,
     useVibration: () => ({ short: () => {}, selection: () => {} })
+  }
+})
+// The real FadingScrollView, recorded: a function component adds no host element, so the tree under test is unchanged.
+jest.mock('@rific/auto-paper', () => {
+  const actual = jest.requireActual('@rific/auto-paper')
+  const { createElement } = require('react')
+  return {
+    ...actual,
+    FadingScrollView: (props: object) => {
+      mockFadingScrollView(props)
+      return createElement(actual.FadingScrollView, props)
+    }
   }
 })
 jest.mock('@/stores/lastActiveGame', () => ({ useLastActiveGame: () => ({ consumeResumeGame: mockConsumeResumeGame }) }))
@@ -361,6 +375,19 @@ describe('Home: portrait', () => {
     expect(cog).toMatchObject({ position: 'absolute', top: 8 + 47, right: 8 })
   })
 
+  // The edge fade the Settings and Rules sheets, the player dropdown, Achievements and Profiles give (2026-10-16).
+  it('scrolls the menu in auto-paper\'s FadingScrollView, in both layouts', async () => {
+    await renderHome()
+    expect(mockFadingScrollView).toHaveBeenCalled()
+    expect(StyleSheet.flatten((lastProps(mockFadingScrollView) as { contentContainerStyle: ViewStyle }).contentContainerStyle).paddingTop).toBe(56)
+
+    mockFadingScrollView.mockClear()
+    mockRotation = 90
+    await rerenderHome()
+    expect(mockFadingScrollView).toHaveBeenCalled()
+    expect(StyleSheet.flatten((lastProps(mockFadingScrollView) as { style: ViewStyle }).style).position).toBe('absolute')
+  })
+
   it("tapping a tile's rules button opens the rules dialog for that game, without navigating", async () => {
     await renderHome()
     const event = { preventDefault: jest.fn(), stopPropagation: jest.fn() }
@@ -415,6 +442,19 @@ describe('Home: landscape (rotated 90)', () => {
     const { scale } = lastProps(mockHeroCards)
     expect(scale).toBe(layout.heroScale)
     expect(scale).toBeLessThan(1)
+  })
+
+  // A web scrollbar is drawn at its scroller's edge: the grid's scroller used to stop at the cog's gutter, which put the
+  // scrollbar 110pt in from the window's edge at 1280 wide, and a classic scrollbar's 15pt then wrapped the third column.
+  it("runs the grid's scroller to the frame's right edge, with the cog's gutter as padding and the grid at its own width", async () => {
+    setLandscape()
+    await renderHome()
+
+    const { style, contentContainerStyle } = lastProps(mockFadingScrollView) as { style: ViewStyle; contentContainerStyle: ViewStyle }
+    expect(StyleSheet.flatten(style)).toMatchObject({ position: 'absolute', right: 0 })
+    expect(StyleSheet.flatten(contentContainerStyle).paddingRight).toBe(layout.paddingRight)
+    const grid = pathOrFail(snapshot(), byTestId('link-/klondike'), 'the Klondike tile').at(-2)!
+    expect(styleOf(grid)).toMatchObject({ flexDirection: 'row', flexWrap: 'wrap', width: layout.rightPaneWidth })
   })
 
   it("opens the rules dialog for a tile from the wide layout's floating rules button", async () => {

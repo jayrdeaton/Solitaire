@@ -91,6 +91,10 @@ interface DraggableTableauCardProps {
   top: number
   zIndex: number
   runCount: number
+  /** A drag may pick this card's run up: not while any of the run is still flying in to the column (games/shared/inAirRun.ts - a tap
+   * sends such a run on from mid-air, but a drag's ghost follows the finger, with nothing to hand those cards to). Taps still go
+   * through. Defaults to true. */
+  liftable?: boolean
   indexFromTop: number
   isHidden: boolean
   /** This card's dim scrim should fade in rather than pop on: it became dimmed after this pile's very first render (its
@@ -151,7 +155,7 @@ interface DraggableTableauCardProps {
  * screen-level auto-move handlers that call `ghost.cardRegistry.measure(cardId)` after applying a
  * move.
  */
-const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected, hinted, dimmed, top, zIndex, runCount, indexFromTop, isHidden, dimFadeIn, held = false, shakeToken, onPress, onDragStart, onDragEnd, originX, originY, dx, dy, startAbsX, startAbsY }: DraggableTableauCardProps) {
+const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected, hinted, dimmed, top, zIndex, runCount, liftable = true, indexFromTop, isHidden, dimFadeIn, held = false, shakeToken, onPress, onDragStart, onDragEnd, originX, originY, dx, dy, startAbsX, startAbsY }: DraggableTableauCardProps) {
   const cardStyle = useMemo(() => ({ position: 'absolute' as const, top, left: 0, zIndex }), [top, zIndex])
   const viewRef = useAnimatedRef<Animated.View>()
   const ghost = useDragGhost()
@@ -248,7 +252,7 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
   )
   /* eslint-enable react-hooks/refs, react-hooks/immutability */
 
-  pan.enabled(runCount > 0)
+  pan.enabled(runCount > 0 && liftable)
 
   function handlePress() {
     if (wasDraggingRef.current) {
@@ -489,6 +493,11 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
   // something to measure/land on; this is purely a decorative overlay.
   const allCardsHidden = cards.length > 0 && cards.every((card, i) => isCardHidden(card, cards.length - 1 - i))
 
+  // The topmost card still flying in to this column (-1 if none): every card under it has part of its run in the air, so a drag
+  // can't pick it up yet (see DraggableTableauCardProps' `liftable`).
+  let topFlyingIndex = cards.length - 1
+  while (topFlyingIndex >= 0 && !isFlying(cards[topFlyingIndex], cards.length - 1 - topFlyingIndex)) topFlyingIndex--
+
   // shakeCardId names the card that was actually tapped, at the TOP of the shaking run (closest
   // to the top of the column) - shakeCount cards from it downward (toward the bottom/exposed end)
   // shake together, same "contiguous range counted from one card's indexFromTop" shape as
@@ -582,6 +591,8 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
             top={tops[i]}
             zIndex={i}
             runCount={runCount}
+            // Never turned off under a drag already in progress: toggling the pan mid-gesture cancels it out from under the finger.
+            liftable={i > topFlyingIndex || !!activeDrag?.has(card.id)}
             indexFromTop={indexFromTop}
             isHidden={isHidden}
             // Gated on isDimmed, not just wasAlreadyMounted alone - dimFadeIn only ever affects a

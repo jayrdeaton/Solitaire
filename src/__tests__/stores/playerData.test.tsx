@@ -21,7 +21,7 @@ jest.mock('@/stores/profiles', () => ({ useProfiles: () => ({ activeProfileId: n
 const KID = 'profile-kid'
 const DAD = 'profile-dad'
 const played = { ...DEFAULT_PROFILE_STATS, currentDayStreak: 3 }
-const settingsOf = (klondikeDraw: 1 | 3): PlayerSettings => ({ settings: { ...DEFAULT_SETTINGS, klondikeDraw }, sound: { enabled: true }, haptic: { vibrate: true }, theme: { appearance: 'system', blur: true } })
+const settingsOf = (klondikeDraw: 1 | 3): PlayerSettings => ({ settings: { ...DEFAULT_SETTINGS, klondikeDraw }, sound: { enabled: true }, haptic: { vibrate: true }, keepAwake: { enabled: true }, theme: { appearance: 'system', blur: true } })
 
 async function setup() {
   const store = configureStore({ reducer: { achievements, playerSettings, tableColor }, middleware: (getDefault) => getDefault({ serializableCheck: false }) })

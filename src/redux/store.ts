@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { combineReducers, configureStore, type Middleware } from '@reduxjs/toolkit'
 import { createThemeReducer } from '@rific/auto-paper'
+import { keepAwakeReducer } from '@rific/core'
 import { defaultSoundSettings, hapticReducer, soundReducer, type SoundSettings } from '@rific/feedback-press'
 import { createReturningPlayerMigrate } from '@tastic/hud/guide'
 import { profilesReducer } from '@tastic/profile'
@@ -46,6 +47,9 @@ const rootReducer = combineReducers({
   achievements,
   haptic: hapticReducer,
   sound: appSoundReducer,
+  // @rific/core's Keep Awake setting (see _layout.tsx's KeepAwakeBridge), under the namespace its
+  // REHYDRATE handling expects.
+  keepAwake: keepAwakeReducer,
   // The shared App Group roster (see @tastic/profile's resolveInitialProfiles/
   // useSharedProfilesSync, wired in stores/profiles.tsx) is layered on top of this as a separate
   // sync target - this slice persisting normally via redux-persist, same as every other key here,
@@ -72,6 +76,10 @@ const rootReducer = combineReducers({
 
 export const persistConfig = {
   key: 'root',
+  // On web every Tastic game shares one origin (games.infinitetoken.com) and so one localStorage, where AsyncStorage
+  // keeps this state under keyPrefix + key: the default prefix would make every game's state the same persist:root.
+  // REHYDRATE still reports key 'root', so guideSlice's persistKey is unchanged.
+  keyPrefix: 'solitaire:',
   storage: AsyncStorage,
   // Grandfathers players from the shipped pre-redux builds (last one 25532f0, otaVersion 3) past the
   // guide: they have no root store yet, only that build's own keys, which would otherwise look like a

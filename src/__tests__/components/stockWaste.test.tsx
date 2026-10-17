@@ -1,5 +1,5 @@
 import { CardSizeProvider, faceUpFanOffset, RANK_INK_RIGHT_FRACTION } from '@tastic/cards'
-import { render, screen } from '@testing-library/react-native'
+import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { StyleSheet, ViewStyle } from 'react-native'
 
 import { markGhostPending } from '@/components/cardFacePaint'
@@ -73,9 +73,10 @@ describe('StockWaste - what the waste slot paints under flying draws', () => {
   })
 
   it('a null settledWasteTop shows the empty slot under the ghosts', async () => {
-    const { rerender, queryByTestId } = await render(waste({ wasteTop: undefined }))
+    // A stock with a card in it, so the only empty slot on screen is the waste's.
+    const { rerender, queryByTestId } = await render(waste({ wasteTop: undefined, stockTopCard: heart(9) }))
 
-    await rerender(waste({ wasteTop: heart(4), wasteHiddenCount: 1, settledWasteTop: null }))
+    await rerender(waste({ wasteTop: heart(4), wasteHiddenCount: 1, settledWasteTop: null, stockTopCard: heart(9) }))
 
     expect(queryByTestId('slot')).not.toBeNull()
     expect(queryByTestId('card-hearts-4-0')).toBeNull()
@@ -183,15 +184,104 @@ describe('StockWaste - the draw-3 fan', () => {
 
 describe('StockWaste - an exhausted stock', () => {
   it('offers the recycle arrow, and the tap, when the game recycles', async () => {
-    await render(waste({ stockTopCard: undefined, wasteTop: heart(4) }))
+    const onDrawStock = jest.fn()
+    await render(waste({ stockTopCard: undefined, wasteTop: heart(4), onDrawStock }))
     expect(screen.queryByText('↺')).not.toBeNull()
-    expect(screen.getByTestId('stock-pile').props.accessibilityHint).toBe('tappable')
+    await fireEvent.press(screen.getByTestId('stock-pile'))
+    expect(onDrawStock).toHaveBeenCalledTimes(1)
   })
 
   it('is a plain, inert slot when the game never recycles (Golf, TriPeaks, Forty Thieves)', async () => {
-    await render(waste({ stockTopCard: undefined, wasteTop: heart(4), canRecycle: false }))
+    const onDrawStock = jest.fn()
+    await render(waste({ stockTopCard: undefined, wasteTop: heart(4), canRecycle: false, onDrawStock }))
     expect(screen.queryByText('↺')).toBeNull()
-    expect(screen.getByTestId('stock-pile').props.accessibilityHint).toBe('inert')
+    expect(screen.getByTestId('stock-pile').props.accessibilityState?.disabled).toBe(true)
+    await fireEvent.press(screen.getByTestId('stock-pile'))
+    expect(onDrawStock).not.toHaveBeenCalled()
+  })
+})
+
+// Every stock tap must reach the screen, however fast (Jay's kids speed through the stock): the press target is one view, never
+// unmounted or hidden, and the art inside it is.
+describe('StockWaste - the stock takes every tap', () => {
+  const back = (rank: number): Card => ({ id: `spades-${rank}-0`, suit: 'spades', rank, faceUp: false }) as Card
+  const opacityOf = (el: { props: { style?: unknown } }) => StyleSheet.flatten(el.props.style as ViewStyle)?.opacity
+
+  it('is the same press target whether the stock draws a card or the empty slot - a press is never cut off by the swap', async () => {
+    const { rerender } = await render(waste({ stockTopCard: back(3) }))
+    const before = screen.getByTestId('stock-pile')
+
+    await rerender(waste({ stockTopCard: undefined }))
+    expect(screen.getByTestId('stock-pile')).toBe(before)
+    await rerender(waste({ stockTopCard: back(5) }))
+    expect(screen.getByTestId('stock-pile')).toBe(before)
+  })
+
+  it('takes a tap while it is hidden for cards flying into it: the target is never drawn at opacity 0 (iOS hit-tests no such view)', async () => {
+    const onDrawStock = jest.fn()
+    await render(waste({ stockTopCard: back(3), stockHidden: true, onDrawStock }))
+
+    // Neither the target nor anything around it is see-through; only the art inside it is.
+    const target = screen.getByTestId('stock-pile')
+    for (let el: typeof target | null = target; el; el = el.parent) expect(opacityOf(el)).not.toBe(0)
+    const hidden = (el: typeof target): boolean => opacityOf(el) === 0 || el.children.some((c) => typeof c !== 'string' && hidden(c))
+    expect(target.children.some((c) => typeof c !== 'string' && hidden(c))).toBe(true)
+    await fireEvent.press(target)
+    expect(onDrawStock).toHaveBeenCalledTimes(1)
+  })
+
+  it('takes a tap while the last card is still taking off (its ghost not on screen yet), instead of ignoring it', async () => {
+    const onDrawStock = jest.fn()
+    const { rerender } = await render(waste({ stockTopCard: back(3), onDrawStock }))
+    let release = () => {}
+    await act(async () => {
+      release = markGhostPending([back(3).id])
+    })
+
+    await rerender(waste({ stockTopCard: undefined, onDrawStock }))
+    expect(screen.queryByTestId('card-spades-3-0')).not.toBeNull() // still drawn where it was
+    await fireEvent.press(screen.getByTestId('stock-pile'))
+    expect(onDrawStock).toHaveBeenCalledTimes(1)
+    await act(async () => release())
+  })
+
+  it('a tap asks for one draw, with nothing else: not the press event', async () => {
+    const onDrawStock = jest.fn()
+    await render(waste({ stockTopCard: back(3), onDrawStock }))
+    await fireEvent.press(screen.getByTestId('stock-pile'), { nativeEvent: {} })
+    expect(onDrawStock).toHaveBeenCalledWith()
+  })
+})
+
+describe('StockWaste - holding the stock', () => {
+  const back = (rank: number): Card => ({ id: `spades-${rank}-0`, suit: 'spades', rank, faceUp: false }) as Card
+  beforeEach(() => jest.useFakeTimers())
+  afterEach(() => jest.useRealTimers())
+
+  it('streams draws where the stock turns over, and stops when the finger lifts', async () => {
+    const onDrawStock = jest.fn(async () => true)
+    await render(waste({ stockTopCard: back(3), onDrawStock }))
+    await fireEvent(screen.getByTestId('stock-pile'), 'longPress')
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(500)
+    })
+    await fireEvent(screen.getByTestId('stock-pile'), 'pressOut')
+    const drawn = onDrawStock.mock.calls.length
+    expect(drawn).toBeGreaterThan(2)
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(500)
+    })
+    expect(onDrawStock).toHaveBeenCalledTimes(drawn)
+  })
+
+  it('is never held where the stock runs out for good: one hold would deal the whole of it', async () => {
+    const onDrawStock = jest.fn(async () => true)
+    await render(waste({ stockTopCard: back(3), onDrawStock, canRecycle: false }))
+    await fireEvent(screen.getByTestId('stock-pile'), 'longPress')
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(500)
+    })
+    expect(onDrawStock).not.toHaveBeenCalled()
   })
 })
 

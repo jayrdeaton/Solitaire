@@ -45,6 +45,8 @@ const mockLog = {
   inAir: 0,
   /** Every startChains() call, with how many flights were still in the air when it happened. */
   cascades: [] as number[],
+  /** Every startChains() call's chains: each chain's card ids (head first) and its own per-card delay. */
+  chains: [] as { ids: string[]; segmentDelayMs?: number }[][],
   /** What the waste showed (its top card's id, or 'empty') at the instant of each startChains() - the real pile must still be drawn then. */
   wasteAtCascade: [] as string[],
   /** The same at the instant the cascade's ghosts showed (its onShown) - the real pile must STILL be drawn then. */
@@ -110,8 +112,9 @@ jest.mock('@/components/winning/WinCascadeLayer', () => ({
   },
   WinCascadeGhosts: () => null,
   useWinCascade: () => ({
-    startChains: (chains: unknown[], _cardWidth: number, onShown?: () => void) => {
+    startChains: (chains: { cards: { id: string }[]; segmentDelayMs?: number }[], _cardWidth: number, onShown?: () => void) => {
       mockLog.cascades.push(mockLog.inAir)
+      mockLog.chains.push(chains.map((chain) => ({ ids: chain.cards.map((c) => c.id), segmentDelayMs: chain.segmentDelayMs })))
       mockLog.wasteAtCascade.push(mockWasteNow())
       mockLog.timeline.push('startChains')
       // Like the real controller: never for an empty cascade, and dropped by clear() or a newer startChains.
@@ -130,9 +133,9 @@ jest.mock('@/components/dealing/measureView', () => ({ measureView: async () => 
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => {}, hapticCard: () => {}, hapticInvalid: () => {} }) }))
 jest.mock('@rific/feedback-press', () => ({ useVibration: () => ({ short: () => {}, selection: () => {} }) }))
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))
-jest.mock('@tastic/sprites/fireworks', () => {
+jest.mock('@/components/winning/PipFireworks', () => {
   const { View: MockView } = require('react-native')
-  return { Fireworks: () => <MockView testID='fireworks' /> }
+  return { PipFireworks: () => <MockView testID='fireworks' /> }
 })
 jest.mock('@/games/shared/WinBanner', () => {
   const { Text: MockText } = require('react-native')
@@ -189,7 +192,7 @@ jest.mock('@/components/StockWaste', () => {
   const { Pressable: MockPressable, Text: MockText, View: MockView } = require('react-native')
   const { useEffect } = require('react')
   return {
-    StockWaste: ({ wasteTop, wasteHiddenCount, settledWasteTop, onDrawStock }: { wasteTop?: { id: string }; wasteHiddenCount?: number; settledWasteTop?: { id: string } | null; onDrawStock: () => void }) => {
+    StockWaste: ({ stockTopCard, wasteTop, wasteHiddenCount, settledWasteTop, onDrawStock }: { stockTopCard?: { id: string }; wasteTop?: { id: string }; wasteHiddenCount?: number; settledWasteTop?: { id: string } | null; onDrawStock: () => void }) => {
       const wasteId = wasteTop?.id
       mockMark(wasteId ?? 'empty')
       // Like the real one: the waste top stays registered (measurable) even while it is hidden mid-flight.
@@ -201,6 +204,7 @@ jest.mock('@/components/StockWaste', () => {
       return (
         <MockView>
           <MockText testID='waste-top'>{wasteId ?? 'empty'}</MockText>
+          <MockText testID='stock-top'>{stockTopCard?.id ?? 'empty'}</MockText>
           <MockText testID='waste-hidden-count'>{String(wasteHiddenCount ?? 0)}</MockText>
           <MockText testID='waste-settled'>{settledWasteTop === undefined ? 'default' : (settledWasteTop?.id ?? 'empty')}</MockText>
           <MockPressable testID='stock' onPress={onDrawStock} />
@@ -294,6 +298,7 @@ beforeEach(() => {
   mockLog.hidden = 0
   mockLog.inAir = 0
   mockLog.cascades = []
+  mockLog.chains = []
   mockLog.wasteAtCascade = []
   mockLog.wasteAtGhostsShown = []
   mockLog.timeline = []
@@ -615,5 +620,98 @@ describe('Golf screen - a dead board', () => {
     await flush(FLIGHT_MS * 2)
     expect(screen.queryByTestId('loss-banner')).toBeNull()
     expect(wasteTop()).toBe(id('spades', 5))
+  })
+})
+
+describe('Golf screen - a win with cards still in the stock', () => {
+  /** Tapping the 6 of hearts onto the 5 of spades wins with two cards still in the stock: the 9 of clubs on top of the 2 of diamonds. */
+  const WON_WITH_STOCK_LEFT = (): GolfState => ({ tableau: [[card('hearts', 6)], [], [], [], [], [], []], waste: [card('spades', 5)], stock: [card('diamonds', 2, false), card('clubs', 9, false)] })
+
+  type Entry = { cardId: string; card: Card; from: { x: number; y: number }; to: { x: number; y: number }; delayMs: number }
+  let deals: { ids: string[]; faceUp: boolean[]; from: { x: number; y: number }[]; to: { x: number; y: number }[] }[]
+  let dealStartedAt: number
+
+  /** A deal that keeps its own schedule, like the real one: each card takes off at its delayMs (onCardDealt) and lands FLIGHT_MS
+   * later, and a newer start() (an empty one included) silences the one before. The file's own stand-in lands every card at once. */
+  beforeEach(() => {
+    deals = []
+    let timers: ReturnType<typeof setTimeout>[] = []
+    jest.spyOn(mockDeal, 'start').mockImplementation(((entries: Entry[], _w: number, onLanded: (id: string) => void, onDone?: () => void, onDealt?: (id: string) => void) => {
+      timers.forEach(clearTimeout)
+      timers = []
+      deals.push({ ids: entries.map((e) => e.cardId), faceUp: entries.map((e) => e.card.faceUp), from: entries.map((e) => e.from), to: entries.map((e) => e.to) })
+      dealStartedAt = Date.now()
+      if (entries.length === 0) return onDone?.()
+      for (const e of entries) {
+        timers.push(setTimeout(() => onDealt?.(e.cardId), e.delayMs))
+        timers.push(setTimeout(() => onLanded(e.cardId), e.delayMs + FLIGHT_MS))
+      }
+      timers.push(setTimeout(() => onDone?.(), Math.max(...entries.map((e) => e.delayMs)) + FLIGHT_MS))
+    }) as never)
+  })
+
+  /** Advances fake time to `ms` after the sweep's deal started. */
+  const sinceSweep = (ms: number) => flush(Math.max(0, dealStartedAt + ms - Date.now()))
+  const stockTop = () => screen.getByTestId('stock-top').props.children as string
+
+  it('deals the leftover stock onto the waste once the winning card has landed, and celebrates with every card in one pile', async () => {
+    await mount(WON_WITH_STOCK_LEFT())
+    await tap(id('hearts', 6))
+    await flush(FLIGHT_MS / 2)
+    expect(deals).toEqual([]) // the winning card is still in the air
+    expect(stockTop()).toBe(id('clubs', 9))
+
+    await flush(FLIGHT_MS)
+    // Landed: the stock is dealt from the stock slot onto the waste slot, top card first, each face up.
+    expect(deals).toEqual([{ ids: [id('clubs', 9), id('diamonds', 2)], faceUp: [true, true], from: [VIEW_POINT, VIEW_POINT], to: [VIEW_POINT, VIEW_POINT] }])
+
+    await sinceSweep(30) // the 9 is flying, the 2 still waits in the stock
+    expect(stockTop()).toBe(id('clubs', 9))
+    expect(wasteTop()).toBe(id('hearts', 6))
+    await sinceSweep(60) // the 2 has taken off too (dealStaggerMs(2) = 35ms after the 9): the stock is empty
+    expect(stockTop()).toBe('empty')
+    expect(wasteTop()).toBe(id('hearts', 6))
+    await sinceSweep(90) // each lands on the waste in turn
+    expect(wasteTop()).toBe(id('clubs', 9))
+    await sinceSweep(125)
+    expect(wasteTop()).toBe(id('diamonds', 2))
+    expect(banner()).toBeNull() // the finished pile reads for a beat first
+    expect(mockLog.chains).toEqual([])
+
+    await sinceSweep(125 + HOLD_MS + 50)
+    expect(banner()).toBeTruthy()
+    // One chain carries all of it (a short pile: under 13 cards), the last card dealt leading.
+    expect(mockLog.chains).toEqual([[{ ids: [id('diamonds', 2), id('clubs', 9), id('hearts', 6), id('spades', 5)] }]])
+    expect(mockLog.wasteAtCascade).toEqual([id('diamonds', 2)])
+    expect(mockRecordWon).toHaveBeenCalledTimes(1)
+  })
+
+  it('an undo while the stock is being dealt takes the deal out of the air and puts the cards back in the stock', async () => {
+    await mount(WON_WITH_STOCK_LEFT())
+    await tap(id('hearts', 6))
+    await flush(FLIGHT_MS + FLIGHT_MS / 2)
+    await sinceSweep(90)
+    expect(wasteTop()).toBe(id('clubs', 9))
+
+    await undo()
+    await flush(FLIGHT_MS * 3)
+    expect(deals[deals.length - 1].ids).toEqual([]) // the sweep's ghosts are gone
+    expect(stockTop()).toBe(id('clubs', 9))
+    expect(wasteTop()).toBe(id('spades', 5))
+    expect(banner()).toBeNull()
+  })
+
+  it('a New Game while the stock is being dealt stops it: nothing celebrates', async () => {
+    await mount(WON_WITH_STOCK_LEFT())
+    await tap(id('hearts', 6))
+    await flush(FLIGHT_MS + FLIGHT_MS / 2)
+    await sinceSweep(30)
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('new-game'))
+    })
+    await flush(3000)
+    expect(banner()).toBeNull()
+    expect(mockLog.chains).toEqual([])
   })
 })

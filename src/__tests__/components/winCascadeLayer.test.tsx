@@ -345,6 +345,44 @@ describe('WinCascadeGhosts - bounce heights and speeds', () => {
   })
 })
 
+describe('WinCascadeGhosts - chains leave one after another', () => {
+  const V_HALF_PERIOD_MS = 1115 // Math.random -> 0.5: every chain's first fall takes this long
+  const FLOOR_Y = cascadeBounds({ width: 400, height: 800 }, CARD_WIDTH, CARD_WIDTH / CARD_ASPECT, 56).floorY
+  const ORIGINS = [
+    { x: 40, y: 300 },
+    { x: 140, y: 300 },
+    { x: 240, y: 300 },
+    { x: 340, y: 300 }
+  ]
+  const HEADS = ['c1', 'c11', 'c21', 'c31']
+
+  it('spreads the chains over the first fall, so the last starts its fall just as the first lands from its own', async () => {
+    // No entranceDelayMs, like every screen: the cascade times the chains itself, in the order given.
+    await start(ORIGINS.map((origin, i) => ({ cards: cards(i * 10 + 1, 2), origin })))
+
+    for (const [i, id] of HEADS.entries()) {
+      const leaves = (i * V_HALF_PERIOD_MS) / (HEADS.length - 1)
+      await tick(leaves - 1)
+      expect(positionOf(id)).toEqual(ORIGINS[i]) // still parked where its pile stood
+      await tick(leaves + 50)
+      expect(positionOf(id).y).toBeGreaterThan(ORIGINS[i].y) // falling
+    }
+
+    await tick(V_HALF_PERIOD_MS)
+    expect(positionOf('c1').y).toBeCloseTo(FLOOR_Y, 6) // the first chain's first bounce...
+    expect(positionOf('c31')).toEqual(ORIGINS[3]) // ...is the instant the last one leaves
+  })
+
+  it('still takes an explicit entranceDelayMs as given', async () => {
+    await start([
+      { cards: cards(1, 2), origin: ORIGINS[0], entranceDelayMs: 0 },
+      { cards: cards(11, 2), origin: ORIGINS[1], entranceDelayMs: 0 }
+    ])
+    await tick(50)
+    expect(positionOf('c11').y).toBeGreaterThan(ORIGINS[1].y)
+  })
+})
+
 describe('WinCascadeGhosts - clear', () => {
   it('unmounts every ghost, including the parked ones', async () => {
     await start([

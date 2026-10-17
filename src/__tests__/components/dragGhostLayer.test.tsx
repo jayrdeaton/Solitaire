@@ -24,7 +24,7 @@ import { Card } from '@/engine/types'
 
 /** What Reanimated's measure() answers for the card being picked up (its screen origin). */
 const mockMeasured = { x: 10, y: 400 }
-const mockPans: { onStart?: (e: { absoluteX: number; absoluteY: number }) => void; onUpdate?: (e: { absoluteX: number; absoluteY: number }) => void; onEnd?: (e: { absoluteX: number; absoluteY: number }) => void }[] = []
+const mockPans: { onStart?: (e: { absoluteX: number; absoluteY: number }) => void; onUpdate?: (e: { absoluteX: number; absoluteY: number }) => void; onEnd?: (e: { absoluteX: number; absoluteY: number }) => void; enabled?: boolean }[] = []
 const mockFeedback = { playCardSound: jest.fn(), playInvalidSound: jest.fn(), hapticCard: jest.fn(), hapticInvalid: jest.fn() }
 
 jest.mock('react-native-reanimated', () => {
@@ -96,7 +96,10 @@ jest.mock('react-native-gesture-handler', () => {
     mockPans.push(handlers)
     const g = {
       minDistance: () => g,
-      enabled: () => g,
+      enabled: (on: boolean) => {
+        handlers.enabled = on
+        return g
+      },
       onStart: (fn: (typeof handlers)['onStart']) => {
         handlers.onStart = fn
         return g
@@ -857,6 +860,29 @@ describe('PileView - rapid drags from one column', () => {
   })
 })
 
+// A tap on a card whose run reaches into cards still flying in to its column sends them on from mid-air (games/shared/inAirRun.ts), but a
+// drag's ghost follows the finger, with nothing to hand those cards to: it used to pick the whole run up, drawing the cards in the air twice.
+describe('PileView - a run still landing on its column', () => {
+  const runDrag = { registry: { hitTest: async () => null }, getRunCount: (indexFromTop: number) => indexFromTop + 1, onDrop: async () => false }
+  const LANDING = card('spades-4-0')
+
+  it('can not be picked up by a drag until all of it has landed', async () => {
+    const { rerender } = await mountProvider(<PileView cards={PILE} drag={runDrag as never} hiddenCount={2} onPressCard={() => {}} />)
+    expect(mockPans).toHaveLength(3) // the two cards still in the air are only their landing spots
+    expect(mockPans.map((p) => p.enabled)).toEqual([false, false, false])
+
+    await rerender(tree(<PileView cards={PILE} drag={runDrag as never} onPressCard={() => {}} />))
+    expect(mockPans.map((p) => p.enabled)).toEqual([true, true, true, true, true])
+  })
+
+  it('a drag already under way is never cut off by a card starting to land on its column', async () => {
+    const { rerender } = await mountProvider(<PileView cards={PILE} drag={runDrag as never} onPressCard={() => {}} />)
+    await dragCard(3, { x: 10, y: 340 }, { dx: 3, dy: 4 }, false) // the 6 and the 5
+    await rerender(tree(<PileView cards={[...PILE, LANDING]} drag={runDrag as never} hiddenCount={1} onPressCard={() => {}} />))
+    expect(mockPans.map((p) => p.enabled)).toEqual([false, false, false, true, true])
+  })
+})
+
 describe('DraggableCard - rapid drags from one slot', () => {
   const SLOT_CARD = card('hearts-4-0')
 
@@ -1128,6 +1154,26 @@ describe('DragGhostProvider - peeling cards off a flight still in the air', () =
     expect(ghostAt(RUN[2].id)).toEqual({ x: head.x, y: head.y + 20 }) // one step down the peeled run, wherever its lift has it
     await inAct(() => last.flyTo(10, 600, () => {}))
     expect(slotStyles(RUN[2].id).map((style) => style.opacity)).toEqual([0, 0, 1])
+  })
+
+  // A tap can peel a run's cards off a flight a moment before it lands (inAirRun.ts). The peeled ghost is a fresh one, invisible until its
+  // faces paint, and the flight it rides along with is the only one drawing those cards meanwhile: landed, it used to go at once (the cards
+  // it still drew were not counted), so they vanished until the peeled ghost showed.
+  it('a flight that lands before the ghost of its peeled cards shows keeps drawing them until it does', async () => {
+    await mountProvider()
+    const flight = await inAct(() => ghost.show(run, { x: 10, y: 20 }))
+    await inAct(() => flight.flyTo(10, 320, () => {}))
+    await advance(springSettleMs(FLIGHT_SPRING) - 10)
+    mockPaint.defer = true
+    const peeled = (await inAct(() => ghost.peel(single(RUN[2]))))!
+    await advance(20) // the run lands; the peeled card's ghost has not painted
+    expect(ghostsAt(RUN[0].id)).toHaveLength(1)
+    expect(slotStyles(RUN[2].id).map((style) => style.opacity)).toEqual([1, 1]) // the run still draws it, over its own invisible ghost
+
+    await inAct(() => paintAll())
+    expect(screen.queryAllByTestId(`ghost:${RUN[0].id}`)).toEqual([]) // its own ghost is on screen: the landed run can go
+    expect(slotStyle(RUN[2].id).opacity).toBe(1)
+    await inAct(() => peeled.flyTo(200, 60, () => {}))
   })
 
   it('a peeled flight hidden before it takes over: the run stops drawing its cards all the same', async () => {

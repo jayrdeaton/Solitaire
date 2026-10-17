@@ -8,7 +8,9 @@ export interface HintRequest {
   auto?: boolean
 }
 
-export type HintHandler = (request?: HintRequest) => void
+/** A screen's Hint handler. Returns true when pressing Hint again would show a different move (the board has more than
+ * one to cycle through), which is what keeps a held Hint button going (hintHold.ts); false or nothing otherwise. */
+export type HintHandler = (request?: HintRequest) => boolean | void
 
 interface AutoHintOptions {
   /** The Auto Hint setting: seconds of no move before a hint shows by itself, 0 for never. */

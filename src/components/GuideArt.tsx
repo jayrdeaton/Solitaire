@@ -60,9 +60,48 @@ function PathDots({ style }: { style: StyleProp<ViewStyle> }) {
   )
 }
 
-// "Tap a card for its best move": a red seven with a fingertip (or, on desktop, a mouse
-// pointer) on it, a dotted path, and the same seven landing fanned onto a black eight. `pointer`
-// also picks the screen-reader verb, so a desktop player is never told to tap.
+// Round dots along a rounded rectangle's centreline (`width` x `height`, corner `radius`), evenly
+// spaced about `spacing` apart, starting at the top's middle with an even count so the ring is
+// symmetric both ways. Drawn as Views rather than a dotted border: React Native draws a dotted border
+// in square dots on Android and the web (round only on iOS), and lopsided at the corners.
+export function roundedRectDots(width: number, height: number, radius: number, spacing: number): { x: number; y: number }[] {
+  const straightX = width - 2 * radius
+  const straightY = height - 2 * radius
+  const arc = (Math.PI / 2) * radius
+  const corner = (cx: number, cy: number, angle: number) => ({ x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) })
+  // Clockwise from the top edge's left end.
+  const segments: { length: number; at: (t: number) => { x: number; y: number } }[] = [
+    { length: straightX, at: (t) => ({ x: radius + t, y: 0 }) },
+    { length: arc, at: (t) => corner(width - radius, radius, -Math.PI / 2 + t / radius) },
+    { length: straightY, at: (t) => ({ x: width, y: radius + t }) },
+    { length: arc, at: (t) => corner(width - radius, height - radius, t / radius) },
+    { length: straightX, at: (t) => ({ x: width - radius - t, y: height }) },
+    { length: arc, at: (t) => corner(radius, height - radius, Math.PI / 2 + t / radius) },
+    { length: straightY, at: (t) => ({ x: 0, y: height - radius - t }) },
+    { length: arc, at: (t) => corner(radius, radius, Math.PI + t / radius) }
+  ]
+  const perimeter = segments.reduce((sum, seg) => sum + seg.length, 0)
+  const count = 2 * Math.max(2, Math.round(perimeter / (2 * spacing)))
+  const step = perimeter / count
+  const points: { x: number; y: number }[] = []
+  for (let i = 0; i < count; i++) {
+    let d = (straightX / 2 + i * step) % perimeter
+    const seg = segments.find((sg) => {
+      if (d <= sg.length) return true
+      d -= sg.length
+      return false
+    })
+    if (seg) points.push(seg.at(d))
+  }
+  return points
+}
+
+// "Tap a card for its best move": a red seven outlined in dots as the card pressed (on desktop with
+// the mouse pointer on it too), a dotted path, and the same seven landing fanned onto a black eight.
+// The outline goes round the whole card: a fingertip circle centred on the card cut across its big
+// pip, which sits below the card's middle (Jay, 2026-10-17). Dotted, in the path's color, so it reads
+// as the start of the path and never as the Hint picture's solid glowing ring. `pointer` also picks
+// the screen-reader verb, so a desktop player is never told to tap.
 export function GuideCardPlay({ pointer }: { pointer: SwipePointer }) {
   const { colors } = useAutoPaperTheme()
   const verb = pointer === 'mouse' ? 'Clicking' : 'Tapping'
@@ -76,12 +115,13 @@ export function GuideCardPlay({ pointer }: { pointer: SwipePointer }) {
       <View style={styles.arrow}>
         <Icon source='chevron-right' size={20} color={colors.primary} />
       </View>
-      {pointer === 'mouse' ? (
+      {PRESS_RING_DOTS.map((p, i) => (
+        <View key={i} style={[styles.pressDot, { backgroundColor: colors.primary, left: SOURCE_LEFT - RING_GAP + PRESS_RING_INSET + p.x - PRESS_DOT / 2, top: ROW_TOP - RING_GAP + PRESS_RING_INSET + p.y - PRESS_DOT / 2 }]} />
+      ))}
+      {pointer === 'mouse' && (
         <View style={styles.mouse}>
           <Icon source='cursor-default-click' size={28} color={colors.primary} />
         </View>
-      ) : (
-        <View style={[styles.finger, { borderColor: colors.primary }]} />
       )}
     </View>
   )
@@ -144,37 +184,45 @@ export function GuideHint() {
         <Icon source='lightbulb-on-outline' size={30} color={colors.primary} />
       </View>
       <PathDots style={styles.hintPath} />
-      <View style={[ring, { left: HINT_SEVEN_LEFT - HINT_RING_GAP }]} />
+      <View style={[ring, { left: HINT_SEVEN_LEFT - RING_GAP }]} />
       <MiniCard rank='7' suit='heart' style={[styles.hintCard, { left: HINT_SEVEN_LEFT }]} />
       <MiniCard rank='8' suit='spade' style={[styles.hintCard, { left: HINT_EIGHT_LEFT }]} />
     </View>
   )
 }
 
-const FINGER = 30
 const MOUSE = 28
 
+// How far a ring sits outside its card (the play picture's dotted outline, the hint picture's ring),
+// so its stroke never covers the card's own edge.
+const RING_GAP = 4
+
 // The play picture's layout: the source card on the left, the target on the right with the landed
-// seven fanned one step below its top, and the path running between the two sevens' centres.
+// seven fanned one step below its top, and the path running between the two sevens' centres, starting
+// just past the source card's outline.
 const SOURCE_LEFT = 16
-const TARGET_LEFT = 120
+const TARGET_LEFT = 120 + RING_GAP
 const TARGET_TOP = 12
 const ROW_TOP = TARGET_TOP + FAN_STEP
 const ROW_CENTER = ROW_TOP + CARD_HEIGHT / 2
 
+// The play picture's outline round the pressed card: the hint picture's ring (a 3px stroke whose outer
+// edge is RING_GAP outside the card, corner radius 8) traced in round dots along that stroke's centreline.
+const PRESS_DOT = 3
+const PRESS_RING_INSET = PRESS_DOT / 2
+const PRESS_RING_DOTS = roundedRectDots(CARD_WIDTH + 2 * (RING_GAP - PRESS_RING_INSET), CARD_HEIGHT + 2 * (RING_GAP - PRESS_RING_INSET), 8 - PRESS_RING_INSET, 6.5)
+
 // The hint picture's layout, left to right: the round button, the dotted path, then the ringed seven
-// and the eight. The ring sits HINT_RING_GAP outside its card, so its 3px stroke never covers the
-// card's own edge; the eight keeps the same spacing so the picture's width is unchanged.
+// and the eight. The eight keeps the ring's spacing so the picture's width is unchanged.
 const HINT_BUTTON = 56
 const HINT_TOP = 8
-const HINT_RING_GAP = 4
 const HINT_PATH_LEFT = HINT_BUTTON + 8
-const HINT_SEVEN_LEFT = HINT_PATH_LEFT + PATH_WIDTH + 8 + HINT_RING_GAP
-const HINT_EIGHT_LEFT = HINT_SEVEN_LEFT + CARD_WIDTH + HINT_RING_GAP * 2 + 8
+const HINT_SEVEN_LEFT = HINT_PATH_LEFT + PATH_WIDTH + 8 + RING_GAP
+const HINT_EIGHT_LEFT = HINT_SEVEN_LEFT + CARD_WIDTH + RING_GAP * 2 + 8
 
 const styles = StyleSheet.create({
   arrow: {
-    left: 96,
+    left: TARGET_LEFT - 24,
     position: 'absolute',
     top: ROW_CENTER - 10
   },
@@ -206,16 +254,6 @@ const styles = StyleSheet.create({
     height: PATH_DOT,
     width: PATH_DOT
   },
-  // Centred on the source card, like a fingertip resting on it.
-  finger: {
-    borderRadius: FINGER / 2,
-    borderWidth: 3,
-    height: FINGER,
-    left: SOURCE_LEFT + CARD_WIDTH / 2 - FINGER / 2,
-    position: 'absolute',
-    top: ROW_CENTER - FINGER / 2,
-    width: FINGER
-  },
   hintButton: {
     alignItems: 'center',
     borderRadius: HINT_BUTTON / 2,
@@ -236,14 +274,14 @@ const styles = StyleSheet.create({
   hintRing: {
     borderRadius: 8,
     borderWidth: 3,
-    height: CARD_HEIGHT + HINT_RING_GAP * 2,
+    height: CARD_HEIGHT + RING_GAP * 2,
     position: 'absolute',
-    top: HINT_TOP - HINT_RING_GAP,
-    width: CARD_WIDTH + HINT_RING_GAP * 2
+    top: HINT_TOP - RING_GAP,
+    width: CARD_WIDTH + RING_GAP * 2
   },
   hintStage: {
     height: HINT_TOP * 2 + CARD_HEIGHT,
-    width: HINT_EIGHT_LEFT + CARD_WIDTH + HINT_RING_GAP
+    width: HINT_EIGHT_LEFT + CARD_WIDTH + RING_GAP
   },
   landed: {
     left: TARGET_LEFT,
@@ -253,17 +291,19 @@ const styles = StyleSheet.create({
   landedGhost: {
     opacity: 0.45
   },
-  // The pointer's tip sits on the source card's centre.
+  // The pointer's tip sits in the source card's lower right, clear of the big pip (centred on the card, it
+  // covered the heart the way the old fingertip circle did). The icon's tip is about a quarter of its
+  // width in and a sixth of its height down.
   mouse: {
-    left: SOURCE_LEFT + CARD_WIDTH / 2 - MOUSE / 4,
+    left: SOURCE_LEFT + CARD_WIDTH - 10 - MOUSE / 4,
     position: 'absolute',
-    top: ROW_CENTER - MOUSE / 6
+    top: ROW_TOP + CARD_HEIGHT - 12 - MOUSE / 6
   },
   operator: {
     marginBottom: 4
   },
   path: {
-    left: SOURCE_LEFT + CARD_WIDTH + 6,
+    left: SOURCE_LEFT + CARD_WIDTH + RING_GAP + 6,
     top: ROW_CENTER - PATH_DOT / 2
   },
   pathRow: {
@@ -275,6 +315,12 @@ const styles = StyleSheet.create({
   playStage: {
     height: ROW_TOP + CARD_HEIGHT + 12,
     width: TARGET_LEFT + CARD_WIDTH + 16
+  },
+  pressDot: {
+    borderRadius: PRESS_DOT / 2,
+    height: PRESS_DOT,
+    position: 'absolute',
+    width: PRESS_DOT
   },
   scoreRow: {
     alignItems: 'flex-end',

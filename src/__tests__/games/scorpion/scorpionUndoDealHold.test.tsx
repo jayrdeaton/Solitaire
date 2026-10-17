@@ -121,7 +121,7 @@ jest.mock('@rific/feedback-press', () => {
   return { Pressable: MockPressable, useVibration: () => ({ short: () => {}, selection: () => {} }) }
 })
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))
-jest.mock('@tastic/sprites/fireworks', () => ({ Fireworks: () => null }))
+jest.mock('@/components/winning/PipFireworks', () => ({ PipFireworks: () => null }))
 jest.mock('@/games/shared/WinBanner', () => ({ WinBanner: () => null }))
 jest.mock('@/stores/gameStats', () => ({ useGameStats: () => ({ recordDealWon: () => {}, recordDealAbandoned: () => {}, recordHintUsed: () => {} }) }))
 jest.mock('@/stores/lastActiveGame', () => ({ useLastActiveGame: () => ({ setLastActiveGame: () => {}, clearLastActiveGame: () => {} }) }))

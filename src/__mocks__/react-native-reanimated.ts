@@ -37,6 +37,8 @@ const Animated = {
     linear: passthrough,
     ease: passthrough,
     quad: passthrough,
+    cubic: passthrough,
+    back: () => passthrough,
     in: passthrough,
     out: passthrough,
     inOut: passthrough,

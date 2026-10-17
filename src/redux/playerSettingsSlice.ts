@@ -1,5 +1,6 @@
 import type { Action, Dispatch, Middleware } from '@reduxjs/toolkit'
 import { themeActions, type ThemeSettings } from '@rific/auto-paper'
+import { keepAwakeActions, type KeepAwakeSettings } from '@rific/core'
 import { hapticActions, type HapticSettings, soundActions, type SoundSettings } from '@rific/feedback-press'
 import { createProfileExtensionSlice, type Profile, type ProfileExtensionState } from '@tastic/profile'
 
@@ -11,9 +12,10 @@ import { settingsActions } from './settingsSlice'
 // Every setting follows the player (2026-10-15, Jay: his kids want sounds and hints, he doesn't, and
 // any line between "the player's" and "the phone's" would be invisible to the people using it). That is
 // the whole Settings sheet: the `settings` slice (rules, play aids, card looks, Lock Orientation with its
-// angle, Reduce Motion), `sound`, `haptic`, and the theme's appearance and Blur. The theme's color is
-// already the player's (ProfileThemeSync). Sound can follow the player safely: the iPhone's ring/silent
-// switch still mutes every game sound (@rific/feedback-press plays them as ambient audio).
+// angle, Reduce Motion), `sound`, `haptic`, `keepAwake` (@rific/core's Keep Awake), and the theme's
+// appearance and Blur. The theme's color is already the player's (ProfileThemeSync). Sound can follow
+// the player safely: the iPhone's ring/silent switch still mutes every game sound (@rific/feedback-press
+// plays them as ambient audio).
 //
 // The live slices always hold the SELECTED player's values, so nothing that reads them changes (each
 // provider bridged from them - FeedbackPressProvider, auto-paper's, the orientation lock - adopts a
@@ -26,6 +28,7 @@ export interface PlayerSettings {
   settings: Settings
   sound: SoundSettings
   haptic: HapticSettings
+  keepAwake: KeepAwakeSettings
   theme: Pick<ThemeSettings, 'appearance' | 'blur'>
 }
 
@@ -40,12 +43,13 @@ export interface PlayerSettingsState {
   settings: Settings
   sound: SoundSettings
   haptic: HapticSettings
+  keepAwake: KeepAwakeSettings
   theme: Pick<ThemeSettings, 'appearance' | 'blur'>
   playerSettings: ProfileExtensionState<PlayerSettings>
 }
 
 function livePlayerSettings(state: PlayerSettingsState): PlayerSettings {
-  return { settings: state.settings, sound: state.sound, haptic: state.haptic, theme: { appearance: state.theme.appearance, blur: state.theme.blur } }
+  return { settings: state.settings, sound: state.sound, haptic: state.haptic, keepAwake: state.keepAwake, theme: { appearance: state.theme.appearance, blur: state.theme.blur } }
 }
 
 /**
@@ -73,6 +77,7 @@ export const playerSettingsMiddleware: Middleware<object, PlayerSettingsState, D
   api.dispatch(settingsActions.initialize({ ...stored.settings, lockedRotation: stored.settings.lockedRotation }))
   api.dispatch(soundActions.initialize({ ...after.sound, ...stored.sound }))
   api.dispatch(hapticActions.initialize({ ...after.haptic, ...stored.haptic }))
+  api.dispatch(keepAwakeActions.initialize({ ...after.keepAwake, ...stored.keepAwake }))
   api.dispatch(themeActions.initialize(stored.theme))
   return result
 }

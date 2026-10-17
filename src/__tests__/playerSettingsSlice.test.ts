@@ -1,5 +1,6 @@
 import { type Action, configureStore, type Dispatch } from '@reduxjs/toolkit'
 import { themeActions, themeReducer } from '@rific/auto-paper'
+import { keepAwakeActions, keepAwakeReducer } from '@rific/core'
 import { hapticActions, hapticReducer, soundActions, soundReducer } from '@rific/feedback-press'
 import { type Profile, profilesReducer } from '@tastic/profile'
 
@@ -13,36 +14,40 @@ const kid: Profile = { id: 'profile-kid', name: 'Kid', color: '#ff0000', tag: 'K
 function makeStore(preloaded: { activeProfile?: string | null; profiles?: Profile[]; playerSettings?: Record<string, PlayerSettings> } = {}) {
   return configureStore({
     preloadedState: { activeProfile: preloaded.activeProfile ?? null, profiles: preloaded.profiles ?? [dad, kid], playerSettings: preloaded.playerSettings ?? {} },
-    reducer: { activeProfile, profiles: profilesReducer, settings, sound: soundReducer, haptic: hapticReducer, theme: themeReducer, playerSettings },
+    reducer: { activeProfile, profiles: profilesReducer, settings, sound: soundReducer, haptic: hapticReducer, keepAwake: keepAwakeReducer, theme: themeReducer, playerSettings },
     middleware: (getDefaultMiddleware) => getDefaultMiddleware({ serializableCheck: false }).concat(playerSettingsMiddleware)
   })
 }
 
 describe('settings follow the player', () => {
-  it('each player gets back every setting they left: rules, play aids, card looks, sound, haptics, appearance, Blur, Reduce Motion', () => {
+  it('each player gets back every setting they left: rules, play aids, card looks, sound, haptics, Keep Awake, appearance, Blur, Reduce Motion', () => {
     const store = makeStore()
     store.dispatch(activeProfileActions.select(dad.id))
     store.dispatch(settingsActions.initialize({ klondikeDraw: 3, autoHintSeconds: 0, cardStyle: 'numeric', reduceMotion: true }))
     store.dispatch(soundActions.initialize({ enabled: false }))
     store.dispatch(hapticActions.initialize({ vibrate: false }))
+    store.dispatch(keepAwakeActions.initialize({ enabled: false }))
     store.dispatch(themeActions.initialize({ appearance: 'dark', blur: false }))
 
     store.dispatch(activeProfileActions.select(kid.id))
     store.dispatch(settingsActions.initialize({ klondikeDraw: 1, autoHintSeconds: 15, cardStyle: 'decorated', reduceMotion: false }))
     store.dispatch(soundActions.initialize({ enabled: true }))
     store.dispatch(hapticActions.initialize({ vibrate: true }))
+    store.dispatch(keepAwakeActions.initialize({ enabled: true }))
     store.dispatch(themeActions.initialize({ appearance: 'light', blur: true }))
 
     store.dispatch(activeProfileActions.select(dad.id))
     expect(store.getState().settings).toMatchObject({ klondikeDraw: 3, autoHintSeconds: 0, cardStyle: 'numeric', reduceMotion: true })
     expect(store.getState().sound.enabled).toBe(false)
     expect(store.getState().haptic.vibrate).toBe(false)
+    expect(store.getState().keepAwake.enabled).toBe(false)
     expect(store.getState().theme).toMatchObject({ appearance: 'dark', blur: false })
 
     store.dispatch(activeProfileActions.select(kid.id))
     expect(store.getState().settings).toMatchObject({ klondikeDraw: 1, autoHintSeconds: 15, cardStyle: 'decorated', reduceMotion: false })
     expect(store.getState().sound.enabled).toBe(true)
     expect(store.getState().haptic.vibrate).toBe(true)
+    expect(store.getState().keepAwake.enabled).toBe(true)
     expect(store.getState().theme).toMatchObject({ appearance: 'light', blur: true })
   })
 
@@ -63,7 +68,7 @@ describe('settings follow the player', () => {
 
   it('an unlocked player read back after a relaunch (no lockedRotation key at all) clears the last angle too', () => {
     // JSON drops an undefined key, so that is how an unlocked player's entry comes back from storage.
-    const filed = JSON.parse(JSON.stringify({ settings: { ...DEFAULT_SETTINGS, lockedRotation: undefined }, sound: { enabled: true }, haptic: { vibrate: true }, theme: { appearance: 'system', blur: true } })) as PlayerSettings
+    const filed = JSON.parse(JSON.stringify({ settings: { ...DEFAULT_SETTINGS, lockedRotation: undefined }, sound: { enabled: true }, haptic: { vibrate: true }, keepAwake: { enabled: true }, theme: { appearance: 'system', blur: true } })) as PlayerSettings
     const store = makeStore({ activeProfile: kid.id, playerSettings: { [dad.id]: filed } })
     store.dispatch(settingsActions.initialize({ lockOrientation: true, lockedRotation: 90 }))
 
@@ -93,7 +98,7 @@ describe('settings follow the player', () => {
 
   it('a setting added after a player was filed keeps what is on screen', () => {
     const { autoHintSeconds: _added, ...older } = DEFAULT_SETTINGS
-    const filed = { settings: older as typeof DEFAULT_SETTINGS, sound: { enabled: true }, haptic: { vibrate: true }, theme: { appearance: 'system' as const, blur: true } }
+    const filed = { settings: older as typeof DEFAULT_SETTINGS, sound: { enabled: true }, haptic: { vibrate: true }, keepAwake: { enabled: true }, theme: { appearance: 'system' as const, blur: true } }
     const store = makeStore({ playerSettings: { [kid.id]: filed } })
     store.dispatch(settingsActions.initialize({ autoHintSeconds: 30 }))
 

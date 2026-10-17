@@ -467,7 +467,7 @@ describe('Klondike scoreHintMove', () => {
     const play = controller.legalMoves(state).find((m) => m.from.zone === 'waste' && m.to.zone === 'tableau' && m.to.index === 0)!
     expect(play).toBeDefined()
     expect(controller.scoreHintMove!(state, play)).toBeGreaterThan(0)
-    expect(findHint(controller, state)).toEqual({ kind: 'move', move: play })
+    expect(findHint(controller, state)).toEqual({ kind: 'move', move: play, choices: 1 })
   })
 })
 

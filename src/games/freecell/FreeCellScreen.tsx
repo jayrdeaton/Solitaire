@@ -2,7 +2,6 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
-import { Fireworks } from '@tastic/sprites/fireworks'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
@@ -21,14 +20,13 @@ import { GameLoading } from '@/components/GameLoading'
 import { rectOffsetToScreenPoint } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
-import { fireworksColors } from '@/components/theme'
 import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useFrozenWhileHidden } from '@/components/useFrozenWhileHidden'
 import { useGameSession } from '@/components/useGameSession'
 import { useTakeOffHold } from '@/components/useTakeOffHold'
+import { PipFireworks } from '@/components/winning/PipFireworks'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
-import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { FREECELL_RULES } from '@/constants/gameRules'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
@@ -40,6 +38,7 @@ import { Card, SUITS } from '@/engine/types'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { showNoHintToast } from '@/games/shared/gameToasts'
+import { liftTappedRun, peelInAir } from '@/games/shared/inAirRun'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFinish } from '@/games/shared/useAutoFinish'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
@@ -128,7 +127,7 @@ export function FreecellCell({
 export default withGameProviders(FreeCellScreenInner)
 
 function FreeCellScreenInner() {
-  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
@@ -136,7 +135,7 @@ function FreeCellScreenInner() {
   // exclusion with everything else; tap/drag/auto-play can all run concurrently with each other -
   // PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`, `commitState`,
   // `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkLanding, isLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<FreeCellState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkLanding, landingCount, isLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<FreeCellState>()
   const [undoStack, setUndoStack, undoStackRef] = useUndoStack<UndoEntry<FreeCellState, FreeCellUndoMove>>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -390,7 +389,7 @@ function FreeCellScreenInner() {
     s.foundation.forEach((pile, suit) => {
       const origin = origins[suit]
       if (!origin || pile.length === 0) return
-      chains.push({ cards: pile.slice().reverse(), origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
+      chains.push({ cards: pile.slice().reverse(), origin })
       handedOff.add(suit)
     })
     winCascade.startChains(chains, cardWidth, () => setCascadeHandoff({ state: s, suits: handedOff }))
@@ -603,13 +602,13 @@ function FreeCellScreenInner() {
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
   // the player still taps/drags the suggested card through the normal tap-to-move/drag flow.
-  function handleHint(request?: HintRequest) {
-    if (!state) return
+  function handleHint(request?: HintRequest): boolean {
+    if (!state) return false
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(FreeCellController, state, skip)
     if (result.kind === 'none') {
       if (!request?.auto) showNoHintToast(infoToast)
-      return
+      return false
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
@@ -620,6 +619,8 @@ function FreeCellScreenInner() {
       const source = resolvePile(from) ?? []
       void playHintGlide({ moving: source.slice(source.length - count), dest: resolvePile(to) ?? [], destFanned: to.zone === 'tableau', slot: to, cardWidth })
     }
+    // True when pressing Hint again shows a different move: a held Hint button steps on while it is (hintHold.ts).
+    return result.kind === 'move' && result.choices > 1
   }
 
   function pushUndo(prev: FreeCellState, move: MoveInfo | null) {
@@ -833,24 +834,18 @@ function FreeCellScreenInner() {
     // thing that still waits on activeFlightCountRef) sees this tap as in-flight for its whole
     // duration, not just once completeMove lands one.
     startFlights(1)
-    const origin = await measure()
-    // Reads via stateRef.current (not the render closure's `state` - see resolvePile's own doc
-    // comment) - this runs after an await gap, during which some other concurrent action may
-    // already have committed a newer board.
-    const sourcePile = resolvePile(move.from, stateRef.current)
-    if (!sourcePile || undoBusyRef.current) {
+    // Part of the run may still be flying in to this column (a quick tap right after a move put it there): it goes on from mid-air
+    // (inAirRun.ts).
+    const takeOff = await liftTappedRun({ ghost, from: move.from, count: move.count, measure, pile: () => resolvePile(move.from, stateRef.current), landingCount, cancelled: () => undoBusyRef.current, cardWidth })
+    if (!takeOff) {
       settleFlight()
       return
     }
-    const movingCards = sourcePile.slice(sourcePile.length - move.count)
-    const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
     playCardSound()
     hapticCard()
-    const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
-
-    if (!completeMove(move.from, move.to, move.count, cardId, flight)) {
-      flight.hide()
+    if (!completeMove(move.from, move.to, move.count, cardId, takeOff.flight, { inAir: takeOff.inAir })) {
+      takeOff.flight.hide()
       settleFlight()
     }
   }
@@ -859,7 +854,10 @@ function FreeCellScreenInner() {
   // drag's drop) - applies the move, then marks the destination "incoming" and stashes the
   // anchor card id for the [state]-effect above to measure and fly the ghost onto, instead of it
   // just vanishing/appearing at the destination instantly.
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean }): boolean {
+  //
+  // `inAir`: a tapped run's cards still flying in to `from` (inAirRun.ts) - `flight` carries only the cards on the board, and each piece
+  // goes on from mid-air in a flight of its own, landing on top of them.
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; inAir?: Card[][] }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) {
       // tableauRunCount's dimming only rules out a run that could NEVER move anywhere (the
       // best-case cap, assuming a non-empty destination - see its own comment). A run that passed
@@ -886,8 +884,16 @@ function FreeCellScreenInner() {
       }
       return false
     }
-    const flyingId = beginFlying(to, count)
-    pendingAutoMoveCardIdRef.current.push({ cardId: anchorCardId, to, gen: dealTokenRef.current, flight, flyingId })
+    const gen = dealTokenRef.current
+    const inAirCount = (opts?.inAir ?? []).reduce((n, piece) => n + piece.length, 0)
+    pendingAutoMoveCardIdRef.current.push({ cardId: anchorCardId, to, gen, flight, flyingId: beginFlying(to, count - inAirCount) })
+    if (inAirCount > 0) {
+      // Out of `from`'s landing count, so the cards left there show at once.
+      shrinkLanding(from, inAirCount)
+      const pieces = peelInAir(ghost, opts?.inAir ?? [], cardWidth)
+      startFlights(pieces.length)
+      for (const p of pieces) pendingAutoMoveCardIdRef.current.push({ cardId: p.anchorCardId, to, gen, flight: p.flight, flyingId: beginFlying(to, p.count) })
+    }
     return true
   }
 
@@ -1086,7 +1092,7 @@ function FreeCellScreenInner() {
     (see WinCascadeGhosts' own doc comment for why nesting depth alone can't do this) - the win
     banner comes last of all three so it's the one thing guaranteed to sit on top of the animation,
     not buried under it. */}
-      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <PipFireworks />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor('freecell')} onNewGame={startNewGame} />}
     </CardSizeProvider>

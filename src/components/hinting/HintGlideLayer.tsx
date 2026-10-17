@@ -41,6 +41,9 @@ export const HINT_GLIDE_MS = scaledMs(300)
 /** A beat on the landing spot before it fades. */
 export const HINT_GLIDE_HOLD_MS = 200
 export const HINT_GLIDE_FADE_OUT_MS = 250
+/** From the copy showing to the end of its beat on the landing spot: a held Hint button shows the next hint then
+ * (GameChrome's HINT_HOLD_REPEAT_MS), replacing this one as it would start to fade. */
+export const HINT_GLIDE_LANDED_MS = HINT_GLIDE_FADE_IN_MS + HINT_GLIDE_MS + HINT_GLIDE_HOLD_MS
 /** From the copy showing to it being gone. */
 export const HINT_GLIDE_TOTAL_MS = HINT_GLIDE_FADE_IN_MS + HINT_GLIDE_MS + HINT_GLIDE_HOLD_MS + HINT_GLIDE_FADE_OUT_MS
 

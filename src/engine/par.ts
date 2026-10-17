@@ -52,9 +52,30 @@ export function parFor(variant: VariantId): Par {
   return { moves, seconds, score: moves + seconds }
 }
 
+/** How far under `par` a value is, as a whole percent (negative over par). */
+function percentUnderPar(value: number, par: number): number {
+  return Math.round((1 - value / par) * 100)
+}
+
 /** How a value compares with its par as a whole percentage: "18% under par", "at par", "5% over par". */
 export function describeVsPar(value: number, par: number): string {
-  const pct = Math.round((1 - value / par) * 100)
+  const pct = percentUnderPar(value, par)
   if (pct === 0) return 'at par'
   return pct > 0 ? `${pct}% under par` : `${-pct}% over par`
+}
+
+export type ParMedal = 'bronze' | 'silver' | 'gold'
+
+/** A win's score this far under par or more earns gold: the Low Score achievement's gold line (its threshold -65, a score 65%
+ * of par). */
+export const GOLD_MEDAL_PERCENT_UNDER_PAR = 35
+
+/** The medal a win's score earns against par, the color of the win card's trophy and title (Jay, 2026-10-17): bronze at par or
+ * over (every win earns one), silver for any amount under, gold from GOLD_MEDAL_PERCENT_UNDER_PAR under. Rounded like
+ * describeVsPar, so "Score at par" is always bronze and "Score 1% under par" silver. Not the Low Score achievement's tiers
+ * (bronze at par, silver 20% under): that one is a lifetime milestone, this is one game. */
+export function parMedal(score: number, par: number): ParMedal {
+  const pct = percentUnderPar(score, par)
+  if (pct >= GOLD_MEDAL_PERCENT_UNDER_PAR) return 'gold'
+  return pct > 0 ? 'silver' : 'bronze'
 }

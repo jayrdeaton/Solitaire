@@ -1,5 +1,5 @@
 import { CardSizeProvider } from '@tastic/cards'
-import { act, render, screen } from '@testing-library/react-native'
+import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { ReactElement } from 'react'
 
 import { isAnyFaceLoading, markGhostPending, REVEAL_MAX_MS } from '@/components/cardFacePaint'
@@ -84,7 +84,7 @@ jest.mock('@/components/theme', () => {
   return { ...actual, useTableColors: () => actual.lightColors }
 })
 // Only imported because FreecellCell / ReserveCell live in their screens' modules.
-jest.mock('@tastic/sprites/fireworks', () => ({ Fireworks: () => null }))
+jest.mock('@/components/winning/PipFireworks', () => ({ PipFireworks: () => null }))
 
 const card = (rank: number, suit = 'hearts', faceUp = true): Card => ({ id: `${suit}-${rank}-0`, suit, rank, faceUp }) as Card
 const X = card(9) // the card that takes off
@@ -265,9 +265,11 @@ describe('StockWaste - the waste top', () => {
   })
 
   it('does not reveal anything when the hold ends on an empty waste - the empty slot shows at once', async () => {
-    const r = await render(stockWaste({ wasteTop: X }))
+    // A stock with a card in it, so the only empty slot on screen is the waste's.
+    const S = card(2, 'diamonds', false)
+    const r = await render(stockWaste({ wasteTop: X, stockTopCard: S }))
     const release = takeOff(X.id)
-    await r.rerender(stockWaste({ wasteTop: undefined }))
+    await r.rerender(stockWaste({ wasteTop: undefined, stockTopCard: S }))
     await act(async () => release())
     expect(real(X)).toBeUndefined()
     expect(screen.getByTestId('empty-slot')).toBeTruthy()
@@ -285,24 +287,30 @@ describe('StockWaste - the stock', () => {
   const S1 = card(2, 'diamonds', false)
   const S2 = card(3, 'diamonds', false)
 
-  it('keeps drawing the card a draw took off, still tappable while the stock has cards (the next draw)', async () => {
+  // The stock's one press target takes every tap, whatever it draws (StockWaste): the cards in it are never pressable themselves.
+  it('keeps drawing the card a draw took off, and still takes a tap while the stock has cards (the next draw)', async () => {
     const r = await render(stockWaste({ wasteTop: undefined, stockTopCard: S1 }))
     const release = takeOff(S1.id)
     await r.rerender(stockWaste({ wasteTop: undefined, stockTopCard: S2 }))
     expect(drawn(real(S1))).toBe(true)
     expect(real(S2)).toBeUndefined()
-    expect(real(S1)!.props.onPress).toBe(onDrawStock)
+    expect(real(S1)!.props.onPress).toBeUndefined()
+    onDrawStock.mockClear()
+    await fireEvent.press(screen.getByTestId('stock-pile'))
+    expect(onDrawStock).toHaveBeenCalledTimes(1)
     await act(async () => release())
     expect(real(S1)).toBeUndefined()
     expect(drawn(real(S2))).toBe(true) // a back is SVG: nothing to reveal
   })
 
-  it('a held last card is not tappable (there is nothing left to draw), and the recycle slot shows once it goes', async () => {
+  it("a held last card still takes the tap (the screen turns the waste over, once that card's flight lets it), and the recycle slot shows once it goes", async () => {
     const r = await render(stockWaste({ wasteTop: undefined, stockTopCard: S1 }))
     const release = takeOff(S1.id)
     await r.rerender(stockWaste({ wasteTop: X, stockTopCard: undefined }))
     expect(drawn(real(S1))).toBe(true)
-    expect(real(S1)!.props.onPress).toBeUndefined()
+    onDrawStock.mockClear()
+    await fireEvent.press(screen.getByTestId('stock-pile'))
+    expect(onDrawStock).toHaveBeenCalledTimes(1)
     await act(async () => release())
     expect(real(S1)).toBeUndefined()
   })

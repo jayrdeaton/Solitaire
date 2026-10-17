@@ -8,7 +8,6 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
-import { Fireworks } from '@tastic/sprites/fireworks'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
@@ -24,12 +23,11 @@ import { useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { StockWaste } from '@/components/StockWaste'
-import { fireworksColors } from '@/components/theme'
 import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
+import { PipFireworks } from '@/components/winning/PipFireworks'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
-import { CHAIN_ENTRANCE_STAGGER_MS } from '@/components/winning/winCascadeMotion'
 import { FORTYTHIEVES_RULES } from '@/constants/gameRules'
 import { AutoCompleteStep } from '@/engine/autoFoundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
@@ -43,6 +41,7 @@ import { fortyThievesVariant } from '@/engine/variants'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { showNoHintToast } from '@/games/shared/gameToasts'
+import { liftTappedRun, peelInAir } from '@/games/shared/inAirRun'
 import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFinish } from '@/games/shared/useAutoFinish'
@@ -94,7 +93,7 @@ function makeStyles() {
 export default withGameProviders(FortyThievesScreenInner)
 
 function FortyThievesScreenInner() {
-  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   // The move-style rule the in-progress deal was actually dealt with - deliberately not
@@ -110,7 +109,7 @@ function FortyThievesScreenInner() {
   // each other - PATTERN_OVERLAP_GATE). Destructured below so every existing reference to `state`,
   // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
   // unchanged.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<FortyThievesState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, isLanding, shrinkLanding, landingCount, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<FortyThievesState>()
   const [undoStack, setUndoStack, undoStackRef] = useUndoStack<UndoEntry<FortyThievesState>>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -324,7 +323,7 @@ function FortyThievesScreenInner() {
     s.foundation.forEach((pile, index) => {
       const origin = origins[index]
       if (!origin || pile.length === 0) return
-      chains.push({ cards: pile.slice().reverse(), origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS })
+      chains.push({ cards: pile.slice().reverse(), origin })
       handedOff.add(index)
     })
     winCascade.startChains(chains, cardWidth, () => setCascadeHandoff({ state: s, piles: handedOff }))
@@ -426,13 +425,13 @@ function FortyThievesScreenInner() {
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
   // the player still taps/drags the suggested card through the normal tap-to-move/drag flow.
-  function handleHint(request?: HintRequest) {
-    if (!state) return
+  function handleHint(request?: HintRequest): boolean {
+    if (!state) return false
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(controllerRef.current, state, skip)
     if (result.kind === 'none') {
       if (!request?.auto) showNoHintToast(infoToast)
-      return
+      return false
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
@@ -443,6 +442,8 @@ function FortyThievesScreenInner() {
       const source = resolvePile(from) ?? []
       void playHintGlide({ moving: source.slice(source.length - count), dest: resolvePile(to) ?? [], destFanned: to.zone === 'tableau', slot: to, cardWidth })
     }
+    // True when pressing Hint again shows a different move: a held Hint button steps on while it is (hintHold.ts).
+    return result.kind === 'move' && result.choices > 1
   }
 
   function pushUndo(prev: FortyThievesState, move: MoveInfo | null) {
@@ -571,10 +572,21 @@ function FortyThievesScreenInner() {
     return false
   }
 
-  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean }): boolean {
+  //
+  // `inAir`: a tapped run's cards still flying in to `from` (inAirRun.ts) - `flight` carries only the cards on the board, and each piece
+  // goes on from mid-air in a flight of its own, landing on top of them.
+  function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { silent?: boolean; inAir?: Card[][] }): boolean {
     if (!applyMove(from, to, count, anchorCardId, opts)) return false
-    const flyingId = beginFlying(to, count)
-    pendingFlightRef.current.push({ cardId: anchorCardId, to, gen: dealTokenRef.current, flyingId, flight })
+    const gen = dealTokenRef.current
+    const inAirCount = (opts?.inAir ?? []).reduce((n, piece) => n + piece.length, 0)
+    pendingFlightRef.current.push({ cardId: anchorCardId, to, gen, flyingId: beginFlying(to, count - inAirCount), flight })
+    if (inAirCount > 0) {
+      // Out of `from`'s landing count, so the cards left there show at once.
+      shrinkLanding(from, inAirCount)
+      const pieces = peelInAir(ghost, opts?.inAir ?? [], cardWidth)
+      startFlights(pieces.length)
+      for (const p of pieces) pendingFlightRef.current.push({ cardId: p.anchorCardId, to, gen, flyingId: beginFlying(to, p.count), flight: p.flight })
+    }
     return true
   }
 
@@ -765,21 +777,18 @@ function FortyThievesScreenInner() {
     }
 
     startFlights(1)
-    const origin = await measure()
-    const sourcePile = resolvePile(move.from)
-    if (!sourcePile || undoBusyRef.current) {
+    // Part of the run may still be flying in to this column (a quick tap right after a move put it there): it goes on from mid-air
+    // (inAirRun.ts).
+    const takeOff = await liftTappedRun({ ghost, from: move.from, count: move.count, measure, pile: () => resolvePile(move.from, stateRef.current), landingCount, cancelled: () => undoBusyRef.current, cardWidth })
+    if (!takeOff) {
       settleFlight()
       return
     }
-    const movingCards = sourcePile.slice(sourcePile.length - move.count)
-    const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
     playCardSound()
     hapticCard()
-    const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
-
-    if (!completeMove(move.from, move.to, move.count, cardId, flight)) {
-      flight.hide()
+    if (!completeMove(move.from, move.to, move.count, cardId, takeOff.flight, { inAir: takeOff.inAir })) {
+      takeOff.flight.hide()
       settleFlight()
     }
   }
@@ -821,7 +830,7 @@ function FortyThievesScreenInner() {
             })}
           </View>
 
-          <StockWaste canRecycle={false} dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteUnder={state.waste[state.waste.length - 2]} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={topRowGroupGap} onDrawStock={handleDrawStock} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight, dragged) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, dragged.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} />
+          <StockWaste canRecycle={false} dropZones={dropZones} stockTopCard={top(state.stock)} wasteTop={wasteTop} wasteUnder={state.waste[state.waste.length - 2]} wasteHiddenCount={flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)} wasteShakeToken={wasteTop && shake?.cardId === wasteTop.id ? shake.token : undefined} wasteHinted={hintCountFor(activeHint, { zone: 'waste', index: 0 }) > 0} stockHinted={activeHint?.kind === 'drawStock'} cardWidth={cardWidth} gap={topRowGroupGap} onDrawStock={() => handleDrawStock()} onWastePress={(measure) => handleCardTap({ zone: 'waste', index: 0 }, wasteTop!.id, measure)} onWasteDrop={(x, y, flight, dragged) => attemptDrop({ zone: 'waste', index: 0 }, 1, x, y, dragged.id, flight)} stockRef={stockViewRef} wasteRef={wasteViewRef} />
         </View>
 
         <View style={[styles.tableauRow, { gap }]}>
@@ -858,7 +867,7 @@ function FortyThievesScreenInner() {
           })}
         </View>
       </GameChrome>
-      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <PipFireworks />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor(variant)} onNewGame={startNewGame} />}
       {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}

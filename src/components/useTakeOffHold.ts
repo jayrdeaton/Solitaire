@@ -10,8 +10,8 @@ export interface TakeOffHoldState<C extends Card> {
   /** The card to draw: the pile's card, or the departing one while `holding`. */
   shown: C | null | undefined
   /** `shown` has already left (its ghost is not on screen yet): draw it inert - no tap, no drag, no hint, no shake. (The
-   * stock alone still takes a tap while it has cards: every back looks the same, so the next draw sends a card nobody
-   * could tell apart from the held one - see StockWaste.) */
+   * stock alone still takes a tap: every back looks the same, so the next draw sends a card nobody could tell apart from the
+   * held one, and a turn-over waits for that card's flight - see StockWaste.) */
   holding: boolean
   /** A hold has just ended and the slot switched to the card under it, whose face is not painted yet: keep the real card
    * hidden and show the pile's overlay (already painted, showing that same card) instead. */

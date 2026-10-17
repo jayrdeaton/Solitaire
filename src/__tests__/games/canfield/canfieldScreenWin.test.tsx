@@ -196,9 +196,9 @@ jest.mock('@/games/canfield/rules', () => {
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => {}, hapticCard: () => {}, hapticInvalid: () => {} }) }))
 jest.mock('@rific/feedback-press', () => ({ useVibration: () => ({ short: () => {}, selection: () => {} }) }))
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))
-jest.mock('@tastic/sprites/fireworks', () => {
+jest.mock('@/components/winning/PipFireworks', () => {
   const { View: MockView } = require('react-native')
-  return { Fireworks: () => <MockView testID='fireworks' /> }
+  return { PipFireworks: () => <MockView testID='fireworks' /> }
 })
 jest.mock('@/games/shared/WinBanner', () => {
   const { Text: MockText } = require('react-native')
@@ -287,6 +287,8 @@ jest.mock('@/components/StockWaste', () => {
       return (
         <MockView>
           {stockTopCard ? <MockPressable testID='stock-pile' onPress={onDrawStock} /> : null}
+          {/* The real stock's one press target is there when it is empty too (a tap turns the waste over). */}
+          {stockTopCard ? null : <MockPressable testID='turn-over' onPress={onDrawStock} />}
           {wasteTop ? <MockPressable testID={`waste-${wasteTop.id}`} onPress={() => onWastePress(async () => ({ x: 10, y: 10 }))} /> : null}
         </MockView>
       )
@@ -1074,6 +1076,40 @@ describe("Canfield screen - once the board is solved, the player's foundation pl
     expect(mockLog.shown).toEqual([id('clubs', 11)])
     expect(cardsOnBoard()).toBe(7)
     expect(foundationTop('clubs')).toBe(id('clubs', 9))
+  })
+})
+
+// Every tap is one draw, however fast (Jay's kids speed through the stock, 2026-10-16).
+describe('Canfield screen - speeding through the stock', () => {
+  const moves = () => screen.getByTestId('moves').props.children as number
+
+  it('draw 3: a tap while the last fan is still landing waits for it - the deal layer flies one fan at a time, and a second start cancelled the first for good', async () => {
+    const stock = [3, 4, 5, 6, 7, 8].map((rank) => card('spades', rank))
+    await mount(board({ tableau: [[card('clubs', 5)]], foundation: [[], [], [], []], stock }), [], 2)
+
+    await press('stock-pile')
+    await press('stock-pile')
+    await flush(10)
+    expect(mockLog.dealt).toHaveLength(3)
+
+    await flush(FLIGHT_MS + 20)
+    expect(mockLog.dealt).toHaveLength(6) // the second fan, once the first had landed
+    await flush(FLIGHT_MS + 20)
+    expect(mockLog.hidden).toBe(0)
+    expect(moves()).toBe(2)
+  })
+
+  it('a turn-over tapped while a drawn card is still flying to the waste waits for it to land - nothing flies back, so the card would land on a waste that had gone', async () => {
+    await mount(board({ tableau: [[card('clubs', 5)]], foundation: [[], [], [], []], stock: [card('spades', 3)], waste: [card('hearts', 9)] }), [], 3, 1)
+
+    await press('stock-pile') // draws the 3
+    await press('turn-over') // while the 3 is in the air
+    await flush(10)
+    expect(moves()).toBe(1)
+
+    await flush(FLIGHT_MS + 20)
+    expect(moves()).toBe(2)
+    expect(mockLog.hidden).toBe(0)
   })
 })
 

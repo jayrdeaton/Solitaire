@@ -118,12 +118,12 @@ describe('findHint', () => {
 
   it('prefers a foundation-bound move over an earlier non-foundation one', () => {
     const controller = { legalMoves: () => [tableauMove, foundationMove] }
-    expect(findHint(controller, null)).toEqual({ kind: 'move', move: foundationMove })
+    expect(findHint(controller, null)).toEqual({ kind: 'move', move: foundationMove, choices: 2 })
   })
 
   it('falls back to the first legal move when none is foundation-bound', () => {
     const controller = { legalMoves: () => [tableauMove] }
-    expect(findHint(controller, null)).toEqual({ kind: 'move', move: tableauMove })
+    expect(findHint(controller, null)).toEqual({ kind: 'move', move: tableauMove, choices: 1 })
   })
 
   it('suggests a stock draw when there are no legal moves but the stock can be drawn', () => {
@@ -158,12 +158,12 @@ describe('findHint', () => {
     })
 
     it('is still suggested when it gains something, reversible or not', () => {
-      expect(findHint(controllerWith(30, false), [1, 0])).toEqual({ kind: 'move', move: shuffle })
+      expect(findHint(controllerWith(30, false), [1, 0])).toEqual({ kind: 'move', move: shuffle, choices: 1 })
     })
 
     it('is still suggested when it cannot be moved back', () => {
       const oneWay = { ...controllerWith(0, false), tryMove: (b: Board, m: Move) => (m === shuffle ? tryMove(b, m) : null) }
-      expect(findHint(oneWay, [1, 0])).toEqual({ kind: 'move', move: shuffle })
+      expect(findHint(oneWay, [1, 0])).toEqual({ kind: 'move', move: shuffle, choices: 1 })
     })
   })
 
@@ -174,28 +174,28 @@ describe('findHint', () => {
     const controller = { legalMoves: () => [moveA, moveB, moveC] }
 
     it('cycles to a different move as skip increases', () => {
-      expect(findHint(controller, null, 0)).toEqual({ kind: 'move', move: moveA })
-      expect(findHint(controller, null, 1)).toEqual({ kind: 'move', move: moveB })
-      expect(findHint(controller, null, 2)).toEqual({ kind: 'move', move: moveC })
+      expect(findHint(controller, null, 0)).toEqual({ kind: 'move', move: moveA, choices: 3 })
+      expect(findHint(controller, null, 1)).toEqual({ kind: 'move', move: moveB, choices: 3 })
+      expect(findHint(controller, null, 2)).toEqual({ kind: 'move', move: moveC, choices: 3 })
     })
 
     it('wraps back around once every move has been shown', () => {
-      expect(findHint(controller, null, 3)).toEqual({ kind: 'move', move: moveA })
-      expect(findHint(controller, null, 4)).toEqual({ kind: 'move', move: moveB })
+      expect(findHint(controller, null, 3)).toEqual({ kind: 'move', move: moveA, choices: 3 })
+      expect(findHint(controller, null, 4)).toEqual({ kind: 'move', move: moveB, choices: 3 })
     })
 
     it('keeps a foundation-bound move first in the cycle', () => {
       const withFoundation = { legalMoves: () => [moveA, foundationMove, moveB] }
-      expect(findHint(withFoundation, null, 0)).toEqual({ kind: 'move', move: foundationMove })
-      expect(findHint(withFoundation, null, 1)).toEqual({ kind: 'move', move: moveA })
-      expect(findHint(withFoundation, null, 2)).toEqual({ kind: 'move', move: moveB })
+      expect(findHint(withFoundation, null, 0)).toEqual({ kind: 'move', move: foundationMove, choices: 3 })
+      expect(findHint(withFoundation, null, 1)).toEqual({ kind: 'move', move: moveA, choices: 3 })
+      expect(findHint(withFoundation, null, 2)).toEqual({ kind: 'move', move: moveB, choices: 3 })
     })
   })
 })
 
 describe('hintCountFor', () => {
   const move: Move = { from: { zone: 'tableau', index: 0 }, to: { zone: 'tableau', index: 1 }, count: 3 }
-  const hint = { kind: 'move' as const, move }
+  const hint = { kind: 'move' as const, move, choices: 1 }
 
   it('returns the full run count for the source pile', () => {
     expect(hintCountFor(hint, { zone: 'tableau', index: 0 })).toBe(3)

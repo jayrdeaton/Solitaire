@@ -1,38 +1,28 @@
 import type { ScreenPoint } from '../dealing/measureView'
 
-// Delay between successive chains (foundation piles / completed runs / the single discard pile)
-// starting their own cascade - independent of, and much coarser than, CHAIN_SEGMENT_DELAY_MS
-// below. Kept small enough that all of a game's chains read as erupting together, not one pile at
-// a time.
-export const CHAIN_ENTRANCE_STAGGER_MS = 220
+/** When chain `index` of a cascade's `count` chains (foundation piles, completed runs, Aces Up's Aces) leaves: one after
+ * another, evenly spaced, so the LAST chain starts its fall just as the FIRST lands from its own - its first bounce off the floor,
+ * `firstFallMs` after it left (that chain's vHalfPeriodMs: the launch leg always takes one half-period). Jay, 2026-10-17: the
+ * chains used to leave a fixed 220ms apart, which read as one burst for 4 foundations; spread over the first fall, each pile
+ * peels off on its own and the first bounce marks the last one going. A lone chain leaves at once. Independent of, and much
+ * coarser than, CHAIN_SEGMENT_DELAY_MS below (the delay between cards WITHIN a chain). */
+export function chainEntranceDelayMs(index: number, count: number, firstFallMs: number): number {
+  if (count <= 1) return 0
+  return (index * firstFallMs) / (count - 1)
+}
 
 // Delay between successive cards WITHIN one chain - card i (0 = head) starts i * this many ms
 // after the chain's own entranceDelayMs. Every card in a chain plays the identical fixed-period
 // path, so this constant delay produces a permanent, non-drifting phase offset: the whole chain
 // stays racked together nose-to-tail forever instead of spreading apart over time.
 //
-// A 13-card chain's total span is 12 * this value - that MUST stay comfortably under
-// BOUNCE_V_HALF_PERIOD_MIN_MS below, or the tail card starts its own fall/rise more than half a
-// bounce cycle behind its King. Once the lag exceeds half a cycle, the tail isn't just "behind" -
-// it can land in the OPPOSITE leg (rising while the King is falling, or vice versa), which reads
-// as the chain splitting apart rather than one snake trailing its head. At 42ms, a 13-card span
-// (504ms) still stays safely under half the shortest half-period's full range (900ms).
+// The same spacing for every chain, however long: a foundation's 13 cards trail their King by
+// ~0.5s, and a whole pile in one chain (Pyramid's discard, Golf's and TriPeaks' waste: up to 52
+// cards, ~2.1s) strings out across several bounces, every card still following its leader. Jay,
+// 2026-10-17: that is the effect. A long chain used to be squeezed into a 13-card chain's half
+// second so it stayed within one bounce, which packed its cards ~10ms apart and stacked their
+// shadows into a black streak.
 export const CHAIN_SEGMENT_DELAY_MS = 42
-
-// The most a LONG chain's tail may trail its head, when its spec opts into a tighter per-card delay (ChainSpec.segmentDelayMs, see
-// chainSegmentDelayMs below). The 42ms rule above only holds for the short chains it was tuned on: at 42ms a 52-card chain (all of
-// Pyramid's deck in one discard pile) trails its head by ~2.1s, more than TWO bounce half-periods, so its tail is in a different leg
-// altogether and the snake reads as a wave, not one chain. 500ms is what a 13-card chain already trails its head by (12 * 42ms),
-// which is known to read as one unit and stays under the shortest half-period (900ms) with room to spare.
-export const CHAIN_MAX_SPAN_MS = 500
-
-/** The per-card delay for a chain of `cardCount` cards that must stay ONE continuous snake however long it is: the usual
- * CHAIN_SEGMENT_DELAY_MS, tightened just enough that the whole chain's head-to-tail span stays within `maxSpanMs`. Chains of ~13
- * cards or fewer keep (or all but keep) the usual delay. Pass the result as ChainSpec.segmentDelayMs. */
-export function chainSegmentDelayMs(cardCount: number, maxSpanMs: number = CHAIN_MAX_SPAN_MS): number {
-  if (cardCount <= 1) return CHAIN_SEGMENT_DELAY_MS
-  return Math.min(CHAIN_SEGMENT_DELAY_MS, maxSpanMs / (cardCount - 1))
-}
 
 // The bounce path itself - assigned once per chain (see buildChainPath), then shared by every card in that chain via the delay
 // above, never randomized per-card, and fixed for the whole cascade (no drift). Every chain in a cascade bounces between the SAME
@@ -216,8 +206,8 @@ export function cardYAtElapsed(path: ChainPath, elapsedMs: number, offsetY: numb
 
 /** Whether a ghost card is drawn at `elapsedMs`. Before its entrance a ghost is parked exactly where
  * the real card it replaces stood (a screen blanks its real cards as the cascade takes over), so it
- * MUST be visible there: hiding it until its own entrance left piles/slots/columns empty for up to
- * (chains - 1) * CHAIN_ENTRANCE_STAGGER_MS, real cards vanishing with no ghost.
+ * MUST be visible there: hiding it until its own entrance left piles/slots/columns empty until the
+ * last chain left (a whole first fall, see chainEntranceDelayMs), real cards vanishing with no ghost.
  *
  * `alwaysVisible` cards (a chain's head - the one card the real pile showed - and any card with a
  * position of its own) are drawn from the cascade's first frame (the one it shows in, once these faces have painted - see

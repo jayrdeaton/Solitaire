@@ -85,6 +85,9 @@ export interface FlightConcurrency<TState> {
    * outlives the render that started it (the auto-play cascade: a card whose own flight hasn't
    * landed must not be picked up again, or it shows twice). */
   isLanding(pile: PileRef): boolean
+  /** How many of `pile`'s top cards are still flying in to it right now - read live, like isLanding. A tap on a card under them sends
+   * them on from mid-air (inAirRun.ts). */
+  landingCount(pile: PileRef): number
   /** How many independent flight-completions are outstanding right now, summed across every
    * concurrently-active action (tap-to-move, drag, auto-play, stock-draw all run concurrently with
    * each other - see PATTERN_OVERLAP_GATE; the first undo of a run waits for this to hit 0, and
@@ -205,7 +208,11 @@ export function useFlightConcurrency<TState>(): FlightConcurrency<TState> {
   }
 
   function isLanding(pile: PileRef): boolean {
-    return flyingRef.current.some((e) => e.count > 0 && e.to.zone === pile.zone && e.to.index === pile.index)
+    return landingCount(pile) > 0
+  }
+
+  function landingCount(pile: PileRef): number {
+    return flyingRef.current.reduce((sum, e) => (e.to.zone === pile.zone && e.to.index === pile.index ? sum + e.count : sum), 0)
   }
 
   const activeFlightCountRef = useRef(0)
@@ -370,6 +377,7 @@ export function useFlightConcurrency<TState>(): FlightConcurrency<TState> {
     shrinkFlying,
     shrinkLanding,
     isLanding,
+    landingCount,
     activeFlightCount,
     activeFlightCountRef,
     startFlights,

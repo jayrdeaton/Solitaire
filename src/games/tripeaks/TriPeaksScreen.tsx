@@ -10,7 +10,6 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
-import { Fireworks } from '@tastic/sprites/fireworks'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
@@ -27,11 +26,11 @@ import { GAME_CONTENT_PADDING, GameChrome } from '@/components/GameChrome'
 import { useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { StockWaste } from '@/components/StockWaste'
-import { fireworksColors } from '@/components/theme'
 import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
 import { useTakeOffHold } from '@/components/useTakeOffHold'
+import { PipFireworks } from '@/components/winning/PipFireworks'
 import { useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { TRIPEAKS_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
@@ -55,6 +54,7 @@ import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
+import { sweptWaste, useWinStockSweep } from '@/games/shared/useWinStockSweep'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { useSettings } from '@/hooks/useSettings'
@@ -147,7 +147,7 @@ const cellStyles = StyleSheet.create({
 })
 
 function TriPeaksScreenInner() {
-  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   // The rank-wrap rule the in-progress deal was actually dealt with - deliberately not re-derived
@@ -222,16 +222,22 @@ function TriPeaksScreenInner() {
   // it used to just sit there with the clock running.
   const { stuck } = useStuckLossCheck(controller, state, variant, recordDealAbandoned)
   const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, variant, session, dealTokenRef, recordDealWon, hintsUsedRef)
-  // Nothing animating and the initial deal finished - what the win celebration waits for (see
-  // useWinReveal). activeFlightCount covers every ghost flight (tap, drag, stock draw, undo all
-  // claim one via startFlights before their first await), dealHiddenIds the initial deal.
-  const settled = activeFlightCount === 0 && dealHiddenIds.size === 0
+  // activeFlightCount covers every ghost flight (tap, drag, stock draw, undo all claim one via startFlights before their first
+  // await), dealHiddenIds the initial deal.
+  const flightsLanded = activeFlightCount === 0 && dealHiddenIds.size === 0
+  // A win with cards still in the stock deals them onto the waste once the winning card has landed, so the cascade takes off
+  // with all 52 in one pile (see useWinStockSweep): the board shows its stock and waste through it.
+  const winSweep = useWinStockSweep({ state, won, othersSettled: flightsLanded, deal, cardWidth, stockViewRef, wasteViewRef })
+  // Nothing animating, the initial deal finished and a won board's leftover stock dealt - what the win celebration waits for
+  // (see useWinReveal).
+  const settled = flightsLanded && !winSweep.active
   // `won` is game state (clock, stat, save, undo/hint gating) and flips with the winning move; the
   // celebration - the waste pile giving way to the win cascade, fireworks, banner - waits until the
   // last card has flown onto the waste and landed. Hiding the waste top on `won` used to unregister
   // the very card the winning flight was measuring to land on, so that flight could not fly at all
-  // and the card simply appeared (see the [state] flight effect below).
-  const winRevealed = useWinReveal(won, settled)
+  // and the card simply appeared (see the [state] flight effect below). A longer fallback than the
+  // default when a sweep follows the last flight.
+  const winRevealed = useWinReveal(won, settled, winSweep.revealMaxWaitMs)
   // The loss banner waits for the last card to land too.
   const lossRevealed = useWinReveal(stuck, settled)
   // The board the win cascade has taken over from (set once its ghosts are on screen - startChains' onShown, see
@@ -278,6 +284,7 @@ function TriPeaksScreenInner() {
     session.reset()
     recordedWinRef.current = false
     winCascade.clear()
+    winSweep.cancel()
     pendingWinCascadeRef.current = null
     // The last shake belongs to the old board: card ids are reused by the next deal, so a cell dealt the shaken card must
     // not be handed its token at all (TriPeaksCell records whatever token its card arrives with as already played, so
@@ -311,6 +318,7 @@ function TriPeaksScreenInner() {
     pendingFlightRef.current = []
     session.restore(saved.moves, saved.elapsedSeconds)
     recordedWinRef.current = false
+    winSweep.cancel()
     setDealHiddenIds(new Set())
     commitState(saved.state)
   }
@@ -404,11 +412,14 @@ function TriPeaksScreenInner() {
   // and blanking in the commit that mounted them showed a blank-faced card there for a frame or two.
   // An undo or New Game before then clears the cascade, which drops the callback (and the hand-off is
   // keyed to `s` anyway). If no chain can start (an unmeasurable slot), the pile simply stays up under
-  // the banner instead of vanishing.
+  // the banner instead of vanishing. The chain is the waste AFTER the win sweep - see Golf's
+  // runWinCascade.
   async function runWinCascade(s: TriPeaksState, gen: number) {
+    winSweep.cancel()
     const origin = await measureView(wasteViewRef.current)
-    if (dealTokenRef.current !== gen || !origin || s.waste.length === 0) return
-    winCascade.startChains([{ cards: s.waste.slice().reverse(), origin, entranceDelayMs: 0 }], cardWidth, () => setCascadeHandoffFor(s))
+    const cards = sweptWaste(s).slice().reverse()
+    if (dealTokenRef.current !== gen || !origin || cards.length === 0) return
+    winCascade.startChains([{ cards, origin }], cardWidth, () => setCascadeHandoffFor(s))
   }
 
   // Also waits for winRevealed (the last card has landed and the finished board has held a beat) - the
@@ -481,13 +492,13 @@ function TriPeaksScreenInner() {
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
   // the player still taps/drags the suggested card through the normal tap-to-move/drag flow.
-  function handleHint(request?: HintRequest) {
-    if (!state) return
+  function handleHint(request?: HintRequest): boolean {
+    if (!state) return false
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(controller, state, skip)
     if (result.kind === 'none') {
       if (!request?.auto) showNoHintToast(infoToast)
-      return
+      return false
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
@@ -497,6 +508,8 @@ function TriPeaksScreenInner() {
       const card = state.tableau[result.move.from.index]
       if (card) void playHintGlide({ moving: [card], dest: state.waste, destFanned: false, cardWidth })
     }
+    // True when pressing Hint again shows a different move: a held Hint button steps on while it is (hintHold.ts).
+    return result.kind === 'move' && result.choices > 1
   }
 
   function pushUndo(prev: TriPeaksState, move: MoveInfo) {
@@ -529,7 +542,11 @@ function TriPeaksScreenInner() {
     const entry = undoStackRef.current[undoStackRef.current.length - 1]
     if (!current || !entry) return
     startFlights(1)
-    if (won) winCascade.clear()
+    if (won) {
+      winCascade.clear()
+      // A win sweep still dealing the leftover stock: its cards go back to the stock with the board.
+      winSweep.cancel()
+    }
     const { move, state: prevState } = entry
     const movingCard = top(current.waste)
     // Once the win is revealed, the winning card's DraggableCard is unmounted (see wasteTopCard below),
@@ -700,7 +717,9 @@ function TriPeaksScreenInner() {
   // onto this pile until then, and its flight measures the registered waste top to land on - AND the
   // cascade has taken over (cascadeHandoffFor === state): its ghosts are on screen by the commit this
   // blanks, so the pile is never seen empty. Not on winRevealed alone: runWinCascade measures first.
-  const wasteTopCard = winRevealed && cascadeHandoffFor === state ? undefined : top(state.waste)
+  // The waste as shown: on a won board, with every leftover stock card the win sweep has landed on it.
+  const shownWaste = winSweep.waste
+  const wasteTopCard = winRevealed && cascadeHandoffFor === state ? undefined : top(shownWaste)
   const wasteHiddenByDeal = wasteTopCard && dealHiddenIds.has(wasteTopCard.id) ? 1 : 0
   const wasteHiddenByFlight = flying.filter((f) => f.to.zone === 'waste').reduce((sum, f) => sum + f.count, 0)
   const wasteHiddenCount = Math.max(wasteHiddenByDeal, wasteHiddenByFlight)
@@ -723,9 +742,9 @@ function TriPeaksScreenInner() {
             <StockWaste
               canRecycle={false}
               dropZones={dropZones}
-              stockTopCard={top(state.stock)}
+              stockTopCard={winSweep.stockTopCard}
               wasteTop={wasteTopCard}
-              wasteUnder={wasteTopCard ? state.waste[state.waste.length - 2] : undefined}
+              wasteUnder={wasteTopCard ? shownWaste[shownWaste.length - 2] : undefined}
               wasteHiddenCount={wasteHiddenCount}
               // While the starter card is still being dealt, the waste is really empty: without this the slot painted its frozen
               // 'card from before the flight' under the ghost - the starter itself on a first deal, the last game's top card on New
@@ -763,7 +782,7 @@ function TriPeaksScreenInner() {
           </View>
         </View>
       </GameChrome>
-      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <PipFireworks />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor(variant)} onNewGame={handleNewGame} />}
       {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}

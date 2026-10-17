@@ -15,12 +15,10 @@ import { darkColors, lightColors } from './palettes'
 // `dark` - this is what the old native header already used unconditionally.
 export const CHROME_FG = '#fff'
 
-// Translucent-white variants of CHROME_FG, for chrome surfaces that need a muted text tone or a
-// lightly-raised card background (e.g. achievements.tsx's stat/achievement sections) instead of
-// CHROME_FG's full-contrast use - tuned against the felt palettes above, not derived from `dark`,
-// for the same reason CHROME_FG itself isn't.
+// A translucent-white variant of CHROME_FG, for muted text drawn straight on the felt (e.g. achievements.tsx's
+// list label) - tuned against the felt palettes above, not derived from `dark`, for the same reason CHROME_FG
+// itself isn't. Raised cards don't use these: they are the theme's surface with its own text roles.
 export const CHROME_FG_MUTED = 'rgba(255,255,255,0.82)'
-export const CHROME_SECTION_BG = 'rgba(255,255,255,0.12)'
 
 export const CARD_WIDTH = 64
 // Chosen aspect ratio for the card face; can be revisited once real hand-drawn
@@ -127,10 +125,4 @@ export function useTableColors(): TableColors {
     const base = dark ? darkColors : lightColors
     return derivePlayerTableColors(tableColorOverride ?? DEFAULT_SEED_COLOR, dark, base)
   }, [dark, tableColorOverride])
-}
-
-/** A representative slice of the active palette for @tastic/sprites' Fireworks background -
- * pulled from theme tokens rather than hardcoded so the show matches the active profile's tint. */
-export function fireworksColors(colors: TableColors): string[] {
-  return [colors.selectedGlow, colors.hintGreen, colors.cardBackPattern, colors.textRed]
 }

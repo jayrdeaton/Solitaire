@@ -1,6 +1,8 @@
 import { GameController, Move, PileRef } from './gameTypes'
 
-export type HintResult = { kind: 'move'; move: Move } | { kind: 'drawStock' } | { kind: 'none' }
+/** A 'move' hint carries `choices`: how many moves Hint cycles through on this board (`skip` wraps at it), so a held Hint
+ * button knows whether there's a next one to show (see components/hintHold.ts). */
+export type HintResult = { kind: 'move'; move: Move; choices: number } | { kind: 'drawStock' } | { kind: 'none' }
 
 function refsEqual(a: PileRef, b: PileRef): boolean {
   return a.zone === b.zone && a.index === b.index
@@ -35,7 +37,8 @@ export function hintCountFor(hint: HintResult | null, ref: PileRef): number {
  * against an unchanged board (see e.g. KlondikeScreen's own handleHint), so pressing Hint
  * repeatedly without making a move surfaces a different legal move each time instead of
  * re-suggesting the same one, wrapping back to the start once every move's been shown. Meaningless
- * for a 'drawStock'/'none' result - there's only one of each to suggest regardless of `skip`.
+ * for a 'drawStock'/'none' result - there's only one of each to suggest regardless of `skip`. Holding the Hint button
+ * steps through the same cycle (see components/hintHold.ts).
  */
 export function findHint<TState>(controller: Pick<GameController<TState>, 'legalMoves' | 'drawStock' | 'scoreHintMove'> & Partial<Pick<GameController<TState>, 'tryMove'>>, state: TState, skip = 0): HintResult {
   const moves = controller.legalMoves(state)
@@ -48,7 +51,7 @@ export function findHint<TState>(controller: Pick<GameController<TState>, 'legal
       return { kind: 'drawStock' }
     }
     const ordered = [...foundationMoves, ...rankedOther]
-    if (ordered.length > 0) return { kind: 'move', move: ordered[skip % ordered.length] }
+    if (ordered.length > 0) return { kind: 'move', move: ordered[skip % ordered.length], choices: ordered.length }
   }
   if (controller.drawStock && controller.drawStock(state) !== null) {
     return { kind: 'drawStock' }

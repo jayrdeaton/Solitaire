@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react-native'
 import { isValidElement, type ReactElement } from 'react'
 
-import { GuideCardPlay, GuideHint, GuideScore } from '@/components/GuideArt'
+import { GuideCardPlay, GuideHint, GuideScore, roundedRectDots } from '@/components/GuideArt'
 import { getGuideSteps } from '@/constants/guideSteps'
 import { computeScore } from '@/engine/score'
 
@@ -97,7 +97,7 @@ describe('getGuideSteps', () => {
     }
   })
 
-  it('draws each card with its own app-local art, a fingertip on touch and a mouse pointer on desktop', () => {
+  it('draws each card with its own app-local art, the touch pointer on touch and a mouse pointer on desktop', () => {
     for (const touch of [true, false]) {
       const [play, score, hint] = getGuideSteps({ touch })
       const playArt = play.art as ReactElement<{ pointer: string }>
@@ -129,5 +129,36 @@ describe('GuideArt', () => {
   it('renders the hint picture', async () => {
     await render(<GuideHint />)
     expect(screen.getByLabelText('The light bulb button, and a red seven ringed as the card to move onto a black eight')).toBeTruthy()
+  })
+})
+
+describe('roundedRectDots, the pressed card dotted outline', () => {
+  const [w, h, r] = [45, 61, 6.5]
+  const dots = roundedRectDots(w, h, r, 6.5)
+  const has = (x: number, y: number) => dots.some((d) => Math.abs(d.x - x) < 1e-6 && Math.abs(d.y - y) < 1e-6)
+
+  it('puts an even number of dots on the rounded rectangle, starting at the top middle', () => {
+    expect(dots.length % 2).toBe(0)
+    expect(has(w / 2, 0)).toBe(true)
+    for (const { x, y } of dots) {
+      const cx = Math.min(Math.max(x, r), w - r)
+      const cy = Math.min(Math.max(y, r), h - r)
+      const onStraight = (x === 0 || x === w || y === 0 || y === h) && (cx === x || cy === y)
+      const onCorner = Math.abs(Math.hypot(x - cx, y - cy) - r) < 1e-6
+      expect(onStraight || onCorner).toBe(true)
+    }
+  })
+
+  it('is symmetric both ways, so no corner looks different from the others', () => {
+    for (const { x, y } of dots) {
+      expect(has(w - x, y)).toBe(true)
+      expect(has(x, h - y)).toBe(true)
+    }
+  })
+
+  it('spaces the dots evenly round the outline', () => {
+    const gaps = dots.map((d, i) => Math.hypot(dots[(i + 1) % dots.length].x - d.x, dots[(i + 1) % dots.length].y - d.y))
+    // Equal along the outline; a straight line between two dots round a corner cuts the arc a little short (0.3px here).
+    expect(Math.max(...gaps) - Math.min(...gaps)).toBeLessThan(0.5)
   })
 })

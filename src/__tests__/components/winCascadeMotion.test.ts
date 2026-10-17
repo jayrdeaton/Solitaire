@@ -1,4 +1,4 @@
-import { BOUNCE_FLOOR_MARGIN_PX, BOUNCE_H_HALF_PERIOD_MAX_MS, BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_H_MARGIN_PX, BOUNCE_MIN_SPAN_PX, BOUNCE_TOP_MARGIN_PX, BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, cardXAtElapsed, cardYAtElapsed, cascadeApexY, CascadeBounds, cascadeBounds, CHAIN_MAX_SPAN_MS, CHAIN_SEGMENT_DELAY_MS, ChainPath, chainSegmentDelayMs, fanOffsetScale, fitXToBounds, fitYToBounds, horizontalXAtElapsed, isGhostVisible, spreadHHalfPeriods, verticalYAtElapsed } from '@/components/winning/winCascadeMotion'
+import { BOUNCE_FLOOR_MARGIN_PX, BOUNCE_H_HALF_PERIOD_MAX_MS, BOUNCE_H_HALF_PERIOD_MIN_MS, BOUNCE_H_MARGIN_PX, BOUNCE_MIN_SPAN_PX, BOUNCE_TOP_MARGIN_PX, cardXAtElapsed, cardYAtElapsed, cascadeApexY, CascadeBounds, cascadeBounds, CHAIN_SEGMENT_DELAY_MS, chainEntranceDelayMs, ChainPath, fanOffsetScale, fitXToBounds, fitYToBounds, horizontalXAtElapsed, isGhostVisible, spreadHHalfPeriods, verticalYAtElapsed } from '@/components/winning/winCascadeMotion'
 
 // A fixed chain path: launches at (100, 200), falls to a floor at 700 (first fall 1000ms), then bounces between 700 and an apex
 // at 100 forever; heads for the wall at x=20 over a 1000ms first leg, then swings between it and x=320.
@@ -6,6 +6,21 @@ const PATH: ChainPath = { origin: { x: 100, y: 200 }, floorY: 700, apexY: 100, v
 
 // Every elapsed time worth sampling: before the launch, through the first fall, and several bounce cycles after it.
 const SAMPLES = Array.from({ length: 400 }, (_, i) => -300 + i * 17)
+
+describe('chainEntranceDelayMs', () => {
+  it('sends a lone chain off at once', () => {
+    expect(chainEntranceDelayMs(0, 1, 1000)).toBe(0)
+  })
+
+  it('spreads the chains evenly over the first fall: the first leaves at once, the last as the first lands', () => {
+    expect([0, 1, 2, 3].map((i) => chainEntranceDelayMs(i, 4, 1200))).toEqual([0, 400, 800, 1200])
+    expect([0, 1].map((i) => chainEntranceDelayMs(i, 2, 1000))).toEqual([0, 1000])
+    // Spider's 8 completed runs: still one after another, just closer together.
+    const spider = Array.from({ length: 8 }, (_, i) => chainEntranceDelayMs(i, 8, 1050))
+    expect(spider[7]).toBe(1050)
+    for (let i = 1; i < 8; i++) expect(spider[i] - spider[i - 1]).toBeCloseTo(150)
+  })
+})
 
 describe('fanOffsetScale', () => {
   it('is all of the offset while a card is parked', () => {
@@ -103,69 +118,6 @@ describe('isGhostVisible - a chain with its own per-card delay', () => {
     expect(isGhostVisible(-41, false)).toBe(true)
     expect(isGhostVisible(-41, false, 10)).toBe(false) // ...and a tighter chain does not show a card that early
     expect(isGhostVisible(-1_000, true, 10)).toBe(true) // a head always shows
-  })
-})
-
-describe('chainSegmentDelayMs', () => {
-  it('keeps the usual per-card delay for the short chains it was tuned on', () => {
-    for (const count of [0, 1, 2, 5, 12]) expect(chainSegmentDelayMs(count)).toBe(CHAIN_SEGMENT_DELAY_MS)
-    expect(chainSegmentDelayMs(13)).toBeCloseTo(CHAIN_SEGMENT_DELAY_MS, 0) // a 13-card chain trails its head by ~500ms already - all but the usual delay
-  })
-
-  it('tightens a long chain so its whole head-to-tail span stays within the cap', () => {
-    for (const count of [14, 28, 40, 52]) {
-      const delay = chainSegmentDelayMs(count)
-      expect(delay).toBeLessThan(CHAIN_SEGMENT_DELAY_MS)
-      expect(delay * (count - 1)).toBeCloseTo(CHAIN_MAX_SPAN_MS, 6)
-    }
-    expect(chainSegmentDelayMs(52)).toBeCloseTo(CHAIN_MAX_SPAN_MS / 51, 6) // ~9.8ms
-    expect(chainSegmentDelayMs(52, 300)).toBeCloseTo(300 / 51, 6) // an explicit cap is honored
-  })
-})
-
-// "One continuous snake" means the chain, at any instant, bends at most once - at the floor (or the apex) the head has just bounced off
-// while the tail is still on its way to it. Every card plays the same vertical path a fixed delay apart, so at a given instant the chain
-// samples that path over a window of (cards - 1) * delay ms; each turning point of the path (floor/apex, one bounce half-period apart)
-// inside the window is a bend, and a window longer than a half-period can hold two: the chain is then a wave, not one snake.
-describe('a 52-card chain (the whole Pyramid deck in one pile)', () => {
-  const paths: ChainPath[] = [BOUNCE_V_HALF_PERIOD_MIN_MS, 1100, BOUNCE_V_HALF_PERIOD_MAX_MS].map((vHalfPeriodMs) => ({ origin: { x: 100, y: 200 }, floorY: 700, apexY: 100, vHalfPeriodMs, firstX: 20, secondX: 320, hHalfPeriodMs: 3000, initialLegMs: 800 }))
-
-  /** Along the chain (head first) at `elapsed`, how many times the vertical direction reverses. */
-  function bends(path: ChainPath, elapsed: number, count: number, delay: number): number {
-    const ys = Array.from({ length: count }, (_, i) => verticalYAtElapsed(path, elapsed - i * delay))
-    let previous = 0
-    let reversals = 0
-    for (let i = 1; i < count; i++) {
-      const direction = Math.sign(ys[i] - ys[i - 1])
-      if (direction === 0) continue // parked cards share a spot
-      if (previous !== 0 && direction !== previous) reversals++
-      previous = direction
-    }
-    return reversals
-  }
-  const mostBends = (path: ChainPath, delay: number) => {
-    let most = 0
-    for (let elapsed = 0; elapsed < 9_000; elapsed += 7) most = Math.max(most, bends(path, elapsed, 52, delay))
-    return most
-  }
-
-  it('at the usual 42ms per card it splits: the tail trails its head by ~2.1s, so the chain bends twice at some instant', () => {
-    for (const path of paths) expect(mostBends(path, CHAIN_SEGMENT_DELAY_MS)).toBeGreaterThanOrEqual(2)
-  })
-
-  it('with the capped per-card delay it never bends more than once, for any bounce period: one continuous snake', () => {
-    const delay = chainSegmentDelayMs(52)
-    for (const path of paths) expect(mostBends(path, delay)).toBeLessThanOrEqual(1)
-  })
-
-  it('and stays packed: no two neighbours are ever more than a card apart, so it does not stretch into a scatter', () => {
-    const delay = chainSegmentDelayMs(52)
-    const cardHeight = 100
-    for (const path of paths) {
-      let widest = 0
-      for (let elapsed = 0; elapsed < 9_000; elapsed += 7) for (let i = 1; i < 52; i++) widest = Math.max(widest, Math.abs(verticalYAtElapsed(path, elapsed - i * delay) - verticalYAtElapsed(path, elapsed - (i - 1) * delay)))
-      expect(widest).toBeLessThan(cardHeight)
-    }
   })
 })
 

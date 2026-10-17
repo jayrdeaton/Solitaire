@@ -37,7 +37,7 @@ export const LEGACY_OWNER = 'saved'
 
 export type GameInProgressSlot = Partial<Record<string, SavedGame<unknown, unknown>>>
 
-// One slot per game, each persisted under its OWN redux-persist key (`persist:gameInProgress.<id>`),
+// One slot per game, each persisted under its OWN redux-persist key (`solitaire:gameInProgress.<id>`),
 // never the root store's: a save holds the whole board plus an undo stack that embeds a full board
 // per entry (~1MB after 300 Klondike moves, several MB for a long Spider game). Separate keys mean a
 // move rewrites only that game's entry, not the whole store, and no single AsyncStorage entry ever
@@ -70,4 +70,4 @@ const slots = Object.fromEntries(SOLITAIRE_GAME_IDS.map((id) => [id, createSlot(
 
 export const gameInProgressActions = Object.fromEntries(SOLITAIRE_GAME_IDS.map((id) => [id, slots[id].actions])) as Record<SolitaireGameId, (typeof slots)[SolitaireGameId]['actions']>
 
-export default combineReducers(Object.fromEntries(SOLITAIRE_GAME_IDS.map((id) => [id, persistReducer({ key: `gameInProgress.${id}`, storage: AsyncStorage, timeout: 0 }, slots[id].reducer)])) as Record<SolitaireGameId, ReturnType<typeof persistReducer<GameInProgressSlot>>>)
+export default combineReducers(Object.fromEntries(SOLITAIRE_GAME_IDS.map((id) => [id, persistReducer({ key: `gameInProgress.${id}`, keyPrefix: 'solitaire:', storage: AsyncStorage, timeout: 0 }, slots[id].reducer)])) as Record<SolitaireGameId, ReturnType<typeof persistReducer<GameInProgressSlot>>>)

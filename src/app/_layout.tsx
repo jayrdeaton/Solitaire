@@ -1,10 +1,12 @@
 import { useAutoPaperTheme, useThemeSettings } from '@rific/auto-paper'
+import { keepAwakeActions, KeepAwakeProvider, type KeepAwakeSettings } from '@rific/core'
 import { FeedbackPressProvider, hapticActions, type HapticSettings, soundActions, type SoundSettings } from '@rific/feedback-press'
 import { ToastProvider } from '@rific/toaster'
 import { OrientationProvider, useRotationAwareStatusBar, useThemedRootBackground } from '@tastic/core'
 import { RotatedFrame } from '@tastic/hud'
 import { ProfileColorProvider } from '@tastic/profile'
 import Constants from 'expo-constants'
+import * as ExpoKeepAwake from 'expo-keep-awake'
 import { DarkTheme, Stack, ThemeProvider as NavigationThemeProvider } from 'expo-router'
 import Head from 'expo-router/head'
 import { DeviceMotion } from 'expo-sensors'
@@ -33,6 +35,9 @@ import { LastActiveGameProvider } from '@/stores/lastActiveGame'
 import { ProfilesProvider, useProfiles } from '@/stores/profiles'
 
 SplashScreen.preventAutoHideAsync()
+// iOS defaults `fade` to false (Android always fades regardless of this flag), so without this the
+// splash view is just yanked off screen the instant every gate reports ready. Same as the other games.
+SplashScreen.setOptions({ fade: true, duration: 400 })
 
 // React Navigation paints `colors.background` from its theme on the layers around every screen - on native
 // the ScreenStack's own container, on web each screen's wrapper - and a screen's `contentStyle` only reaches
@@ -206,6 +211,21 @@ function FeedbackBridge({ children, playCardSound, playInvalidSound }: FeedbackB
   )
 }
 
+// @rific/core's Keep Awake setting (Settings dialog), persisted as the store's `keepAwake` slice and
+// swapped per player with the rest of the Settings sheet (see playerSettingsSlice.ts). Handing it
+// expo-keep-awake is what turns the feature on: GameChrome's useKeepAwake('game') and hud's Keep
+// Awake row both read the module from here.
+function KeepAwakeBridge({ children }: { children: ReactNode }) {
+  const keepAwake = useSelector((state: RootState) => state.keepAwake)
+  const dispatch = useDispatch()
+  const onChange = useCallback((settings: KeepAwakeSettings) => dispatch(keepAwakeActions.initialize(settings)), [dispatch])
+  return (
+    <KeepAwakeProvider expoKeepAwake={ExpoKeepAwake} initialValue={keepAwake} onChange={onChange}>
+      {children}
+    </KeepAwakeProvider>
+  )
+}
+
 export default function RootLayout() {
   // Registers the 'fonts' gate itself (see useFontsPreload's own doc): expo-font's own load is the one
   // thing left that has to finish before anything renders. Every other splash gate is marked from
@@ -244,21 +264,23 @@ export default function RootLayout() {
                   <MutedProfileColors>
                     <GameStatsProvider>
                       <FeedbackBridge playCardSound={playCardSound} playInvalidSound={playInvalidSound}>
-                        <ToastProvider>
-                          <ProfileThemeSync />
-                          <OrientationBridge>
-                            {/* Wraps the stack (rather than sitting beside it like RootOverlays) because
-                            Home's useAutoShowGuide() and its Settings "How to Play" row reach it through
-                            context (see GuideHost's own doc). Must stay inside PersistGate (the seen
-                            version is read already rehydrated), FeedbackBridge (the card portals into
-                            FeedbackPressProvider's Portal.Host) and OrientationBridge (it reads the
-                            live tilt). */}
-                            <GuideHost>
-                              <ThemedStack />
-                            </GuideHost>
-                            <RootOverlays />
-                          </OrientationBridge>
-                        </ToastProvider>
+                        <KeepAwakeBridge>
+                          <ToastProvider>
+                            <ProfileThemeSync />
+                            <OrientationBridge>
+                              {/* Wraps the stack (rather than sitting beside it like RootOverlays) because
+                              Home's useAutoShowGuide() and its Settings "How to Play" row reach it through
+                              context (see GuideHost's own doc). Must stay inside PersistGate (the seen
+                              version is read already rehydrated), FeedbackBridge (the card portals into
+                              FeedbackPressProvider's Portal.Host) and OrientationBridge (it reads the
+                              live tilt). */}
+                              <GuideHost>
+                                <ThemedStack />
+                              </GuideHost>
+                              <RootOverlays />
+                            </OrientationBridge>
+                          </ToastProvider>
+                        </KeepAwakeBridge>
                       </FeedbackBridge>
                     </GameStatsProvider>
                   </MutedProfileColors>

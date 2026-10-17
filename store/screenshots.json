@@ -1,0 +1,13 @@
+{
+  "font": "../node_modules/dejavu-fonts-ttf/ttf/DejaVuSerif-Bold.ttf",
+  "out": "screenshots",
+  "raw": "screenshots/raw",
+  "shots": [
+    { "name": "01-klondike", "title": "Classic Solitaire, No Ads", "sub": "Klondike, FreeCell, Spider, and more" },
+    { "name": "02-home", "title": "11 Games in One App", "sub": "Each with its rules one tap away" },
+    { "name": "03-win", "title": "Beat Par in Every Game", "sub": "Score is moves plus seconds" },
+    { "name": "04-hint", "title": "A Hint When You Need One", "sub": "See a move you can make" },
+    { "name": "05-stats", "title": "Stats and 41 Achievements", "sub": "For every game and rule set" },
+    { "name": "06-style", "title": "Your Cards, Your Colors", "sub": "Four faces, four backs, any color" }
+  ]
+}

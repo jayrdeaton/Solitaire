@@ -2,11 +2,23 @@
   "git": {
     "deploymentEnabled": false
   },
-  "buildCommand": "npx expo export -p web",
-  "outputDirectory": "dist",
+  "buildCommand": "npm run build:web",
+  "outputDirectory": "web-build",
   "framework": null,
   "cleanUrls": true,
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/index" }
-  ]
+  "redirects": [
+    {
+      "source": "/privacy",
+      "has": [{ "type": "host", "value": "(?<game>snake|hangman|solitaire|lightcycles)\\.infinitetoken\\.com" }],
+      "destination": "https://games.infinitetoken.com/privacy",
+      "permanent": false
+    },
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "(?<game>snake|hangman|solitaire|lightcycles)\\.infinitetoken\\.com" }],
+      "destination": "https://games.infinitetoken.com/:game/:path*",
+      "permanent": false
+    }
+  ],
+  "rewrites": [{ "source": "/:game/:path*", "destination": "/:game/index" }]
 }

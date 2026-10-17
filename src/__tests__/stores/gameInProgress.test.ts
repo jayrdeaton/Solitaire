@@ -5,7 +5,7 @@ const board = (moves: number) => ({ state: { tableau: [] as number[], n: moves }
 // redux-persist stores each key of a persisted slice as its own JSON string inside the entry.
 // Each owner (a profile id, or 'guest') is a key of its game's entry.
 const persistedMoves = (disk: Map<string, string>, gameId: string, owner = 'guest'): number | undefined => {
-  const raw = disk.get(`persist:gameInProgress.${gameId}`)
+  const raw = disk.get(`solitaire:gameInProgress.${gameId}`)
   if (!raw) return undefined
   const entry = JSON.parse(raw)[owner]
   return entry ? JSON.parse(entry)?.moves : undefined
@@ -134,7 +134,7 @@ describe('game-in-progress persistence (coalesced saves)', () => {
     expect(persistedMoves(disk, 'klondike')).toBe(1)
     expect(persistedMoves(disk, 'spider')).toBe(2)
     // Never in the root entry: a saved board can run to megabytes.
-    expect(disk.get('persist:root') ?? '').not.toContain('gameInProgress')
+    expect(disk.get('solitaire:root') ?? '').not.toContain('gameInProgress')
   })
 
   it('swallows a failing write (best effort, never an unhandled rejection)', async () => {
@@ -222,8 +222,8 @@ describe('saves from before they were per profile', () => {
     const AsyncStorage = require('@react-native-async-storage/async-storage')
     // What a build from before this change left on disk: one `saved` per game, plus the root store's active profile.
     const disk = new Map<string, string>([
-      ['persist:gameInProgress.klondike', JSON.stringify({ saved: JSON.stringify(board(77)), _persist: JSON.stringify({ version: -1, rehydrated: true }) })],
-      ['persist:gameInProgress.spider', JSON.stringify({ saved: JSON.stringify(board(5)), _persist: JSON.stringify({ version: -1, rehydrated: true }) })]
+      ['solitaire:gameInProgress.klondike', JSON.stringify({ saved: JSON.stringify(board(77)), _persist: JSON.stringify({ version: -1, rehydrated: true }) })],
+      ['solitaire:gameInProgress.spider', JSON.stringify({ saved: JSON.stringify(board(5)), _persist: JSON.stringify({ version: -1, rehydrated: true }) })]
     ])
     jest.spyOn(AsyncStorage, 'setItem').mockImplementation((async (k: string, v: string) => void disk.set(k, v)) as never)
     jest.spyOn(AsyncStorage, 'getItem').mockImplementation((async (k: string) => disk.get(k) ?? null) as never)

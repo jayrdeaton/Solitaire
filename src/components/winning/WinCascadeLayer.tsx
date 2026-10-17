@@ -12,7 +12,7 @@ import { ScreenPoint } from '../dealing/measureView'
 import { GAME_CONTENT_TOP_PADDING } from '../gameLayout'
 import { screenToLocalPoint } from '../overlayFrame'
 import { PlayingCard } from '../PlayingCard'
-import { BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, cardXAtElapsed, cardYAtElapsed, CascadeBounds, cascadeBounds, CHAIN_SEGMENT_DELAY_MS, ChainPath, fitXToBounds, fitYToBounds, isGhostVisible, spreadHHalfPeriods } from './winCascadeMotion'
+import { BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, cardXAtElapsed, cardYAtElapsed, CascadeBounds, cascadeBounds, CHAIN_SEGMENT_DELAY_MS, chainEntranceDelayMs, ChainPath, fitXToBounds, fitYToBounds, isGhostVisible, spreadHHalfPeriods } from './winCascadeMotion'
 
 export interface ChainSpec {
   /** Head-to-tail order - index 0 leads the chain (e.g. a foundation pile's King, or Pyramid's
@@ -26,12 +26,14 @@ export interface ChainSpec {
    * `origin` exactly as it always did. Each entry must be card-sized, like `origin`: it goes through
    * the same rotation conversion. */
   cardOrigins?: ScreenPoint[]
-  /** This chain's own launch delay relative to the cascade's other chains. */
-  entranceDelayMs: number
+  /** Opt-in: this chain's own launch delay, overriding the default - chains leave in the order given, spread so the last
+   * starts its fall as the first lands (chainEntranceDelayMs). No screen passes one; the tests use it for exact timings. */
+  entranceDelayMs?: number
   /** Opt-in: this chain's own delay between successive cards (CHAIN_SEGMENT_DELAY_MS when omitted). A chain's total lag
    * (cards * this) has to stay well under the bounce half-period or its tail lands in the opposite leg and the snake splits
-   * apart - fine at the default 42ms for the ~13-card chains that value was tuned on, not for a 52-card one (~2.1s). Pass
-   * chainSegmentDelayMs(cards.length) to cap the whole chain's span instead. */
+   * apart - fine at the default 42ms for the ~13-card chains that value was tuned on, not for a 52-card one (~2.1s). No screen
+   * passes one (a whole pile in one chain strings out across the bounces at the usual spacing, see CHAIN_SEGMENT_DELAY_MS); the
+   * tests use it. */
   segmentDelayMs?: number
 }
 
@@ -125,9 +127,9 @@ interface ChainGhostCardProps {
 const ChainGhostCard = memo(function ChainGhostCard({ card, path, delayMs, segmentDelayMs, offsetX, offsetY, alwaysVisible, zIndex, startMs, onFacePainted, bounds, containerOffsetX, containerOffsetY }: ChainGhostCardProps) {
   // Parked where the real card stood until this card's own entrance - VISIBLE, not hidden until then:
   // a screen blanks its real cards as the cascade takes over, so a ghost waiting invisible for its
-  // entrance (chain i enters i * CHAIN_ENTRANCE_STAGGER_MS late, a card 42ms after the one ahead of
-  // it) left the piles/slots/columns empty for up to ~1.5s with no card standing where one had just
-  // been. See isGhostVisible for which cards show while parked, and cardXAtElapsed for offsetX/Y.
+  // entrance (the last chain enters a whole first fall late - chainEntranceDelayMs - a card 42ms
+  // after the one ahead of it) left the piles/slots/columns empty for up to ~1.5s with no card
+  // standing where one had just been. See isGhostVisible for which cards show while parked, and cardXAtElapsed for offsetX/Y.
   // (Visible once the whole cascade shows - see CascadeChains' paint gate.)
   const bx = useSharedValue(path.origin.x + offsetX)
   const by = useSharedValue(path.origin.y + offsetY)
@@ -255,12 +257,16 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
         // WinCascadeGhosts' own overlay-offset subtraction already handles screen -> overlay space.
         const { rotation: rot, width: sw, height: sh } = screenRef.current
         const toLocal = (point: ScreenPoint): ScreenPoint => (rot === 0 ? point : screenToLocalPoint(point.x, point.y, cardWidth, cardHeight, rot, sw, sh))
+        const origins = chains.map((chain) => toLocal(chain.origin))
+        const paths = chains.map((_, chainIndex) => buildChainPath(origins[chainIndex], bounds, chainIndex, hHalfPeriods[chainIndex]))
         const resolved: ResolvedChain[] = chains.map((chain, chainIndex) => {
-          const origin = toLocal(chain.origin)
+          const origin = origins[chainIndex]
           const segmentDelayMs = chain.segmentDelayMs ?? CHAIN_SEGMENT_DELAY_MS
+          // One after another: the last chain leaves as the first one's head lands from its launch fall (paths[0]'s half-period).
+          const entranceDelayMs = chain.entranceDelayMs ?? chainEntranceDelayMs(chainIndex, chains.length, paths[0].vHalfPeriodMs)
           return {
             segmentDelayMs,
-            path: buildChainPath(origin, bounds, chainIndex, hHalfPeriods[chainIndex]),
+            path: paths[chainIndex],
             cards: chain.cards
               .map((card, i) => {
                 // Converted with the same function as the chain's own origin, so the offset between them is the
@@ -268,7 +274,7 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
                 const own = chain.cardOrigins?.[i]
                 const local = own ? toLocal(own) : null
                 // The head (index 0) is the card the real pile showed; a card with a spot of its own stood there too.
-                return { card, delayMs: chain.entranceDelayMs + i * segmentDelayMs, offsetX: local ? local.x - origin.x : 0, offsetY: local ? local.y - origin.y : 0, alwaysVisible: i === 0 || !!local }
+                return { card, delayMs: entranceDelayMs + i * segmentDelayMs, offsetX: local ? local.x - origin.x : 0, offsetY: local ? local.y - origin.y : 0, alwaysVisible: i === 0 || !!local }
               })
               .reverse()
           }

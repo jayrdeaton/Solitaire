@@ -1,7 +1,6 @@
 import { Pressable, useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { CARD_ASPECT, CardSizeProvider, faceUpFanOffset, useCardSize } from '@tastic/cards'
-import { Fireworks } from '@tastic/sprites/fireworks'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import Animated, { useAnimatedStyle, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated'
@@ -21,13 +20,13 @@ import { GameLoading } from '@/components/GameLoading'
 import { OverlayFrame, toLocal, useOverlayFrame } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
-import { fireworksColors } from '@/components/theme'
 import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
 import { useTakeOffHold } from '@/components/useTakeOffHold'
+import { PipFireworks } from '@/components/winning/PipFireworks'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
-import { CHAIN_ENTRANCE_STAGGER_MS, CHAIN_SEGMENT_DELAY_MS } from '@/components/winning/winCascadeMotion'
+import { CHAIN_SEGMENT_DELAY_MS } from '@/components/winning/winCascadeMotion'
 import { SPIDER_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
@@ -38,6 +37,7 @@ import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
 import { spiderVariant } from '@/engine/variants'
 import { showNoHintToast } from '@/games/shared/gameToasts'
+import { liftTappedRun, peelInAir } from '@/games/shared/inAirRun'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
@@ -299,7 +299,7 @@ function SequenceFlightGhosts({ flights, onCardLanded, onRetire }: { flights: Se
 export default withGameProviders(SpiderScreenInner)
 
 function SpiderScreenInner() {
-  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   const [ready, setReady] = useState(false)
@@ -320,7 +320,7 @@ function SpiderScreenInner() {
   // `commitState`, `flying`, `startFlights`, `settleFlight`, `undoBusyRef`, etc. keeps working
   // unchanged. Spider has no foundation piles/useAutoFoundationCascade, so activeFlightCount (the state
   // mirror of the ref, which handleUndo's own guard reads) only feeds the win celebration's `settled` flag.
-  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkLanding, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<SpiderState>()
+  const { state, stateRef, commitState, flying, beginFlying, endFlying, shrinkLanding, landingCount, activeFlightCount, startFlights, settleFlight, undoBusyRef, runUndo, reset: resetFlightConcurrency } = useFlightConcurrency<SpiderState>()
   const [history, setHistory, historyRef] = useUndoStack<HistoryEntry>()
   // Paired with the exact state it was computed against, rather than cleared via a [state]-effect
   // - state is always replaced wholesale on every real change (never mutated in place - see
@@ -704,7 +704,7 @@ function SpiderScreenInner() {
     s.completedRuns.forEach((run, slot) => {
       const origin = origins[slot]
       if (!origin || run.length === 0) return
-      chains.push({ cards: run, origin, entranceDelayMs: chains.length * CHAIN_ENTRANCE_STAGGER_MS }) // already King-first, Ace-last
+      chains.push({ cards: run, origin }) // already King-first, Ace-last
       chained.add(slot)
     })
     winCascade.startChains(chains, cardWidth, () => setCascadeHandoff({ forState: s, slots: chained }))
@@ -1348,13 +1348,13 @@ function SpiderScreenInner() {
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() every game already implements. Only highlights;
   // the player still taps/drags the suggested card through the normal tap-to-move/drag flow.
-  function handleHint(request?: HintRequest) {
-    if (!state) return
+  function handleHint(request?: HintRequest): boolean {
+    if (!state) return false
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(controller, state, skip)
     if (result.kind === 'none') {
       if (!request?.auto) showNoHintToast(infoToast)
-      return
+      return false
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
@@ -1365,6 +1365,8 @@ function SpiderScreenInner() {
       const source = state.tableau[from.index]
       void playHintGlide({ moving: source.slice(source.length - count), dest: state.tableau[to.index], destFanned: true, slot: to, cardWidth })
     }
+    // True when pressing Hint again shows a different move: a held Hint button steps on while it is (hintHold.ts).
+    return result.kind === 'move' && result.choices > 1
   }
 
   function pushHistory(prev: SpiderState, move: MoveInfo | null) {
@@ -1463,21 +1465,18 @@ function SpiderScreenInner() {
     // thing that still waits on activeFlightCountRef) sees this tap as in-flight for its whole
     // duration, not just once completeMove lands one.
     startFlights(1)
-    const origin = await measure()
-    const sourcePile = state.tableau[move.from.index] ?? null
-    if (!sourcePile || undoBusyRef.current) {
+    // Part of the run may still be flying in to this column (a quick tap right after a move put it there): it goes on from mid-air
+    // (inAirRun.ts).
+    const takeOff = await liftTappedRun({ ghost, from: move.from, count: move.count, measure, pile: () => stateRef.current?.tableau[move.from.index] ?? null, landingCount, cancelled: () => undoBusyRef.current, cardWidth })
+    if (!takeOff) {
       settleFlight()
       return
     }
-    const movingCards = sourcePile.slice(sourcePile.length - move.count)
-    const offsetStep = move.count > 1 ? faceUpFanOffset(cardWidth) : 0
 
     playCardSound()
     hapticCard()
-    const flight = ghost.show({ cards: movingCards, offsetStep, cardWidth }, { x: origin.x, y: origin.y })
-
-    if (!(await completeMove(move.from, move.to, move.count, card.id, flight))) {
-      flight.hide()
+    if (!(await completeMove(move.from, move.to, move.count, card.id, takeOff.flight, { inAir: takeOff.inAir }))) {
+      takeOff.flight.hide()
       settleFlight()
     }
   }
@@ -1505,7 +1504,10 @@ function SpiderScreenInner() {
   // commitState just did, not the same stale board both closures captured. Doesn't itself claim/
   // settle a flight slot - every call site (handlePressCard, dragConfig.onDrop) already claims its
   // own via startFlights(1) before calling this, and settles it on failure.
-  async function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle): Promise<boolean> {
+  //
+  // `inAir`: a tapped run's cards still flying in to `from` (inAirRun.ts) - `flight` carries only the cards on the board, and each piece
+  // goes on from mid-air in a flight of its own, landing on top of them. A completed run's sweep waits for the last of them.
+  async function completeMove(from: PileRef, to: PileRef, count: number, anchorCardId: string, flight: DragFlightHandle, opts?: { inAir?: Card[][] }): Promise<boolean> {
     const current = stateRef.current
     if (!current) return false
     // The authoritative check for a tap and a drag alike (a drop reaches here with no guard of its own; a tap may have passed
@@ -1525,9 +1527,18 @@ function SpiderScreenInner() {
     // The displayState above holds the last run back in the tableau, so `won` (derived from the swept state) only
     // flips a phase later, once that run leaves - the clock still stops with the winning move itself.
     if (controller.isWon(sweptView(next))) session.stopClock()
-    const flyingId = beginFlying(to, count)
+    const inAirCount = (opts?.inAir ?? []).reduce((n, piece) => n + piece.length, 0)
+    const flights: { cardId: string; flight: DragFlightHandle; flyingId: number }[] = [{ cardId: anchorCardId, flight, flyingId: beginFlying(to, count - inAirCount) }]
+    if (inAirCount > 0) {
+      // Out of `from`'s landing count, so the cards left there show at once.
+      shrinkLanding(from, inAirCount)
+      const pieces = peelInAir(ghost, opts?.inAir ?? [], cardWidth)
+      startFlights(pieces.length)
+      for (const p of pieces) flights.push({ cardId: p.anchorCardId, flight: p.flight, flyingId: beginFlying(to, p.count) })
+    }
     // The claim is made here, in the same tick as the commit that shows the assembled run, so there is no gap before it holds.
-    pendingMoveFlightsRef.current.push({ cardId: anchorCardId, flight, flyingId, sweep: justCompleted ? { colIndex: to.index, run: justCompleted, release: claimSweep(to.index, justCompleted) } : null })
+    const sweep = justCompleted ? { colIndex: to.index, run: justCompleted, release: claimSweep(to.index, justCompleted) } : null
+    flights.forEach((f, i) => pendingMoveFlightsRef.current.push({ ...f, sweep: i === flights.length - 1 ? sweep : null }))
     return true
   }
 
@@ -1906,7 +1917,7 @@ function SpiderScreenInner() {
     (see WinCascadeGhosts' own doc comment for why nesting depth alone can't do this) - the win
     dialog comes last of all three so it's the one thing guaranteed to sit on top of the animation,
     not buried under it (also backstopped by WinBanner's own explicit zIndex). */}
-      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <PipFireworks />}
       <SequenceFlightGhosts flights={sequenceFlights} onCardLanded={handleSequenceFlightLanded} onRetire={retireSequenceFlight} />
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor(variant)} onNewGame={handleNewGame} />}

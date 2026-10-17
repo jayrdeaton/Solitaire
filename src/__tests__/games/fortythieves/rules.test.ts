@@ -389,6 +389,6 @@ describe('Forty Thieves scoreHintMove', () => {
     expect(intoEmpty).toBeDefined()
     expect(Strict.scoreHintMove!(state, onto)).toBeGreaterThan(0)
     expect(Strict.scoreHintMove!(state, intoEmpty)).toBe(0)
-    expect(findHint(Strict, state)).toEqual({ kind: 'move', move: onto })
+    expect(findHint(Strict, state)).toEqual({ kind: 'move', move: onto, choices: 19 })
   })
 })

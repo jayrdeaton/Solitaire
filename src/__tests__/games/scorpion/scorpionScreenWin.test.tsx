@@ -162,7 +162,7 @@ jest.mock('@/components/dealing/measureView', () => ({ measureView: async () => 
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => {}, hapticCard: () => {}, hapticInvalid: () => {} }) }))
 jest.mock('@rific/feedback-press', () => ({ useVibration: () => ({ short: () => {}, selection: () => {} }) }))
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))
-jest.mock('@tastic/sprites/fireworks', () => ({ Fireworks: () => null }))
+jest.mock('@/components/winning/PipFireworks', () => ({ PipFireworks: () => null }))
 jest.mock('@/games/shared/WinBanner', () => {
   const { Text: MockText } = require('react-native')
   return { WinBanner: () => <MockText testID='win-banner'>won</MockText> }

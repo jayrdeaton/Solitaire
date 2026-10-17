@@ -1,11 +1,11 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
 import { FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
-import { CHAIN_MAX_SPAN_MS, chainSegmentDelayMs } from '@/components/winning/winCascadeMotion'
 import { Card, Suit } from '@/engine/types'
-import PyramidScreen, { SWEEP_WIN_REVEAL_MAX_WAIT_MS, winHoldView } from '@/games/pyramid/PyramidScreen'
+import PyramidScreen, { winHoldView } from '@/games/pyramid/PyramidScreen'
 import { PyramidController, PyramidState } from '@/games/pyramid/rules'
 import { WIN_REVEAL_MAX_WAIT_MS } from '@/games/shared/useWinReveal'
+import { SWEEP_WIN_REVEAL_MAX_WAIT_MS } from '@/games/shared/useWinStockSweep'
 
 import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
 
@@ -255,9 +255,9 @@ jest.mock('@/components/dealing/measureView', () => ({
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => {}, hapticCard: () => {}, hapticInvalid: () => {} }) }))
 jest.mock('@rific/feedback-press', () => ({ useVibration: () => ({ short: () => {}, selection: () => {} }) }))
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))
-jest.mock('@tastic/sprites/fireworks', () => {
+jest.mock('@/components/winning/PipFireworks', () => {
   const { View: MockView } = require('react-native')
-  return { Fireworks: () => <MockView testID='fireworks' /> }
+  return { PipFireworks: () => <MockView testID='fireworks' /> }
 })
 jest.mock('@/games/shared/WinBanner', () => {
   const { Text: MockText } = require('react-native')
@@ -610,7 +610,7 @@ describe('Pyramid screen - a winning King', () => {
     expect(chains[0].origin.x).toBe(100) // out of the discard pile
     // Head = the card on top of the discard: the last card swept in, then back through the whole pile to the oldest discard.
     expect(chains[0].ids).toEqual([id('diamonds', 6), id('hearts', 5), id('spades', 3), id('spades', 2), id('clubs', 13), id('spades', 4), id('spades', 9)])
-    expect(chains[0].segmentDelayMs).toBe(chainSegmentDelayMs(7)) // a short chain keeps the usual per-card delay
+    expect(chains[0].segmentDelayMs).toBeUndefined() // the usual spacing between cards, as on a foundation
   })
 
   it('hands the discard over to the cascade once its ghosts show: its real top is still drawn when the cascade starts and when its ghosts appear, and it was never blank before that', async () => {
@@ -699,7 +699,7 @@ describe('Pyramid screen - a winning King', () => {
     await flush(FLIGHT_MS + HOLD_MS + 50)
 
     expect(mockLog.deals).toHaveLength(0)
-    expect(mockLog.chains).toEqual([{ ids: [id('clubs', 13), id('spades', 4), id('spades', 9)], origin: { x: 100, y: 5 }, segmentDelayMs: chainSegmentDelayMs(3) }])
+    expect(mockLog.chains).toEqual([{ ids: [id('clubs', 13), id('spades', 4), id('spades', 9)], origin: { x: 100, y: 5 } }])
     expect(screen.getByTestId('win-banner')).toBeTruthy()
     expect(screen.getByTestId('fireworks')).toBeTruthy()
   })
@@ -871,7 +871,7 @@ describe('Pyramid screen - the win sweep is timed to fit its wait', () => {
     expect(revealedAfter).toBeGreaterThanOrEqual(30 + SLOWEST_FLIGHT_MS + 30 + 23 * STAGGER_MS + DEAL_SPRING_MS + HOLD_MS)
   })
 
-  it('hands ONE chain of all 52 cards to the cascade, head on top of the discard, its per-card delay capped so the whole chain stays one snake', async () => {
+  it('hands ONE chain of all 52 cards to the cascade, head on top of the discard, at the usual spacing between cards', async () => {
     const state = fullDeckBoard(12, 12)
     await mount(state)
     await winAndStartSweep()
@@ -886,9 +886,8 @@ describe('Pyramid screen - the win sweep is timed to fit its wait', () => {
     expect(chains[0].ids).toEqual(won.discard.map((c) => c.id).reverse())
     expect(chains[0].ids[0]).toBe(state.stock[state.stock.length - 1].id) // the head is the card on top of the pile: the last one dealt onto it
     expect(chains[0].origin.x).toBe(100)
-    const perCard = chains[0].segmentDelayMs!
-    expect(perCard).toBeCloseTo(CHAIN_MAX_SPAN_MS / 51, 5)
-    expect(perCard * 51).toBeLessThanOrEqual(CHAIN_MAX_SPAN_MS + 1e-6) // the whole head-to-tail span
+    // Spaced like a foundation's chain, not squeezed: the cards string out across the bounces behind the leader (Jay, 2026-10-17).
+    expect(chains[0].segmentDelayMs).toBeUndefined()
   })
 })
 

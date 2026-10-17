@@ -240,6 +240,13 @@ function adoptable(entry: FlightEntry, content: GhostContent): boolean {
   return a.length === b.length && a.every((c, i) => c.id === b[i].id && c.faceUp === b[i].faceUp)
 }
 
+/** What a peeled flight's cards are marked as taking off under (cardFacePaint.ts's ghost pending) until its ghost is on screen: not
+ * the card ids themselves, which every pile reads (a pile would hold a card it never drew - the cards were in the air), only the
+ * landed ghost of the flight they were taken out of reads these (see the paint wait in DragGhostProvider). */
+function peelHoldId(cardId: string): string {
+  return `peel:${cardId}`
+}
+
 // No shadow on a landed ghost: the real card under it draws its own, and two would darken it for as long as both show.
 const LANDED_CARD_STYLE = { shadowOpacity: 0, elevation: 0 }
 
@@ -512,12 +519,13 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
   // so their sources (and any other landed ghost of them, see the paint wait below) keep drawing them until this ghost
   // shows. A show() flight (`inStartOrder`) also joins the start queue (startQueueRef), adopted or not.
   //
-  // A peeled flight (`peel`) adopts nothing and marks nothing: its cards are drawn by the flight they were taken out of until it takes
-  // over (see peel()), and nothing on the board is drawing them.
+  // A peeled flight (`peel`) adopts nothing and marks none of its cards: they are drawn by the flight they were taken out of until it
+  // takes over (see peel()), and nothing on the board is drawing them, so no pile may hold them. It marks them under peelHoldId
+  // instead, which only that flight's landed ghost reads (see the paint wait below).
   const addFlight = useCallback(
     (id: number, mountGate: MountGate, content: GhostContent, live: FlightValues, own: FlightValues, handedOff: SharedValue<number>, step: SharedValue<number>, lift: SharedValue<number>, inStartOrder: boolean, candidate?: FlightEntry, peel?: PeelFrom) => {
       const adopted = peel ? undefined : candidate && adoptable(candidate, content) ? candidate : modelRef.current.find((f) => f.landed && adoptable(f, content))
-      const releasePending = adopted || peel ? () => {} : markGhostPending(visibleFaceIds(content))
+      const releasePending = adopted ? () => {} : markGhostPending(peel ? content.cards.map((c) => peelHoldId(c.id)) : visibleFaceIds(content))
       const shown = { current: false }
       const ticket: StartTicket | null = inStartOrder ? { id, ready: false, open: () => mountGate.open() } : null
       const onVisible = () => {
@@ -577,8 +585,9 @@ export function DragGhostProvider({ children }: { children: React.ReactNode }) {
       if (!f.landed || waits.has(f.id)) continue
       // Every card the ghost still draws, whatever its own face: only the board's faces are ever loading (a ghost's are not
       // tracked), so a card that lands face-down simply has nothing to wait for, and one the reveal turns face-up does. Cards
-      // peeled off it landed somewhere else, under their own ghost.
-      const ids = f.content.cards.slice(0, f.visible.current).map((c) => c.id)
+      // peeled off it go somewhere else under their own ghost - but a ghost that lands before that ghost is on screen is still
+      // the only one drawing them, so it waits for it too (peelHoldId).
+      const ids = [...f.content.cards.slice(0, f.visible.current).map((c) => c.id), ...f.content.cards.slice(f.visible.current).map((c) => peelHoldId(c.id))]
       let painted = false
       const cancel = whenCardsSettled(ids, LANDED_GHOST_MAX_MS, () => {
         painted = true

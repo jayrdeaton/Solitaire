@@ -4,7 +4,6 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { CARD_ASPECT, CardSizeProvider } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
-import { Fireworks } from '@tastic/sprites/fireworks'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
@@ -25,14 +24,14 @@ import { useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { OverlayFrame, toLocal, useOverlayFrame } from '@/components/overlayFrame'
 import { PlayingCard } from '@/components/PlayingCard'
+import type { StockRequestOptions } from '@/components/stockHold'
 import { StockWaste } from '@/components/StockWaste'
-import { fireworksColors } from '@/components/theme'
 import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
 import { useTakeOffHold } from '@/components/useTakeOffHold'
+import { PipFireworks } from '@/components/winning/PipFireworks'
 import { useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
-import { chainSegmentDelayMs } from '@/components/winning/winCascadeMotion'
 import { PYRAMID_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
@@ -52,7 +51,8 @@ import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { useUndoStack } from '@/games/shared/useUndoStack'
-import { useWinReveal, WIN_REVEAL_HOLD_MS } from '@/games/shared/useWinReveal'
+import { useWinReveal } from '@/games/shared/useWinReveal'
+import { SWEEP_PILE_BLANK_LAG_MS, SWEEP_WIN_REVEAL_MAX_WAIT_MS } from '@/games/shared/useWinStockSweep'
 import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
@@ -80,11 +80,6 @@ const SLOWEST_FLIGHT_MS = springSettleMs(FLIGHT_SPRING)
  * wait can never expire before a healthy draw ghost has landed - it used to be a flat 1000ms against a flight of at most ~320ms. */
 export const DEFER_MAX_WAIT_MS = 3 * SLOWEST_FLIGHT_MS
 
-/** A pile blanks this long AFTER its last card takes off in the win sweep (the deal layer's onCardDealt): the departing ghost is
- * drawn exactly over the pile's top card at take-off, so a blank a frame late is hidden under it, while one a frame EARLY would
- * flash an empty slot. */
-const SWEEP_PILE_BLANK_LAG_MS = 20
-
 /** The wait budget of ONE deferred action: a clock started when it first has to wait, read by every re-check of its gate (see
  * PyramidScreenInner's whenLanded). One budget for the whole wait - not a fresh DEFER_MAX_WAIT_MS per resume, which a flight that keeps
  * being re-checked without ever clearing the gate would stretch without end. Module level (not inline at the call sites) because the
@@ -93,15 +88,6 @@ function startDeferBudget(): { left: () => number } {
   const deadline = Date.now() + DEFER_MAX_WAIT_MS
   return { left: () => deadline - Date.now() }
 }
-
-/** How long a won game may wait for its flights before the celebration starts anyway. Longer than useWinReveal's default because the
- * winning move here starts a whole sequence the reveal must wait for: the last removal's flight (SLOWEST_FLIGHT_MS plus ~30ms of
- * measurement), then the sweep of up to ~24 leftover stock/waste cards onto the discard (dealStaggerMs(24) = 35ms apart + the 280ms
- * deal spring = ~1.1s - the deal is not re-paced by FLIGHT_TIME_SCALE), then the hold (WIN_REVEAL_HOLD_MS) - ~2.2s nominal at the
- * default pace, against the default 2.5s: too little margin for a slow phone's JS stalls (a 24-card deal was measured at ~+0.8s of
- * lag there), and cutting the sweep short with the fallback timer is exactly what this is meant to avoid. Twice the nominal timeline
- * (it was 4000ms against ~1.9s before the flights were slowed). Only a flight that never lands waits this long. */
-export const SWEEP_WIN_REVEAL_MAX_WAIT_MS = 2 * (SLOWEST_FLIGHT_MS + 30 + 1100 + WIN_REVEAL_HOLD_MS)
 
 interface UndoEntry {
   state: PyramidState
@@ -443,7 +429,7 @@ const NONE_LANDED: ReadonlySet<string> = new Set()
 export default withGameProviders(PyramidScreenInner)
 
 function PyramidScreenInner() {
-  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
@@ -952,10 +938,9 @@ function PyramidScreenInner() {
   // (cascadeHandoff, set from startChains' onShown) only once the ghosts are on screen - in the commit they appear, which waits
   // for the parked head's face to paint (see WinCascadeLayer's CascadeChains) - so it is never empty before the ghosts arrive,
   // nor covered by a blank-faced head for a frame or two (blanking in the commit that mounted them). An undo or New Game before
-  // then clears the cascade, which drops the callback (and the hand-off is keyed to `s` anyway). A 52-card chain at the usual
-  // 42ms per card would trail its head by ~2.1s, more than two bounce half-periods, and split into a wave: segmentDelayMs caps
-  // the whole chain's span (see chainSegmentDelayMs). If the sweep is somehow still running (the reveal's fallback timer fired
-  // first) it is cut short first and the chain simply carries every card. If no chain can start (an unmeasurable discard),
+  // then clears the cascade, which drops the callback (and the hand-off is keyed to `s` anyway). The chain keeps the usual
+  // spacing, so all 52 string out across the bounces behind the leader (see CHAIN_SEGMENT_DELAY_MS). If the sweep is somehow still
+  // running (the reveal's fallback timer fired first) it is cut short first and the chain simply carries every card. If no chain can start (an unmeasurable discard),
   // nothing blanks and the finished board stays up under the banner instead of vanishing. Same dealTokenRef guard as every
   // other async measurement in this file, for the same "New Game tapped mid-measurement" reason.
   async function runWinCascade(s: PyramidState, gen: number) {
@@ -963,7 +948,7 @@ function PyramidScreenInner() {
     const discardOrigin = await measureView(discardViewRef.current)
     if (dealTokenRef.current !== gen || !discardOrigin) return
     const cards = s.discard.slice().reverse()
-    winCascade.startChains([{ cards, origin: discardOrigin, entranceDelayMs: 0, segmentDelayMs: chainSegmentDelayMs(cards.length) }], cardWidth, () => setCascadeHandoff({ state: s }))
+    winCascade.startChains([{ cards, origin: discardOrigin }], cardWidth, () => setCascadeHandoff({ state: s }))
   }
 
   // Starts once the win is REVEALED (winRevealed - which waits for the winning removal's flight(s) AND the sweep to land and
@@ -1704,11 +1689,11 @@ function PyramidScreenInner() {
   // actually drawn - or recycled - is worked out from the board as it is once the measurements are
   // back (see attemptMove for why): three rapid taps must draw three DIFFERENT cards, and a draw
   // racing a removal must build on it instead of overwriting it.
-  async function handleDrawStock() {
-    if (won || !state) return
-    if (undoBusyRef.current) return // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
+  async function handleDrawStock(opts?: StockRequestOptions): Promise<boolean> {
+    if (won || !state) return false
+    if (undoBusyRef.current) return false // see PATTERN_OVERLAP_GATE - undo still holds full exclusion
     const board = stateRef.current
-    if (!board || !PyramidController.drawStock!(board)) return
+    if (!board || heldAtEmptyStock(board, opts) || !PyramidController.drawStock!(board)) return false
     // Claimed up front, before the await, covering whichever branch this draw turns out to be
     // (recycle or plain draw) - exactly one outstanding completion either way, matching
     // Klondike's own handleDrawStock.
@@ -1731,15 +1716,19 @@ function PyramidScreenInner() {
     // which the next must wait again for THAT flight instead of drawing from the freshly recycled stock while the group ghost is
     // still flying into it. (The reverse pairing - a recycle behind a draw still in the air - is the same predicate, so the same
     // loop.) Checked in the same synchronous stretch as the draw/recycle below, which has no await before its commit.
+    // Unlike Klondike's and Canfield's, taps that waited here are NOT paced out (createStockQueue): a tap or drop on a card can be
+    // parked beside them (attemptMove's whenLanded), and they all resume in the order they were tapped - a stock tap held back a
+    // beat let a parked pair go ahead of the draw it was tapped after.
     const budget = startDeferBudget()
-    while (dealTokenRef.current === gen && !quiet() && budget.left() > 0) await whenLanded(quiet, budget.left())
+    while (dealTokenRef.current === gen && !quiet() && budget.left() > 0 && !opts?.cancelled?.()) await whenLanded(quiet, budget.left())
     // A New Game tapped mid-measurement already replaced the board and dropped this claim - drop
-    // this stale draw entirely rather than overwrite what startNewGame applied.
-    const latest = dealTokenRef.current === gen ? stateRef.current : null
-    const result = latest && PyramidController.drawStock!(latest)
+    // this stale draw entirely rather than overwrite what startNewGame applied. So is a held stock's draw once the hold has let go
+    // (StockWaste's useStockHold), or its repeat at an empty stock.
+    const latest = dealTokenRef.current === gen && !opts?.cancelled?.() ? stateRef.current : null
+    const result = latest && !heldAtEmptyStock(latest, opts) && PyramidController.drawStock!(latest)
     if (!latest || !result) {
       settle()
-      return
+      return false
     }
     session.registerMove()
 
@@ -1760,7 +1749,7 @@ function PyramidScreenInner() {
       setSelected(null)
       if (!wastePos || !stockPos) {
         settle()
-        return
+        return true
       }
       playCardSound()
       hapticCard()
@@ -1778,7 +1767,7 @@ function PyramidScreenInner() {
         endFlying(flyingId)
         settle()
       })
-      return
+      return true
     }
     const move: MoveInfo = { from: { zone: 'stock', index: 0 }, to: { zone: 'waste', index: 0 }, count: 1, anchorCardId: drawnCard.id }
     pushUndo(latest, move)
@@ -1787,7 +1776,7 @@ function PyramidScreenInner() {
     if (!stockPos) {
       // Only an unmeasurable stock pile (a zero-size or detached view) leaves nothing to fly from.
       settle()
-      return
+      return true
     }
 
     playCardSound()
@@ -1796,18 +1785,24 @@ function PyramidScreenInner() {
     const flyingId = beginFlying({ zone: 'waste', index: 0 }, 1)
     markWasteInAir(drawnCard.id)
     pendingFlightRef.current.push({ cardId: drawnCard.id, gen, flyingId, flight, settle })
+    return true
+  }
+
+  // A held stock's repeat at an empty stock: the hold never turns the waste over (see StockRequestOptions).
+  function heldAtEmptyStock(board: PyramidState, opts?: StockRequestOptions): boolean {
+    return !!opts?.repeat && board.stock.length === 0
   }
 
   // Finds one legal move (a pairing/solo King) or a stock-draw suggestion to highlight - see
   // engine/hint.ts's findHint, which reuses this game's own legalMoves(). Only highlights; the
   // player still taps/drags the suggested card(s) through the normal flow.
-  function handleHint(request?: HintRequest) {
-    if (!state) return
+  function handleHint(request?: HintRequest): boolean {
+    if (!state) return false
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(PyramidController, state, skip)
     if (result.kind === 'none') {
       if (!request?.auto) showNoHintToast(infoToast)
-      return
+      return false
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
@@ -1822,6 +1817,8 @@ function PyramidScreenInner() {
       const partner = king ? undefined : cardAt(to)
       if (card) void playHintGlide({ moving: [card], dest: partner ? [partner] : [], destFanned: false, measureSlot: king ? () => measureView(discardViewRef.current) : undefined, cardWidth })
     }
+    // True when pressing Hint again shows a different move: a held Hint button steps on while it is (hintHold.ts).
+    return result.kind === 'move' && result.choices > 1
   }
 
   // The triangle cells' press and drop handlers: STABLE for the screen's lifetime, so the memoized PyramidCell is not
@@ -1884,7 +1881,7 @@ function PyramidScreenInner() {
     (see WinCascadeGhosts' own doc comment for why nesting depth alone can't do this) - the win
     dialog comes last of all three so it's the one thing guaranteed to sit on top of the animation,
     not buried under it (also backstopped by WinBanner's own explicit zIndex). */}
-      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <PipFireworks />}
       <PairFlightGhosts flights={pairFlights} onCardLanded={handlePairFlightLanded} onCardRetired={retirePairCard} />
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor('pyramid')} onNewGame={startNewGame} />}

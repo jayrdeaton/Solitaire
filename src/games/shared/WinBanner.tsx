@@ -1,11 +1,13 @@
 import { useAutoPaperTheme } from '@rific/auto-paper'
 import { Button } from '@rific/feedback-press'
-import { DialogHeader, overlayActionStyles, OverlayBackdrop, OverlayCard, useCompactDialog, useOverlayCardColors } from '@tastic/hud'
+import { overlayActionStyles, OverlayBackdrop, OverlayCard, useCompactDialog, useOverlayCardColors } from '@tastic/hud'
 import { StyleSheet, View } from 'react-native'
 import { Text } from 'react-native-paper'
 
 import { formatTime, GAME_DIALOG_Z_INDEX } from '@/components/GameChrome'
-import { describeVsPar, Par } from '@/engine/par'
+import { describeVsPar, Par, parMedal } from '@/engine/par'
+
+import { MedalHeader } from './MedalHeader'
 
 export interface WinBannerProps {
   elapsedSeconds: number
@@ -34,7 +36,8 @@ export function WinBanner({ elapsedSeconds, moves, score, par, onNewGame }: WinB
     // GameChrome's Home and Settings stay live: they're portaled above this backdrop.
     <OverlayBackdrop style={styles.overlay} onLayout={onLayout}>
       <OverlayCard style={styles.card}>
-        <DialogHeader icon='trophy' title='You Won!' compact={compact} />
+        {/* The trophy and "You Won!" in the metal of the medal the score earned against par (parMedal). */}
+        <MedalHeader medal={parMedal(score, par.score)} title='You Won!' compact={compact} />
         <View style={styles.statRow}>
           {stats.map(({ label, value, par: parValue }) => (
             <View key={label} style={styles.stat}>
@@ -51,7 +54,9 @@ export function WinBanner({ elapsedSeconds, moves, score, par, onNewGame }: WinB
           ))}
         </View>
         <Text variant='bodySmall' style={[styles.caption, { color: fgMuted }]}>
-          {vsPar.charAt(0).toUpperCase() + vsPar.slice(1)}. Lower is better.
+          {/* Names the score (the percentage is the score's alone; moves and time show their own par above), with no "Lower is
+          better" (par already says so) and no period: one phrase, not a sentence (Jay, 2026-10-17). */}
+          Score {vsPar}
         </Text>
         <View style={overlayActionStyles.actions}>
           <Button mode='contained' onPress={onNewGame} style={overlayActionStyles.actionButtonSingle} buttonColor={colors.primary} textColor={colors.onPrimary} testID='win-new-game'>

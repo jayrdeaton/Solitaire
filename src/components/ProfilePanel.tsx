@@ -45,9 +45,9 @@ export function ProfilePanel({ host }: ProfilePanelProps) {
   // popover under the notch/island or past the frame's bottom, so it's placed by a frame-aware hook
   // instead (`alignOverride`), sized from the same color section and Manage row the picker draws.
   const align = useProfilePickerAlign(host.openId === `${PROFILE_ID_PREFIX}-profile`, profiles.length, true, colorSection)
-  // The pill's background can't live in the static StyleSheet below - it's a function of both `dark` and the
-  // live Paper theme's surface color.
-  const pillStyle = useMemo(() => [styles.pill, { backgroundColor: dark ? paperColors.surface : '#ffffffee' }], [dark, paperColors.surface])
+  // The pill's background can't live in the static StyleSheet below - it's the live Paper theme's surface color,
+  // the one Home's tiles and every dialog are drawn on (it was a fixed near-white in light mode until 2026-10-17).
+  const pillStyle = useMemo(() => [styles.pill, { backgroundColor: paperColors.surface }], [paperColors.surface])
 
   return <ProfilePicker idPrefix={PROFILE_ID_PREFIX} host={host} profiles={profiles} selectedId={activeProfileId} color={previewCardBack(liveColor, dark)} dark={dark} guestLabel='GUEST' nullLabel='Guest' onSelect={(profile) => selectProfile(profile?.id ?? null)} onManage={() => router.push('/profiles')} alignOverride={align} colorSection={colorSection} triggerStyle={pillStyle} />
 }

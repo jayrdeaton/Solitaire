@@ -1,3 +1,4 @@
+import { Pressable } from '@rific/feedback-press'
 import { type TableColors, useCardSize } from '@tastic/cards'
 import React, { RefObject } from 'react'
 import { StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
@@ -11,6 +12,7 @@ import { DropZone } from './dragdrop/DropZone'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
 import { PileOverlay } from './PileOverlay'
 import { EmptySlot, PlayingCard } from './PlayingCard'
+import { STOCK_LONG_PRESS_MS, StockHandler, useStockHold } from './stockHold'
 import { useTableColors } from './theme'
 import { useFrozenWhileHidden } from './useFrozenWhileHidden'
 import { useTakeOffHold } from './useTakeOffHold'
@@ -41,7 +43,9 @@ interface StockWasteProps {
    * a drag, so the card that will be on top once it goes is in view meanwhile - unless the draw-3 fan already shows it
    * beside the slot (wasteBehind[0]). Omitted: the slot shows its empty outline under a lifted card. */
   wasteUnder?: Card
-  onDrawStock: () => void
+  /** One draw (or turn-over) per call - see StockHandler. Holding the stock calls it again and again (useStockHold) when the game's
+   * stock turns over (`canRecycle`); a stock that runs out for good is never held - one hold would deal the whole of it. */
+  onDrawStock: StockHandler
   /** Lazy measure function - see DraggableCard.tsx's onPress doc comment for why (this is a
    * straight pass-through to that same prop). */
   onWastePress: (measure: () => Promise<{ x: number; y: number }>) => void
@@ -165,6 +169,11 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
   // The stock too: a draw that empties it would otherwise show the empty slot while the drawn card's ghost is not on
   // screen yet - the card visible nowhere for a frame or two.
   const { shown: stockShown, holding: stockHolding } = useTakeOffHold(stockTopCard)
+  // The stock's one touch target (see the stock below). A held stock deals card after card (useStockHold) - only where it turns over:
+  // in Golf, TriPeaks and Forty Thieves one hold would deal the whole stock, which never comes back.
+  const stockHold = useStockHold(onDrawStock)
+  const stockPressable = !!stockShown || canRecycle
+  const stockLabel = stockShown ? 'Draw' : 'Turn over'
   // Starts from faceUpFanOffset's fraction, tuned to clear PileView's VERTICAL corner-row strip, and
   // widens it where a HORIZONTAL fan needs more: a covered card shows only its left `fanOffset`
   // points, and the corner rank's ink (a '10' in particular) can reach past that strip - see
@@ -200,20 +209,22 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
         </DropZone>
       </View>
       <View ref={stockRef} collapsable={false}>
-        <View style={stockHidden ? HIDDEN_STOCK_STYLE : undefined}>
-          {stockShown ? (
-            <PlayingCard card={{ ...stockShown, faceUp: false }} hinted={stockHinted && !stockHolding} onPress={stockHolding && !stockTopCard ? undefined : onDrawStock} testID='stock-pile' />
-          ) : (
-            <EmptySlot onPress={canRecycle ? onDrawStock : undefined} hinted={stockHinted} testID='stock-pile'>
-              {showRecycle ? <Text style={styles.recycleIcon}>↺</Text> : null}
-            </EmptySlot>
+        {/* ONE press target for the stock, whatever it draws: a back, the empty slot, the frozen look while cards fly into it, the
+        card a draw has just taken off. It used to be the card's own press, then the empty slot's, and fast taps were lost (Jay's
+        kids, speeding through the stock, 2026-10-16): a press that began on one and ended after the swap to the other went with
+        the unmounted one; while the last card took off the tap was ignored; and while a turn-over flew in, iOS gave the stock NO
+        taps at all, because the hidden stock is drawn at opacity 0 and React Native on iOS hit-tests no view under 1% opacity
+        (RCTViewComponentView's betterHitTest - the web doesn't, which is why it never showed there). So the art inside is never
+        pressable and only ever hidden, and this stays mounted, fully opaque, and decides nothing: a tap goes to the screen, which
+        draws, turns the waste over, or waits for a flight in its way (KlondikeScreen's handleDrawStock). */}
+        <Pressable testID='stock-pile' accessibilityRole='button' accessibilityLabel={stockLabel} disabled={!stockPressable} soundDisabled onPress={() => void onDrawStock()} onLongPress={canRecycle ? stockHold.onLongPress : undefined} onPressOut={canRecycle ? stockHold.onPressOut : undefined} delayLongPress={STOCK_LONG_PRESS_MS}>
+          <View style={stockHidden ? HIDDEN_STOCK_STYLE : undefined}>{stockShown ? <PlayingCard card={{ ...stockShown, faceUp: false }} hinted={stockHinted && !stockHolding} /> : <EmptySlot hinted={stockHinted}>{showRecycle ? <Text style={styles.recycleIcon}>↺</Text> : null}</EmptySlot>}</View>
+          {stockHidden && (
+            <View style={StyleSheet.absoluteFill} pointerEvents='none'>
+              {frozenStockTopCard ? <PlayingCard card={{ ...frozenStockTopCard, faceUp: false }} /> : <EmptySlot>{showRecycle ? <Text style={styles.recycleIcon}>↺</Text> : null}</EmptySlot>}
+            </View>
           )}
-        </View>
-        {stockHidden && (
-          <View style={StyleSheet.absoluteFill} pointerEvents='none'>
-            {frozenStockTopCard ? <PlayingCard card={{ ...frozenStockTopCard, faceUp: false }} /> : <EmptySlot>{showRecycle ? <Text style={styles.recycleIcon}>↺</Text> : null}</EmptySlot>}
-          </View>
-        )}
+        </Pressable>
       </View>
     </View>
   )

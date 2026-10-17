@@ -21,7 +21,6 @@
 import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { CardSizeProvider } from '@tastic/cards'
-import { Fireworks } from '@tastic/sprites/fireworks'
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
@@ -38,10 +37,10 @@ import { fitCardWidthToHeight, fittedGap, useGameLayout } from '@/components/gam
 import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { PlayingCard } from '@/components/PlayingCard'
-import { fireworksColors } from '@/components/theme'
 import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
+import { PipFireworks } from '@/components/winning/PipFireworks'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { ACESUP_RULES } from '@/constants/gameRules'
 import { PileRef } from '@/engine/gameTypes'
@@ -82,7 +81,7 @@ const STOCK_DISPLAY_CARD: Card = { id: 'acesup-stock', suit: 'spades', rank: 1, 
 export default withGameProviders(AcesUpScreenInner)
 
 function AcesUpScreenInner() {
-  const { colors, dark, styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
@@ -312,7 +311,7 @@ function AcesUpScreenInner() {
         const origin = origins[i]
         if (pile.length === 0 || !origin) return
         started.add(i)
-        chains.push({ cards: pile, origin: { x: origin.x, y: origin.y }, entranceDelayMs: 0 })
+        chains.push({ cards: pile, origin: { x: origin.x, y: origin.y } })
       })
       winCascade.startChains(chains, cardWidth, () => setCascadeHandoff({ state, piles: started }))
     })()
@@ -463,13 +462,13 @@ function AcesUpScreenInner() {
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
   // findHint, which reuses the same legalMoves() rules.ts already implements. Only highlights;
   // the player still taps/drags the suggested card through the normal tap-to-move/drag flow.
-  function handleHint(request?: HintRequest) {
-    if (!state) return
+  function handleHint(request?: HintRequest): boolean {
+    if (!state) return false
     const skip = hint && hint.forState === state ? hint.skip + 1 : 0
     const result = findHint(AcesUpController, state, skip)
     if (result.kind === 'none') {
       if (!request?.auto) showNoHintToast(infoToast)
-      return
+      return false
     }
     setHint({ result, forState: state, skip })
     hintsUsedRef.current = true
@@ -482,6 +481,8 @@ function AcesUpScreenInner() {
       const toDiscard = to.zone === 'discard'
       void playHintGlide({ moving: source.slice(-1), dest: toDiscard ? [] : state.piles[to.index], destFanned: true, slot: toDiscard ? undefined : to, measureSlot: toDiscard ? () => measureView(discardViewRef.current) : undefined, cardWidth })
     }
+    // True when pressing Hint again shows a different move: a held Hint button steps on while it is (hintHold.ts).
+    return result.kind === 'move' && result.choices > 1
   }
 
   function pushUndo(prev: AcesUpState, move: MoveInfo | null) {
@@ -765,7 +766,7 @@ function AcesUpScreenInner() {
           })}
         </View>
       </GameChrome>
-      {winRevealed && <Fireworks colors={fireworksColors(colors)} dark={dark} />}
+      {winRevealed && <PipFireworks />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor('acesup')} onNewGame={startNewGame} />}
       {stuck && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}

@@ -1,3 +1,4 @@
+import { getBlendedColor } from '@rific/auto-paper'
 import { getAchievementCatalogRows } from '@tastic/achievements'
 import { AchievementRow, BaseStatsScreen, LOCKED_BADGE_COLOR, StatRow, StatSection, usePopoverHost } from '@tastic/hud'
 import { ProfilePicker } from '@tastic/profile'
@@ -7,7 +8,7 @@ import { Text, useTheme } from 'react-native-paper'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { RotatedScreen } from '@/components/RotatedScreen'
-import { CHROME_FG, CHROME_FG_MUTED, CHROME_SECTION_BG } from '@/components/theme'
+import { CHROME_FG, CHROME_FG_MUTED } from '@/components/theme'
 import { useProfilePickerAlign } from '@/components/useProfilePickerAlign'
 import { describeVsPar, parFor } from '@/engine/par'
 import { VARIANTS } from '@/engine/variants'
@@ -59,6 +60,14 @@ function AchievementsContent() {
   // Already remapped onto the rotated frame's edges by RotatedScreen's SafeAreaInsetsContext.
   const insets = useSafeAreaInsets()
   const { dark } = useTheme()
+  // The wells (every StatSection and AchievementRow) take hud's own colors: the theme's surface on MD3's level-1
+  // shadow, with its onSurface text (hud's wellSurface.ts), the same surface as Home's tiles and every dialog (Jay,
+  // 2026-10-17: one surface for every raised card). They used to be a 12% white tint over the felt with white text.
+  // What sits on the felt itself (the picker, the list label, the header) stays CHROME_FG.
+  // The check mark and progress bar: the tier color mixed half with black in light mode, as hud's
+  // AchievementCatalogSection does - raw gold and silver barely show on a light surface. The badge keeps the true
+  // tier color behind its black glyph.
+  const tierAccent = (tierColor: string) => (dark ? tierColor : getBlendedColor('#000000', tierColor, 0.5))
   const { stats, unlockedAchievements, resetAll } = useGameStats()
   const { resetPlayer } = usePlayerData()
   const { profiles } = useProfiles()
@@ -105,16 +114,16 @@ function AchievementsContent() {
       <BaseStatsScreen onBack={safeBack} insets={insets} onReset={reset.onReset} resetLabel={reset.label} resetConfirmTitle={reset.title} resetConfirmBody={reset.body} fg={CHROME_FG} bg='transparent' rotation={0}>
         {profiles.length > 0 && <ProfilePicker idPrefix='achievements' host={profilePickerHost} profiles={profiles} selectedId={effectiveProfileId} color={CHROME_FG} dark={dark} guestLabel='All Profiles' nullLabel='All Profiles' nullIcon='account-group' onSelect={(profile) => setSelectedProfileId(profile?.id ?? null)} alignOverride={profilePickerAlign} />}
 
-        <StatSection label='OVERALL' fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
-          <StatRow label='Games Played' value={String(played)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Wins' value={String(wins)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Win Rate' value={played > 0 ? `${Math.round((wins / played) * 100)}%` : '-'} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Best Streak' value={String(getBestStreak(statsView))} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Games Solved' value={`${getGamesWon(statsView)} / ${SOLITAIRE_GAME_IDS.length}`} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+        <StatSection label='OVERALL'>
+          <StatRow label='Games Played' value={String(played)} />
+          <StatRow label='Wins' value={String(wins)} />
+          <StatRow label='Win Rate' value={played > 0 ? `${Math.round((wins / played) * 100)}%` : '-'} />
+          <StatRow label='Best Streak' value={String(getBestStreak(statsView))} />
+          <StatRow label='Games Solved' value={`${getGamesWon(statsView)} / ${SOLITAIRE_GAME_IDS.length}`} />
           {/* Overall bests are measured against par: a raw lowest score or fastest time across all 11 games would just
           name the quickest game (Golf, Aces Up), not the best play. */}
-          <StatRow label='Best Score' value={bestScoreVsPar === null ? '-' : describeVsPar(bestScoreVsPar, 1)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Hints Used' value={String(getTotalHintsUsed(statsView))} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+          <StatRow label='Best Score' value={bestScoreVsPar === null ? '-' : describeVsPar(bestScoreVsPar, 1)} />
+          <StatRow label='Hints Used' value={String(getTotalHintsUsed(statsView))} />
         </StatSection>
 
         {/* Per variant: one game under one rule set (engine/variants.ts), since a 1-suit and a 4-suit Spider win aren't the
@@ -126,29 +135,29 @@ function AchievementsContent() {
           const par = parFor(info.id)
           const vsPar = (best: number | null, parValue: string, show: (n: number) => string) => (best === null ? `- · par ${parValue}` : `${show(best)} · par ${parValue}`)
           return (
-            <StatSection key={info.id} label={`${GAME_TITLES[info.game]}${info.label ? ` · ${info.label}` : ''}`.toUpperCase()} fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
-              <StatRow label='Played' value={String(v.record.played)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Won' value={String(v.record.wins)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Lost' value={String(v.record.losses)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Streak' value={`${v.streak.currentWinStreak} (best ${v.streak.bestWinStreak})`} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Fastest' value={vsPar(v.bestTimeSeconds, formatTime(par.seconds), formatTime)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Fewest Moves' value={vsPar(v.bestMoves, String(par.moves), String)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-              <StatRow label='Lowest Score' value={vsPar(v.bestScore, String(par.score), String)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+            <StatSection key={info.id} label={`${GAME_TITLES[info.game]}${info.label ? ` · ${info.label}` : ''}`.toUpperCase()}>
+              <StatRow label='Played' value={String(v.record.played)} />
+              <StatRow label='Won' value={String(v.record.wins)} />
+              <StatRow label='Lost' value={String(v.record.losses)} />
+              <StatRow label='Streak' value={`${v.streak.currentWinStreak} (best ${v.streak.bestWinStreak})`} />
+              <StatRow label='Fastest' value={vsPar(v.bestTimeSeconds, formatTime(par.seconds), formatTime)} />
+              <StatRow label='Fewest Moves' value={vsPar(v.bestMoves, String(par.moves), String)} />
+              <StatRow label='Lowest Score' value={vsPar(v.bestScore, String(par.score), String)} />
             </StatSection>
           )
         })}
 
-        <StatSection label='ACTIVITY' fg={CHROME_FG} sectionBg={CHROME_SECTION_BG}>
-          <StatRow label='Days Played' value={String(statsView.distinctDaysPlayed)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Day Streak' value={String(statsView.currentDayStreak)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
-          <StatRow label='Best Day Streak' value={String(statsView.bestDayStreak)} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} />
+        <StatSection label='ACTIVITY'>
+          <StatRow label='Days Played' value={String(statsView.distinctDaysPlayed)} />
+          <StatRow label='Day Streak' value={String(statsView.currentDayStreak)} />
+          <StatRow label='Best Day Streak' value={String(statsView.bestDayStreak)} />
         </StatSection>
 
         <Text variant='labelMedium' style={[styles.listLabel, { color: CHROME_FG_MUTED }]}>
           ALL ACHIEVEMENTS
         </Text>
         {getAchievementCatalogRows(ACHIEVEMENT_CATALOG, stats, statsView, unlockedAchievements, effectiveProfileId).map((row) => (
-          <AchievementRow key={row.id} icon={row.icon} title={row.title} description={row.description} badgeColor={row.unlockedAt !== undefined ? row.tierColor : LOCKED_BADGE_COLOR} checkColor={row.tierColor} unlockedLabel={row.unlockedLabel} progress={row.progress} deviceMarker={row.deviceMarker} fg={CHROME_FG} fgMuted={CHROME_FG_MUTED} sectionBg={CHROME_SECTION_BG} />
+          <AchievementRow key={row.id} icon={row.icon} title={row.title} description={row.description} badgeColor={row.unlockedAt !== undefined ? row.tierColor : LOCKED_BADGE_COLOR} checkColor={tierAccent(row.tierColor)} unlockedLabel={row.unlockedLabel} progress={row.progress} deviceMarker={row.deviceMarker} />
         ))}
       </BaseStatsScreen>
     </View>

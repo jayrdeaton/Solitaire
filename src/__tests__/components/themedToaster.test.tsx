@@ -1,10 +1,11 @@
+import { getTintTextColor } from '@rific/auto-paper'
 import { Toast, Toaster, type ToasterProps } from '@rific/toaster'
 import { OverlayCard } from '@tastic/hud'
 import { render, screen } from '@testing-library/react-native'
-import { Text } from 'react-native'
-import { Provider as PaperProvider } from 'react-native-paper'
+import { StyleSheet, Text } from 'react-native'
+import { Icon, Provider as PaperProvider } from 'react-native-paper'
 
-import { ThemedToaster, TOAST_LEVEL_ICONS, TOAST_MAX_WIDTH, TOAST_TOP, toastStackFrame } from '@/components/ThemedToaster'
+import { ThemedToaster, TOAST_BADGE_SIZE, TOAST_LEVEL_ICONS, TOAST_MAX_WIDTH, TOAST_TOP, toastBadgeInk, toastStackFrame } from '@/components/ThemedToaster'
 import { showNoHintToast } from '@/games/shared/gameToasts'
 
 jest.mock('@/components/useFontsPreload', () => ({ CARD_FONT_FAMILY: 'TestSerif' }))
@@ -12,6 +13,12 @@ jest.mock('@/components/useFontsPreload', () => ({ CARD_FONT_FAMILY: 'TestSerif'
 // The toaster itself is stood in for: what's pinned here is what ThemedToaster hands it (the toaster's own stacking, swiping and timing are
 // @rific/toaster's tests).
 jest.mock('@rific/toaster', () => ({ ...jest.requireActual('@rific/toaster'), Toaster: jest.fn(() => null) }))
+
+// Paper's Icon, wrapped so a test can see what each badge's glyph was drawn with.
+jest.mock('react-native-paper', () => {
+  const actual = jest.requireActual('react-native-paper')
+  return { ...actual, Icon: jest.fn((props: object) => actual.Icon(props)) }
+})
 
 // The real card, wrapped so a test can see the toast was drawn on it. A Proxy, not a spread: hud and @tastic/profile import each other, so the
 // module is still half-loaded when this factory runs, and every export has to be read lazily.
@@ -76,11 +83,34 @@ describe('ThemedToaster', () => {
     expect((OverlayCard as unknown as jest.Mock).mock.lastCall![0].style).toBe(toastStyle)
   })
 
-  it('gives every level an outline icon, the set the dialog headers use', async () => {
+  // Jay, 2026-10-17: the toasts were "still missing custom colors or icons". A bare 20pt glyph in the dark theme's primary (the muted card back)
+  // all but vanished on the dark frosted pill, so each icon is now a filled badge in its level's color with the glyph knocked out of it.
+  it("gives every level a bare glyph for its badge (the badge is the circle, so no ringed icons) in the theme's role for it", async () => {
     const props = await toasterProps()
     expect(props.levelIcons).toBe(TOAST_LEVEL_ICONS)
-    expect(TOAST_LEVEL_ICONS).toEqual({ error: 'alert-circle-outline', info: 'information-outline', success: 'check-circle-outline', warning: 'alert-outline' })
-    expect(props.Icon).toBeDefined()
+    expect(TOAST_LEVEL_ICONS).toEqual({ error: 'close-thick', info: 'information-variant', success: 'check-bold', warning: 'exclamation-thick' })
+    const { colors } = await new Promise<{ colors: Record<string, string> }>((resolve) => {
+      const { useAutoPaperTheme } = jest.requireActual('@rific/auto-paper')
+      function Read() {
+        resolve(useAutoPaperTheme())
+        return null
+      }
+      void render(
+        <PaperProvider>
+          <Read />
+        </PaperProvider>
+      )
+    })
+    expect(props.levelColors).toEqual({ error: colors.danger, info: colors.primary, success: colors.success, warning: colors.warning })
+  })
+
+  it("draws the icon as a filled badge in the toast's color, as tall as a one-line pill less its inset, with the glyph in a contrasting ink", async () => {
+    const { Icon: ToastIcon } = await toasterProps()
+    await render(<PaperProvider>{ToastIcon ? <ToastIcon color='#9d2d53' name='lightbulb-off-outline' size={20} /> : null}</PaperProvider>)
+    const glyph = (Icon as unknown as jest.Mock).mock.lastCall![0]
+    expect(glyph).toMatchObject({ color: toastBadgeInk('#9d2d53'), source: 'lightbulb-off-outline' })
+    expect(toastBadgeInk('#9d2d53')).toBe(getTintTextColor('#9d2d53', '#9d2d53', 1))
+    expect(StyleSheet.flatten(screen.getByTestId('toast-badge').props.style)).toMatchObject({ backgroundColor: '#9d2d53', borderRadius: TOAST_BADGE_SIZE / 2, height: TOAST_BADGE_SIZE, width: TOAST_BADGE_SIZE })
   })
 })
 

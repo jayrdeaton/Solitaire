@@ -85,11 +85,12 @@ describe('RulesDialog', () => {
 })
 
 describe('the win and loss cards', () => {
-  it("WinBanner opens with the fleet's header: the trophy, in the theme's primary", async () => {
+  it("WinBanner opens with the fleet's header layout, the trophy over the title, in the metal of the medal the score earned (its one deliberate look of its own)", async () => {
     await show(<WinBanner moves={110} elapsedSeconds={166} score={276} par={{ moves: 125, seconds: 220, score: 345 }} onNewGame={jest.fn()} />)
 
-    expect(lastHeaderProps()).toEqual(expect.objectContaining({ icon: 'trophy', title: 'You Won!', compact: false }))
-    expect(lastHeaderProps().color).toBeUndefined()
+    // MedalHeader: DialogHeader's own layout, drawn itself because DialogHeader takes one flat color (20% under par: silver).
+    expect(screen.getByTestId('medal-header-silver')).toBeTruthy()
+    expect(screen.getByRole('header', { name: 'You Won!' })).toBeTruthy()
   })
 
   it("LossBanner opens with the same header, in the theme's primary too (not a muted one of its own)", async () => {

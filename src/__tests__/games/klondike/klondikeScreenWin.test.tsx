@@ -1,8 +1,10 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { useEffect } from 'react'
 
+import { markGhostPending } from '@/components/cardFacePaint'
 import { AUTO_PLAY_STAGGER_MS, finishGapMs } from '@/components/dragdrop/dragSpring'
 import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
+import { STOCK_HOLD_REPEAT_MS } from '@/components/stockHold'
 import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
 import KlondikeScreen from '@/games/klondike/KlondikeScreen'
@@ -172,9 +174,9 @@ jest.mock('@/components/dealing/measureView', () => ({
 jest.mock('@/components/useCardSounds', () => ({ useCardSoundEffects: () => ({ playCardSound: () => {}, playInvalidSound: () => {}, hapticCard: () => {}, hapticInvalid: () => {} }) }))
 jest.mock('@rific/feedback-press', () => ({ useVibration: () => ({ short: () => {}, selection: () => {} }) }))
 jest.mock('@rific/toaster', () => ({ useToast: () => ({ info: () => {} }) }))
-jest.mock('@tastic/sprites/fireworks', () => {
+jest.mock('@/components/winning/PipFireworks', () => {
   const { View: MockView } = require('react-native')
-  return { Fireworks: () => <MockView testID='fireworks' /> }
+  return { PipFireworks: () => <MockView testID='fireworks' /> }
 })
 jest.mock('@/games/shared/WinBanner', () => {
   const { Text: MockText } = require('react-native')
@@ -234,16 +236,19 @@ jest.mock('@/components/StockWaste', () => {
       </MockPressable>
     )
   }
-  // Also reports what the real waste paints under incoming ghost(s) - the frozen copy of its pre-flight top while
-  // wasteHiddenCount > 0 ('empty' for the bare slot), 'none' when nothing lands there - and whether the stock is frozen.
-  function MockStockWaste(props: { wasteTop?: { id: string }; wasteHiddenCount?: number; stockHidden?: boolean; onDrawStock: () => void; onWastePress: (measure: () => Promise<{ x: number; y: number }>) => void }) {
+  // Also reports what the real waste paints under incoming ghost(s) - the caller's settledWasteTop, or else the frozen copy of
+  // its pre-flight top, while wasteHiddenCount > 0 ('empty' for the bare slot), 'none' when nothing lands there - and whether
+  // the stock is frozen. 'stock-repeat' is a held stock's repeat draw (StockWaste's useStockHold).
+  function MockStockWaste(props: { wasteTop?: { id: string }; wasteHiddenCount?: number; settledWasteTop?: { id: string } | null; stockHidden?: boolean; onDrawStock: (opts?: { repeat?: boolean }) => unknown; onWastePress: (measure: () => Promise<{ x: number; y: number }>) => void }) {
     const landing = (props.wasteHiddenCount ?? 0) > 0
     const frozenTop = useFrozenWhileHidden(props.wasteTop, landing)
+    const underTop = props.settledWasteTop === undefined ? frozenTop : props.settledWasteTop
     return (
       <MockView>
         <MockPressable testID='stock-pile' onPress={() => props.onDrawStock()} />
+        <MockPressable testID='stock-repeat' onPress={() => props.onDrawStock({ repeat: true })} />
         {props.wasteTop ? <MockWasteTop card={props.wasteTop} onPress={props.onWastePress} /> : null}
-        <MockText testID='under-waste'>{landing ? (frozenTop ? frozenTop.id : 'empty') : 'none'}</MockText>
+        <MockText testID='under-waste'>{landing ? (underTop ? underTop.id : 'empty') : 'none'}</MockText>
         <MockText testID='stock-hidden'>{String(!!props.stockHidden)}</MockText>
       </MockView>
     )
@@ -349,8 +354,8 @@ async function flushUntil(done: () => boolean, maxMs = 2000) {
 }
 
 /** `undoStack`/`moves` seed the save too (an old save's undo entries, for the legacy-shape tests). */
-async function mount(state: KlondikeState, expectedCards: number, undoStack: unknown[] = [], moves = 0) {
-  seedGameInProgress('klondike', { state, undoStack, moves, elapsedSeconds: 0, config: 1 })
+async function mount(state: KlondikeState, expectedCards: number, undoStack: unknown[] = [], moves = 0, draw: 1 | 3 = 1) {
+  seedGameInProgress('klondike', { state, undoStack, moves, elapsedSeconds: 0, config: draw })
   await render(<KlondikeScreen />)
   await flush() // loadGameInProgress -> restoreGame
   expect(screen.queryAllByTestId(/^card-|^waste-top/).length).toBe(expectedCards)
@@ -993,6 +998,138 @@ describe('Klondike screen - recycling the waste', () => {
   })
 })
 
+// Jay's kids speed through the stock (2026-10-16): every tap is one draw, and the flip-over neither drops taps nor draws a card twice.
+describe('Klondike screen - speeding through the stock', () => {
+  const underWaste = () => screen.getByTestId('under-waste').props.children as string
+  const stockHidden = () => screen.getByTestId('stock-hidden').props.children as string
+  const TWO_CARD_WASTE = () => board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)]], waste: [card('spades', 7), card('clubs', 4)], foundation: foundations({}) })
+
+  it('a tap while a turned-over waste is still flying into the stock waits for it to land, then draws - no card comes out of a stock that still looks empty, and no tap is dropped', async () => {
+    await mount(TWO_CARD_WASTE(), 3)
+
+    await tap('stock-pile') // turns the waste over
+    const turnedOverAt = mockLog.shownAt[0]
+    await tap('stock-pile') // while those cards are in the air
+    await flush(FLIGHT_MS / 2)
+    expect(mockLog.shown).toHaveLength(1)
+    expect(stockHidden()).toBe('true')
+
+    await flush(FLIGHT_MS)
+    expect(mockLog.shown).toHaveLength(2)
+    expect(mockLog.shownAt[1] - turnedOverAt).toBeGreaterThanOrEqual(FLIGHT_MS) // it went once they had landed
+    expect(stockHidden()).toBe('false')
+    expect(wasteTop()).toBe(mockLog.shown[1])
+    expect(movesCount()).toBe('2')
+  })
+
+  it("taps made while the turned-over cards fly back go one after another once they land, a held stock's beat apart - not all at once as one card", async () => {
+    await mount(TWO_CARD_WASTE(), 3)
+
+    await tap('stock-pile') // turns the waste over
+    await tap('stock-pile')
+    await tap('stock-pile') // both wait for it to land
+    await flush(FLIGHT_MS + STOCK_HOLD_REPEAT_MS + 4 * STEP_MS)
+
+    expect(mockLog.shown).toHaveLength(3)
+    expect(mockLog.shownAt[1] - mockLog.shownAt[0]).toBeGreaterThanOrEqual(FLIGHT_MS)
+    expect(mockLog.shownAt[2] - mockLog.shownAt[1]).toBeGreaterThanOrEqual(STOCK_HOLD_REPEAT_MS)
+    expect(mockLog.shown[1]).not.toBe(mockLog.shown[2])
+    expect(movesCount()).toBe('3')
+  })
+
+  it('turning the waste over while the last card drawn is still flying to it turns that card back in mid-air, and the waste keeps its top card until the ghost of the rest shows', async () => {
+    await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)]], stock: [card('spades', 4, false)], waste: [card('clubs', 2)], foundation: foundations({}) }), 3)
+    // Like the real layer: a new ghost's top face is taking off until it has painted (a frame or two).
+    const realShow = mockGhost.show
+    jest.spyOn(mockGhost, 'show').mockImplementation((spec) => {
+      const flight = realShow(spec)
+      const release = markGhostPending([spec.cards[spec.cards.length - 1].id])
+      setTimeout(release, STEP_MS)
+      return flight
+    })
+
+    await tap('stock-pile') // draws the 4, which flies to the waste
+    await flush(STEP_MS)
+    await tap('stock-pile') // turns the waste over while it is still in the air
+    await flush()
+
+    expect(mockLog.shown).toEqual([id('spades', 4), id('clubs', 2)]) // only the card that had landed takes off from the waste
+    expect(mockPeel.peeled).toEqual([id('spades', 4)]) // the 4 turns back from where it is
+    expect(wasteTop()).toBe('none')
+    expect(underWaste()).toBe(id('clubs', 2)) // the 2 is still drawn there until its ghost shows
+    expect(stockHidden()).toBe('true')
+
+    await flush(STEP_MS)
+    expect(underWaste()).toBe('none')
+    await flush(FLIGHT_MS + STEP_MS)
+    expect(stockHidden()).toBe('false')
+    expect(movesCount()).toBe('2')
+
+    // Both are back in the stock: the next two taps draw them.
+    await tap('stock-pile')
+    await flush(STEP_MS)
+    await tap('stock-pile')
+    await flush(FLIGHT_MS + STEP_MS)
+    expect(mockLog.shown.slice(2).sort()).toEqual([id('clubs', 2), id('spades', 4)].sort())
+  })
+
+  it('quick taps overlap their flights, and once a card lands the waste shows it under the ones still in the air - not the card from before them all', async () => {
+    await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)]], stock: [card('spades', 3, false), card('spades', 4, false), card('spades', 5, false)], waste: [card('clubs', 2)], foundation: foundations({}) }), 3)
+
+    await tap('stock-pile')
+    await flush(20)
+    await tap('stock-pile')
+    await flush(20)
+    await tap('stock-pile')
+    expect(mockLog.shown).toHaveLength(3) // all three in the air at once
+    expect(underWaste()).toBe(id('clubs', 2))
+
+    await flush(FLIGHT_MS - 40 + STEP_MS) // the first has landed, the other two are still flying
+    expect(underWaste()).toBe(mockLog.shown[0])
+    await flush(20)
+    expect(underWaste()).toBe(mockLog.shown[1])
+    await flush(40)
+    expect(underWaste()).toBe('none')
+    expect(wasteTop()).toBe(mockLog.shown[2])
+    expect(movesCount()).toBe('3')
+  })
+
+  it('draw 3: a tap while the last fan is still landing waits for it - the deal layer flies one fan at a time, and a second start cancelled the first for good', async () => {
+    const stock = [3, 4, 5, 6, 7, 8].map((rank) => card('spades', rank, false))
+    await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)]], stock, foundation: foundations({}) }), 2, [], 0, 3)
+
+    await tap('stock-pile')
+    await tap('stock-pile')
+    await flush()
+    expect(mockLog.dealt).toHaveLength(3)
+    expect(underWaste()).toBe('empty')
+
+    await flush(FLIGHT_MS + 2 * STEP_MS)
+    expect(mockLog.dealt).toHaveLength(6) // the second fan, once the first had landed
+    await flush(FLIGHT_MS + 2 * STEP_MS)
+    expect(underWaste()).toBe('none')
+    expect(movesCount()).toBe('2')
+  })
+
+  it("a held stock's repeat draws, but never turns the waste over: the hold stops where the stock runs out", async () => {
+    await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)]], stock: [card('spades', 3, false)], waste: [card('clubs', 4)], foundation: foundations({}) }), 3)
+
+    await tap('stock-repeat')
+    await flush(FLIGHT_MS + STEP_MS)
+    expect(mockLog.shown).toEqual([id('spades', 3)])
+
+    await tap('stock-repeat') // at the empty stock
+    await flush(FLIGHT_MS + STEP_MS)
+    expect(mockLog.shown).toHaveLength(1)
+    expect(movesCount()).toBe('1')
+
+    await tap('stock-pile') // a tap turns it over
+    await flush()
+    expect(mockLog.shown).toHaveLength(2)
+    expect(movesCount()).toBe('2')
+  })
+})
+
 describe("Klondike screen - the player's draw is worked out from the board as it is once its measurement is back", () => {
   // A draw-1 measures the stock (and the waste) before it commits, a native round trip; MEASURE_MS stands in for it. Anything
   // committed in that window - a second stock tap, a tap-to-move - must be built on, never overwritten.
@@ -1045,7 +1182,10 @@ describe("Klondike screen - the player's draw is worked out from the board as it
     await tap('stock-pile') // tapped on a board with one stock card left - but by the time it commits, the stock is empty
     await flush(MEASURE_MS + FLIGHT_MS + 50)
 
-    expect(mockLog.shown).toEqual([id('spades', 4), `${id('clubs', 2)}+${id('spades', 4)}`]) // the draw, then the whole waste back
+    // The draw, then the waste back: the card that had landed in a ghost of its own, and the card just drawn - still flying in to
+    // the waste - turned back to the stock in mid-air (see 'speeding through the stock' below).
+    expect(mockLog.shown).toEqual([id('spades', 4), id('clubs', 2)])
+    expect(mockPeel.peeled).toEqual([id('spades', 4)])
     expect(wasteTop()).toBe('none')
     expect(movesCount()).toBe('2')
   })
