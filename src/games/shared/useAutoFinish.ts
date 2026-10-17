@@ -6,12 +6,12 @@ import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 
 export interface AutoFinish {
   /** Call right after every move the PLAYER made commits (a tap or a drag, to ANY pile; never an
-   * auto-played, silent one), with the pile it went `to`. Only a play of a card TO a foundation allows
-   * the finish: if that play - or the safe-card cascade it sets off - leaves the board solved, the
-   * finish starts at once, its first card one gap (finishGapMs(0)) after the move that made it so. Any
-   * other move stops a finish still running (a card taken back off a foundation isn't sent straight
-   * back up), and the player's next foundation play starts it again. */
-  afterPlayerMove(to: PileRef): void
+   * auto-played, silent one), with the pile it came `from`. If that move - or the safe-card cascade a
+   * foundation play sets off - leaves the board solved, the finish starts at once, its first card one
+   * gap (finishGapMs(0)) after the move that made it so. A move that takes a card back OFF a foundation
+   * stops it instead (and one still running): the player chose to take that card back, so it isn't
+   * sent straight back up. Their next move starts it again. */
+  afterPlayerMove(from: PileRef): void
   /** Call when the board changed for a reason that isn't a player move - an undo, a resumed save,
    * a new deal - and stops a finish that's already running. Nothing starts again until the player's
    * next move, so undoing a card off a solved board can't fly it straight back up. */
@@ -45,13 +45,14 @@ function sleep(ms: number): Promise<void> {
  * useFlightConcurrency), and every flight takes the same time (FLIGHT_SPRING), so they overlap freely
  * and land in the order they left.
  *
- * Like every auto-play, it only ever follows the player's own play of a card to a foundation (Jay,
- * 2026-10-14; from 2026-10-12 it started after ANY move that left the board solved): that play
- * (afterPlayerMove), or the safe-card cascade it sets off, the moment either makes the board solved.
- * An undo, a resume or a new deal never does (suppress): undoing a card off a solved board leaves it
- * solved, and the card would fly straight back up. Nor does any other move of the player's, a card
- * taken back off a foundation included. Their next foundation play starts it again. A permission ends
- * with the finish itself.
+ * The one exception to "auto-play only ever follows the player's own play of a card to a foundation"
+ * (Jay, 2026-10-17, as from 2026-10-12; from 2026-10-14 it too waited for a foundation play): ANY
+ * player move that leaves the board solved starts it (afterPlayerMove), a column move that turns the
+ * last hidden card over or empties the waste, say, as does the safe-card cascade a foundation play
+ * sets off, the moment it makes the board solved. An undo, a resume or a new deal never does
+ * (suppress): undoing a card off a solved board leaves it solved, and the card would fly straight back
+ * up. Nor does the player's own move of a card back off a foundation, for the same reason. Their next
+ * move starts it again. A permission ends with the finish itself.
  *
  * The pace is a fixed clock: each card leaves its gap after the card before it LEFT (the player's own
  * move, for the first), not after that card's measurement and commit, so the gap really is the pace. The one thing a card waits for is its own pile to stop landing (`isLanding`, bounded by
@@ -169,8 +170,8 @@ export function useAutoFinish<TState>(config: {
   }, [config.state])
 
   return {
-    afterPlayerMove(to) {
-      allowedRef.current = to.zone === 'foundation'
+    afterPlayerMove(from) {
+      allowedRef.current = from.zone !== 'foundation'
     },
     suppress() {
       allowedRef.current = false

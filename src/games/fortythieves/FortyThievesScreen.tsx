@@ -388,8 +388,8 @@ function FortyThievesScreenInner() {
     beat: cascadeFeedback
   })
   // The finish: once the board is solved (the stock and waste empty, every card able to go up - rules.ts's canAutoFinish),
-  // the rest files away on its own, at a pace that ramps up - after the player's play of a card to a foundation that leaves it
-  // that way, or the cascade that play set off (see useAutoFinish). Both read the live controller (it is replaced every deal).
+  // the rest files away on its own, at a pace that ramps up - after any move of the player's that leaves it that way, or the
+  // cascade a foundation play set off (see useAutoFinish). Both read the live controller (it is replaced every deal).
   const finish = useAutoFinish<FortyThievesState>({
     state,
     enabled: () => settings.autoMoveToFoundation,
@@ -563,11 +563,12 @@ function FortyThievesScreenInner() {
       session.registerMove()
       checkWin(result)
       // Only the player's own play of a card to a foundation starts the cascade; any other move of theirs
-      // stops it, so a card it uncovers (the waste's next card, say) is theirs to find and play. The
-      // finish follows the same foundation play, once the board is solved (see useAutoFinish).
+      // stops it, so a card it uncovers (the waste's next card, say) is theirs to find and play. The finish
+      // follows any move of theirs that leaves the board solved, except one taking a card back off a foundation
+      // (see useAutoFinish).
       if (!opts?.silent) {
         cascade.afterPlayerMove(to)
-        finish.afterPlayerMove(to)
+        finish.afterPlayerMove(from)
       }
       return true
     }

@@ -528,8 +528,8 @@ function FreeCellScreenInner() {
     beat: cascadeFeedback
   })
   // The finish: once every column is sorted (nothing hidden, no choice left), every remaining card
-  // files away on its own, at a pace that ramps up - after the player's play of a card to a foundation
-  // that leaves the board that way, or the cascade that play set off (see useAutoFinish).
+  // files away on its own, at a pace that ramps up - after any move of the player's that leaves the
+  // board that way, or the cascade a foundation play set off (see useAutoFinish).
   const finish = useAutoFinish<FreeCellState>({
     state,
     enabled: () => settings.autoMoveToFoundation,
@@ -772,11 +772,11 @@ function FreeCellScreenInner() {
       session.registerMove()
       checkWin(result)
       // Only the player's own play of a card to a foundation (a tap or a drag) starts the cascade; any other
-      // move of theirs stops it, so a card it uncovers is theirs to play. The finish follows the same
-      // foundation play, once the board is solved (see autoPlay.ts).
+      // move of theirs stops it, so a card it uncovers is theirs to play. The finish follows any move of
+      // theirs that leaves the board solved, except one taking a card back off a foundation (see autoPlay.ts).
       if (!opts?.silent) {
         cascade.afterPlayerMove(to)
-        finish.afterPlayerMove(to)
+        finish.afterPlayerMove(from)
       }
       return true
     }

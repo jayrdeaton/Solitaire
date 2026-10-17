@@ -645,9 +645,9 @@ function KlondikeScreenInner() {
     beat: cascadeFeedback
   })
   // The finish: once the board is solved (nothing face-down, the stock and waste empty, every card able
-  // to go up), the rest files away on its own, at a pace that ramps up - after the player's play of a
-  // card to a foundation that leaves the board that way, or the cascade that play set off (see
-  // useAutoFinish and rules.ts's canAutoFinish). Both read the live controller: New Game and restore replace it.
+  // to go up), the rest files away on its own, at a pace that ramps up - after any move of the player's
+  // that leaves the board that way, or the cascade a foundation play set off (see useAutoFinish and
+  // rules.ts's canAutoFinish). Both read the live controller: New Game and restore replace it.
   const finish = useAutoFinish<KlondikeState>({
     state,
     enabled: () => settings.autoMoveToFoundation,
@@ -1023,10 +1023,11 @@ function KlondikeScreenInner() {
       checkWin(result)
       // Only the player's own play of a card to a foundation starts the cascade; any other move of theirs
       // stops it, so a card it uncovers (an ace flipped up on the tableau, say) is theirs to find and play.
-      // The finish follows the same foundation play, once the board is solved (see useAutoFinish).
+      // The finish follows any move of theirs that leaves the board solved, except one taking a card back off a
+      // foundation (see useAutoFinish).
       if (!opts?.silent) {
         cascade.afterPlayerMove(to)
-        finish.afterPlayerMove(to)
+        finish.afterPlayerMove(from)
       }
       return true
     }

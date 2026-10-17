@@ -1261,7 +1261,7 @@ describe('Klondike screen - a foundation card back down to the tableau', () => {
   })
 })
 
-describe("Klondike screen - once the board is solved, the player's foundation play finishes the rest, at a pace that ramps up", () => {
+describe("Klondike screen - once the board is solved, any move of the player's finishes the rest, at a pace that ramps up", () => {
   /** Every card is home but the Jack, Queen and King of clubs and the other three Kings. Clubs only go up to 10, so the Queen of clubs (on the
    * face-down Jack) has no foundation move: moving it onto a red King turns the Jack over, and then nothing is hidden. */
   const SOLVED_BY_COLUMN_MOVE = () => board({ tableau: [[card('clubs', 11, false), card('clubs', 12)], [card('diamonds', 13)], [card('hearts', 13)], [card('clubs', 13)], [card('spades', 13)]], foundation: foundations({ clubs: 10, diamonds: 12, hearts: 12, spades: 12 }) })
@@ -1286,47 +1286,46 @@ describe("Klondike screen - once the board is solved, the player's foundation pl
     })
   }
 
-  it('a column move that turns the last face-down card over does not start it: the next foundation play does, every card left flies exactly once, and the game is won', async () => {
+  it('a column move that turns the last face-down card over starts it at once: every card left flies exactly once, at the ramping pace, and the game is won', async () => {
     await mount(SOLVED_BY_COLUMN_MOVE(), 6)
 
     await tapCard(id('clubs', 12)) // no foundation move for it: onto the King of diamonds, and the Jack of clubs turns over
     await flush(3000)
-    expect(mockLog.shown).toEqual([id('clubs', 12)]) // the player's own move, and nothing after it
-    expect(won()).toBe('false')
 
-    await tapCard(id('clubs', 11)) // to its foundation
-    await flush(3000)
-
-    expect(mockLog.shown.slice(0, 2)).toEqual([id('clubs', 12), id('clubs', 11)]) // the player's two moves...
-    const finish = mockLog.shown.slice(2) // ...then the finish, with nothing else in between
-    expect([...finish].sort()).toEqual(REMAINING.filter((c) => c !== id('clubs', 11)).sort())
-    expectFinishPace(gapsFrom(2)) // the first a gap after the foundation play, every other one its gap after the card before it
+    expect(mockLog.shown[0]).toBe(id('clubs', 12)) // the player's own move...
+    const finish = mockLog.shown.slice(1) // ...then the finish, with nothing else in between
+    expect(finish).toHaveLength(REMAINING.length)
+    expect([...finish].sort()).toEqual([...REMAINING].sort())
+    expectFinishPace(gapsFrom(1)) // the first a gap after the player's move, every other one its gap after the card before it
     expect(won()).toBe('true')
     expect(screen.getByTestId('win-banner')).toBeTruthy()
     expect(cardsOnBoard()).toBe(0)
-    expect(movesCount()).toBe('7') // the player's two moves and each finished card
+    expect(movesCount()).toBe('7') // the player's move and each finished card
     expect(mockLog.hides).toBe(0)
   })
 
-  it('a drag to a column that leaves the board solved does not start it either', async () => {
+  it('a drag to a column that leaves the board solved starts it too', async () => {
     await mount(SOLVED_BY_COLUMN_MOVE(), 6)
 
     expect(await dragFromColumn(id('clubs', 12), column(2))).toBe(true) // onto the King of hearts this time
     await flush(3000)
 
-    expect(mockLog.shown).toEqual([]) // the drag's own flight is not a show()
-    expect(won()).toBe('false')
+    expect([...mockLog.shown].sort()).toEqual([...REMAINING].sort()) // every card once (the drag's own flight is not a show())
+    expectFinishPace(gapsFrom(1))
+    expect(won()).toBe('true')
   })
 
-  it('a move off the waste that empties it does not start it either', async () => {
+  it('a move off the waste that empties it starts it too', async () => {
     await mount(SOLVED_BY_WASTE_MOVE(), 6)
 
     await tap('waste-top') // the Queen of clubs onto the King of diamonds: the waste is empty now
     await flush(3000)
 
-    expect(mockLog.shown).toEqual([id('clubs', 12)])
+    expect(mockLog.shown[0]).toBe(id('clubs', 12))
+    expect([...mockLog.shown.slice(1)].sort()).toEqual([...REMAINING].sort())
+    expectFinishPace(gapsFrom(1))
+    expect(won()).toBe('true')
     expect(wasteTop()).toBe('none')
-    expect(won()).toBe('false')
   })
 
   it("a foundation play on a solved board finishes it at the finish's pace, the cascade stepping aside - no card goes twice, no two at once", async () => {
@@ -1373,7 +1372,7 @@ describe("Klondike screen - once the board is solved, the player's foundation pl
     expect(won()).toBe('false')
   })
 
-  it('a resumed solved board sits until the player plays a card to a foundation - a column move does not start it', async () => {
+  it('a resumed solved board sits until the player moves - then any move of theirs starts it', async () => {
     await mount(SOLVED(), 6)
     await flush(3000)
     expect(mockLog.shown).toEqual([])
@@ -1381,11 +1380,7 @@ describe("Klondike screen - once the board is solved, the player's foundation pl
 
     expect(await dragFromColumn(id('clubs', 12), column(2))).toBe(true) // the Queen of clubs from one red King to the other
     await flush(3000)
-    expect(mockLog.shown).toEqual([])
-    expect(cardsOnBoard()).toBe(6)
 
-    await tapCard(id('clubs', 11))
-    await flush(3000)
     expect([...mockLog.shown].sort()).toEqual([...REMAINING].sort())
     expect(won()).toBe('true')
   })

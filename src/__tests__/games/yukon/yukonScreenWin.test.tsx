@@ -682,7 +682,7 @@ describe("Yukon screen - auto-play only ever follows the player's own play of a 
   })
 })
 
-describe("Yukon screen - once the board is solved, the player's foundation play finishes the rest, at a pace that ramps up", () => {
+describe("Yukon screen - once the board is solved, any move of the player's finishes the rest, at a pace that ramps up", () => {
   /** Clubs and diamonds home up to the 9, hearts up to the 10, spades complete: the other 11 cards are on the tableau. */
   const FOUNDATIONS = () => [pile('clubs', 9), pile('diamonds', 9), pile('hearts', 10), pile('spades', 13)]
   /** A column `high` at the bottom down to `low` on top, each card free to go up once the one below it in rank has. */
@@ -735,49 +735,46 @@ describe("Yukon screen - once the board is solved, the player's foundation play 
     mockSettings.autoMove = true
   })
 
-  it('a tap that moves a card to a column and leaves the board solved does not start it - the next foundation play does', async () => {
+  it('a tap that moves a card to a column and leaves the board solved starts it at once - no foundation play needed', async () => {
     await mount(ONE_MOVE_FROM_SOLVED(), [], 11)
 
     await tap(id('hearts', 13)) // nowhere to go but an empty column, and it turns over the last face-down card
-    await flush(3000)
-    expect(mockLog.shown).toEqual([id('hearts', 13)]) // the move's own flight, and nothing after it
-    expect(cardsOnBoard()).toBe(11)
-
-    await tap(id('clubs', 10))
     await flush(3000)
 
     expect(cardsOnBoard()).toBe(0)
     expect(screen.getByTestId('win-banner')).toBeTruthy()
     expect(mockRecordWon).toHaveBeenCalledTimes(1)
-    expect(mockLog.shown).toHaveLength(2 + 10) // the two taps, then every card left...
+    expect(mockLog.shown).toHaveLength(1 + 11) // the tap, then every card left...
     expect(new Set(mockLog.shown.slice(1)).size).toBe(11) // ...each one once
-    // The first one gap after the foundation play, the gaps closing in on half the cascade's.
-    expectFinishPace(gapsFrom(1))
+    // The first one gap after the tap, the gaps closing in on half the cascade's.
+    expectFinishPace(gapsFrom(0))
   })
 
-  it('a DRAG to a column that leaves the board solved does not start it either', async () => {
+  it('a DRAG to a column that leaves the board solved starts it too', async () => {
     await mount(ONE_MOVE_FROM_SOLVED(), [], 11)
 
     await dragTo(id('hearts', 13), EMPTY_COLUMN)
     await flush(3000)
 
-    expect(cardsOnBoard()).toBe(11)
-    expect(mockLog.shown).toEqual([]) // the drag's own ghost is not counted here
+    expect(cardsOnBoard()).toBe(0)
+    expect(screen.getByTestId('win-banner')).toBeTruthy()
+    expect(mockLog.shown).toHaveLength(11) // every card left, each once (the drag's own ghost is not counted here)
+    expect(new Set(mockLog.shown).size).toBe(11)
+    expectFinishPace(gapsFrom(0))
   })
 
   it("a card the player's own move is still flying in to waits for it to land before going up (taken mid-air it would show twice)", async () => {
-    mockFlightMs = 1000 // the King's flight to its new column outlasts the nine finish cards in front of it
+    mockFlightMs = 1000 // the King's flight to its new column outlasts the ten finish cards in front of it
     await mount(ONE_MOVE_FROM_SOLVED(), [], 11)
 
-    await tap(id('hearts', 13))
-    await tap(id('clubs', 10)) // the foundation play that starts the finish, while the King is still flying
+    await tap(id('hearts', 13)) // starts the finish while the King is still flying
     await flush(4000)
 
     expect(cardsOnBoard()).toBe(0)
     const kingUp = mockLog.shown.lastIndexOf(id('hearts', 13))
     expect(kingUp).toBe(11) // the last card to go up...
     expect(mockLog.shownAt[kingUp]).toBeGreaterThanOrEqual(mockLog.shownAt[0] + 1000) // ...once its own flight had landed
-    expectFinishPace(gapsFrom(1).slice(0, 9)) // the nine in front of it kept the finish's pace
+    expectFinishPace(gapsFrom(0).slice(0, 10)) // the ten in front of it kept the finish's pace
   })
 
   it('a tap to a foundation on a solved board sends the rest up at the finish pace, each card once - the cascade steps aside', async () => {
@@ -827,19 +824,16 @@ describe("Yukon screen - once the board is solved, the player's foundation play 
     expect(cardsOnBoard()).toBe(11)
   })
 
-  it('a resumed solved board is left alone until the player plays a card to a foundation - a column move does not start it', async () => {
+  it('a resumed solved board is left alone until the player moves - then any move of theirs starts it', async () => {
     await mount(SOLVED(), [], 11)
     await flush(3000)
     expect(mockLog.shown).toEqual([])
 
     await tap(id('hearts', 13)) // the whole hearts column onto an empty one: still solved
     await flush(3000)
-    expect(mockLog.shown).toEqual([[id('hearts', 13), id('hearts', 12), id('hearts', 11)].join('+')])
-    expect(cardsOnBoard()).toBe(11)
 
-    await tap(id('clubs', 10))
-    await flush(3000)
-    expect(mockLog.shown).toHaveLength(2 + 10)
+    expect(mockLog.shown[0]).toBe([id('hearts', 13), id('hearts', 12), id('hearts', 11)].join('+'))
+    expect(mockLog.shown).toHaveLength(1 + 11)
     expect(cardsOnBoard()).toBe(0)
   })
 
@@ -895,7 +889,7 @@ describe("Yukon screen - once the board is solved, the player's foundation play 
     expect(mockLog.shown.length).toBe(before) // none of it auto-played
   })
 
-  it("a card dragged back off a foundation onto a solved board is not sent straight back up - the player's next foundation play sends it with the rest", async () => {
+  it("a card dragged back off a foundation onto a solved board is not sent straight back up - the player's next move sends it with the rest", async () => {
     await mount(SOLVED(), [], 11)
 
     expect(await dropFromFoundation('clubs', card('clubs', 9), 5)).toBe(true)

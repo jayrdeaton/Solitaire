@@ -132,7 +132,7 @@ export function dropSpringFor(distance: number): WithSpringConfig {
 export const AUTO_PLAY_STAGGER_MS = scaledMs(60)
 
 /** The FINISH's pace (useAutoFinish: the board is solved, nothing hidden and no choice left, so every remaining card files away on its own)
- * RAMPS UP (Jay, 2026-10-14: not "immediately flying in"): its first card follows the player's foundation play at ordinary auto-play's gap
+ * RAMPS UP (Jay, 2026-10-14: not "immediately flying in"): its first card follows the player's move at ordinary auto-play's gap
  * (FINISH_RAMP_START_MS = AUTO_PLAY_STAGGER_MS, so a cascade handing over to it doesn't slow down), and each later gap closes in on
  * FINISH_STAGGER_MS, the top speed, by FINISH_RAMP_FACTOR of what is left: 96, 89, 83, 77, 73 ... ~59 by the 10th card, ~50 by the 20th.
  * The flights still take FLIGHT_SPRING's one time, so the cards still land in the order they left. */
@@ -146,7 +146,7 @@ export const FINISH_STAGGER_MS = scaledMs(30)
 /** How much of the gap still above FINISH_STAGGER_MS each finish card keeps - see FINISH_RAMP_START_MS. */
 export const FINISH_RAMP_FACTOR = 0.85
 
-/** The gap in front of the finish's `index`th card (0 = the first, after the player's own foundation play). */
+/** The gap in front of the finish's `index`th card (0 = the first, after the player's own move). */
 export function finishGapMs(index: number): number {
   return Math.round(FINISH_STAGGER_MS + (FINISH_RAMP_START_MS - FINISH_STAGGER_MS) * FINISH_RAMP_FACTOR ** index)
 }

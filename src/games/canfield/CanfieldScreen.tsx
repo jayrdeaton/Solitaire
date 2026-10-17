@@ -524,8 +524,8 @@ function CanfieldScreenInner() {
     beat: cascadeFeedback
   })
   // The finish: once the board is solved (rules.ts's canAutoFinish - reserve, stock and waste empty, nothing hidden, no
-  // choice left), every remaining card files away on its own, at a pace that ramps up - after the player's play of a
-  // card to a foundation that leaves it so, or the cascade that play set off (see useAutoFinish). Both read the live
+  // choice left), every remaining card files away on its own, at a pace that ramps up - after any move of the player's
+  // that leaves it so, or the cascade a foundation play set off (see useAutoFinish). Both read the live
   // controller: it is replaced on every New Game/restore.
   const finish = useAutoFinish<CanfieldState>({
     state,
@@ -768,11 +768,12 @@ function CanfieldScreenInner() {
       session.registerMove()
       checkWin(result)
       // Only the player's own play of a card to a foundation starts the cascade; any other move of theirs
-      // stops it, so a card it uncovers (the reserve's next card, say) is theirs to find and play. The
-      // finish follows the same foundation play, once the board is solved (see useAutoFinish).
+      // stops it, so a card it uncovers (the reserve's next card, say) is theirs to find and play. The finish
+      // follows any move of theirs that leaves the board solved, except one taking a card back off a foundation
+      // (see useAutoFinish).
       if (!opts?.silent) {
         cascade.afterPlayerMove(to)
-        finish.afterPlayerMove(to)
+        finish.afterPlayerMove(from)
       }
       return true
     }

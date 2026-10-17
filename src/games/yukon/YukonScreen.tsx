@@ -257,8 +257,8 @@ function YukonScreenInner() {
   // existed - see SavedGame's own doc comment).
   function restoreGame(saved: SavedGame<YukonState, UndoEntry<YukonState, YukonUndoMove>>) {
     ++dealTokenRef.current
-    // Nothing auto-plays on a resumed board until the player's own next foundation play: it arms the cascade, and starts
-    // the finish if it leaves the board solved.
+    // Nothing auto-plays on a resumed board until the player's own next move: a foundation play arms the cascade, and
+    // any move starts the finish if it leaves the board solved.
     finish.suppress()
     cascade.disarm()
     setUndoStack(saved.undoStack ?? [])
@@ -617,9 +617,9 @@ function YukonScreenInner() {
     beat: cascadeFeedback
   })
   // The finish: once the board is solved (every card face up and able to go up by foundation moves alone), every
-  // remaining card files away on its own, at a pace that ramps up - after the player's play of a card to a foundation
-  // that leaves the board that way, or once the cascade that play set off turns the last hidden card over (see
-  // useAutoFinish).
+  // remaining card files away on its own, at a pace that ramps up - after any move of the player's that leaves the
+  // board that way (one that turns the last hidden card over, say), or once the cascade a foundation play set off
+  // does (see useAutoFinish).
   const finish = useAutoFinish<YukonState>({
     state,
     enabled: () => settings.autoMoveToFoundation,
@@ -852,10 +852,11 @@ function YukonScreenInner() {
       checkWin(result)
       // Only the player's own play of a card to a foundation starts the cascade; any other move of theirs
       // stops it, so a card it uncovers (an ace flipped up on the tableau, say) is theirs to find and play.
-      // The finish follows the same foundation play, once the board is solved.
+      // The finish follows any move of theirs that leaves the board solved, except one taking a card back off a
+      // foundation (see useAutoFinish).
       if (!opts?.silent) {
         cascade.afterPlayerMove(to)
-        finish.afterPlayerMove(to)
+        finish.afterPlayerMove(from)
       }
       return true
     }

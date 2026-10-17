@@ -62,10 +62,10 @@ async function advance(ms: number) {
   })
 }
 
-/** What the screen does on a player's move (to a foundation, unless `to` says otherwise): afterPlayerMove in the same breath as the
- * move's commit, so the next render has a new board. */
-async function playerMove(finish: AutoFinish, rerender: (props: Props) => Promise<void>, state = 'move-1', to: PileRef = FOUNDATION) {
-  finish.afterPlayerMove(to)
+/** What the screen does on a player's move (from a column, to any pile, unless `from` says otherwise): afterPlayerMove in the same
+ * breath as the move's commit, so the next render has a new board. */
+async function playerMove(finish: AutoFinish, rerender: (props: Props) => Promise<void>, state = 'move-1', from: PileRef = COLUMN) {
+  finish.afterPlayerMove(from)
   await rerender({ state })
 }
 
@@ -147,20 +147,17 @@ describe('useAutoFinish', () => {
     await unmount()
   })
 
-  it("a move to a column or a freecell that leaves the board solved does not start it - only the player's next foundation play does", async () => {
+  it("starts after the player's move to a column that leaves the board solved - any move counts, not just a foundation play", async () => {
     const { board, firePlay, render } = setup()
     board.remaining = 0 // not solved yet
     const { result, rerender, unmount } = await render()
 
-    board.remaining = 2 // the player's column move solved it
-    await playerMove(result.current, rerender, 'move-1', COLUMN)
-    await advance(STAGGER_MS * 3)
-    expect(firePlay).not.toHaveBeenCalled()
-    await playerMove(result.current, rerender, 'move-2', { zone: 'freecell', index: 0 })
+    await playerMove(result.current, rerender)
     await advance(STAGGER_MS * 3)
     expect(firePlay).not.toHaveBeenCalled()
 
-    await playerMove(result.current, rerender, 'move-3') // a card to a foundation
+    board.remaining = 2 // the player's column move (or a freecell move: the hook never sees the destination) solved it
+    await playerMove(result.current, rerender, 'move-2')
     await advance(STAGGER_MS)
     expect(firePlay).toHaveBeenCalledTimes(1)
     await unmount()
@@ -182,7 +179,7 @@ describe('useAutoFinish', () => {
     await unmount()
   })
 
-  it("the player's own foundation play mid-finish neither stops it nor starts a second loop", async () => {
+  it('a player move mid-finish that keeps the board solved neither stops it nor starts a second loop', async () => {
     const { board, firePlay, render } = setup()
     board.remaining = 10
     const { result, rerender, unmount } = await render()
@@ -191,27 +188,11 @@ describe('useAutoFinish', () => {
     await advance(STAGGER_MS)
     expect(firePlay).toHaveBeenCalledTimes(1)
 
-    await playerMove(result.current, rerender, 'move-2') // they tap a card up themselves: still solved
+    await playerMove(result.current, rerender, 'move-2') // a card to a freecell, say: still solved
     await advance(STAGGER_MS)
     expect(firePlay).toHaveBeenCalledTimes(2)
     await advance(STAGGER_MS)
     expect(firePlay).toHaveBeenCalledTimes(3)
-    await unmount()
-  })
-
-  it('a move of the player to any other pile mid-finish stops it, even one that keeps the board solved', async () => {
-    const { board, firePlay, render } = setup()
-    board.remaining = 10
-    const { result, rerender, unmount } = await render()
-
-    await playerMove(result.current, rerender)
-    await advance(STAGGER_MS)
-    expect(firePlay).toHaveBeenCalledTimes(1)
-
-    await playerMove(result.current, rerender, 'move-2', { zone: 'freecell', index: 0 })
-    await advance(STAGGER_MS * 4)
-    expect(firePlay).toHaveBeenCalledTimes(1)
-    expect(result.current.isAllowed()).toBe(false)
     await unmount()
   })
 
@@ -231,7 +212,7 @@ describe('useAutoFinish', () => {
     await unmount()
   })
 
-  it('suppress() stops a running finish, and nothing restarts it until the next foundation play', async () => {
+  it('suppress() stops a running finish, and nothing restarts it until the next player move - to any pile', async () => {
     const { board, firePlay, render } = setup()
     board.remaining = 10
     const { result, rerender, unmount } = await render()
@@ -521,7 +502,7 @@ describe('useAutoFinish', () => {
     const firePlay = jest.fn(async () => true)
     const { result, rerender, unmount } = await renderHook(({ state, enabled }: FreshProps) => useAutoFinish<string>({ state, enabled, isBusy: () => false, getState: () => 'live', canFinish: () => true, nextMove: () => moveFor(1), isLanding: () => false, firePlay, gapMs: () => STAGGER_MS }), { initialProps: { state: 'board-0', enabled: () => true } as FreshProps })
 
-    result.current.afterPlayerMove(FOUNDATION)
+    result.current.afterPlayerMove(COLUMN)
     await rerender({ state: 'move-1', enabled: () => true })
     await advance(STAGGER_MS)
     expect(firePlay).toHaveBeenCalledTimes(1)
@@ -540,7 +521,7 @@ describe('useAutoFinish', () => {
     }
     const firePlay = jest.fn(async () => true)
     const { result, rerender, unmount } = await renderHook(({ state, staggerMs }: StaggerProps) => useAutoFinish<string>({ state, enabled: () => true, isBusy: () => false, getState: () => 'live', canFinish: () => true, nextMove: () => moveFor(1), isLanding: () => false, firePlay, gapMs: () => staggerMs }), { initialProps: { state: 'board-0', staggerMs: STAGGER_MS } as StaggerProps })
-    result.current.afterPlayerMove(FOUNDATION)
+    result.current.afterPlayerMove(COLUMN)
     await rerender({ state: 'move-1', staggerMs: STAGGER_MS })
     await advance(STAGGER_MS / 2)
     await rerender({ state: 'move-1', staggerMs: 1000 }) // during the first gap, which already started at the old value...
@@ -558,7 +539,7 @@ describe('useAutoFinish', () => {
     const { firePlay, render } = setup()
     const { result, rerender, unmount } = await render()
 
-    result.current.afterPlayerMove(FOUNDATION)
+    result.current.afterPlayerMove(COLUMN)
     await rerender({ state: null }) // getState() still answers 'board-0'
     await advance(STAGGER_MS * 3)
     expect(firePlay).not.toHaveBeenCalled()
@@ -583,11 +564,11 @@ describe('useAutoFinish', () => {
     const { firePlay, render } = setup()
     const { result, rerender, unmount } = await render()
 
-    await playerMove(result.current, rerender, 'move-1', COLUMN) // off a foundation, onto a column
+    await playerMove(result.current, rerender, 'move-1', FOUNDATION) // off a foundation, onto a column
     await advance(STAGGER_MS * 3)
     expect(firePlay).not.toHaveBeenCalled()
 
-    await playerMove(result.current, rerender, 'move-2') // their next foundation play does
+    await playerMove(result.current, rerender, 'move-2') // their next move (from anywhere else) does
     await advance(STAGGER_MS)
     expect(firePlay).toHaveBeenCalledTimes(1)
     await unmount()
@@ -602,7 +583,7 @@ describe('useAutoFinish', () => {
     await advance(STAGGER_MS)
     expect(firePlay).toHaveBeenCalledTimes(1)
 
-    await playerMove(result.current, rerender, 'move-2', COLUMN)
+    await playerMove(result.current, rerender, 'move-2', FOUNDATION)
     await advance(STAGGER_MS * 4)
     expect(firePlay).toHaveBeenCalledTimes(1)
     expect(result.current.isAllowed()).toBe(false)
@@ -614,16 +595,16 @@ describe('useAutoFinish', () => {
     const { result, unmount } = await render()
 
     expect(result.current.isAllowed()).toBe(false)
-    result.current.afterPlayerMove(FOUNDATION)
+    result.current.afterPlayerMove(COLUMN)
     expect(result.current.isAllowed()).toBe(true)
     result.current.suppress()
     expect(result.current.isAllowed()).toBe(false)
     result.current.afterPlayerMove({ zone: 'freecell', index: 0 })
-    expect(result.current.isAllowed()).toBe(false)
-    result.current.afterPlayerMove(FOUNDATION)
     expect(result.current.isAllowed()).toBe(true)
-    result.current.afterPlayerMove(COLUMN)
+    result.current.afterPlayerMove(FOUNDATION)
     expect(result.current.isAllowed()).toBe(false)
+    result.current.afterPlayerMove({ zone: 'waste', index: 0 })
+    expect(result.current.isAllowed()).toBe(true)
     await unmount()
   })
 

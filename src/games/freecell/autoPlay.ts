@@ -9,10 +9,10 @@
 // 2. The FINISH (mechanism B, driven by useAutoFinish): once the rest of the board can go up on
 //    foundation moves alone - every column already sorted, highest at the bottom; FreeCell hides
 //    nothing, so that is all "solved" takes - there is no decision left to protect, so every remaining
-//    card files away on its own, at a pace that ramps up (finishGapMs). Like the cascade it only
-//    follows the player's play of a card to a foundation (Jay, 2026-10-14): that play, or the cascade
-//    it set off, once the board is solved. An undo, a resume or a new deal never starts it; the
-//    player's next foundation play does.
+//    card files away on its own, at a pace that ramps up (finishGapMs). Unlike the cascade it follows
+//    ANY move of the player's that leaves the board solved (Jay, 2026-10-17), or the cascade a
+//    foundation play set off, once it does. An undo, a resume, a new deal or a card taken back off a
+//    foundation never starts it; the player's next move does.
 //
 // The cascade steps aside the moment the board is finishable (nextSafeCascadeStep returns null),
 // so the two never both try to fire a card at the same settle.
