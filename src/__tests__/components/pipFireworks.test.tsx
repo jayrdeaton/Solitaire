@@ -25,9 +25,7 @@ type Drawn = { color: string; outline: { color: string; width: number }; theme: 
 /** Lets the show run until it has thrown every suit, and returns how each suit's pips were drawn. */
 async function drawnBySuit(): Promise<Record<string, Drawn>> {
   await render(<PipFireworks />)
-  await act(async () => {
-    fireEvent(screen.getByTestId('pip-fireworks'), 'layout', { nativeEvent: { layout: { width: 400, height: 800 } } })
-  })
+  await fireEvent(screen.getByTestId('pip-fireworks'), 'layout', { nativeEvent: { layout: { width: 400, height: 800 } } })
   const seen: Record<string, Drawn> = {}
   for (let i = 0; i < 20 && Object.keys(seen).length < 4; i++) {
     for (const pip of screen.queryAllByTestId('pip')) {
@@ -99,7 +97,7 @@ describe('PipFireworks', () => {
       mockSettings = { cardStyle, invertDarkModeColors: false }
       const drawn = await drawnBySuit()
       Object.values(drawn).forEach((d) => expect(d.theme).toBe('standard'))
-      screen.unmount()
+      await screen.unmount()
     }
   })
 })

@@ -335,7 +335,7 @@ describe('StockWaste - what a drag uncovers when it lifts the top card', () => {
       expect(screen.getByTestId('waste-top').props.nativeID).toBe('hearts-4-0') // held
       expect(underLifted()).toBe('hearts-3-0') // not the 2, two cards down
     } finally {
-      release()
+      await act(async () => release())
     }
   })
 })

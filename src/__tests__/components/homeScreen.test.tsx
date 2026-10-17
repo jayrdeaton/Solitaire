@@ -376,7 +376,7 @@ describe('Home: portrait', () => {
   })
 
   // The edge fade the Settings and Rules sheets, the player dropdown, Achievements and Profiles give (2026-10-16).
-  it('scrolls the menu in auto-paper\'s FadingScrollView, in both layouts', async () => {
+  it("scrolls the menu in auto-paper's FadingScrollView, in both layouts", async () => {
     await renderHome()
     expect(mockFadingScrollView).toHaveBeenCalled()
     expect(StyleSheet.flatten((lastProps(mockFadingScrollView) as { contentContainerStyle: ViewStyle }).contentContainerStyle).paddingTop).toBe(56)
