@@ -1,3 +1,4 @@
+import { callWorkletCallback, useWorkletCallback } from '@rific/core'
 import { faceUpFanOffset, useCardSize } from '@tastic/cards'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
@@ -13,7 +14,6 @@ import { DragFlightHandle, useDragGhost } from './dragdrop/DragGhostLayer'
 import { scaledMs } from './dragdrop/dragSpring'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
 import { clearFanTop, setFanTop } from './dragdrop/fanTops'
-import { callWorkletCallback, useWorkletCallback } from './dragdrop/workletCallbacks'
 import { EmptySlot, PlayingCard, RunOutline } from './PlayingCard'
 import { useShakeStyle } from './shakeAnimation'
 import { useCardSoundEffects } from './useCardSounds'
@@ -210,7 +210,7 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
       wasDraggingRef.current = false
     }, 0)
   }, [])
-  // The worklets below reach these through workletCallbacks.ts, never `runOnJS(handleStart)`: handing them over directly
+  // The worklets below reach these through @rific/core's key registry, never `runOnJS(handleStart)`: handing them over directly
   // kept every card ever mounted in memory (see that file).
   const startKey = useWorkletCallback(handleStart)
   const endKey = useWorkletCallback(handleEnd)

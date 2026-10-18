@@ -1,3 +1,4 @@
+import { callWorkletCallback, useWorkletCallback } from '@rific/core'
 import { useCardSize } from '@tastic/cards'
 import { ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
@@ -12,7 +13,6 @@ import { useShakeStyle } from '../shakeAnimation'
 import { useCardSoundEffects } from '../useCardSounds'
 import { useFrozenWhileHidden } from '../useFrozenWhileHidden'
 import { DragFlightHandle, useDragGhost } from './DragGhostLayer'
-import { callWorkletCallback, useWorkletCallback } from './workletCallbacks'
 
 interface DraggableCardProps {
   card: Card
@@ -193,7 +193,7 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
     },
     [hapticCard]
   )
-  // The worklets below reach these through workletCallbacks.ts, never `runOnJS(handleStart)`: handing them over directly
+  // The worklets below reach these through @rific/core's key registry, never `runOnJS(handleStart)`: handing them over directly
   // kept every card ever mounted in memory (see that file).
   const startKey = useWorkletCallback(handleStart)
   const releaseKey = useWorkletCallback(handleRelease)
