@@ -1,7 +1,5 @@
 import { useEffect, useRef } from 'react'
 
-import { AUTO_PLAY_STAGGER_MS } from './dragdrop/dragSpring'
-
 export interface StockRequestOptions {
   /** A held stock's repeat draw: it never turns the waste over, so the hold stops where the stock runs out (the player lets go and
    * taps, or holds again, to turn it over). The press that starts a hold does whatever a tap would, a turn-over included. */
@@ -19,9 +17,11 @@ export type StockHandler = (opts?: StockRequestOptions) => Promise<boolean | voi
 /** How long the stock is held before it starts drawing on its own: the footer's Undo and Hint holds' long press. */
 export const STOCK_LONG_PRESS_MS = 400
 
-/** A held stock draws its cards at the auto-play's own pace, each leaving while the ones before it are still flying - the same
- * rhythm a held Undo streams them back at. */
-export const STOCK_HOLD_REPEAT_MS = AUTO_PLAY_STAGGER_MS
+/** A held stock draws a card every quarter second (Jay, 2026-10-18): quick enough to go through a whole stock (24 cards in about six
+ * seconds), slow enough to read each card as it leaves and let go on the one wanted. It used to be the auto-play's 96ms, with three or
+ * four cards in the air at once and the waste's top changing faster than it could be read. Counted from each draw's start, so a draw
+ * that had to wait (a draw-3 fan still landing) still gets its full beat on top. Taps keep their own, quicker pace (stockWait.ts). */
+export const STOCK_HOLD_REPEAT_MS = 250
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))

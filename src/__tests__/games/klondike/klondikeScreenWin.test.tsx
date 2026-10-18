@@ -4,12 +4,12 @@ import { useEffect } from 'react'
 import { markGhostPending } from '@/components/cardFacePaint'
 import { AUTO_PLAY_STAGGER_MS, finishGapMs } from '@/components/dragdrop/dragSpring'
 import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
-import { STOCK_HOLD_REPEAT_MS } from '@/components/stockHold'
 import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
 import KlondikeScreen from '@/games/klondike/KlondikeScreen'
 import * as klondikeRules from '@/games/klondike/rules'
 import { KlondikeState } from '@/games/klondike/rules'
+import { STOCK_QUEUE_GAP_MS } from '@/games/shared/stockWait'
 
 import { resetGameInProgress, seedGameInProgress } from '../../../testUtils/gameInProgressStore'
 import { peelableFlights } from '../../../testUtils/peelableFlights'
@@ -1022,17 +1022,17 @@ describe('Klondike screen - speeding through the stock', () => {
     expect(movesCount()).toBe('2')
   })
 
-  it("taps made while the turned-over cards fly back go one after another once they land, a held stock's beat apart - not all at once as one card", async () => {
+  it('taps made while the turned-over cards fly back go one after another once they land, an auto-play stagger apart - not all at once as one card', async () => {
     await mount(TWO_CARD_WASTE(), 3)
 
     await tap('stock-pile') // turns the waste over
     await tap('stock-pile')
     await tap('stock-pile') // both wait for it to land
-    await flush(FLIGHT_MS + STOCK_HOLD_REPEAT_MS + 4 * STEP_MS)
+    await flush(FLIGHT_MS + STOCK_QUEUE_GAP_MS + 4 * STEP_MS)
 
     expect(mockLog.shown).toHaveLength(3)
     expect(mockLog.shownAt[1] - mockLog.shownAt[0]).toBeGreaterThanOrEqual(FLIGHT_MS)
-    expect(mockLog.shownAt[2] - mockLog.shownAt[1]).toBeGreaterThanOrEqual(STOCK_HOLD_REPEAT_MS)
+    expect(mockLog.shownAt[2] - mockLog.shownAt[1]).toBeGreaterThanOrEqual(STOCK_QUEUE_GAP_MS)
     expect(mockLog.shown[1]).not.toBe(mockLog.shown[2])
     expect(movesCount()).toBe('3')
   })

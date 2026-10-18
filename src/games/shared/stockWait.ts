@@ -11,7 +11,7 @@
  * hand its answer back across a microtask in which a sibling has already changed it (Pyramid's whenLanded has the same rule).
  */
 
-import { STOCK_HOLD_REPEAT_MS } from '@/components/stockHold'
+import { AUTO_PLAY_STAGGER_MS } from '@/components/dragdrop/dragSpring'
 
 /** How often a waiting stock tap asks again: a frame. The same poll the auto-play cascade and a waiting Undo use. */
 export const STOCK_WAIT_POLL_MS = 16
@@ -31,16 +31,19 @@ export function startStockWait(): { left: () => number } {
   return { left: () => deadline - Date.now() }
 }
 
+/** How far apart taps that waited go once the way is clear: the auto-play's stagger, each card leaving while the one before it is still
+ * flying. Not a held stock's slower beat (STOCK_HOLD_REPEAT_MS): each of these is a draw the player has already asked for. */
+export const STOCK_QUEUE_GAP_MS = AUTO_PLAY_STAGGER_MS
+
 /**
  * The taps that waited out one flight would all go in the frame it lands: three or four cards flying as one, the first ones never
- * seen. So a tap that had to wait goes no sooner than STOCK_HOLD_REPEAT_MS after the last one that did - they play out at a held
- * stock's pace once the way is clear. One per screen (a ref), shared by its taps: `ready()` is part of a waiting tap's loop condition,
+ * seen. So a tap that had to wait goes no sooner than STOCK_QUEUE_GAP_MS after the last one that did. One per screen (a ref), shared by its taps: `ready()` is part of a waiting tap's loop condition,
  * `went()` is called by a tap that waited, in the stretch it commits.
  */
 export function createStockQueue(): { ready: () => boolean; went: () => void } {
   let lastAt = -Infinity
   return {
-    ready: () => Date.now() - lastAt >= STOCK_HOLD_REPEAT_MS,
+    ready: () => Date.now() - lastAt >= STOCK_QUEUE_GAP_MS,
     went: () => {
       lastAt = Date.now()
     }

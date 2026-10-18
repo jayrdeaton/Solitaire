@@ -1,8 +1,8 @@
 import { act, renderHook } from '@testing-library/react-native'
 
-import { StockRequestOptions, useStockHold } from '@/components/stockHold'
+import { STOCK_HOLD_REPEAT_MS, StockRequestOptions, useStockHold } from '@/components/stockHold'
 
-const REPEAT_MS = 96
+const REPEAT_MS = STOCK_HOLD_REPEAT_MS
 
 async function advance(ms: number) {
   await act(async () => {
@@ -41,7 +41,7 @@ describe('useStockHold', () => {
 
   it('draws at the long press, then once more every repeat after each draw has started', async () => {
     const screen = screenStock(10)
-    const { result } = await renderHook(() => useStockHold(screen.onDrawStock, REPEAT_MS))
+    const { result } = await renderHook(() => useStockHold(screen.onDrawStock))
 
     await act(async () => result.current.onLongPress())
     await advance(0)
@@ -57,7 +57,7 @@ describe('useStockHold', () => {
 
   it('stops where the stock runs out: a hold never turns the waste over', async () => {
     const screen = screenStock(3)
-    const { result } = await renderHook(() => useStockHold(screen.onDrawStock, REPEAT_MS))
+    const { result } = await renderHook(() => useStockHold(screen.onDrawStock))
 
     await act(async () => result.current.onLongPress())
     await advance(10 * REPEAT_MS)
@@ -68,7 +68,7 @@ describe('useStockHold', () => {
 
   it('held on an empty stock, turns the waste over at the long press and then draws through it', async () => {
     const screen = screenStock(3)
-    const { result } = await renderHook(() => useStockHold(screen.onDrawStock, REPEAT_MS))
+    const { result } = await renderHook(() => useStockHold(screen.onDrawStock))
     // Draw the stock dry first, by taps.
     for (let i = 0; i < 3; i++) await act(async () => void screen.onDrawStock())
     await advance(0)
@@ -83,7 +83,7 @@ describe('useStockHold', () => {
 
   it('a draw that has to wait its turn holds the next one back - the repeat counts from when it started', async () => {
     const screen = screenStock(10, 250) // each draw waits 250ms (a draw-3 fan waiting for the last one to land)
-    const { result } = await renderHook(() => useStockHold(screen.onDrawStock, REPEAT_MS))
+    const { result } = await renderHook(() => useStockHold(screen.onDrawStock))
 
     await act(async () => result.current.onLongPress())
     await advance(250)
@@ -96,7 +96,7 @@ describe('useStockHold', () => {
 
   it('letting go stops it, and a draw still waiting when the finger lifts is dropped', async () => {
     const screen = screenStock(10, 50)
-    const { result } = await renderHook(() => useStockHold(screen.onDrawStock, REPEAT_MS))
+    const { result } = await renderHook(() => useStockHold(screen.onDrawStock))
 
     await act(async () => result.current.onLongPress())
     await advance(50 + REPEAT_MS + 1) // the second draw has been asked for and is waiting
@@ -109,7 +109,7 @@ describe('useStockHold', () => {
 
   it('a handler that answers nothing (a stock that is never held) gets one draw, not a stream', async () => {
     const onDrawStock = jest.fn(() => {})
-    const { result } = await renderHook(() => useStockHold(onDrawStock, REPEAT_MS))
+    const { result } = await renderHook(() => useStockHold(onDrawStock))
 
     await act(async () => result.current.onLongPress())
     await advance(10 * REPEAT_MS)
