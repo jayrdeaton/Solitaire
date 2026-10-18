@@ -1,7 +1,7 @@
 import { FadingScrollView, useAutoPaperTheme } from '@rific/auto-paper'
 import { Button } from '@rific/feedback-press'
 import { rotateInsets, useRotatedWindowDimensions, useRotation } from '@tastic/core'
-import { DialogHeader, overlayActionStyles, OverlayBackdrop, OverlayCard, useCompactDialog } from '@tastic/hud'
+import { DialogHeader, overlayActionStyles, OverlayBackdrop, OverlayCard, useCompactDialog } from '@tastic/hud/chrome'
 import { useEffect } from 'react'
 import { BackHandler, Pressable, StyleSheet, View } from 'react-native'
 import { Portal, Text } from 'react-native-paper'

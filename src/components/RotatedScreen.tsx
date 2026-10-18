@@ -1,4 +1,4 @@
-import { RotatedFrame, type RotatedFrameProps } from '@tastic/hud'
+import { RotatedFrame, type RotatedFrameProps } from '@tastic/hud/chrome'
 
 /** A routed screen (Home, Achievements, Profiles) that rotates with the phone: @tastic/hud's RotatedFrame with its own
  * Portal.Host. Game screens get the same turned frame from withGameProviders. The status bar hides while the frame is

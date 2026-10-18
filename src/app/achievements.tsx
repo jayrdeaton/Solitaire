@@ -1,6 +1,6 @@
 import { getBlendedColor } from '@rific/auto-paper'
 import { getAchievementCatalogRows } from '@tastic/achievements'
-import { AchievementRow, BaseStatsScreen, LOCKED_BADGE_COLOR, StatRow, StatSection, usePopoverHost } from '@tastic/hud'
+import { AchievementRow, BaseStatsScreen, LOCKED_BADGE_COLOR, StatRow, StatSection, usePopoverHost } from '@tastic/hud/chrome'
 import { ProfilePicker } from '@tastic/profile'
 import { useState } from 'react'
 import { StyleSheet, View } from 'react-native'

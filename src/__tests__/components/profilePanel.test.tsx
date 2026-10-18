@@ -1,4 +1,4 @@
-import type { PopoverHost } from '@tastic/hud'
+import type { PopoverHost } from '@tastic/hud/chrome'
 import type { Profile, ProfilePickerColorSection } from '@tastic/profile'
 import { render } from '@testing-library/react-native'
 

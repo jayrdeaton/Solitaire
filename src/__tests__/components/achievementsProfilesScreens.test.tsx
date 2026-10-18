@@ -118,12 +118,12 @@ jest.mock('@/components/GameLoading', () => {
   const { View } = require('react-native')
   return { LoadingIndicator: () => <View testID='loading-indicator' /> }
 })
-jest.mock('@tastic/hud', () => {
+jest.mock('@tastic/hud/chrome', () => {
   const { View, Pressable } = require('react-native')
   const { useEffect } = require('react')
   const { Portal } = require('react-native-paper')
   return {
-    ...jest.requireActual('@tastic/hud'),
+    ...jest.requireActual('@tastic/hud/chrome'),
     BaseStatsScreen: (props: BaseStatsProps & { children: unknown }) => {
       useEffect(() => {
         mockBaseStatsLifecycle.mounts += 1

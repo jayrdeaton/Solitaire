@@ -27,5 +27,24 @@ module.exports = [
     rules: {
       'react-native/no-unused-styles': 'off'
     }
+  },
+  // @tastic/hud's main entry also re-exports the per-seat lobby and the Skia gauge, so one import from
+  // it would bring back @shopify/react-native-skia and @tastic/split-screen, which this app doesn't
+  // install. Everything Solitaire uses is in the light './chrome' entry (and './guide').
+  // src/__tests__/hudImports.test.ts also covers jest.mock() and require(), which this rule doesn't see.
+  {
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@tastic/hud',
+              message: "Import from '@tastic/hud/chrome' instead. The main entry pulls in Skia and @tastic/split-screen."
+            }
+          ]
+        }
+      ]
+    }
   }
 ]

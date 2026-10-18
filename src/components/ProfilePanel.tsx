@@ -1,4 +1,4 @@
-import { PopoverHost } from '@tastic/hud'
+import type { PopoverHost } from '@tastic/hud/chrome'
 import { ProfilePicker, type ProfilePickerColorSection } from '@tastic/profile'
 import { useRouter } from 'expo-router'
 import { useMemo } from 'react'

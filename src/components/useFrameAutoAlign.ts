@@ -1,5 +1,5 @@
 import { rotateInsets, useRotatedWindowDimensions, useRotation } from '@tastic/core'
-import { type AlignResult, type PopoverAlign, type PopoverVerticalAlign } from '@tastic/hud'
+import type { AlignResult, PopoverAlign, PopoverVerticalAlign } from '@tastic/hud/chrome'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWindowDimensions, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'

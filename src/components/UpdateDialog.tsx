@@ -1,5 +1,5 @@
 import { useToast } from '@rific/toaster'
-import { UpdateDialog as SharedUpdateDialog } from '@tastic/hud'
+import { UpdateDialog as SharedUpdateDialog } from '@tastic/hud/chrome'
 
 export function UpdateDialog() {
   const { error } = useToast()

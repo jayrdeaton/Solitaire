@@ -1,5 +1,5 @@
 import { FakeLandscapeView } from '@tastic/core'
-import { RotatedFrame } from '@tastic/hud'
+import { RotatedFrame } from '@tastic/hud/chrome'
 import { render, screen } from '@testing-library/react-native'
 import { useContext, useEffect } from 'react'
 import { StyleSheet, Text, View, type ViewStyle } from 'react-native'

@@ -1,4 +1,4 @@
-import { DialogHeader } from '@tastic/hud'
+import { DialogHeader } from '@tastic/hud/chrome'
 import { fireEvent, render, screen, within } from '@testing-library/react-native'
 import { BackHandler } from 'react-native'
 import { Provider as PaperProvider } from 'react-native-paper'
@@ -11,13 +11,10 @@ jest.mock('@/components/useFontsPreload', () => ({ CARD_FONT_FAMILY: 'TestSerif'
 // No win recorded this session: the win card measures against Klondike's expert par (345).
 jest.mock('@/stores/gameStats', () => ({ useGameStats: () => ({ lastWin: null }) }))
 
-// The real header, wrapped so a test can read what each dialog handed it. A Proxy, not a spread:
-// hud and @tastic/profile import each other, so the module is still half-loaded when this factory
-// runs, and every export has to be read lazily.
-jest.mock('@tastic/hud', () => {
-  const actual = jest.requireActual('@tastic/hud')
-  const DialogHeader = jest.fn((props: object) => actual.DialogHeader(props))
-  return new Proxy(actual, { get: (target, key) => (key === 'DialogHeader' ? DialogHeader : target[key]) })
+// The real header, wrapped so a test can read what each dialog handed it.
+jest.mock('@tastic/hud/chrome', () => {
+  const actual = jest.requireActual('@tastic/hud/chrome')
+  return { ...actual, DialogHeader: jest.fn((props: object) => actual.DialogHeader(props)) }
 })
 
 // Jay, 2026-10-15: "I value consistency above all else." Every dialog opens with @tastic/hud's

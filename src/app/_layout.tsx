@@ -3,7 +3,7 @@ import { keepAwakeActions, KeepAwakeProvider, type KeepAwakeSettings } from '@ri
 import { FeedbackPressProvider, hapticActions, type HapticSettings, soundActions, type SoundSettings } from '@rific/feedback-press'
 import { ToastProvider } from '@rific/toaster'
 import { OrientationProvider, useRotationAwareStatusBar, useThemedRootBackground } from '@tastic/core'
-import { RotatedFrame } from '@tastic/hud'
+import { RotatedFrame } from '@tastic/hud/chrome'
 import { ProfileColorProvider } from '@tastic/profile'
 import Constants from 'expo-constants'
 import * as ExpoKeepAwake from 'expo-keep-awake'

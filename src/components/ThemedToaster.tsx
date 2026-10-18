@@ -1,7 +1,7 @@
 import { getTintTextColor, useAutoPaperTheme } from '@rific/auto-paper'
 import { type ToastCardProps, Toaster, type ToastLevel } from '@rific/toaster'
 import { useRotatedWindowDimensions } from '@tastic/core'
-import { OverlayCard } from '@tastic/hud'
+import { OverlayCard } from '@tastic/hud/chrome'
 import { useMemo } from 'react'
 import { StyleSheet, View } from 'react-native'
 import { Icon } from 'react-native-paper'

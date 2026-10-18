@@ -1,7 +1,7 @@
 import { useKeepAwake } from '@rific/core'
 import { Pressable, withFeedback } from '@rific/feedback-press'
 import { rotateInsets, useRotation } from '@tastic/core'
-import { ConfirmDialog, CornerActionButtons } from '@tastic/hud'
+import { ConfirmDialog, CornerActionButtons } from '@tastic/hud/chrome'
 import { useRouter } from 'expo-router'
 import { ReactNode, useEffect, useRef, useState } from 'react'
 import { Platform, Pressable as RNPressable, PressableProps, ScrollView, StyleSheet, Text, View } from 'react-native'

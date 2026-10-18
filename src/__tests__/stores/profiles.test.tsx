@@ -1,7 +1,3 @@
-// First, so the @tastic/hud <-> @tastic/profile import cycle starts from hud: the '@tastic/profile' mock
-// below spreads the real module, which must not be half-evaluated when hud reaches back into it.
-import '@tastic/hud'
-
 import { configureStore } from '@reduxjs/toolkit'
 import { type Profile, profilesReducer, resolveInitialProfiles, useSharedProfilesSync, type UseSharedProfilesSyncOptions } from '@tastic/profile'
 import { act, renderHook } from '@testing-library/react-native'

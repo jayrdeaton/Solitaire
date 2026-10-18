@@ -1,6 +1,6 @@
 import { getTintTextColor } from '@rific/auto-paper'
 import { Toast, Toaster, type ToasterProps } from '@rific/toaster'
-import { OverlayCard } from '@tastic/hud'
+import { OverlayCard } from '@tastic/hud/chrome'
 import { render, screen } from '@testing-library/react-native'
 import { StyleSheet, Text } from 'react-native'
 import { Icon, Provider as PaperProvider } from 'react-native-paper'
@@ -20,12 +20,10 @@ jest.mock('react-native-paper', () => {
   return { ...actual, Icon: jest.fn((props: object) => actual.Icon(props)) }
 })
 
-// The real card, wrapped so a test can see the toast was drawn on it. A Proxy, not a spread: hud and @tastic/profile import each other, so the
-// module is still half-loaded when this factory runs, and every export has to be read lazily.
-jest.mock('@tastic/hud', () => {
-  const actual = jest.requireActual('@tastic/hud')
-  const OverlayCard = jest.fn((props: object) => actual.OverlayCard(props))
-  return new Proxy(actual, { get: (target, key) => (key === 'OverlayCard' ? OverlayCard : target[key]) })
+// The real card, wrapped so a test can see the toast was drawn on it.
+jest.mock('@tastic/hud/chrome', () => {
+  const actual = jest.requireActual('@tastic/hud/chrome')
+  return { ...actual, OverlayCard: jest.fn((props: object) => actual.OverlayCard(props)) }
 })
 
 // Jay, 2026-10-15: the toast sat on the footer, so "No helpful moves right now." covered Undo, the button the player wanted next. It now sits in

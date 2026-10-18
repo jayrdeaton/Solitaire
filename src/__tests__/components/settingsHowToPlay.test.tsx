@@ -1,7 +1,3 @@
-// First, so the @tastic/hud <-> @tastic/profile import cycle starts from profile: the '@tastic/hud' mock
-// below spreads the real module, which must not be half-evaluated when profile reaches back into it.
-import '@tastic/profile'
-
 import { render } from '@testing-library/react-native'
 
 import { SettingsDialog } from '@/components/SettingsDialog'
@@ -17,8 +13,8 @@ jest.mock('@/hooks/useSettings', () => {
   const { DEFAULT_SETTINGS } = jest.requireActual('@/redux/settingsSlice')
   return { useSettings: () => ({ settings: { ...DEFAULT_SETTINGS }, setSettings: jest.fn() }) }
 })
-jest.mock('@tastic/hud', () => ({
-  ...jest.requireActual('@tastic/hud'),
+jest.mock('@tastic/hud/chrome', () => ({
+  ...jest.requireActual('@tastic/hud/chrome'),
   BaseSettingsDialog: (props: { onShowHowToPlay?: () => void }) => mockBaseSettingsDialog(props)
 }))
 jest.mock('@tastic/hud/guide', () => ({ ...jest.requireActual('@tastic/hud/guide'), useGuide: () => ({ isOpen: false, open: mockOpenGuide, close: jest.fn(), requestAutoShow: jest.fn() }) }))
