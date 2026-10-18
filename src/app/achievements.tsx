@@ -10,8 +10,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { RotatedScreen } from '@/components/RotatedScreen'
 import { CHROME_FG, CHROME_FG_MUTED } from '@/components/theme'
 import { useProfilePickerAlign } from '@/components/useProfilePickerAlign'
-import { describeVsPar, parFor } from '@/engine/par'
+import { describeVsPar, parFor, playerParFor } from '@/engine/par'
 import { VARIANTS } from '@/engine/variants'
+import { GUEST_PLAYER_ID } from '@/redux/activeProfileSlice'
 import { ACHIEVEMENT_CATALOG } from '@/stores/achievementCatalog'
 import { useGameStats } from '@/stores/gameStats'
 import { usePlayerData } from '@/stores/playerData'
@@ -68,7 +69,7 @@ function AchievementsContent() {
   // AchievementCatalogSection does - raw gold and silver barely show on a light surface. The badge keeps the true
   // tier color behind its black glyph.
   const tierAccent = (tierColor: string) => (dark ? tierColor : getBlendedColor('#000000', tierColor, 0.5))
-  const { stats, unlockedAchievements, resetAll } = useGameStats()
+  const { stats, unlockedAchievements, resetAll, recentWins } = useGameStats()
   const { resetPlayer } = usePlayerData()
   const { profiles } = useProfiles()
   // Own popover host, independent of whichever profile is active for gameplay elsewhere (see
@@ -92,6 +93,10 @@ function AchievementsContent() {
   // Profiles. A player's reset leaves the All Profiles totals alone, so the copy says so.
   const selectedName = effectiveProfileId ? (profiles.find((p) => p.id === effectiveProfileId)?.name ?? '') : null
   const reset = selectedName !== null ? { onReset: () => resetPlayer(effectiveProfileId!), label: `Reset ${selectedName}'s Stats`, title: `Reset ${selectedName}?`, body: `Erases ${selectedName}'s stats, achievements and saved games. All Profiles keeps its totals. This cannot be undone.` } : { onReset: resetAll, label: 'Reset All Stats', title: 'Reset Everything?', body: "Erases every player's stats, achievements and saved games. This cannot be undone." }
+
+  // Whose par the per-variant rows show: the player picked, or guest on a phone with no profiles (All Profiles is then
+  // just guest). All Profiles with profiles is everyone at once, and a par is one player's (engine/par.ts' playerParFor).
+  const parPlayer = effectiveProfileId ?? (profiles.length === 0 ? GUEST_PLAYER_ID : null)
 
   const played = getTotalPlayed(statsView)
   const wins = getTotalWins(statsView)
@@ -122,18 +127,19 @@ function AchievementsContent() {
           <StatRow label='Games Solved' value={`${getGamesWon(statsView)} / ${SOLITAIRE_GAME_IDS.length}`} />
           {/* Overall bests are measured against par: a raw lowest score or fastest time across all 11 games would just
           name the quickest game (Golf, Aces Up), not the best play. */}
-          <StatRow label='Best Score' value={bestScoreVsPar === null ? '-' : describeVsPar(bestScoreVsPar, 1)} />
+          <StatRow label='Best Score' value={bestScoreVsPar === null ? '-' : describeVsPar(bestScoreVsPar, 1, 'expert par')} />
           <StatRow label='Hints Used' value={String(getTotalHintsUsed(statsView))} />
         </StatSection>
 
         {/* Per variant: one game under one rule set (engine/variants.ts), since a 1-suit and a 4-suit Spider win aren't the
         same. A game's default rules always show; its other rules once a deal under them has been played. Each best is shown
-        next to its par. "Lost" counts both ways a deal ends without a win: dealt over mid-game, and the No Moves Left dead
+        next to its expert par (the achievements measure against it), and Your Par is the shown player's own (their last 20 wins). "Lost" counts both ways a deal ends without a win: dealt over mid-game, and the No Moves Left dead
         board of Aces Up, Golf, TriPeaks, Forty Thieves and Scorpion - see stores/statsTypes.ts. */}
         {VARIANTS.filter((info, i) => i === 0 || VARIANTS[i - 1].game !== info.game || statsView.variants[info.id].record.played > 0).map((info) => {
           const v = statsView.variants[info.id]
           const par = parFor(info.id)
-          const vsPar = (best: number | null, parValue: string, show: (n: number) => string) => (best === null ? `- · par ${parValue}` : `${show(best)} · par ${parValue}`)
+          const vsPar = (best: number | null, parValue: string, show: (n: number) => string) => `${best === null ? '-' : show(best)} · expert par ${parValue}`
+          const yourPar = parPlayer === null ? null : playerParFor(info.id, recentWins[parPlayer]?.[info.id] ?? [])
           return (
             <StatSection key={info.id} label={`${GAME_TITLES[info.game]}${info.label ? ` · ${info.label}` : ''}`.toUpperCase()}>
               <StatRow label='Played' value={String(v.record.played)} />
@@ -143,6 +149,7 @@ function AchievementsContent() {
               <StatRow label='Fastest' value={vsPar(v.bestTimeSeconds, formatTime(par.seconds), formatTime)} />
               <StatRow label='Fewest Moves' value={vsPar(v.bestMoves, String(par.moves), String)} />
               <StatRow label='Lowest Score' value={vsPar(v.bestScore, String(par.score), String)} />
+              {yourPar && <StatRow label='Your Par' value={yourPar.kind === 'personal' ? String(yourPar.score) : '-'} />}
             </StatSection>
           )
         })}

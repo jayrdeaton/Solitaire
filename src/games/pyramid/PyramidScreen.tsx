@@ -1885,7 +1885,7 @@ function PyramidScreenInner() {
       {winRevealed && <PipFireworks />}
       <PairFlightGhosts flights={pairFlights} onCardLanded={handlePairFlightLanded} onCardRetired={retirePairCard} />
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor('pyramid')} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} variant='pyramid' onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }

@@ -16,7 +16,7 @@ interface RulesDialogProps {
   onDismiss: () => void
   title: string
   rules: string[]
-  /** In a game: its variant's par, told after the scoring rule. Home's sheet has no deal, so no par. */
+  /** In a game: its variant's expert par, told after the medals. Home's sheet has no deal, so no par. */
   par?: Par
 }
 
@@ -71,7 +71,7 @@ export function RulesDialog({ visible, onDismiss, title, rules, par }: RulesDial
               engine/score.ts) is identical across every game, so duplicating this sentence into all
               11 games' constants/gameRules.ts entries would just be 11 copies to keep in sync. */}
               <Text style={[styles.scoreHeading, { color: colors.onSurface }]}>Scoring</Text>
-              <Text style={[styles.scoreText, { color: colors.onSurfaceVariant }]}>Score is moves plus seconds, and lower is better. The clock starts with your first move and pauses while you&rsquo;re away from the game or in Settings or Rules. Every move counts, even one you undo or one the game plays for you.{par ? ` Par, a good win under these rules, is ${par.score}: ${par.moves} moves in ${formatParTime(par.seconds)}.` : ''}</Text>
+              <Text style={[styles.scoreText, { color: colors.onSurfaceVariant }]}>Score is moves plus seconds, and lower is better. The clock starts with your first move and pauses while you&rsquo;re away from the game or in Settings or Rules. Every move counts, even one you undo or one the game plays for you. Every win earns a medal: bronze, silver for beating your par (the middle score of your last 20 wins here), or gold for a win in your best fifth of them.{par ? ` Expert par, a strong win under these rules, is ${par.score}: ${par.moves} moves in ${formatParTime(par.seconds)}. It is your par until your first win here, and what the achievements measure.` : ''}</Text>
             </View>
           </FadingScrollView>
           <View style={overlayActionStyles.actions}>

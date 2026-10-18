@@ -99,7 +99,7 @@ jest.mock('@/stores/playerData', () => ({ usePlayerData: () => mockPlayerData })
 jest.mock('@/stores/gameStats', () => {
   const { DEFAULT_STATS } = jest.requireActual('@/stores/statsValidation')
   return {
-    useGameStats: () => ({ stats: DEFAULT_STATS, unlockedAchievements: [], resetAll: mockResetAll })
+    useGameStats: () => ({ stats: DEFAULT_STATS, unlockedAchievements: [], resetAll: mockResetAll, recentWins: {} })
   }
 })
 jest.mock('@/stores/profiles', () => ({

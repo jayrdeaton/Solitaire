@@ -1,8 +1,9 @@
 import { VariantId } from './variants'
 
-// Par: a good win's moves, time and score in one game under one rule set, so a score means something next to the
-// game it was made in (a 200 is a fine Golf win and an impossible Spider one). Shown under each number in the win
-// dialog, on the Stats screen and in the Rules sheet, and what the score/speed/moves achievements are measured against.
+// Par (expert par, since personal par below): a strong win's moves, time and score in one game under one rule set, so a
+// score means something next to the game it was made in (a 200 is a fine Golf win and an impossible Spider one). What the
+// score/speed/moves achievements and the Stats screen's bests are measured against, told in the Rules sheet, and a
+// player's par in the win dialog until their first win in that variant (playerParFor).
 //
 // Moves: the median winning move count of a simulated player (2026-10-14) that follows the app's own Hint on each
 // variant's real rules.ts, with a little randomness and up to 10 tries per deal, over 300 deals each. A move is every
@@ -57,11 +58,12 @@ function percentUnderPar(value: number, par: number): number {
   return Math.round((1 - value / par) * 100)
 }
 
-/** How a value compares with its par as a whole percentage: "18% under par", "at par", "5% over par". */
-export function describeVsPar(value: number, par: number): string {
+/** How a value compares with its par as a whole percentage: "18% under par", "at par", "5% over par". `name` is what the
+ * par is called ("your par", "expert par"). */
+export function describeVsPar(value: number, par: number, name = 'par'): string {
   const pct = percentUnderPar(value, par)
-  if (pct === 0) return 'at par'
-  return pct > 0 ? `${pct}% under par` : `${-pct}% over par`
+  if (pct === 0) return `at ${name}`
+  return pct > 0 ? `${pct}% under ${name}` : `${-pct}% over ${name}`
 }
 
 export type ParMedal = 'bronze' | 'silver' | 'gold'
@@ -78,4 +80,61 @@ export function parMedal(score: number, par: number): ParMedal {
   const pct = percentUnderPar(score, par)
   if (pct >= GOLD_MEDAL_PERCENT_UNDER_PAR) return 'gold'
   return pct > 0 ? 'silver' : 'bronze'
+}
+
+// Personal par (Jay, 2026-10-17: the fixed par above was out of reach, so silver was rare and gold never came, and he
+// wanted the bar to follow each player). A win's medal is measured against the player's OWN recent wins in that variant:
+// silver under the median of their last RECENT_WINS_KEPT, gold in their best fifth. The bar follows the player both ways
+// (it tightens as they improve and eases after a rough patch), so each medal comes about as often whatever their level:
+// silver about half the time, gold about 1 win in 5. The fixed par stays as expert par: what the score, speed and moves
+// achievements and the Stats screen's bests are measured against, and the stand-in before a player's first win.
+
+/** How many of a player's latest wins in a variant their par is made from. */
+export const RECENT_WINS_KEPT = 20
+
+/** One win, as a player's par remembers it (redux/recentWinsSlice.ts). */
+export interface RecentWin {
+  score: number
+  moves: number
+  seconds: number
+}
+
+/** The par a win is measured against. */
+export interface PlayerPar extends Par {
+  /** 'personal': the medians of the player's recent wins. 'expert': the variant's fixed par, before their first win. */
+  kind: 'personal' | 'expert'
+  /** Personal only: the highest score that earns gold, or null until there are five recent wins to take a fifth of. */
+  goldScore: number | null
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+
+/** A player's par in a variant from their recent wins (oldest first), measured BEFORE the win being judged joins them.
+ * Each number is its own median, so the three needn't add up. Gold: a score no worse than the best fifth's last
+ * (the 4th best of 20), so at most a fifth of the recent wins beat it. */
+export function playerParFor(variant: VariantId, recent: readonly RecentWin[]): PlayerPar {
+  const wins = recent.slice(-RECENT_WINS_KEPT)
+  if (wins.length === 0) return { ...parFor(variant), kind: 'expert', goldScore: null }
+  const scores = wins.map((w) => w.score).sort((a, b) => a - b)
+  const bestFifth = Math.floor(scores.length / 5)
+  return {
+    kind: 'personal',
+    moves: Math.round(median(wins.map((w) => w.moves))),
+    seconds: Math.round(median(wins.map((w) => w.seconds))),
+    score: Math.round(median(scores)),
+    goldScore: bestFifth > 0 ? scores[bestFifth - 1] : null
+  }
+}
+
+/** The medal a win's score earns against the player's par: bronze at it or over (rounded like describeVsPar, so "at your
+ * par" is always bronze), silver under it, gold in the best fifth (never without silver). Expert par keeps parMedal's
+ * 35% gold line. */
+export function playerParMedal(score: number, par: PlayerPar): ParMedal {
+  if (par.kind === 'expert') return parMedal(score, par.score)
+  if (percentUnderPar(score, par.score) <= 0) return 'bronze'
+  return par.goldScore !== null && score <= par.goldScore ? 'gold' : 'silver'
 }

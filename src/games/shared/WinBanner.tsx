@@ -5,7 +5,9 @@ import { StyleSheet, View } from 'react-native'
 import { Text } from 'react-native-paper'
 
 import { formatTime, GAME_DIALOG_Z_INDEX } from '@/components/GameChrome'
-import { describeVsPar, Par, parMedal } from '@/engine/par'
+import { describeVsPar, playerParFor, playerParMedal } from '@/engine/par'
+import type { VariantId } from '@/engine/variants'
+import { useGameStats } from '@/stores/gameStats'
 
 import { MedalHeader } from './MedalHeader'
 
@@ -13,31 +15,36 @@ export interface WinBannerProps {
   elapsedSeconds: number
   moves: number
   score: number
-  /** This deal's variant's par (engine/par.ts), shown under each number. */
-  par: Par
+  /** The deal's variant: the win is measured against the player's par in it (engine/par.ts' playerParFor). */
+  variant: VariantId
   onNewGame: () => void
 }
 
 /** The post-win overlay, shared by every game: the fleet's overlay card (@tastic/hud's
  * OverlayBackdrop/OverlayCard, the card ConfirmDialog and every other game's game-over dialog use) with the score summary, each number over its par, and a New Game button. Home is GameChrome's own corner button,
  * which is portaled above this backdrop so it stays live. */
-export function WinBanner({ elapsedSeconds, moves, score, par, onNewGame }: WinBannerProps) {
+export function WinBanner({ elapsedSeconds, moves, score, variant, onNewGame }: WinBannerProps) {
   const { colors } = useAutoPaperTheme()
   const { fg, fgMuted } = useOverlayCardColors()
   const { compact, onLayout } = useCompactDialog()
+  // The player's par as it stood just before this win (useGameStats' lastWin: their recent wins hold this one by now),
+  // or expert par if none was taken for this variant. The shown numbers are judged against it, not the recorded ones, so
+  // a win reached again after an Undo (recorded once, at the first) still gets the medal its own score earns.
+  const { lastWin } = useGameStats()
+  const par = lastWin?.variant === variant ? lastWin.par : playerParFor(variant, [])
   const stats = [
     { label: 'MOVES', value: String(moves), par: String(par.moves) },
     { label: 'SCORE', value: String(score), par: String(par.score) },
     { label: 'TIME', value: formatTime(elapsedSeconds), par: formatTime(par.seconds) }
   ]
-  const vsPar = describeVsPar(score, par.score)
+  const vsPar = describeVsPar(score, par.score, par.kind === 'personal' ? 'your par' : 'expert par')
   return (
     // The backdrop takes every touch, so nothing behind the dialog (the board, the footer) can be played.
     // GameChrome's Home and Settings stay live: they're portaled above this backdrop.
     <OverlayBackdrop style={styles.overlay} onLayout={onLayout}>
       <OverlayCard style={styles.card}>
-        {/* The trophy and "You Won!" in the metal of the medal the score earned against par (parMedal). */}
-        <MedalHeader medal={parMedal(score, par.score)} title='You Won!' compact={compact} />
+        {/* The trophy and "You Won!" in the metal of the medal the score earned against the player's par (playerParMedal). */}
+        <MedalHeader medal={playerParMedal(score, par)} title='You Won!' compact={compact} />
         <View style={styles.statRow}>
           {stats.map(({ label, value, par: parValue }) => (
             <View key={label} style={styles.stat}>

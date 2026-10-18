@@ -1095,7 +1095,7 @@ function FreeCellScreenInner() {
     not buried under it. */}
       {winRevealed && <PipFireworks />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor('freecell')} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} variant='freecell' onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }

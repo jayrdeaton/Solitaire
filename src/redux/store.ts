@@ -15,6 +15,7 @@ import gameInProgress from './gameInProgressSlice'
 import guide, { LEGACY_STORAGE_KEYS } from './guideSlice'
 import lastActiveGame from './lastActiveGameSlice'
 import playerSettings, { playerSettingsMiddleware } from './playerSettingsSlice'
+import recentWins from './recentWinsSlice'
 import settings from './settingsSlice'
 import tableColor from './tableColorSlice'
 
@@ -45,6 +46,8 @@ const rootReducer = combineReducers({
   gameInProgress,
   // Stats and unlocked achievements (see achievementsSlice.ts).
   achievements,
+  // Each player's latest wins in each variant, which their par is made from (see recentWinsSlice.ts).
+  recentWins,
   haptic: hapticReducer,
   sound: appSoundReducer,
   // @rific/core's Keep Awake setting (see _layout.tsx's KeepAwakeBridge), under the namespace its

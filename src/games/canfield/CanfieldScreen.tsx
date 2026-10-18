@@ -1207,7 +1207,7 @@ function CanfieldScreenInner() {
       animation, not buried under it. */}
       {winRevealed && <PipFireworks />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor(variant)} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} variant={variant} onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }

@@ -1060,7 +1060,7 @@ function YukonScreenInner() {
     not buried under it. */}
       {winRevealed && <PipFireworks />}
       <WinCascadeGhosts />
-      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} par={parFor('yukon')} onNewGame={startNewGame} />}
+      {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} variant='yukon' onNewGame={startNewGame} />}
     </CardSizeProvider>
   )
 }

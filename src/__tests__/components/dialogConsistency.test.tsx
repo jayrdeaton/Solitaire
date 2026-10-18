@@ -8,6 +8,8 @@ import { LossBanner } from '@/games/shared/LossBanner'
 import { WinBanner } from '@/games/shared/WinBanner'
 
 jest.mock('@/components/useFontsPreload', () => ({ CARD_FONT_FAMILY: 'TestSerif' }))
+// No win recorded this session: the win card measures against Klondike's expert par (345).
+jest.mock('@/stores/gameStats', () => ({ useGameStats: () => ({ lastWin: null }) }))
 
 // The real header, wrapped so a test can read what each dialog handed it. A Proxy, not a spread:
 // hud and @tastic/profile import each other, so the module is still half-loaded when this factory
@@ -86,7 +88,7 @@ describe('RulesDialog', () => {
 
 describe('the win and loss cards', () => {
   it("WinBanner opens with the fleet's header layout, the trophy over the title, in the metal of the medal the score earned (its one deliberate look of its own)", async () => {
-    await show(<WinBanner moves={110} elapsedSeconds={166} score={276} par={{ moves: 125, seconds: 220, score: 345 }} onNewGame={jest.fn()} />)
+    await show(<WinBanner moves={110} elapsedSeconds={166} score={276} variant='klondike' onNewGame={jest.fn()} />)
 
     // MedalHeader: DialogHeader's own layout, drawn itself because DialogHeader takes one flat color (20% under par: silver).
     expect(screen.getByTestId('medal-header-silver')).toBeTruthy()

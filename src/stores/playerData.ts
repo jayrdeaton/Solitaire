@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useDispatch } from 'react-redux'
 
 import { playerSettingsActions } from '@/redux/playerSettingsSlice'
+import { recentWinsActions } from '@/redux/recentWinsSlice'
 import type { AppDispatch } from '@/redux/store'
 import { tableColorActions } from '@/redux/tableColorSlice'
 
@@ -13,11 +14,13 @@ export function usePlayerData(): { resetPlayer: (profileId: string) => void; for
   const { removeProfileStats } = useGameStats()
   const dispatch = useDispatch<AppDispatch>()
   return useMemo(() => {
-    // The player's own stats bucket, their unlocked achievements and their saved deals. The All Profiles
-    // totals (every deal this phone has seen) keep their games, as they keep a deleted player's.
+    // The player's own stats bucket, their unlocked achievements, their saved deals and the wins their par is
+    // made from. The All Profiles totals (every deal this phone has seen) keep their games, as they keep a
+    // deleted player's.
     const resetPlayer = (profileId: string) => {
       removeProfileStats(profileId)
       clearProfileGamesInProgress(profileId)
+      dispatch(recentWinsActions.forget(profileId))
     }
     return {
       resetPlayer,
