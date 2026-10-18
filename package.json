@@ -1,6 +1,6 @@
 {
   "name": "solitaire-app",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "private": true,
   "description": "Eleven classic solitaire games in one app (Klondike, Spider, FreeCell, Pyramid and more), ad-free, built with Expo.",
   "type": "commonjs",
