@@ -13,6 +13,7 @@ import { DragFlightHandle, useDragGhost } from './dragdrop/DragGhostLayer'
 import { scaledMs } from './dragdrop/dragSpring'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
 import { clearFanTop, setFanTop } from './dragdrop/fanTops'
+import { callWorkletCallback, useWorkletCallback } from './dragdrop/workletCallbacks'
 import { EmptySlot, PlayingCard, RunOutline } from './PlayingCard'
 import { useShakeStyle } from './shakeAnimation'
 import { useCardSoundEffects } from './useCardSounds'
@@ -209,6 +210,10 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
       wasDraggingRef.current = false
     }, 0)
   }, [])
+  // The worklets below reach these through workletCallbacks.ts, never `runOnJS(handleStart)`: handing them over directly
+  // kept every card ever mounted in memory (see that file).
+  const startKey = useWorkletCallback(handleStart)
+  const endKey = useWorkletCallback(handleEnd)
 
   // react-hooks/refs and react-hooks/immutability both assume ordinary render-time JS: a ref
   // "passed into a function" or a value "returned from a hook" might get read/written synchronously
@@ -239,16 +244,16 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
           dy.value = 0
           startAbsX.value = e.absoluteX
           startAbsY.value = e.absoluteY
-          runOnJS(handleStart)()
+          runOnJS(callWorkletCallback)(startKey)
         })
         .onUpdate((e) => {
           dx.value = e.absoluteX - startAbsX.value
           dy.value = e.absoluteY - startAbsY.value
         })
         .onEnd((e) => {
-          runOnJS(handleEnd)(e.absoluteX, e.absoluteY)
+          runOnJS(callWorkletCallback)(endKey, e.absoluteX, e.absoluteY)
         }),
-    [handleStart, handleEnd, originX, originY, dx, dy, startAbsX, startAbsY, viewRef]
+    [startKey, endKey, originX, originY, dx, dy, startAbsX, startAbsY, viewRef]
   )
   /* eslint-enable react-hooks/refs, react-hooks/immutability */
 

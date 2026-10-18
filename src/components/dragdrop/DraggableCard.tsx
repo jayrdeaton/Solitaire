@@ -12,6 +12,7 @@ import { useShakeStyle } from '../shakeAnimation'
 import { useCardSoundEffects } from '../useCardSounds'
 import { useFrozenWhileHidden } from '../useFrozenWhileHidden'
 import { DragFlightHandle, useDragGhost } from './DragGhostLayer'
+import { callWorkletCallback, useWorkletCallback } from './workletCallbacks'
 
 interface DraggableCardProps {
   card: Card
@@ -192,6 +193,10 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
     },
     [hapticCard]
   )
+  // The worklets below reach these through workletCallbacks.ts, never `runOnJS(handleStart)`: handing them over directly
+  // kept every card ever mounted in memory (see that file).
+  const startKey = useWorkletCallback(handleStart)
+  const releaseKey = useWorkletCallback(handleRelease)
 
   // react-hooks/refs and react-hooks/immutability both assume ordinary render-time JS: a ref
   // "passed into a function" or a value "returned from a hook" might get read/written synchronously
@@ -222,16 +227,16 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
           dy.value = 0
           startAbsX.value = e.absoluteX
           startAbsY.value = e.absoluteY
-          runOnJS(handleStart)()
+          runOnJS(callWorkletCallback)(startKey)
         })
         .onUpdate((e) => {
           dx.value = e.absoluteX - startAbsX.value
           dy.value = e.absoluteY - startAbsY.value
         })
         .onEnd((e) => {
-          runOnJS(handleRelease)(e.absoluteX, e.absoluteY)
+          runOnJS(callWorkletCallback)(releaseKey, e.absoluteX, e.absoluteY)
         }),
-    [handleStart, handleRelease, originX, originY, dx, dy, startAbsX, startAbsY, viewRef]
+    [startKey, releaseKey, originX, originY, dx, dy, startAbsX, startAbsY, viewRef]
   )
   /* eslint-enable react-hooks/refs, react-hooks/immutability */
 
