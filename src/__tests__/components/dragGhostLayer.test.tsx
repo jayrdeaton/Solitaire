@@ -86,8 +86,7 @@ jest.mock('react-native-reanimated', () => {
     withSpring: (toValue: number, config: { duration: number }) => ({ __spring: true, toValue, config }),
     withSequence: (...values: unknown[]) => values[values.length - 1],
     withTiming: (value: unknown) => value,
-    measure: () => ({ pageX: mockMeasured.x, pageY: mockMeasured.y }),
-    runOnJS: (fn: unknown) => fn
+    measure: () => ({ pageX: mockMeasured.x, pageY: mockMeasured.y })
   }
 })
 jest.mock('react-native-gesture-handler', () => {

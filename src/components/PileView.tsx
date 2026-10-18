@@ -3,7 +3,8 @@ import { faceUpFanOffset, useCardSize } from '@tastic/cards'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
-import Animated, { Easing, LinearTransition, measure, runOnJS, SharedValue, useAnimatedRef, useSharedValue } from 'react-native-reanimated'
+import Animated, { Easing, LinearTransition, measure, SharedValue, useAnimatedRef, useSharedValue } from 'react-native-reanimated'
+import { scheduleOnRN } from 'react-native-worklets'
 
 import { PileRef } from '@/engine/gameTypes'
 import { Card } from '@/engine/types'
@@ -210,7 +211,7 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
       wasDraggingRef.current = false
     }, 0)
   }, [])
-  // The worklets below reach these through @rific/core's key registry, never `runOnJS(handleStart)`: handing them over directly
+  // The worklets below reach these through @rific/core's key registry, never `scheduleOnRN(handleStart)`: handing them over directly
   // kept every card ever mounted in memory (see that file).
   const startKey = useWorkletCallback(handleStart)
   const endKey = useWorkletCallback(handleEnd)
@@ -244,14 +245,14 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
           dy.value = 0
           startAbsX.value = e.absoluteX
           startAbsY.value = e.absoluteY
-          runOnJS(callWorkletCallback)(startKey)
+          scheduleOnRN(callWorkletCallback, startKey)
         })
         .onUpdate((e) => {
           dx.value = e.absoluteX - startAbsX.value
           dy.value = e.absoluteY - startAbsY.value
         })
         .onEnd((e) => {
-          runOnJS(callWorkletCallback)(endKey, e.absoluteX, e.absoluteY)
+          scheduleOnRN(callWorkletCallback, endKey, e.absoluteX, e.absoluteY)
         }),
     [startKey, endKey, originX, originY, dx, dy, startAbsX, startAbsY, viewRef]
   )

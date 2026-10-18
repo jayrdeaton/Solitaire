@@ -3,7 +3,8 @@ import { useCardSize } from '@tastic/cards'
 import { ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
-import Animated, { measure, runOnJS, useAnimatedRef, useSharedValue } from 'react-native-reanimated'
+import Animated, { measure, useAnimatedRef, useSharedValue } from 'react-native-reanimated'
+import { scheduleOnRN } from 'react-native-worklets'
 
 import { Card } from '@/engine/types'
 
@@ -193,7 +194,7 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
     },
     [hapticCard]
   )
-  // The worklets below reach these through @rific/core's key registry, never `runOnJS(handleStart)`: handing them over directly
+  // The worklets below reach these through @rific/core's key registry, never `scheduleOnRN(handleStart)`: handing them over directly
   // kept every card ever mounted in memory (see that file).
   const startKey = useWorkletCallback(handleStart)
   const releaseKey = useWorkletCallback(handleRelease)
@@ -227,14 +228,14 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
           dy.value = 0
           startAbsX.value = e.absoluteX
           startAbsY.value = e.absoluteY
-          runOnJS(callWorkletCallback)(startKey)
+          scheduleOnRN(callWorkletCallback, startKey)
         })
         .onUpdate((e) => {
           dx.value = e.absoluteX - startAbsX.value
           dy.value = e.absoluteY - startAbsY.value
         })
         .onEnd((e) => {
-          runOnJS(callWorkletCallback)(releaseKey, e.absoluteX, e.absoluteY)
+          scheduleOnRN(callWorkletCallback, releaseKey, e.absoluteX, e.absoluteY)
         }),
     [startKey, releaseKey, originX, originY, dx, dy, startAbsX, startAbsY, viewRef]
   )

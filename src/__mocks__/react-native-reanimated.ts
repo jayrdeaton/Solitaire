@@ -30,7 +30,6 @@ const Animated = {
   cancelAnimation: jest.fn(),
   interpolate: passthrough,
   interpolateColor: () => '#000000',
-  runOnJS: (fn: (...args: unknown[]) => unknown) => fn,
   runOnUI: (fn: (...args: unknown[]) => unknown) => fn,
   useAnimatedRef: () => ({ current: null }),
   Easing: {

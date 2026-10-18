@@ -1,4 +1,5 @@
-import { runOnJS, SharedValue, withTiming } from 'react-native-reanimated'
+import { SharedValue, withTiming } from 'react-native-reanimated'
+import { scheduleOnRN } from 'react-native-worklets'
 
 /** How long the "not playable" scrim takes to fade in once a card that was held back (see PlayingCard's `dimHold`) is
  * revealed. Kept shorter than the ~270-400ms before the next card of a column lands on top and covers the card, so the
@@ -12,7 +13,7 @@ export const DIM_FADE_MS = 160
 export function fadeInDimScrim(opacity: SharedValue<number>, onDone?: () => void) {
   opacity.value = withTiming(1, { duration: DIM_FADE_MS }, (finished) => {
     'worklet'
-    if (finished && onDone) runOnJS(onDone)()
+    if (finished && onDone) scheduleOnRN(onDone)
   })
 }
 
