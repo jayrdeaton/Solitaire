@@ -45,7 +45,7 @@
     "@tastic/cards": "^0.6.0",
     "@tastic/core": "^0.14.0",
     "@tastic/hud": "^0.24.1",
-    "@tastic/profile": "^0.16.0",
+    "@tastic/profile": "^0.16.2",
     "dejavu-fonts-ttf": "^2.37.3",
     "expo": "~58.0.14",
     "expo-asset": "~58.0.16",
