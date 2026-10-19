@@ -26,7 +26,7 @@ Limits: title 30, subtitle 30, promotional text 170 (editable any time without r
 
 The PNGs are build output and are gitignored, along with the raw captures they were made from (`store/screenshots/raw/`). The captions are in `store/screenshots.json`.
 
-How they were made (2026-10-17): a Release build on the iPhone 17 Pro Max and iPad Pro 13" (M5) simulators, status bar pinned to 9:41 with full battery, dark appearance. The saved data was written before first launch (sound off, guide seen, three weeks of stats from a Hint-following player on the real rules and stats engine, and saved boards for Klondike, Yukon and a FreeCell one play from its finish), so every number on screen is one the app produced. The hint and win shots are frames from a screen recording. A compositor puts each capture under its caption in DejaVu Serif Bold, on the felt color sampled from the capture. The tools (simulator setup, the slim build, frame picking, the compositor) are in Jay's `app-store-prep` skill; the Solitaire-specific seeding is here in `store/seed/`.
+How they were made (2026-10-17, all retaken 2026-10-19 on 1.2.4 for the pip fireworks, medal trophy, personal par and new card surfaces): a Release build on the iPhone 17 Pro Max and iPad Pro 13" (M5) simulators, status bar pinned to 9:41 with full battery, dark appearance. The saved data was written before first launch (sound off, guide seen, three weeks of stats from a Hint-following player on the real rules and stats engine, the recent wins their personal par is made from, and saved boards for Klondike, Yukon and a FreeCell one play from its finish), so every number on screen is one the app produced. The hint and win shots are frames from a screen recording. A compositor puts each capture under its caption in DejaVu Serif Bold, on the felt color sampled from the capture. The tools (simulator setup, the slim build, frame picking, the compositor) are in Jay's `app-store-prep` skill; the Solitaire-specific seeding is here in `store/seed/`.
 
 To redo them:
 
@@ -35,7 +35,7 @@ To redo them:
 3. `store/seed/reseed.sh <udid>` on each, then capture into `store/screenshots/raw/<device>/<name>.png`:
    - **01-klondike:** open Klondike (the saved board), draw one card so Undo lights up
    - **02-home:** Home as it opens
-   - **03-win:** open FreeCell, record, play the 4♣ to its foundation; use a frame once every card chain is mid-bounce (10 to 25 s in), not the start
+   - **03-win:** open FreeCell, record, play the 4♣ to its foundation; use a frame once every card chain is mid-bounce (10 to 25 s in), not the start, with a pip burst in view (iPhone 17 s, iPad 21 s on 2026-10-19)
    - **04-hint:** open Yukon, record, press Hint; use the frame where the see-through 6♣ 5♥ 4♣ is halfway to the 7♥
    - **05-stats:** the trophy on Home, scrolled to a stretch of achievements with bronze, silver, gold and locked rows
    - **06-style:** `store/seed/reseed.sh <udid> --style '#009688'`, open Pyramid (a fresh deal), draw one card

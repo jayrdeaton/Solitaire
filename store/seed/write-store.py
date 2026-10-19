@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Writes the screenshot seed (store/seed/seed.json, from generate.mjs) into a simulator's Solitaire
-install BEFORE it launches, so it opens on Home with sound off, the guide seen, three weeks of stats and
-achievements, and saved games for the gameplay shots. See store/README.md.
+install BEFORE it launches, so it opens on Home with sound off, the guide seen, three weeks of stats,
+achievements and the recent wins personal par is made from, and saved games for the gameplay shots. See store/README.md.
 
   write-store.py <simulator udid> [--style <hex color>]
 
@@ -51,6 +51,7 @@ root = {
     'achievements': json.dumps({'stats': seed['stats'], 'unlocked': seed['unlocked']}),
     'sound': json.dumps({'enabled': False}),
     'guide': json.dumps({'versionSeen': 1}),
+    'recentWins': json.dumps(seed['recentWins']),
 }
 if style:
     root['settings'] = json.dumps({'cardStyle': 'decorated', 'cardBackStyle': 'ornate'})

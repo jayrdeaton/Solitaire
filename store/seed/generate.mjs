@@ -1,7 +1,8 @@
 // Seed data for the App Store screenshots (see store/README.md), made by the app's own rules, Hint,
 // stats engine and achievement catalog: three weeks of play by a Hint-following player who wins about two
-// deals in three and gets quicker over time, a Klondike board partway through a game, a Yukon board whose
-// hint moves a clean run, and a FreeCell board one foundation play from its finish.
+// deals in three and gets quicker over time (with the recent wins their personal par is made from), a
+// Klondike board partway through a game, a Yukon board whose hint moves a clean run, and a FreeCell board
+// one foundation play from its finish.
 //
 //   node store/seed/generate.mjs        writes store/seed/seed.json (gitignored), then store/seed/reseed.sh
 //
@@ -20,6 +21,7 @@ import { findHint } from '@/engine/hint'
 import { gameOfVariant } from '@/engine/variants'
 import { applyDealWon, applyDealAbandoned, applyHintUsed } from '@/stores/statsEngine'
 import { DEFAULT_STATS } from '@/stores/statsValidation'
+import { RECENT_WINS_KEPT } from '@/engine/par'
 import { ACHIEVEMENT_CATALOG } from '@/stores/achievementCatalog'
 import { createCanfieldController } from '@/games/canfield/rules'
 import { createFortyThievesController } from '@/games/fortythieves/rules'
@@ -97,6 +99,7 @@ export function run(nowMs) {
   const DAYS = 21
   let stats = DEFAULT_STATS
   const unlocked = {}
+  const recent = {}
   let seed = 1000
   deals.forEach((variant, i) => {
     const day = DAYS - 1 - Math.floor((i * DAYS) / deals.length)
@@ -111,6 +114,8 @@ export function run(nowMs) {
       // A player who gets quicker over the three weeks: about 4.6 seconds per decision at first, 2.4 by the end.
       const seconds = Math.round(r.decisions * (4.2 - (2.2 * i) / deals.length + rand() * 0.8))
       stats = applyDealWon(stats, variant, { seconds, moves: r.moves, score: r.moves + seconds, usedHint }, null, when)
+      // The same win in the player's recent wins, which their personal par is made from (recentWinsSlice.ts).
+      ;(recent[variant] ??= []).push({ score: r.moves + seconds, moves: r.moves, seconds })
     } else {
       stats = applyDealAbandoned(stats, variant, null, when)
     }
@@ -186,7 +191,8 @@ export function run(nowMs) {
     }
   }
   boards.yukon = hintBest
-  return { stats, unlocked, finish, boards }
+  const recentWins = { guest: Object.fromEntries(Object.entries(recent).map(([v, wins]) => [v, wins.slice(-RECENT_WINS_KEPT)])) }
+  return { stats, unlocked, recentWins, finish, boards }
 }
 `
 
