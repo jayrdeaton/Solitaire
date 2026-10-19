@@ -14,7 +14,7 @@ eas metadata:lint
 eas metadata:push
 ```
 
-`push` needs the app record to exist in App Store Connect and edits the version matching `app.json`'s `expo.version`. The first `eas submit` creates the record (named by `eas.json`'s `submit.production.ios.appName`) when you sign in with your Apple ID. Apple's API can't create apps, so with an API key create it first: My Apps > + > New App, bundle ID `com.infinitetoken.solitaire`, name `SolitaireTastic`, primary language English (U.S.).
+`push` needs the app record to exist in App Store Connect and edits its editable version, setting its number to `store.config.json`'s `apple.version`. Keep that equal to `app.json`'s `expo.version` and bump both together: without it, push sends no version number and Apple refuses the version step (copyright, promo text, description, keywords, support and marketing URLs) while the rest goes through. The first `eas submit` creates the record (named by `eas.json`'s `submit.production.ios.appName`) when you sign in with your Apple ID. Apple's API can't create apps, so with an API key create it first: My Apps > + > New App, bundle ID `com.infinitetoken.solitaire`, name `SolitaireTastic`, primary language English (U.S.).
 
 Limits: title 30, subtitle 30, promotional text 170 (editable any time without review), description 4000, keywords 100 in total with the commas. Keywords don't repeat words already in the title or subtitle ("solitaire", "games", "ads" are indexed from the subtitle; "SolitaireTastic" is one word, so it does NOT match a search for "solitaire" on its own).
 
@@ -22,7 +22,7 @@ Limits: title 30, subtitle 30, promotional text 170 (editable any time without r
 
 ## Screenshots (uploaded by hand)
 
-`store/screenshots/iphone/` (6.9", 1320x2868) and `store/screenshots/ipad/` (13", 2064x2752). Apple scales these to every smaller device, so these two sets are all it asks for. The iPad set is required because `ios.supportsTablet` is on. The order in the folder is the upload order; the first three are what search results show.
+`store/screenshots/iphone-medium/` (1206x2622) goes in the "iPhone 6.1" or 6.3" displays" slot, which App Store Connect requires (a 1320x2868 file there fails with "File dimensions are invalid"). `store/screenshots/iphone/` (1320x2868) is for the optional 6.9" slot, and `store/screenshots/ipad/` (2064x2752) for the 13" iPad slot. Apple scales these to every smaller device. The iPad set is required because `ios.supportsTablet` is on. The order in the folder is the upload order; the first three are what search results show.
 
 The PNGs are build output and are gitignored, along with the raw captures they were made from (`store/screenshots/raw/`). The captions are in `store/screenshots.json`.
 
@@ -40,6 +40,17 @@ To redo them:
    - **05-stats:** the trophy on Home, scrolled to a stretch of achievements with bronze, silver, gold and locked rows
    - **06-style:** `store/seed/reseed.sh <udid> --style '#009688'`, open Pyramid (a fresh deal), draw one card
 4. The skill's `compose.mjs store/screenshots.json`
+
+## Header and search results art (uploaded by hand, optional, iOS 27+)
+
+`store/screenshots/header.png` (3840 x 1646) and `store/screenshots/search.png` (3840 x 2560), gitignored like the screenshots. `node store/creative/build.mjs` draws both with the app's own components at full size (react-native-web, like the face bitmaps), in the default player's colors in dark mode:
+
+- **Header:** Home's fan of card backs in the middle, Kings bouncing out to both edges like the win cascade, and pip fireworks in the top corners. No words: the app's name sits right under it.
+- **Search results:** "11 Classic Solitaire Games / No ads. Plays offline." beside the Klondike screenshot capture in a phone (`store/screenshots/raw/iphone/01-klondike.png`, so take the screenshots first).
+
+Each comes with `-safe.png` (the safe area from Apple's templates outlined) and `-384.png` (about a search card's size on a phone). They are rendered through the app-store-prep skill's `creative.mjs`, which checks the size and strips any alpha channel.
+
+Upload in the version's Product Page Information > Header and Search Results (Header, then Search Results), then check both with Preview. The header has no words, so it can go on every localization; the search image's words are English, so it goes on English only. They're reviewed with the version, or on their own through Asset Library.
 
 ## Set by hand in App Store Connect
 
@@ -71,5 +82,5 @@ To redo them:
 2. `jrd ship build production`
 3. `eas submit -p ios --profile production` (uploads the build to TestFlight)
 4. `eas metadata:push`
-5. Upload the screenshots if they changed
+5. Upload the screenshots, and the header and search art, if they changed
 6. In App Store Connect: pick the build, fill in anything new above, and Add for Review
