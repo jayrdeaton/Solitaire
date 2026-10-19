@@ -3,7 +3,7 @@
     "name": "Solitaire",
     "slug": "Solitaire",
     "scheme": "solitaire",
-    "version": "1.2.4",
+    "version": "1.2.5",
     "runtimeVersion": {
       "policy": "fingerprint"
     },
