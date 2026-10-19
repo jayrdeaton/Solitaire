@@ -1,0 +1,3 @@
+# Build output kept out of the root .gitignore, which is part of the EAS fingerprint: an edit there changes
+# the runtime version and cuts off OTA updates (see TODO.md).
+creative/.build-*/

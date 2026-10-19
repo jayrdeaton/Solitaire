@@ -49,4 +49,3 @@ scripts/.simulate-par-*/
 store/screenshots/
 store/seed/seed.json
 store/seed/.generate-*/
-store/creative/.build-*/
