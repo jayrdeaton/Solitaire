@@ -166,6 +166,8 @@ const FOOTER_PRESS_RETENTION = { top: 20 + FOOTER_DROP }
 // is Android's double-tap window, and too soon to see a button arrive and mean to press it. A second tap later than
 // that still presses the button, on purpose: it comes up right under the finger.
 const FOOTER_SHOW_GUARD_MS = 300
+// How long the scoreboard and the controls take to fade out under the win dialog (see winFade).
+const WIN_CHROME_FADE_MS = 300
 
 // Wide (landscape) layout only - the footer and the readout live in the side gutters GameLayout
 // reserves (see gameLayout.ts), never over the board. The 8pt margin keeps the readout off the
@@ -217,13 +219,17 @@ interface GameChromeProps {
   hintShowing: boolean
   /** True once the deal is won - a hint has nothing left to suggest. */
   hintDisabled?: boolean
-  /** True once the deal is won - hides the footer (Undo/New Game/Hint/Rules) and the moves/timer/
-   * score row below, since the win dialog (WinBanner) already shows all three and covers the board
-   * anyway. Deliberately NOT the same thing as `hintDisabled`: AcesUp passes `won || stuck` for the
-   * latter (a stuck, unwinnable deal has nothing left to hint either), but a stuck deal isn't a win -
-   * its LossBanner has no score to duplicate, and Undo stays reachable there on purpose, so this
-   * chrome should keep showing while merely stuck. */
+  /** True once the deal is won (the winning move's own commit): the footer (Undo/New Game/Hint/Rules) and the
+   * moves/timer/score row below stop taking presses, but stay as they were while the winning card flies in and the
+   * finished board reads for a beat, until `winRevealed`. Deliberately NOT the same thing as `hintDisabled`: AcesUp
+   * passes `won || stuck` for the latter (a stuck, unwinnable deal has nothing left to hint either), but a stuck deal
+   * isn't a win - its LossBanner has no score to duplicate, and Undo stays reachable there on purpose, so this chrome
+   * should keep working while merely stuck. */
   won: boolean
+  /** True once the win dialog is up (each screen's useWinReveal): the footer and the moves/timer/score row fade out
+   * under it (WIN_CHROME_FADE_MS) and then unmount, since the dialog shows the same three numbers. They used to unmount
+   * on `won`, so the score vanished the moment the winning card was played (Jay, 2026-10-19). */
+  winRevealed: boolean
   /** Whether the current deal has had any real player moves - gates the New Game confirm dialog
    * below. Deliberately NOT the same thing as `!undoDisabled`: a resumed deal (see
    * stores/gameInProgress.ts) always restores with an empty undo stack (undo history isn't
@@ -263,19 +269,20 @@ interface GameChromeProps {
  * re-renders each second. The tick used to be state on GameChrome itself, which re-rendered the whole
  * chrome (footer, hidden dialogs, settings content, every animated style) once a second for as long as
  * a deal was in progress - measured at ~140ms of JS per tick, i.e. a busy thread ~14% of the time
- * exactly while the player is dragging cards. Unmounted while `won` (its caller only renders it then),
- * so a fresh New Game after a win remounts it and re-reads the clock instead of showing the frozen
- * time of the deal that just ended. */
-function ElapsedClock({ getElapsedSeconds, clockRunning, children }: { getElapsedSeconds: () => number; clockRunning: boolean; children: (displayedElapsed: number) => ReactNode }) {
+ * exactly while the player is dragging cards. Unmounted once a win's fade is done (its caller stops
+ * rendering it then), and re-reads the clock whenever `won` flips, so a New Game after a win (even
+ * one pressed mid-fade) shows the new deal's clock instead of the frozen time of the one that ended. */
+function ElapsedClock({ getElapsedSeconds, clockRunning, won, children }: { getElapsedSeconds: () => number; clockRunning: boolean; won: boolean; children: (displayedElapsed: number) => ReactNode }) {
   const [displayedElapsed, setDisplayedElapsed] = useState(getElapsedSeconds)
-  // Resyncs the instant clockRunning flips (deal starts/resumes), rather than waiting up to a second
-  // for the interval below - e.g. resuming an in-progress deal would otherwise flash "0:00" for up to
-  // a second before its first tick. Setting state directly during render (React's documented "adjust
-  // state when a prop changes" pattern) re-renders immediately, before paint, instead of the extra
-  // committed-then-corrected frame a same-effect setState would cost.
-  const [prevClockRunning, setPrevClockRunning] = useState(clockRunning)
-  if (clockRunning !== prevClockRunning) {
-    setPrevClockRunning(clockRunning)
+  // Resyncs the instant clockRunning flips (deal starts/resumes, or stops on the win), rather than
+  // waiting up to a second for the interval below - e.g. resuming an in-progress deal would otherwise
+  // flash "0:00" for up to a second before its first tick - and the instant `won` flips (a New Game
+  // after a win leaves clockRunning false). Setting state directly during render (React's documented
+  // "adjust state when a prop changes" pattern) re-renders immediately, before paint, instead of the
+  // extra committed-then-corrected frame a same-effect setState would cost.
+  const [prevSync, setPrevSync] = useState({ clockRunning, won })
+  if (clockRunning !== prevSync.clockRunning || won !== prevSync.won) {
+    setPrevSync({ clockRunning, won })
     setDisplayedElapsed(getElapsedSeconds())
   }
   useEffect(() => {
@@ -296,13 +303,13 @@ function ElapsedClock({ getElapsedSeconds, clockRunning, children }: { getElapse
  * toggleFooter), since those three are game controls
  * reached for far less often than anything mid-board and don't need to stay onscreen while the
  * player's actually working the tableau - unlike the moves/timer readout, which stays put
- * regardless of the footer's own hidden state (though both disappear together once `won`, per
- * GameChromeProps' own doc comment on it).
+ * regardless of the footer's own hidden state (though both fade out together under the win dialog,
+ * per GameChromeProps' own doc comment on `winRevealed`).
  *
  * Previously each of the four game screens hand-rolled its own version of this row (and Pyramid's
  * had drifted to a bottom button row entirely) - unifying it here means a layout tweak (like this
  * one, and the header/footer regrouping that followed it) only has to happen once. */
-export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, autoHintKey, hintShowing, hintDisabled, won, hasProgress, getElapsedSeconds, pauseClock, par, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
+export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, autoHintKey, hintShowing, hintDisabled, won, winRevealed, hasProgress, getElapsedSeconds, pauseClock, par, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
   const router = useRouter()
   // The safe-area insets remapped onto the rotated frame's own edges (a no-op at rotation 0). The dialogs
   // below need no rotation of their own - see the Portal.Host in withGameProviders.
@@ -340,15 +347,39 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   }, [pauseClock, dialogOpen])
   useAutoHint({ seconds: settings.autoHintSeconds, boardKey: autoHintKey, paused: !!hintDisabled || settingsOpen || rulesOpen || confirmNewGameVisible, hintShowing, onHint })
 
+  // The footer and the moves/timer/score row outlast the winning move's commit: they stay as they were, taking no
+  // presses, while the winning card flies in and the finished board reads for a beat, then fade out under the win dialog
+  // (winRevealed) and unmount (bottomChromeGone). A new deal (`won` false again) brings them back, at full opacity from
+  // its first frame: the fade only applies while `won` (the styles below re-run when it flips), so they never wait on
+  // the reset of winFade, which only lands after the commit.
+  const winFade = useSharedValue(1)
+  const winFadeStyle = useAnimatedStyle(() => ({ opacity: won ? winFade.value : 1 }), [won])
+  const [bottomChromeGone, setBottomChromeGone] = useState(false)
+  useEffect(() => {
+    // See toggleFooter's note on react-hooks/immutability and SharedValues.
+    /* eslint-disable react-hooks/immutability */
+    if (!winRevealed) {
+      winFade.value = 1
+      return
+    }
+    winFade.value = withTiming(0, { duration: WIN_CHROME_FADE_MS, easing: Easing.out(Easing.quad) })
+    /* eslint-enable react-hooks/immutability */
+    const timer = setTimeout(() => setBottomChromeGone(true), WIN_CHROME_FADE_MS)
+    return () => clearTimeout(timer)
+  }, [winFade, winRevealed])
+  if (!won && bottomChromeGone) setBottomChromeGone(false)
+  const showBottomChrome = !(won && bottomChromeGone)
+
   const footerOpacity = useSharedValue(1)
   const footerTranslateY = useSharedValue(0)
-  const footerAnimatedStyle = useAnimatedStyle(() => ({ opacity: footerOpacity.value, transform: [{ translateY: footerTranslateY.value }] }))
+  const footerAnimatedStyle = useAnimatedStyle(() => ({ opacity: footerOpacity.value * (won ? winFade.value : 1), transform: [{ translateY: footerTranslateY.value }] }), [won])
 
   // Slides the moves/timer row down to fill the footer's own spot once it's hidden, rather than
   // leaving it stranded above an empty gap - the row itself never fades as a whole (see
-  // toggleFooter), only repositions; its labels fade (labelOpacity below) as it goes.
+  // toggleFooter), only repositions; its labels fade (labelOpacity below) as it goes. It does fade
+  // as a whole under the win dialog (winFade).
   const movesTimerTranslateY = useSharedValue(0)
-  const movesTimerAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ translateY: movesTimerTranslateY.value }] }))
+  const movesTimerAnimatedStyle = useAnimatedStyle(() => ({ opacity: won ? winFade.value : 1, transform: [{ translateY: movesTimerTranslateY.value }] }), [won])
 
   // The scoreboard's MOVES/SCORE/TIME labels: shown while the footer is up (the scoreboard is expanded), faded out while
   // it is tucked away. It is ONE row in both states (Jay, 2026-10-14): the numbers keep their columns and only drop
@@ -380,14 +411,17 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   // button wide (see WIDE_FOOTER_BUTTON_WIDTH).
   const footerLayout = isWide ? WIDE_FOOTER_BUTTON_LAYOUT : FOOTER_BUTTON_LAYOUT
 
-  const undoButton = <FooterButton icon='undo' label='Undo' layout={footerLayout} disabled={undoDisabled} inert={footerSettling} onPress={() => void onUndo()} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={HOLD_LONG_PRESS_MS} />
+  // Once the deal is won every control is inert, not dimmed: it stays exactly as it was until it fades under the win
+  // dialog (see winFade), so nothing changes on the board's last beat.
+  const footerInert = footerSettling || won
+  const undoButton = <FooterButton icon='undo' label='Undo' layout={footerLayout} disabled={undoDisabled} inert={footerInert} onPress={() => void onUndo()} onLongPress={undoHold.onLongPress} onPressOut={undoHold.onPressOut} delayLongPress={HOLD_LONG_PRESS_MS} />
 
   const newGameButton = (
     <FooterButton
       icon='cards-playing-outline'
       label='New Game'
       layout={footerLayout}
-      inert={footerSettling}
+      inert={footerInert}
       onPress={() => {
         // Nothing to lose yet - deal immediately, no warning. Otherwise, dealing a new game
         // abandons the one in progress (counted as a loss - see stores/gameStats.tsx), so confirm
@@ -402,7 +436,7 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
     />
   )
 
-  const hintButton = <FooterButton icon='lightbulb-on-outline' label='Hint' layout={footerLayout} disabled={hintDisabled} inert={footerSettling} onPress={() => onHint()} onLongPress={hintHold.onLongPress} onPressOut={hintHold.onPressOut} delayLongPress={HOLD_LONG_PRESS_MS} />
+  const hintButton = <FooterButton icon='lightbulb-on-outline' label='Hint' layout={footerLayout} disabled={hintDisabled && !won} inert={footerInert} onPress={() => onHint()} onLongPress={hintHold.onLongPress} onPressOut={hintHold.onPressOut} delayLongPress={HOLD_LONG_PRESS_MS} />
 
   // The dialogs below (Settings, Rules, the New Game confirm) portal into the Portal.Host that
   // withGameProviders mounts INSIDE the rotated frame - so they lay out against the rotated size and
@@ -487,10 +521,9 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
       Undo/New Game/Hint, this is a read-only status line, not a control reached for occasionally -
       there's no reason hiding the footer to declutter the board should also take this away
       entirely, but it does slide down to fill the footer's own spot once those buttons are gone
-      (movesTimerAnimatedStyle), rather than sitting stranded above an empty gap. Hidden entirely
-      once `won`, alongside the footer below - see GameChromeProps' own doc comment on `won`: the
-      win dialog already shows the same three numbers, so this would just be a stale duplicate
-      sitting behind it.
+      (movesTimerAnimatedStyle), rather than sitting stranded above an empty gap. Fades out under
+      the win dialog, alongside the footer below, and is then unmounted - see GameChromeProps' own
+      doc comment on `winRevealed`: the dialog already shows the same three numbers.
 
       In portrait this row is also the footer's show/hide button (toggleFooter): tapping it tucks the
       footer away and tapping it again brings it back, from the same spot either way since the row slides
@@ -499,13 +532,14 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
       fade and the same three numbers drop into the buttons' place, each staying in its column (Jay, 2026-10-14:
       it used to swap to a separate one-line readout, and labeled the tucked-away state instead of the expanded
       one). */}
-      {!won && isWide && (
+      {showBottomChrome && isWide && (
         // Leading (local left) gutter, left-aligned inside [insets.left + 8, leftGutter] and vertically
         // centred in the safe area. Always the captioned form (there is room for it and no footer to
-        // compete with) and never animated - see the footer's own wide branch below.
-        <ElapsedClock getElapsedSeconds={getElapsedSeconds} clockRunning={clockRunning}>
+        // compete with) and never animated, except for the fade under the win dialog - see the footer's
+        // own wide branch below.
+        <ElapsedClock getElapsedSeconds={getElapsedSeconds} clockRunning={clockRunning} won={won}>
           {(displayedElapsed) => (
-            <View style={[styles.wideStatsWrap, { left: insets.left + WIDE_STATS_LEFT_MARGIN, right: windowWidth - leftGutter, top: insets.top + GAME_CONTENT_TOP_PADDING, bottom: insets.bottom }]} pointerEvents='none'>
+            <Animated.View style={[styles.wideStatsWrap, { left: insets.left + WIDE_STATS_LEFT_MARGIN, right: windowWidth - leftGutter, top: insets.top + GAME_CONTENT_TOP_PADDING, bottom: insets.bottom }, winFadeStyle]} pointerEvents='none'>
               <View style={styles.wideStatBlock}>
                 <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
                   {movesCount}
@@ -524,17 +558,17 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
                 </Text>
                 <Text style={styles.statCaption}>Time</Text>
               </View>
-            </View>
+            </Animated.View>
           )}
         </ElapsedClock>
       )}
-      {!won && !isWide && (
-        <ElapsedClock getElapsedSeconds={getElapsedSeconds} clockRunning={clockRunning}>
+      {showBottomChrome && !isWide && (
+        <ElapsedClock getElapsedSeconds={getElapsedSeconds} clockRunning={clockRunning} won={won}>
           {(displayedElapsed) => (
             // Above the footer while it is hidden: the lowered readout then sits under the hidden buttons, and on
             // the web a child's own pointer-events beat a parent's pointerEvents='none', so they would take its tap.
             <Animated.View style={[styles.movesTimerWrap, { bottom: MOVES_TIMER_BOTTOM + insets.bottom }, !footerVisible && styles.movesTimerAboveFooter, movesTimerAnimatedStyle]} pointerEvents='box-none'>
-              <Pressable onPress={toggleFooter} pressRetentionOffset={SCOREBOARD_PRESS_RETENTION} style={styles.scoreboardButton} accessibilityRole='button' accessibilityLabel={footerVisible ? 'Hide controls' : 'Show controls'}>
+              <Pressable onPress={toggleFooter} disabled={won} pressRetentionOffset={SCOREBOARD_PRESS_RETENTION} style={styles.scoreboardButton} accessibilityRole='button' accessibilityLabel={footerVisible ? 'Hide controls' : 'Show controls'}>
                 <Animated.View style={[styles.chevron, chevronAnimatedStyle]} accessibilityElementsHidden importantForAccessibility='no-hide-descendants'>
                   <Icon source='chevron-down' size={CHEVRON_SIZE} color={STAT_LABEL_COLOR} />
                 </Animated.View>
@@ -562,11 +596,11 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
       tucked into a footer the player can hide (tap the moves/score/time readout) to get them out of the
       way of the board, then bring back the same way. Undo, the one used most, sits in the middle, the
       easiest spot for either thumb; New Game, the destructive one, sits furthest out. Rules has no icon
-      here: the title opens it (see the titleWrap comment above). Hint is disabled once the deal is won
-      - see GameChromeProps' own doc comment. Hidden entirely once `won` (see the moves/timer row's own comment just above) - the win dialog's "New Game"
-      button already covers that one control, and there's nothing left to Undo/Hint/check Rules for
-      on a finished board. */}
-      {!won && !isWide && (
+      here: the title opens it (see the titleWrap comment above). Every button is inert once `won` (not
+      dimmed, see footerInert), then fades out under the win dialog (see the moves/timer row's own comment
+      just above) - the dialog's "New Game" button already covers that one control, and there's nothing left
+      to Undo/Hint/check Rules for on a finished board. */}
+      {showBottomChrome && !isWide && (
         // box-none (not 'auto') while visible: footerWrap's own box spans the full screen width
         // (left:0/right:0), wider than the centered icon row it actually contains, so plain 'auto'
         // silently swallowed every tap in that empty side margin - never reaching the board
@@ -584,13 +618,13 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
       never animated: tap-to-hide is a portrait feature (there the footer floats over the board, so tucking
       it away frees room); here it sits in a gutter, so hiding it would give the board nothing back. The
       wrapper is box-none so only the icons claim taps; the rest falls through to the board. */}
-      {!won && isWide && (
-        <View style={[styles.wideFooterWrap, { right: insets.right + WIDE_FOOTER_RIGHT_MARGIN, top: insets.top + GAME_CONTENT_TOP_PADDING, bottom: insets.bottom }]} pointerEvents='box-none'>
+      {showBottomChrome && isWide && (
+        <Animated.View style={[styles.wideFooterWrap, { right: insets.right + WIDE_FOOTER_RIGHT_MARGIN, top: insets.top + GAME_CONTENT_TOP_PADDING, bottom: insets.bottom }, winFadeStyle]} pointerEvents='box-none'>
           {undoButton}
           {newGameButton}
           {hintButton}
-          <FooterButton icon='information-outline' label='Rules' layout={footerLayout} onPress={() => setRulesOpen(true)} />
-        </View>
+          <FooterButton icon='information-outline' label='Rules' layout={footerLayout} inert={won} onPress={() => setRulesOpen(true)} />
+        </Animated.View>
       )}
 
       <SettingsDialog visible={settingsOpen} onDismiss={() => setSettingsOpen(false)} rotation={0}>

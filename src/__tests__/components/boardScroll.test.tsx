@@ -225,7 +225,7 @@ describe('GameChrome', () => {
 
   const chrome = (movesCount = 0) => (
     <PaperProvider>
-      <GameChrome title='Yukon' onNewGame={jest.fn()} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} hasProgress={movesCount > 0} getElapsedSeconds={() => 0} pauseClock={jest.fn()} par={{ moves: 100, seconds: 200, score: 300 }} clockRunning={false} movesCount={movesCount} rules={[]}>
+      <GameChrome title='Yukon' onNewGame={jest.fn()} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} winRevealed={false} hasProgress={movesCount > 0} getElapsedSeconds={() => 0} pauseClock={jest.fn()} par={{ moves: 100, seconds: 200, score: 300 }} clockRunning={false} movesCount={movesCount} rules={[]}>
         <Content />
       </GameChrome>
     </PaperProvider>
@@ -295,7 +295,7 @@ describe('GameChrome', () => {
     const onHint = jest.fn()
     await render(
       <PaperProvider>
-        <GameChrome title='Yukon' onNewGame={onNewGame} onUndo={onUndo} undoDisabled={false} onHint={onHint} autoHintKey={null} hintShowing={false} won={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={jest.fn()} par={{ moves: 100, seconds: 200, score: 300 }} clockRunning={false} movesCount={3} rules={[]}>
+        <GameChrome title='Yukon' onNewGame={onNewGame} onUndo={onUndo} undoDisabled={false} onHint={onHint} autoHintKey={null} hintShowing={false} won={false} winRevealed={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={jest.fn()} par={{ moves: 100, seconds: 200, score: 300 }} clockRunning={false} movesCount={3} rules={[]}>
           <Content />
         </GameChrome>
       </PaperProvider>
@@ -341,7 +341,7 @@ describe('GameChrome', () => {
     const onNewGame = jest.fn()
     const harness = () => (
       <PaperProvider>
-        <GameChrome title='Yukon' onNewGame={onNewGame} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={jest.fn()} par={{ moves: 100, seconds: 200, score: 300 }} clockRunning={false} movesCount={0} rules={[]}>
+        <GameChrome title='Yukon' onNewGame={onNewGame} onUndo={jest.fn()} undoDisabled onHint={jest.fn()} autoHintKey={null} hintShowing={false} won={false} winRevealed={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={jest.fn()} par={{ moves: 100, seconds: 200, score: 300 }} clockRunning={false} movesCount={0} rules={[]}>
           <Content />
         </GameChrome>
       </PaperProvider>

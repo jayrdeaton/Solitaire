@@ -27,7 +27,7 @@ async function renderChrome(onHint: () => boolean, onUndo = jest.fn()) {
   await render(
     <PaperProvider>
       <FeedbackPressProvider soundInitialValue={{ enabled: true }} sound={{ selection: click, notification: invalid }}>
-        <GameChrome title='Klondike' onNewGame={jest.fn()} onUndo={onUndo} undoDisabled={false} onHint={onHint} autoHintKey={null} hintShowing={false} won={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={jest.fn()} par={{ moves: 100, seconds: 200, score: 300 }} clockRunning={false} movesCount={0} rules={[]}>
+        <GameChrome title='Klondike' onNewGame={jest.fn()} onUndo={onUndo} undoDisabled={false} onHint={onHint} autoHintKey={null} hintShowing={false} won={false} winRevealed={false} hasProgress={false} getElapsedSeconds={() => 0} pauseClock={jest.fn()} par={{ moves: 100, seconds: 200, score: 300 }} clockRunning={false} movesCount={0} rules={[]}>
           {null}
         </GameChrome>
       </FeedbackPressProvider>
