@@ -6,12 +6,12 @@ import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue, withDelay,
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { Card } from '@/engine/types'
-import { useSettings } from '@/hooks/useSettings'
 
 import { FaceLoadTrackingContext, GHOST_PAINT_MAX_MS, whenCardsSettled } from '../cardFacePaint'
 import { GAME_CONTENT_TOP_PADDING } from '../gameLayout'
 import { OverlayFrame, toLocal, useOverlayFrame } from '../overlayFrame'
 import { PlayingCard } from '../PlayingCard'
+import { isMotionReduced } from '../reducedMotionFlag'
 import { useCardSoundEffects } from '../useCardSounds'
 import { DEAL_SPRING } from './dealSpring'
 import { ScreenPoint } from './measureView'
@@ -630,14 +630,6 @@ export function DealProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     rotationRef.current = rotation
   }, [rotation])
-  // Read through a ref, not a controller dependency: `controller` below is memoized once (`[]`) so
-  // every screen's `deal` reference stays stable for its whole lifetime, and start() itself always
-  // wants the CURRENT setting - not whatever it was when the provider first mounted.
-  const { settings } = useSettings()
-  const reduceMotionRef = useRef(settings.reduceMotion)
-  useEffect(() => {
-    reduceMotionRef.current = settings.reduceMotion
-  }, [settings.reduceMotion])
   // How many ghost slots the current deal mounts (see ghostPoolSize) - NOT one per card.
   const [poolSize, setPoolSize] = useState(0)
   // Slots still holding a landed card on screen (see GhostSlot's `holding`), by slot, with where each rests. The pool stays
@@ -952,7 +944,8 @@ export function DealProvider({ children }: { children: ReactNode }) {
           onAllLanded()
           return
         }
-        if (reduceMotionRef.current) {
+        // Reduce Motion (the Settings row or the device's, see reducedMotion.tsx), read when the deal starts.
+        if (isMotionReduced()) {
           // No ghost is ever mounted or flown: every card is dealt and lands in the same tick - the
           // same instant-land outcome handleSkipTap already gives an unlaunched card, just reached
           // without a tap. onCardDealt/onCardLanded still fire once per card in entries order (via

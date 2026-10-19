@@ -68,13 +68,15 @@ Upload in the version's Product Page Information > Header and Search Results (He
 
 **Content Rights:** yes, the app contains third-party content, and the rights are covered: the card artwork is based on SVG-cards by David Bellot and Huub de Beer (LGPL-2.1, credited in Settings), and the card font is DejaVu Serif (Bitstream Vera license).
 
-**Pricing and Availability:** Free, all territories.
+**License Agreement:** Apple's standard EULA (the default). A custom one only matters for subscriptions, accounts or user content, none of which this app has.
+
+**Pricing and Availability:** Free (0.00 USD base price), 173 countries or regions: every one except China mainland (needs a government game approval number) and Vietnam (needs a game license from a local company). Apple Silicon Mac and Apple Vision Pro availability unticked: the app has never been run on a Mac (no accelerometer, untested window sizing), and Apple marks 1.2.5 as not compatible with Vision Pro. Distribution method Public. Tax category left at the default. No In-App Purchases, Subscriptions, App Store Server Notifications, Game Center or Growth & Marketing items; Age Suitability URL, User Privacy Choices URL and Accessibility URL left blank.
 
 **Export compliance:** already answered by `ITSAppUsesNonExemptEncryption: false` in `app.json`, so App Store Connect doesn't ask.
 
-**Accessibility (optional):** leave blank until each feature has been checked on a device. Apple asks per feature (VoiceOver, Larger Text, Dark Interface, Reduced Motion and so on), and a claim that doesn't hold up is worse than none.
+**Accessibility (optional):** Dark Interface claimed for iPhone and iPad (1.2.5). Nothing else until each feature has been checked on a device; Reduced Motion needs the app to follow the system Reduce Motion setting first. Apple asks per feature (VoiceOver, Larger Text, Dark Interface, Reduced Motion and so on), and a claim that doesn't hold up is worse than none.
 
-**Version release:** automatic after approval, or manual (you press Release). Manual is the safer choice for the first version.
+**Version release:** automatic after approval, or manual (you press Release). Manual for 1.2.5, so SolitaireTastic, LightCycles and Snake go live together.
 
 ## Shipping a version
 

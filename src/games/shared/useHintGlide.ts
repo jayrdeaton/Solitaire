@@ -5,6 +5,7 @@ import { CardRegistry } from '@/components/dragdrop/CardRegistry'
 import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
 import { fanStep } from '@/components/dragdrop/fanTops'
 import { ScreenRect, useHintGlideLayer } from '@/components/hinting/HintGlideLayer'
+import { isMotionReduced } from '@/components/reducedMotionFlag'
 import { PileRef } from '@/engine/gameTypes'
 import { Card } from '@/engine/types'
 
@@ -40,7 +41,8 @@ export function useHintGlide(resetKey: unknown, cardRegistry: CardRegistry, drop
 
   return useCallback(
     async (target: HintGlideTarget) => {
-      if (!layer || target.moving.length === 0) return
+      // Under Reduce Motion (see reducedMotion.tsx) a hint is its ring alone, with no glide.
+      if (!layer || target.moving.length === 0 || isMotionReduced()) return
       const key = keyRef.current
       const anchor = target.moving[0]
       const onto = target.dest[target.dest.length - 1]

@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { StyleSheet, View } from 'react-native'
-import Animated, { cancelAnimation, Easing, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withRepeat, withTiming } from 'react-native-reanimated'
+import Animated, { cancelAnimation, Easing, ReduceMotion, SharedValue, useAnimatedStyle, useSharedValue, withDelay, withRepeat, withTiming } from 'react-native-reanimated'
 
 // The four suits, in the order the wave sweeps across them.
 const SUITS = ['♠', '♥', '♦', '♣']
@@ -22,16 +22,19 @@ const SUIT_STAGGER_MS = 140
 // already mid-wave rather than starting from rest.
 const REVEAL_DELAY_MS = 750
 const REVEAL_FADE_MS = 200
+// Every animation here is a fade, not motion, so it plays under Reduce Motion too (see reducedMotion.tsx): skipped, the
+// reveal's delay went with it and the indicator flashed up at every game entry.
+const FADE = ReduceMotion.Never
 
 /** One suit's looping pulse, phase-shifted by its position in the row (see SUIT_STAGGER_MS) so the
  * four together make a wave. Reversing repeat with no end (`-1`) - the owner cancels it on unmount. */
 function startSuitPulse(opacity: SharedValue<number>, index: number) {
-  opacity.value = withDelay(index * SUIT_STAGGER_MS, withRepeat(withTiming(1, { duration: SUIT_PULSE_MS, easing: Easing.inOut(Easing.quad) }), -1, true))
+  opacity.value = withDelay(index * SUIT_STAGGER_MS, withRepeat(withTiming(1, { duration: SUIT_PULSE_MS, easing: Easing.inOut(Easing.quad), reduceMotion: FADE }), -1, true, undefined, FADE), FADE)
 }
 
 /** The row's fade-in once REVEAL_DELAY_MS has passed - see there. */
 function startReveal(opacity: SharedValue<number>) {
-  opacity.value = withDelay(REVEAL_DELAY_MS, withTiming(1, { duration: REVEAL_FADE_MS }))
+  opacity.value = withDelay(REVEAL_DELAY_MS, withTiming(1, { duration: REVEAL_FADE_MS, reduceMotion: FADE }), FADE)
 }
 
 function Suit({ glyph, index }: { glyph: string; index: number }) {

@@ -20,6 +20,7 @@ import { GameLoading } from '@/components/GameLoading'
 import { OverlayFrame, toLocal, useOverlayFrame } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
+import { isMotionReduced } from '@/components/reducedMotionFlag'
 import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
@@ -158,16 +159,18 @@ interface SequenceFlightInstance {
  * so stacking switches to reflect ARRIVAL order instead, letting each card land visibly on top of
  * the ones before it, exactly like a real pile building up, without the two phases (natural fan,
  * then arrival order) ever fighting each other. Otherwise mirrors Pyramid's own FlyingPairCard. */
-function FlyingSequenceCard({ card, from, to, delayMs, frame, cardWidth, go, landed, onFacePainted, onDealt, onLanded }: { card: Card; from: ScreenPoint; to: ScreenPoint; delayMs: number; frame: OverlayFrame; cardWidth: number; go: boolean; landed: boolean; onFacePainted: () => void; onDealt: () => void; onLanded: () => void }) {
+function FlyingSequenceCard({ card, from, to, delayMs: stagger, frame, cardWidth, go, landed, onFacePainted, onDealt, onLanded }: { card: Card; from: ScreenPoint; to: ScreenPoint; delayMs: number; frame: OverlayFrame; cardWidth: number; go: boolean; landed: boolean; onFacePainted: () => void; onDealt: () => void; onLanded: () => void }) {
   const cardHeight = cardWidth / CARD_ASPECT
   const tx = useSharedValue(from.x)
   const ty = useSharedValue(from.y)
   const zIndex = useSharedValue(0)
   const notified = useRef(false)
 
-  // Leaves (and its clocks run) only once the whole run is on screen - see SequenceFlightGroup.
+  // Leaves (and its clocks run) only once the whole run is on screen - see SequenceFlightGroup. Under Reduce Motion
+  // Reanimated skips the withDelay as well as the spring, so the whole run lands at once and its clocks must too.
   useEffect(() => {
     if (!go) return
+    const delayMs = isMotionReduced() ? 0 : stagger
     tx.value = withDelay(delayMs, withSpring(to.x, FLIGHT_SPRING))
     ty.value = withDelay(delayMs, withSpring(to.y, FLIGHT_SPRING))
     zIndex.value = withDelay(delayMs, withTiming(100 + delayMs, { duration: 0 }))

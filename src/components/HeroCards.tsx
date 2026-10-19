@@ -10,6 +10,7 @@ import type { Settings } from '@/types'
 
 import { CardBackArt } from './CardBackArt'
 import { HERO_CARD_COUNT, HERO_FAN_CARDS, HERO_FAN_CENTER_Y, HERO_FAN_HEIGHT, HERO_FAN_SPAN, HERO_WAVE_CYCLE_MS, heroBumpAt, type HeroFanCard } from './heroFan'
+import { useMotionReduced } from './reducedMotion'
 import { CARD_HEIGHT, CARD_RADIUS, CARD_WIDTH, cardRadiusForWidth, useTableColors } from './theme'
 
 // Per-card entrance stagger - kept well under dealing/dealSpring.ts's 35ms-for-28-fast-dealt-cards
@@ -96,9 +97,11 @@ export function HeroCards({ scale = 1 }: { scale?: number } = {}) {
   // screen is open - all wasted, since none of it is on screen. Pausing it costs nothing on return:
   // the wave simply restarts from rest.
   const focused = useIsFocused()
+  // Under Reduce Motion (see reducedMotion.tsx) the fan rests: no wave (the entrance lands at once).
+  const reduced = useMotionReduced()
 
   useEffect(() => {
-    if (!focused) return
+    if (!focused || reduced) return
 
     // The first-ever wave waits for the whole fan to actually land (HERO_ENTRANCE_TOTAL_MS) plus its own
     // beat, rather than starting mid-entrance - otherwise the earliest cards' bumps would overlap their
@@ -124,7 +127,7 @@ export function HeroCards({ scale = 1 }: { scale?: number } = {}) {
       wave.value = 0
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focused])
+  }, [focused, reduced])
 
   return (
     <View style={{ width: HERO_FAN_SPAN * scale, height: HERO_FAN_HEIGHT * scale }} pointerEvents='none'>

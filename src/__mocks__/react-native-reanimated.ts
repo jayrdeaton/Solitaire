@@ -43,6 +43,9 @@ const Animated = {
     inOut: passthrough,
     bezier: () => passthrough
   },
+  ReduceMotion: { System: 'system', Always: 'always', Never: 'never' },
+  // Reanimated's global Reduce Motion override (reducedMotion.tsx's bridge): renders nothing.
+  ReducedMotionConfig: () => null,
   // A layout transition (PileView's fan glide): inert here, every builder step hands the same transition back.
   LinearTransition: layoutTransition(),
   default: {

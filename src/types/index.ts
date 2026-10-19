@@ -73,18 +73,8 @@ export interface Settings {
   // cleared on unlock) and handed back as lockInitialValue, so a relaunch reopens in the orientation
   // the player locked to instead of portrait. Never set by the UI directly; absent while unlocked.
   lockedRotation?: ViewRotation
-  // Global, not per-game: skips every DealAnimator-driven flight (the initial deal, stock draws,
-  // undo/recycle returns, Pyramid's win sweep - see components/dealing/DealLayer.tsx) straight to
-  // its landed state, with no ghost ever mounted or flown - the same instant-land outcome a mid-deal
-  // skip tap already produces (DealProvider.start reuses that exact path when this is on), just
-  // applied automatically rather than waiting for a tap. A standard "Reduce Motion" accessibility
-  // preference, matching the same intent as iOS's own systemwide setting of that name - for players
-  // who find the fly-in animation distracting, motion-sensitive, or just want to get into a game
-  // faster, not a performance workaround (the deal's own pace already accounts for that - see
-  // dealSpring.ts's FACE_UP_TARGET_TOTAL_MS). Does not touch drag/tap-to-move flights
-  // (dragdrop/DragGhostLayer.tsx) or the win cascade (WinCascadeLayer.tsx), which are separate
-  // animation systems - a future extension, not covered here. Defaults false: today's animated deal
-  // stays the default experience.
+  // The Settings row's own Reduce Motion. Applied together with the device's setting (either one turns it on), see
+  // components/reducedMotion.tsx for what it does. Defaults false.
   reduceMotion: boolean
 }
 

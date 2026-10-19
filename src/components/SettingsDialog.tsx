@@ -10,6 +10,7 @@ import { StyleSheet, View } from 'react-native'
 import { Icon, Text } from 'react-native-paper'
 
 import { CardBackArt } from '@/components/CardBackArt'
+import { useSystemReduceMotion } from '@/components/reducedMotion'
 import { SettingsSection } from '@/components/SettingsSection'
 import { useTableColors } from '@/components/theme'
 import { release } from '@/constants/release'
@@ -104,6 +105,8 @@ interface SettingsDialogProps {
 export function SettingsDialog({ visible, onDismiss, children, rotation, showHowToPlay = false }: SettingsDialogProps) {
   const { open: openGuide } = useGuide()
   const { settings, setSettings } = useSettings()
+  const systemReduceMotion = useSystemReduceMotion()
+  const reduceMotionOn = settings.reduceMotion || systemReduceMotion
   const colors = useTableColors()
   const { colors: paperColors } = useAutoPaperTheme()
   const { error } = useToast()
@@ -166,18 +169,24 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
               </View>
             </View>
           </TouchableRipple>
-          {/* Same bare-row shape as the toggles above - a standard "Reduce Motion" accessibility
-          preference (see types/index.ts's own doc comment on reduceMotion): skips every deal/
-          draw/undo/sweep flight straight to landed, the same instant-land outcome a mid-deal skip tap
-          already produces, just automatic rather than requiring one. */}
-          <TouchableRipple onPress={() => setSettings({ reduceMotion: !settings.reduceMotion })} style={styles.toggleButton} accessibilityLabel={`Reduce motion ${settings.reduceMotion ? 'on' : 'off'}`}>
+          {/* Same bare-row shape as the toggles above (see components/reducedMotion.tsx for what it does). It shows Reduce Motion
+          as the app applies it: on while the device's own setting is, with no tap (the device's setting wins) and a caption saying
+          where it comes from. */}
+          <TouchableRipple onPress={() => setSettings({ reduceMotion: !settings.reduceMotion })} disabled={systemReduceMotion} style={styles.toggleButton} accessibilityLabel={`Reduce motion ${reduceMotionOn ? 'on' : 'off'}${systemReduceMotion ? ', on in device settings' : ''}`}>
             <View style={styles.toggleContent}>
-              <View style={[styles.iconBadge, { backgroundColor: settings.reduceMotion ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
-                <Icon source={settings.reduceMotion ? 'motion-pause-outline' : 'motion-play-outline'} size={18} color={settings.reduceMotion ? paperColors.tertiary : paperColors.onSurfaceVariant} />
+              <View style={[styles.iconBadge, { backgroundColor: reduceMotionOn ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
+                <Icon source={reduceMotionOn ? 'motion-pause-outline' : 'motion-play-outline'} size={18} color={reduceMotionOn ? paperColors.tertiary : paperColors.onSurfaceVariant} />
               </View>
-              <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
-                Reduce Motion
-              </Text>
+              <View style={styles.flexShrink}>
+                <Text variant='bodyLarge' style={{ color: paperColors.onSurface }}>
+                  Reduce Motion
+                </Text>
+                {systemReduceMotion && (
+                  <Text variant='bodySmall' numberOfLines={1} style={{ color: paperColors.onSurfaceVariant }}>
+                    On in device settings
+                  </Text>
+                )}
+              </View>
             </View>
           </TouchableRipple>
         </View>

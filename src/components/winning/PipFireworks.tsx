@@ -4,6 +4,7 @@ import { type LayoutChangeEvent, StyleSheet, View } from 'react-native'
 import { useTheme } from 'react-native-paper'
 import Animated, { Easing, type SharedValue, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated'
 
+import { useMotionReduced } from '@/components/reducedMotion'
 import { useTableColors } from '@/components/theme'
 import { useSettings } from '@/hooks/useSettings'
 
@@ -163,6 +164,8 @@ export function PipBursts({ look, onBurst }: { look: PipLook; onBurst?: () => vo
  * and with Invert Dark Mode Colors on in dark mode they turn light with a dark ring, as the cards do. */
 export function PipFireworks() {
   const { settings } = useSettings()
+  // Under Reduce Motion (see reducedMotion.tsx) the win has no fireworks: the win dialog says it.
+  const reduced = useMotionReduced()
   const { dark } = useTheme()
   const colors = useTableColors()
   const cardStyle = settings.cardStyle
@@ -172,6 +175,7 @@ export function PipFireworks() {
     const inks = Object.fromEntries(SUITS.map((suit) => [suit, suitInk(suit, colors, options)])) as Record<Suit, string>
     return { deck: cardStyle === 'tarot' ? 'tarot' : 'standard', inks, outline: cardFaceColor(colors, invertDarkModeColors) }
   }, [cardStyle, colors, invertDarkModeColors])
+  if (reduced) return null
   return <PipBursts look={look} />
 }
 

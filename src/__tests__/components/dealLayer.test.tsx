@@ -7,6 +7,7 @@ import { trackFaceLoad } from '@/components/cardFacePaint'
 import { DEAL_BEAT_MIN_GAP_MS, DEAL_LANDED_MAX_MS, type DealAnimator, dealBeatTicks, type DealCardSpec, dealPoolSize, DealProvider, ghostPoolSize, TAKE_OFF_RELEASE_LAG_MS, useDealAnimator } from '@/components/dealing/DealLayer'
 import { DEAL_SPRING, DEAL_STAGGER_MS } from '@/components/dealing/dealSpring'
 import { FLIGHT_SPRING } from '@/components/dragdrop/dragSpring'
+import { setMotionReduced } from '@/components/reducedMotionFlag'
 import type { Card } from '@/engine/types'
 
 const mockPlayCardSound = jest.fn()
@@ -89,11 +90,8 @@ jest.mock('@/components/PlayingCard', () => {
   }
 })
 jest.mock('@tastic/core', () => ({ useRotation: () => 0, rotateInsets: (insets: unknown) => insets }))
-// A plain mutable holder, not @infinitetoken/jest-config's usual "stable object" trick (see
-// playingCardDimHold.test.tsx) - these tests set it once, before the provider mounts, never mid-render,
-// so there's no reactivity to prove here, only what start() does with whatever it read at that point.
-const mockReduceMotion = { value: false }
-jest.mock('@/hooks/useSettings', () => ({ useSettings: () => ({ settings: { reduceMotion: mockReduceMotion.value } }) }))
+// Reduce Motion as the app applies it (the Settings row or the device's, see reducedMotion.tsx): DealProvider reads it when
+// a deal starts, so these tests set it before start().
 
 const CARD_WIDTH = 64
 const LOOKAHEAD_MS = 150
@@ -1437,11 +1435,11 @@ describe('DealProvider reduceMotion', () => {
     mockHapticCard.mockClear()
     mockMounts.count = 0
     mockShown.length = 0
-    mockReduceMotion.value = true
+    setMotionReduced(true)
   })
   afterEach(() => {
     jest.useRealTimers()
-    mockReduceMotion.value = false
+    setMotionReduced(false)
   })
 
   it('lands every card synchronously, in entries order, with no ghost ever mounted and no skip layer shown', async () => {
@@ -1518,7 +1516,7 @@ describe('DealProvider reduceMotion', () => {
   })
 
   it('behaves exactly as the animated path when reduceMotion is off - a same-session regression guard', async () => {
-    mockReduceMotion.value = false
+    setMotionReduced(false)
     await renderProvider()
     const entries = makeEntries(12, 'c', true)
     const landed: string[] = []
@@ -1550,7 +1548,7 @@ describe('DealProvider releasePending (a take-off hold, given back exactly once)
     jest.useRealTimers()
     mockPaint.defer = false
     mockPaint.pending.clear()
-    mockReduceMotion.value = false
+    setMotionReduced(false)
   })
 
   /** `entries`, each with its own jest.fn hold release (by card id), recording when it ran (ms after `t0`). */
@@ -1704,7 +1702,7 @@ describe('DealProvider releasePending (a take-off hold, given back exactly once)
   })
 
   it("Reduce Motion gives every hold back as its card lands at once, ahead of that card's landing", async () => {
-    mockReduceMotion.value = true
+    setMotionReduced(true)
     await renderProvider()
     const { held, releases } = withHolds(makeEntries(8, 'c', true))
     const releasedBeforeLanding: boolean[] = []

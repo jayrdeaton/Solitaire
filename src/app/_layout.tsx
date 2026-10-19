@@ -20,6 +20,7 @@ import { Provider as ReduxProvider, useDispatch, useSelector } from 'react-redux
 import { PersistGate } from 'redux-persist/integration/react'
 
 import { GuideHost } from '@/components/GuideHost'
+import { ReducedMotionBridge } from '@/components/reducedMotion'
 import { TableBackground } from '@/components/TableBackground'
 import { previewCardBack } from '@/components/theme'
 import { ThemeBridge } from '@/components/ThemeBridge'
@@ -267,6 +268,7 @@ export default function RootLayout() {
                         <KeepAwakeBridge>
                           <ToastProvider>
                             <ProfileThemeSync />
+                            <ReducedMotionBridge />
                             <OrientationBridge>
                               {/* Wraps the stack (rather than sitting beside it like RootOverlays) because
                               Home's useAutoShowGuide() and its Settings "How to Play" row reach it through

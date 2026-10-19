@@ -12,6 +12,7 @@ import { ScreenPoint } from '../dealing/measureView'
 import { GAME_CONTENT_TOP_PADDING } from '../gameLayout'
 import { screenToLocalPoint } from '../overlayFrame'
 import { PlayingCard } from '../PlayingCard'
+import { isMotionReduced } from '../reducedMotionFlag'
 import { BOUNCE_V_HALF_PERIOD_MAX_MS, BOUNCE_V_HALF_PERIOD_MIN_MS, cardXAtElapsed, cardYAtElapsed, CascadeBounds, cascadeBounds, CHAIN_SEGMENT_DELAY_MS, chainEntranceDelayMs, ChainPath, fitXToBounds, fitYToBounds, isGhostVisible, spreadHHalfPeriods } from './winCascadeMotion'
 
 export interface ChainSpec {
@@ -242,7 +243,9 @@ export function WinCascadeProvider({ children }: { children: ReactNode }) {
     () => ({
       startChains(chains, cardWidth, onShown) {
         setGeneration((g) => g + 1)
-        if (chains.length === 0) {
+        // Under Reduce Motion (see reducedMotion.tsx) nothing bounces: the cards stay on their piles, since onShown, the hand-off
+        // that blanks them, never runs - the same as a cascade whose chains couldn't be measured.
+        if (chains.length === 0 || isMotionReduced()) {
           setCascade({ mode: 'idle' })
           return
         }

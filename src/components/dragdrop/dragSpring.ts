@@ -1,5 +1,7 @@
 import { WithSpringConfig } from 'react-native-reanimated'
 
+import { isMotionReduced } from '../reducedMotionFlag'
+
 /**
  * THE pace knob for every per-PLAY card flight (FLIGHT_SPRING: tap-to-move, undo, pair removal, stock
  * draws, auto-play, the finish sweep, Pyramid/Spider's own flights) and a drag's drop settle
@@ -61,6 +63,8 @@ export const SPRING_START_LAG_MS = 33
  * covers a spring. */
 export function springSettleMs(config: WithSpringConfig): number {
   const duration = config.duration ?? 0
+  // Under Reduce Motion the spring lands at once (see reducedMotion.tsx), so only the UI thread's start lag is left to cover.
+  if (isMotionReduced()) return duration <= 0 ? 0 : SPRING_START_LAG_MS
   return duration <= 0 ? 0 : Math.ceil(duration * SPRING_SETTLE_FACTOR + SPRING_START_LAG_MS)
 }
 
