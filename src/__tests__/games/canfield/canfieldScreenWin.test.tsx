@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react-n
 
 import { AUTO_PLAY_STAGGER_MS, finishGapMs } from '@/components/dragdrop/dragSpring'
 import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
+import { setMotionReduced } from '@/components/reducedMotionFlag'
 import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
 import CanfieldScreen from '@/games/canfield/CanfieldScreen'
@@ -269,10 +270,10 @@ jest.mock('@/components/dragdrop/DraggableCard', () => {
   }
 })
 jest.mock('@/components/StockWaste', () => {
-  const { Pressable: MockPressable, View: MockView } = require('react-native')
+  const { Pressable: MockPressable, Text: MockText, View: MockView } = require('react-native')
   const { useEffect } = require('react')
   return {
-    StockWaste: ({ wasteTop, stockTopCard, onDrawStock, onWastePress, onWasteDrop, stockRef, wasteRef }: { wasteTop?: { id: string }; stockTopCard?: { id: string }; onDrawStock: () => void; onWastePress: (measure: () => Promise<{ x: number; y: number }>) => void; onWasteDrop?: MockDrop; stockRef?: { current: unknown }; wasteRef?: { current: unknown } }) => {
+    StockWaste: ({ wasteTop, wasteHiddenCount, stockTopCard, onDrawStock, onWastePress, onWasteDrop, stockRef, wasteRef }: { wasteTop?: { id: string }; wasteHiddenCount?: number; stockTopCard?: { id: string }; onDrawStock: () => void; onWastePress: (measure: () => Promise<{ x: number; y: number }>) => void; onWasteDrop?: MockDrop; stockRef?: { current: unknown }; wasteRef?: { current: unknown } }) => {
       mockDrops.set('waste', onWasteDrop)
       useEffect(() => {
         if (stockRef) stockRef.current = mockSlotView
@@ -290,6 +291,8 @@ jest.mock('@/components/StockWaste', () => {
           {/* The real stock's one press target is there when it is empty too (a tap turns the waste over). */}
           {stockTopCard ? null : <MockPressable testID='turn-over' onPress={onDrawStock} />}
           {wasteTop ? <MockPressable testID={`waste-${wasteTop.id}`} onPress={() => onWastePress(async () => ({ x: 10, y: 10 }))} /> : null}
+          {/* How many of the waste's top cards it keeps frozen while they fly in. */}
+          <MockText testID='hidden-on-waste'>{String(wasteHiddenCount ?? 0)}</MockText>
         </MockView>
       )
     }
@@ -1203,5 +1206,24 @@ describe('Canfield screen - an undo that needs cards still flying back', () => {
 
     await flushUntil(() => mockLog.inAir === 0)
     expect([0, 1, 2].map(columnIds)).toEqual([[id('spades', 5)], [id('clubs', 7)], [id('hearts', 6)]])
+  })
+})
+
+describe('Canfield screen - a draw-3 fan under Reduce Motion', () => {
+  afterEach(() => setMotionReduced(false))
+
+  // DealLayer lands a reduced-motion fan at once, but only once the screen has measured the waste, after the commit that draws the
+  // cards: keeping the drawn cards hidden on the waste until then showed them nowhere for a frame.
+  it('the waste shows the drawn fan in the very commit that takes it off the stock', async () => {
+    const stock = [card('diamonds', 7), card('hearts', 9), card('spades', 4), card('clubs', 8)]
+    await mount(board({ tableau: [[card('clubs', 5)]], foundation: [[], [], [], []], stock }), [], 2)
+    setMotionReduced(true)
+
+    await press('stock-pile')
+    // The stand-in deal has not landed the fan yet (it lands FLIGHT_MS after it starts), and the waste hides none of it.
+    expect(screen.getByTestId('hidden-on-waste').props.children).toBe('0')
+    expect(screen.queryAllByTestId(/^waste-/)).toHaveLength(1)
+    await flush(FLIGHT_MS * 2)
+    expect(mockLog.dealt).toHaveLength(3)
   })
 })

@@ -20,7 +20,7 @@ import { Provider as ReduxProvider, useDispatch, useSelector } from 'react-redux
 import { PersistGate } from 'redux-persist/integration/react'
 
 import { GuideHost } from '@/components/GuideHost'
-import { ReducedMotionBridge } from '@/components/reducedMotion'
+import { ReducedMotionBridge, useMotionReduced } from '@/components/reducedMotion'
 import { TableBackground } from '@/components/TableBackground'
 import { previewCardBack } from '@/components/theme'
 import { ThemeBridge } from '@/components/ThemeBridge'
@@ -77,7 +77,9 @@ function ThemedStack() {
   // needs). Nothing in this app mounts a StatusBar (auto-paper's is off, see ThemeBridge): with that key on, one logs
   // an error. Home stays mounted under a game, and the top screen's options win, so a covered screen has no say.
   const statusBar = useRotationAwareStatusBar({ style: 'light' })
-  const screenOptions = { ...rootBackground, ...statusBar, contentStyle: { backgroundColor: 'transparent' }, animation: Platform.select({ android: 'fade' as const }) }
+  // Under Reduce Motion (see reducedMotion.tsx) iOS crossfades too, instead of sliding the new screen in.
+  const reduced = useMotionReduced()
+  const screenOptions = { ...rootBackground, ...statusBar, contentStyle: { backgroundColor: 'transparent' }, animation: reduced ? ('fade' as const) : Platform.select({ android: 'fade' as const }) }
   return (
     <View style={styles.root}>
       <TableBackground />

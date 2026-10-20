@@ -4,6 +4,7 @@ import { StyleSheet } from 'react-native'
 
 import { isGhostPending } from '@/components/cardFacePaint'
 import { TAKE_OFF_RELEASE_LAG_MS } from '@/components/dealing/DealLayer'
+import { setMotionReduced } from '@/components/reducedMotionFlag'
 import { Card } from '@/engine/types'
 import { createScorpionController, ScorpionState } from '@/games/scorpion/rules'
 import ScorpionScreen from '@/games/scorpion/ScorpionScreen'
@@ -91,13 +92,13 @@ jest.mock('@/components/PlayingCard', () => {
   const { useContext, useEffect } = require('react')
   const { View: MockView } = require('react-native')
   const { FaceLoadTrackingContext } = require('@/components/cardFacePaint')
-  function MockPlayingCard({ card, style, onFacePainted }: { card: Card; style?: unknown; onFacePainted?: () => void }) {
+  function MockPlayingCard({ card, style, onFacePainted, onPress }: { card: Card; style?: unknown; onFacePainted?: () => void; onPress?: () => void }) {
     const board = useContext(FaceLoadTrackingContext)
     // Every card here has runway before its departure, so its take-off never waits on its face: a face simply reports painted.
     useEffect(() => {
       onFacePainted?.()
     }, [onFacePainted, card.id])
-    return <MockView testID={`${board ? 'pc' : 'ghost'}-${card.id}`} style={style} />
+    return <MockView testID={`${board ? 'pc' : 'ghost'}-${card.id}`} style={style} onPress={onPress} />
   }
   return { PlayingCard: MockPlayingCard, EmptySlot: () => <MockView testID='empty-slot' /> }
 })
@@ -316,5 +317,33 @@ describe('Scorpion - undoing the stock deal keeps every dealt card drawn until i
       expect(isGhostPending(id)).toBe(false)
       expect(onBoard(id)).toBe(false)
     })
+  })
+})
+
+describe('Scorpion - a stock deal under Reduce Motion', () => {
+  afterEach(() => setMotionReduced(false))
+
+  // DealLayer lands a reduced-motion deal at once, but only once the screen has measured where the dealt cards are, which it does
+  // after the commit that deals them: hiding them in that commit showed the board without them for a frame.
+  it('the dealt cards are drawn in the very commit that deals them', async () => {
+    const { undoStack, dealt } = afterDeal()
+    const prev = (undoStack[0] as { state: Parameters<typeof mount>[0] }).state
+    await mount(prev, [])
+    setMotionReduced(true)
+    dealt.forEach((id) => expect(onBoard(id)).toBe(false))
+    // The screen measures the dealt cards from an effect of the commit that dealt them: what is drawn then is that commit.
+    const drawnWhenMeasured: Record<string, boolean>[] = []
+    const measure = mockGhost.cardRegistry.measure
+    jest.spyOn(mockGhost.cardRegistry, 'measure').mockImplementation(async (id: string) => {
+      if (dealt.includes(id) && drawnWhenMeasured.length === 0) drawnWhenMeasured.push(Object.fromEntries(dealt.map((d) => [d, onBoard(d)])))
+      return measure(id)
+    })
+
+    await act(async () => {
+      fireEvent.press(all('pc-scorpion-stock-packet')[0] as never)
+    })
+    await flush(200)
+    expect(drawnWhenMeasured).toEqual([Object.fromEntries(dealt.map((d) => [d, true]))])
+    dealt.forEach((id) => expect(onBoard(id)).toBe(true))
   })
 })

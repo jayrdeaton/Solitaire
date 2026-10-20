@@ -19,6 +19,7 @@ import { useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { wasteFanScreenShift } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
+import { countHiddenUntilDealt } from '@/components/reducedMotionFlag'
 import type { StockRequestOptions } from '@/components/stockHold'
 import { StockWaste } from '@/components/StockWaste'
 import type { UndoRequestOptions } from '@/components/undoHold'
@@ -1244,7 +1245,7 @@ function KlondikeScreenInner() {
       const drawnCards = result.waste.slice(result.waste.length - drawnCount) // oldest -> newest/top
       const moveWithIds: MoveInfo = { ...move, cardIds: drawnCards.map((c) => c.id) }
       pushUndo(board, moveWithIds)
-      const flyingId = beginFlying(WASTE, drawnCount)
+      const flyingId = beginFlying(WASTE, countHiddenUntilDealt(drawnCount))
       pendingDealDrawRef.current.push({ topCardId: drawnCard.id, drawnCards, gen: dealTokenRef.current, flyingId })
       commitState(result)
       return true

@@ -27,6 +27,7 @@ import { useGameLayout } from '@/components/gameLayout'
 import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
+import { hiddenUntilDealt } from '@/components/reducedMotionFlag'
 import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
@@ -656,7 +657,7 @@ function ScorpionScreenInner() {
     const myToken = ++dealTokenRef.current
     const origin = await ghost.cardRegistry.measure(STOCK_PACKET_ID)
 
-    setDealHiddenIds(new Set(dealt.map((d) => d.card.id)))
+    setDealHiddenIds(hiddenUntilDealt(dealt.map((d) => d.card.id)))
     pendingStockDealRef.current.push({ dealt, origin, token: myToken })
     commitState(result)
   }

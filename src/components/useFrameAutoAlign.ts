@@ -62,13 +62,24 @@ export function computeFramePlacement(trigger: FrameRect, contentWidth: number, 
   return { align, verticalAlign: above ? 'above' : 'below', maxHeight: Math.max(above ? roomAbove : roomBelow, 0) }
 }
 
+/** The safe-area insets widened to the edges of a centred content column capped at `maxContentWidth`, which
+ * hud's RotatedFrame applies only while the frame is wider than tall. A popover inside a scroll view in that
+ * column is clipped at the column's edges (the scroll view, and on web FadingScrollView's mask), so it has to
+ * be placed against them rather than the frame's (the Profiles roster on a desktop window). */
+export function columnInsets(insets: LayoutInsets, frameWidth: number, frameHeight: number, maxContentWidth: number | undefined): LayoutInsets {
+  if (maxContentWidth === undefined || frameWidth <= frameHeight || frameWidth <= maxContentWidth) return insets
+  const side = (frameWidth - maxContentWidth) / 2
+  return { ...insets, left: Math.max(insets.left, side), right: Math.max(insets.right, side) }
+}
+
 /** Drop-in for useAutoAlign, for a popover trigger inside a fake-rotated frame (Home). Same result shape,
  * so it goes straight into a hud component's `alignOverride`.
  *
  * Re-measures whenever `open` flips true, and again if the frame changes under an open popover (a rotation
  * or resize) - `measured` only resets on a genuine (re)open, via the render-phase edge check, so an
  * already-open popover never flickers hidden just because the window changed. */
-export function useFrameAutoAlign(open: boolean, contentWidth: number, contentHeight: number): AlignResult {
+export function useFrameAutoAlign(open: boolean, contentWidth: number, contentHeight: number, options?: { maxContentWidth?: number }): AlignResult {
+  const maxContentWidth = options?.maxContentWidth
   const triggerRef = useRef<View>(null)
   const rotation = useRotation()
   const { width: windowWidth, height: windowHeight } = useWindowDimensions()
@@ -88,10 +99,10 @@ export function useFrameAutoAlign(open: boolean, contentWidth: number, contentHe
   const measure = useCallback(() => {
     triggerRef.current?.measureInWindow((x, y, width, height) => {
       const trigger = frameRectFromScreen(x, y, width, height, rotation, windowWidth, windowHeight)
-      setPlacement(computeFramePlacement(trigger, contentWidth, contentHeight, frameWidth, frameHeight, { top, right, bottom, left }))
+      setPlacement(computeFramePlacement(trigger, contentWidth, contentHeight, frameWidth, frameHeight, columnInsets({ top, right, bottom, left }, frameWidth, frameHeight, maxContentWidth)))
       setMeasured(true)
     })
-  }, [rotation, windowWidth, windowHeight, contentWidth, contentHeight, frameWidth, frameHeight, top, right, bottom, left])
+  }, [rotation, windowWidth, windowHeight, contentWidth, contentHeight, frameWidth, frameHeight, top, right, bottom, left, maxContentWidth])
 
   useEffect(() => {
     if (open) measure()

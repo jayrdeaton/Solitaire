@@ -172,7 +172,7 @@ export function SettingsDialog({ visible, onDismiss, children, rotation, showHow
           {/* Same bare-row shape as the toggles above (see components/reducedMotion.tsx for what it does). It shows Reduce Motion
           as the app applies it: on while the device's own setting is, with no tap (the device's setting wins) and a caption saying
           where it comes from. */}
-          <TouchableRipple onPress={() => setSettings({ reduceMotion: !settings.reduceMotion })} disabled={systemReduceMotion} style={styles.toggleButton} accessibilityLabel={`Reduce motion ${reduceMotionOn ? 'on' : 'off'}${systemReduceMotion ? ', on in device settings' : ''}`}>
+          <TouchableRipple onPress={() => !systemReduceMotion && setSettings({ reduceMotion: !settings.reduceMotion })} disabled={systemReduceMotion} style={styles.toggleButton} accessibilityLabel={`Reduce motion ${reduceMotionOn ? 'on' : 'off'}${systemReduceMotion ? ', on in device settings' : ''}`}>
             <View style={styles.toggleContent}>
               <View style={[styles.iconBadge, { backgroundColor: reduceMotionOn ? paperColors.tertiaryContainer : paperColors.surfaceVariant }]}>
                 <Icon source={reduceMotionOn ? 'motion-pause-outline' : 'motion-play-outline'} size={18} color={reduceMotionOn ? paperColors.tertiary : paperColors.onSurfaceVariant} />

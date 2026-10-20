@@ -1,5 +1,5 @@
 import { localOffsetToScreenPoint } from '@/components/overlayFrameMath'
-import { computeFramePlacement, FRAME_ALIGN_EDGE_MARGIN, frameRectFromScreen } from '@/components/useFrameAutoAlign'
+import { columnInsets, computeFramePlacement, FRAME_ALIGN_EDGE_MARGIN, frameRectFromScreen } from '@/components/useFrameAutoAlign'
 
 // A 402x874 portrait window. FakeLandscapeView keeps the game frame centred in it and rotates it, so the frame's
 // own (local) size is 402x874 at 0/180 and 874x402 at +/-90 - and its screen bounding box always fills the window.
@@ -218,5 +218,30 @@ describe('computeFramePlacement', () => {
       const direct = computeFramePlacement(local, CONTENT_W, CONTENT_H, frame.width, frame.height, insets)
       expect(viaScreen).toEqual(direct)
     })
+  })
+})
+
+describe('columnInsets', () => {
+  const none = { top: 0, right: 0, bottom: 0, left: 0 }
+
+  it('moves the side bounds in to a capped column in a wide frame', () => {
+    expect(columnInsets(none, 1280, 720, 640)).toEqual({ top: 0, right: 320, bottom: 0, left: 320 })
+  })
+
+  it('keeps a safe-area inset larger than the column margin', () => {
+    expect(columnInsets({ ...none, left: 400 }, 1280, 720, 640)).toEqual({ top: 0, right: 320, bottom: 0, left: 400 })
+  })
+
+  it('leaves portrait, an uncapped frame and a frame narrower than the cap alone', () => {
+    expect(columnInsets(none, 720, 1280, 640)).toBe(none)
+    expect(columnInsets(none, 1280, 720, undefined)).toBe(none)
+    expect(columnInsets(none, 600, 400, 640)).toBe(none)
+  })
+
+  it('stops a centred popover running past the column (the desktop Profiles roster)', () => {
+    // A 64pt swatch 12pt inside the column's left edge, a 180pt-wide popover.
+    const trigger = { x: 332, y: 100, width: 64, height: 64 }
+    expect(computeFramePlacement(trigger, 180, 200, 1280, 720, none).align).toBe('center')
+    expect(computeFramePlacement(trigger, 180, 200, 1280, 720, columnInsets(none, 1280, 720, 640)).align).toBe('left')
   })
 })

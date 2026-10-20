@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { markGhostPending } from '@/components/cardFacePaint'
 import { AUTO_PLAY_STAGGER_MS, finishGapMs } from '@/components/dragdrop/dragSpring'
 import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
+import { setMotionReduced } from '@/components/reducedMotionFlag'
 import { PileRef } from '@/engine/gameTypes'
 import { Card, Suit, SUITS } from '@/engine/types'
 import KlondikeScreen from '@/games/klondike/KlondikeScreen'
@@ -1557,5 +1558,25 @@ describe('Klondike screen - an undo that needs cards still flying back', () => {
 
     await flushUntil(() => mockLog.shown.length === 2)
     expect(mockLog.shownAt[1] - mockLog.shownAt[0]).toBeGreaterThanOrEqual(FLIGHT_MS)
+  })
+})
+
+describe('Klondike screen - a draw-3 fan under Reduce Motion', () => {
+  afterEach(() => setMotionReduced(false))
+
+  // DealLayer lands a reduced-motion fan at once, but only once the screen has measured the waste, after the commit that draws the
+  // cards: keeping the waste frozen on its old top until then showed the cards nowhere for a frame.
+  it('the waste shows the drawn fan in the very commit that takes it off the stock', async () => {
+    const stock = [3, 4, 5].map((rank) => card('spades', rank, false))
+    await mount(board({ tableau: [[card('diamonds', 2, false), card('hearts', 9)]], stock, waste: [card('clubs', 4)], foundation: foundations({}) }), 3, [], 0, 3)
+    setMotionReduced(true)
+
+    await tap('stock-pile')
+    // The stand-in deal has not landed the fan yet (it lands FLIGHT_MS after it starts), and nothing is frozen over it.
+    expect(screen.getByTestId('under-waste').props.children).toBe('none')
+    expect(wasteTop()).toBe(id('spades', 5))
+    await flush(FLIGHT_MS + 2 * STEP_MS)
+    expect(mockLog.dealt).toHaveLength(3)
+    expect(movesCount()).toBe('1')
   })
 })

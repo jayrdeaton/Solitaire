@@ -1,5 +1,5 @@
 import { useLayoutEffect, useSyncExternalStore } from 'react'
-import { AccessibilityInfo } from 'react-native'
+import { AccessibilityInfo, LogBox } from 'react-native'
 import { ReducedMotionConfig, ReduceMotion } from 'react-native-reanimated'
 
 import { useSettings } from '@/hooks/useSettings'
@@ -28,6 +28,9 @@ export { isMotionReduced } from './reducedMotionFlag'
  * Pacing that is not motion (the auto-play's and the finish's gaps, a held Undo's or Hint's repeat)
  * is unchanged: cards still go one after another, each appearing in its spot.
  */
+
+// ReducedMotionConfig warns once in a dev build that it overrides the device setting, which is the point here.
+LogBox.ignoreLogs(['Reduced motion setting is overwritten'])
 
 // The device setting, shared by every reader through one AccessibilityInfo subscription.
 let systemReduced = false

@@ -28,7 +28,9 @@ import { safeBack } from '@/utils/navigation'
 // (at rotation 0). The edit row's colour swatch gets a frame-aware
 // placement via `useColorPickerAlign` (@tastic/profile >= 0.9.0) - `useFrameAutoAlign`'s own signature already
 // matches what it wants exactly (`(open, contentWidth, contentHeight) => AlignResult`), so it's passed straight
-// through with no adapter.
+// through, told the column's width (`useRosterColorAlign`): the roster scrolls inside that column, which clips the
+// popover at its edges, so in a window wider than the column (a desktop browser) the popover is placed against the
+// column, not the window.
 export default function Profiles() {
   return (
     <RotatedScreen rotatedSafeArea maxContentWidth={SCREEN_MAX_WIDTH}>
@@ -39,6 +41,10 @@ export default function Profiles() {
 
 // Widest the roster gets in a wide (landscape) frame.
 const SCREEN_MAX_WIDTH = 640
+
+function useRosterColorAlign(open: boolean, contentWidth: number, contentHeight: number) {
+  return useFrameAutoAlign(open, contentWidth, contentHeight, { maxContentWidth: SCREEN_MAX_WIDTH })
+}
 
 function ProfilesContent() {
   const { profiles, createProfile, updateProfile, deleteProfile } = useProfiles()
@@ -51,7 +57,7 @@ function ProfilesContent() {
 
   return (
     <View style={styles.container}>
-      <ProfilesScreen profiles={profiles} defaultColor={DEFAULT_SEED_COLOR} onCreate={(patch) => createProfile(patch)} onSave={(id, patch) => updateProfile(id, patch)} onDelete={handleDelete} onBack={safeBack} fg={CHROME_FG} bg='transparent' titleVariant='headlineSmall' useColorPickerAlign={useFrameAutoAlign} />
+      <ProfilesScreen profiles={profiles} defaultColor={DEFAULT_SEED_COLOR} onCreate={(patch) => createProfile(patch)} onSave={(id, patch) => updateProfile(id, patch)} onDelete={handleDelete} onBack={safeBack} fg={CHROME_FG} bg='transparent' titleVariant='headlineSmall' useColorPickerAlign={useRosterColorAlign} />
     </View>
   )
 }

@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { type ReactNode } from 'react'
 import { AccessibilityInfo, Text } from 'react-native'
 
-import { SPRING_START_LAG_MS, FLIGHT_SPRING, springSettleMs } from '@/components/dragdrop/dragSpring'
+import { FLIGHT_SPRING, SPRING_START_LAG_MS, springSettleMs } from '@/components/dragdrop/dragSpring'
 import { isMotionReduced, ReducedMotionBridge, useMotionReduced } from '@/components/reducedMotion'
 import { setMotionReduced } from '@/components/reducedMotionFlag'
 import { SettingsDialog } from '@/components/SettingsDialog'
@@ -17,7 +17,7 @@ jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockImplementation(() => 
 jest.spyOn(AccessibilityInfo, 'addEventListener').mockImplementation(((event: string, listener: (enabled: boolean) => void) => {
   if (event === 'reduceMotionChanged') systemListeners.push(listener)
   return { remove: jest.fn() }
-}) as typeof AccessibilityInfo.addEventListener)
+}) as unknown as typeof AccessibilityInfo.addEventListener)
 
 const mockSetSettings = jest.fn()
 let mockRowOn = false

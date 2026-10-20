@@ -4,6 +4,7 @@ import { StyleSheet } from 'react-native'
 
 import { isGhostPending } from '@/components/cardFacePaint'
 import { TAKE_OFF_RELEASE_LAG_MS } from '@/components/dealing/DealLayer'
+import { setMotionReduced } from '@/components/reducedMotionFlag'
 import { Card } from '@/engine/types'
 import { createSpiderController, SpiderState } from '@/games/spider/rules'
 import SpiderScreen from '@/games/spider/SpiderScreen'
@@ -222,9 +223,12 @@ function heldOnBoard(id: string): boolean {
 /** A deal ghost of card `id` is on screen. */
 const ghostUp = (id: string) => all(`ghost-${id}`).some(visible)
 
+/** The stock still draws a packet. */
+const stockShown = () => all('pc-stock-packet').some(visible)
+
 /** For every watched card, at EVERY commit while recording (a Profiler's onRender runs in each commit, once the host tree
  * is updated): whether its column draws it, and whether its ghost is up - and when (fake time). */
-const commits: { at: number; board: Record<string, boolean>; ghost: Record<string, boolean>; held: Record<string, boolean> }[] = []
+const commits: { at: number; board: Record<string, boolean>; ghost: Record<string, boolean>; held: Record<string, boolean>; stock: boolean }[] = []
 let recording = false
 let watched: string[] = []
 function recordCommit() {
@@ -233,7 +237,8 @@ function recordCommit() {
     at: Date.now(),
     board: Object.fromEntries(watched.map((id) => [id, onBoard(id)])),
     ghost: Object.fromEntries(watched.map((id) => [id, ghostUp(id)])),
-    held: Object.fromEntries(watched.map((id) => [id, heldOnBoard(id)]))
+    held: Object.fromEntries(watched.map((id) => [id, heldOnBoard(id)])),
+    stock: stockShown()
   })
 }
 function watch(ids: string[]) {
@@ -386,5 +391,29 @@ describe('Spider - undoing a stock deal keeps every dealt card drawn until its o
       expect(isGhostPending(id)).toBe(false)
       expect(onBoard(id)).toBe(false)
     })
+  })
+})
+
+describe('Spider - a stock deal under Reduce Motion', () => {
+  afterEach(() => setMotionReduced(false))
+
+  // DealLayer lands a reduced-motion deal at once, but only once the dealt cards have been measured, a commit after the one that
+  // takes the packet off the stock: hiding them until then showed the columns without them for a frame.
+  it('the dealt cards are drawn in their columns in the very commit that takes the packet off the stock', async () => {
+    const prev = boardWithOneDealLeft()
+    const { dealt } = afterDeal(prev)
+    await mount(prev, [])
+    setMotionReduced(true)
+    expect(stockShown()).toBe(true)
+    watch(dealt)
+
+    await act(async () => {
+      fireEvent.press(all('pc-stock-packet')[0] as never)
+    })
+    await flush(200)
+    recording = false
+    expect(commits.some((c) => !c.stock)).toBe(true)
+    expect(commits.flatMap((c, i) => (c.stock || dealt.every((id) => c.board[id]) ? [] : [i]))).toEqual([])
+    dealt.forEach((id) => expect(onBoard(id)).toBe(true))
   })
 })

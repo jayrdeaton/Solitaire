@@ -20,7 +20,7 @@ import { GameLoading } from '@/components/GameLoading'
 import { OverlayFrame, toLocal, useOverlayFrame } from '@/components/overlayFrame'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
-import { isMotionReduced } from '@/components/reducedMotionFlag'
+import { hiddenUntilDealt, isMotionReduced } from '@/components/reducedMotionFlag'
 import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
@@ -1627,7 +1627,7 @@ function SpiderScreenInner() {
     const completingColumns = controller.isWon(next) ? [] : dealt.filter(({ colIndex }) => next.tableau[colIndex].length !== current.tableau[colIndex].length + 1).map(({ colIndex }) => colIndex)
 
     if (completingColumns.length === 0) {
-      setDealHiddenIds(new Set(dealt.map((d) => d.card.id)))
+      setDealHiddenIds(hiddenUntilDealt(dealt.map((d) => d.card.id)))
       pendingDealRef.current = { dealt, origin, token: myToken }
       commitState(next)
       return
@@ -1653,7 +1653,7 @@ function SpiderScreenInner() {
       })
     )
 
-    setDealHiddenIds(new Set(dealt.map((d) => d.card.id)))
+    setDealHiddenIds(hiddenUntilDealt(dealt.map((d) => d.card.id)))
     pendingDealRef.current = { dealt, origin, token: myToken, sweeps }
     commitState(displayState)
   }

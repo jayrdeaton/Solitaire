@@ -28,6 +28,7 @@ import { wasteFanScreenShift } from '@/components/overlayFrame'
 import { PileOverlay } from '@/components/PileOverlay'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { EmptySlot, PlayingCard } from '@/components/PlayingCard'
+import { countHiddenUntilDealt } from '@/components/reducedMotionFlag'
 import type { StockRequestOptions } from '@/components/stockHold'
 import { StockWaste } from '@/components/StockWaste'
 import type { UndoRequestOptions } from '@/components/undoHold'
@@ -987,7 +988,7 @@ function CanfieldScreenInner() {
     if (drawnCount > 1) {
       const drawnCards = result.waste.slice(result.waste.length - drawnCount) // oldest -> newest/top
       pushUndo(board, move)
-      const flyingId = beginFlying(WASTE, drawnCount)
+      const flyingId = beginFlying(WASTE, countHiddenUntilDealt(drawnCount))
       pendingDealDrawRef.current.push({ topCardId: drawnCard.id, drawnCards, gen: dealTokenRef.current, flyingId })
       commitState(result)
       return true

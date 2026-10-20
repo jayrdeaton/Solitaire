@@ -37,6 +37,7 @@ import { fitCardWidthToHeight, fittedGap, useGameLayout } from '@/components/gam
 import { GameLoading } from '@/components/GameLoading'
 import { PileDragConfig, PileView } from '@/components/PileView'
 import { PlayingCard } from '@/components/PlayingCard'
+import { hiddenUntilDealt } from '@/components/reducedMotionFlag'
 import type { UndoRequestOptions } from '@/components/undoHold'
 import { useCardSoundEffects } from '@/components/useCardSounds'
 import { useGameSession } from '@/components/useGameSession'
@@ -721,7 +722,7 @@ function AcesUpScreenInner() {
     const myToken = ++dealTokenRef.current
     const origin = await measureView(stockViewRef.current)
 
-    setDealHiddenIds(new Set(dealt.map((d) => d.card.id)))
+    setDealHiddenIds(hiddenUntilDealt(dealt.map((d) => d.card.id)))
     pendingRoundDealRef.current.push({ dealt, origin, token: myToken })
     commitState(result)
   }
