@@ -1,5 +1,6 @@
 import { configureStore } from '@reduxjs/toolkit'
 
+import { FOUNDATION_LAYOUT } from '@/engine/foundation'
 import { GUEST_PLAYER_ID } from '@/redux/activeProfileSlice'
 import gameInProgress, { gameInProgressActions, type SavedGame } from '@/redux/gameInProgressSlice'
 import { SOLITAIRE_GAME_IDS, type SolitaireGameId } from '@/stores/statsTypes'
@@ -20,10 +21,12 @@ export function resetGameInProgress(): void {
 }
 
 /** Starts a test from `saved` as `gameId`'s only save, JSON round-tripped like a save read back after a
- * relaunch (so an older save shape behaves exactly as it would in the app). */
+ * relaunch (so an older save shape behaves exactly as it would in the app). Stamped with the current foundation
+ * layout, like every save the app makes; pass `foundationLayout: undefined` for a save from before it. */
 export function seedGameInProgress(gameId: SolitaireGameId, saved: object): void {
   resetGameInProgress()
-  store.dispatch(gameInProgressActions[gameId].setSaved({ owner: GUEST_PLAYER_ID, saved: JSON.parse(JSON.stringify(saved)) as SavedGame<unknown, unknown> }))
+  const stamped = { foundationLayout: FOUNDATION_LAYOUT, ...saved }
+  store.dispatch(gameInProgressActions[gameId].setSaved({ owner: GUEST_PLAYER_ID, saved: JSON.parse(JSON.stringify(stamped)) as SavedGame<unknown, unknown> }))
 }
 
 /** What is currently stored for `gameId` (what a relaunch would resume). */

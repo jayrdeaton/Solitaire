@@ -6,7 +6,7 @@ import Svg, { Path, Rect } from 'react-native-svg'
 
 import { useSettings } from '@/hooks/useSettings'
 
-import { PREVIEW_CANVAS_HEIGHT, PREVIEW_CANVAS_WIDTH, PREVIEW_CARD_HEIGHT, PREVIEW_CARD_WIDTH, type PreviewCardPlacement } from './previewCanvas'
+import { PREVIEW_CANVAS_HEIGHT, PREVIEW_CANVAS_WIDTH, PREVIEW_CARD_HEIGHT, PREVIEW_CARD_WIDTH, type PreviewCardPlacement, previewFrame } from './previewCanvas'
 import { PREVIEW_FACE_BITMAPS, type PreviewGame } from './previewFaceBitmaps'
 import { buildBackStrips } from './previewGeometry'
 
@@ -34,6 +34,17 @@ function backStripsFor(placements: PreviewCardPlacement[]): string | null {
   return backStripsCache.get(placements) ?? null
 }
 
+const viewBoxCache = new WeakMap<PreviewCardPlacement[], string>()
+function viewBoxFor(placements: PreviewCardPlacement[]): string {
+  let viewBox = viewBoxCache.get(placements)
+  if (viewBox === undefined) {
+    const f = previewFrame(placements)
+    viewBox = `${f.x} ${f.y} ${f.width} ${f.height}`
+    viewBoxCache.set(placements, viewBox)
+  }
+  return viewBox
+}
+
 /** Renders a small, static, non-interactive snapshot of a game's starting deal for the home
  * screen's game list, laid out per-game by each game's own previewLayout.ts (built from that game's
  * own newGame(PREVIEW_SEED), so it can never drift out of sync with how the game actually deals).
@@ -48,8 +59,9 @@ function backStripsFor(placements: PreviewCardPlacement[]): string | null {
  * was ~12k native views (1.3-1.5s of blocked JS thread in a production bundle every time Home mounted), and even one
  * card Image each would be ~370 views. Here a column layout's backs are merged into one Path by drawing only each
  * back's VISIBLE strip (see previewGeometry.ts), and Pyramid/TriPeaks (overlapping, not strip-safe) draw a Rect per
- * back - so a tile is a View, an Svg, a Path or a few Rects, and an Image. The Svg scales its own viewBox, so the very
- * first frame already shows cards.
+ * back - so a tile is a View, an Svg, a Path or a few Rects, and an Image. The Svg's viewBox is the layout's
+ * previewFrame (its cards plus a margin, at the tile's aspect ratio), the same region the face layer was drawn from, so
+ * each tile zooms onto its own deal and the very first frame already shows cards.
  *
  * Memoized: `placements` are module-level constants and `colors` is a stable reference until the theme
  * changes, so an unrelated Home re-render (a setting, a profile change) never re-walks eleven decks. */
@@ -63,7 +75,7 @@ export const GamePreview = React.memo(function GamePreview({ game, placements, c
 
   return (
     <View style={[styles.canvas, style]}>
-      <Svg width='100%' height='100%' viewBox={`0 0 ${PREVIEW_CANVAS_WIDTH} ${PREVIEW_CANVAS_HEIGHT}`}>
+      <Svg width='100%' height='100%' viewBox={viewBoxFor(placements)}>
         {backStrips !== null ? backStrips !== '' && <Path d={backStrips} fill={colors.cardBack} stroke={frame} strokeWidth={BACK_FRAME} /> : placements.map((p, i) => (p.faceUp && p.card ? null : <Rect key={i} x={p.x + BACK_FRAME / 2} y={p.y + BACK_FRAME / 2} width={PREVIEW_CARD_WIDTH - BACK_FRAME} height={PREVIEW_CARD_HEIGHT - BACK_FRAME} rx={CARD_RX} fill={colors.cardBack} stroke={frame} strokeWidth={BACK_FRAME} />))}
       </Svg>
       {/* Only once the tile has cards: Home passes [] for its first frame (previewsRevealed) to keep that commit light. */}

@@ -1,4 +1,5 @@
-import { Card, Suit, SUITS } from '@/engine/types'
+import { FOUNDATION_SUITS } from '@/engine/foundation'
+import { Card, Suit } from '@/engine/types'
 import { canAutoFinish, nextFinishMove, nextSafeCascadeStep } from '@/games/freecell/autoPlay'
 import { FreeCellState } from '@/games/freecell/rules'
 
@@ -32,7 +33,7 @@ describe('canAutoFinish / nextFinishMove', () => {
     expect(canAutoFinish(state)).toBe(true)
     const step = nextFinishMove(state)!
     expect(step.entry.card.rank).toBe(1) // an ace, whichever suit the scan reaches first
-    expect(step.to).toEqual({ zone: 'foundation', index: SUITS.indexOf(step.entry.card.suit) })
+    expect(step.to).toEqual({ zone: 'foundation', index: FOUNDATION_SUITS.indexOf(step.entry.card.suit) })
   })
 
   it('counts cards sitting in freecells as finishable', () => {
@@ -60,24 +61,24 @@ describe('canAutoFinish / nextFinishMove', () => {
 
   it('is false on a won board (nothing left to finish)', () => {
     const state = emptyBoard()
-    SUITS.forEach((suit, i) => (state.foundation[i] = foundationUpTo(suit, 13)))
+    FOUNDATION_SUITS.forEach((suit, i) => (state.foundation[i] = foundationUpTo(suit, 13)))
     expect(canAutoFinish(state)).toBe(false)
     expect(nextFinishMove(state)).toBeNull()
   })
 })
 
 // Which foundation a card is sent to must be ITS suit's, for every suit - not just whichever one a scan happens to reach first.
-describe.each(SUITS)('foundation targeting - %s', (suit) => {
+describe.each(FOUNDATION_SUITS)('foundation targeting - %s', (suit) => {
   it("nextFinishMove sends this suit's card to this suit's foundation", () => {
     const state = emptyBoard()
-    SUITS.forEach((other, i) => {
+    FOUNDATION_SUITS.forEach((other, i) => {
       if (other !== suit) state.foundation[i] = foundationUpTo(other, 13)
     })
     state.tableau[0] = column(suit, 13, 1)
     expect(canAutoFinish(state)).toBe(true)
     const step = nextFinishMove(state)!
     expect(step.entry.card).toMatchObject({ suit, rank: 1 })
-    expect(step.to).toEqual({ zone: 'foundation', index: SUITS.indexOf(suit) })
+    expect(step.to).toEqual({ zone: 'foundation', index: FOUNDATION_SUITS.indexOf(suit) })
   })
 
   it("nextSafeCascadeStep sends this suit's safe Ace to this suit's foundation", () => {
@@ -88,7 +89,7 @@ describe.each(SUITS)('foundation targeting - %s', (suit) => {
     expect(step?.kind).toBe('play')
     if (step?.kind === 'play') {
       expect(step.entry.card).toMatchObject({ suit, rank: 1 })
-      expect(step.to).toEqual({ zone: 'foundation', index: SUITS.indexOf(suit) })
+      expect(step.to).toEqual({ zone: 'foundation', index: FOUNDATION_SUITS.indexOf(suit) })
     }
   })
 })
@@ -108,7 +109,7 @@ describe('nextSafeCascadeStep - the safe-card cascade', () => {
 
   it('leaves alone a card that is legal on its foundation but not yet safe', () => {
     const state = emptyBoard()
-    state.foundation[SUITS.indexOf('clubs')] = foundationUpTo('clubs', 1)
+    state.foundation[FOUNDATION_SUITS.indexOf('clubs')] = foundationUpTo('clubs', 1)
     // Black 2 is legal on clubs' foundation, but the red 2s/aces that could still want it as a
     // landing spot are not up yet - not safe. Board is not finishable (a red king buries the red ace).
     state.tableau[0] = [card('clubs', 2)]

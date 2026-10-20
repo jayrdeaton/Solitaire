@@ -3,8 +3,9 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react-n
 import { AUTO_PLAY_STAGGER_MS, finishGapMs } from '@/components/dragdrop/dragSpring'
 import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
 import { setMotionReduced } from '@/components/reducedMotionFlag'
+import { FOUNDATION_SUITS } from '@/engine/foundation'
 import { PileRef } from '@/engine/gameTypes'
-import { Card, Suit, SUITS } from '@/engine/types'
+import { Card, Suit } from '@/engine/types'
 import CanfieldScreen from '@/games/canfield/CanfieldScreen'
 import { CanfieldState } from '@/games/canfield/rules'
 
@@ -346,7 +347,7 @@ function board(parts: { tableau?: Card[][]; foundation: Card[][]; reserve?: Card
   return { tableau: Array.from({ length: 4 }, (_, i) => parts.tableau?.[i] ?? []), foundation: parts.foundation, foundationRank: 1, reserve: parts.reserve ?? [], stock: parts.stock ?? [], waste: parts.waste ?? [] }
 }
 /** Every card is home except the King of clubs, alone in the reserve: tapping it wins the game. */
-const ONE_CARD_FROM_WON = () => board({ reserve: [card('clubs', 13)], foundation: [pile('clubs', 12), pile('diamonds', 13), pile('hearts', 13), pile('spades', 13)] })
+const ONE_CARD_FROM_WON = () => board({ reserve: [card('clubs', 13)], foundation: [pile('spades', 13), pile('diamonds', 13), pile('clubs', 12), pile('hearts', 13)] })
 
 // ------------------------------------------------------------------------------------------------ harness
 
@@ -529,7 +530,7 @@ describe('Canfield screen - the win cascade takes over from the real foundation 
     expect(mockLog.cascadeChains).toBe(4)
     expect(mockLog.pilesShownAtCascade).toBe(4) // every pile was still drawing its real cards when the chains started (the origins are measured off the slots, before anything blanks)
     expect(screen.getByTestId('cascade-ghosts')).toBeTruthy()
-    SUITS.forEach((suit) => expect(foundationTop(suit)).toBe('empty')) // and the real cards are gone now that the ghosts stand in for them
+    FOUNDATION_SUITS.forEach((suit) => expect(foundationTop(suit)).toBe('empty')) // and the real cards are gone now that the ghosts stand in for them
 
     // No commit ever drew a pile bare without the cascade's ghosts ON SCREEN to stand in for it (that was ~140ms of empty piles,
     // then - blanking in the commit that mounted the ghosts - a frame or two of blank-faced ones)...
@@ -561,7 +562,7 @@ describe('Canfield screen - the win cascade takes over from the real foundation 
   })
 
   it('leaves the finished piles up when no chain can start, instead of blanking them with nothing to show', async () => {
-    SUITS.forEach((suit) => mockNoSlot.add(suit))
+    FOUNDATION_SUITS.forEach((suit) => mockNoSlot.add(suit))
     await mount(ONE_CARD_FROM_WON())
 
     await press(`reserve-${id('clubs', 13)}`)
@@ -570,7 +571,7 @@ describe('Canfield screen - the win cascade takes over from the real foundation 
     expect(screen.getByTestId('win-banner')).toBeTruthy()
     expect(mockLog.cascadeChains).toBe(0)
     expect(screen.queryByTestId('cascade-ghosts')).toBeNull()
-    expect(SUITS.map((suit) => foundationTop(suit))).toEqual([id('clubs', 13), id('diamonds', 13), id('hearts', 13), id('spades', 13)])
+    expect(FOUNDATION_SUITS.map((suit) => foundationTop(suit))).toEqual(FOUNDATION_SUITS.map((suit) => id(suit, 13)))
   })
 })
 
@@ -631,9 +632,9 @@ describe('Canfield screen - a card never moves without its own flight', () => {
   it('undoing a foundation move whose card is buried under an auto-played card flies THAT card (not the one on top) from the pile', async () => {
     // The player sent the 3 of clubs up; the auto-play then put the 4 on top of it - in a save written before auto-plays became
     // their own undo steps, the 4 has no entry of its own.
-    const before = board({ tableau: [[card('clubs', 3)], [card('clubs', 4)]], foundation: [pile('clubs', 2), [], [], []] })
-    const after = board({ foundation: [pile('clubs', 4), [], [], []] })
-    const entry = { state: before, move: { from: { zone: 'tableau', index: 0 } as PileRef, to: { zone: 'foundation', index: SUITS.indexOf('clubs') } as PileRef, count: 1, anchorCardId: id('clubs', 3) } }
+    const before = board({ tableau: [[card('clubs', 3)], [card('clubs', 4)]], foundation: [[], [], pile('clubs', 2), []] })
+    const after = board({ foundation: [[], [], pile('clubs', 4), []] })
+    const entry = { state: before, move: { from: { zone: 'tableau', index: 0 } as PileRef, to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') } as PileRef, count: 1, anchorCardId: id('clubs', 3) } }
     await mount(after, [entry], 0) // the 3 is buried: only a foundation's top card (the 4) is in the registry
     expect(mockRegistered.has(id('clubs', 3))).toBe(false)
 
@@ -649,7 +650,7 @@ describe('Canfield screen - a card never moves without its own flight', () => {
 
 describe('Canfield screen - a foundation pile keeps showing the card that has landed while other cards are still flying', () => {
   /** The Ace of clubs is up, the 2 and the 3 each sit alone in a column (a diamond in the reserve keeps the game unfinished). */
-  const TWO_THEN_THREE = () => board({ tableau: [[card('clubs', 2)], [card('clubs', 3)]], reserve: [card('diamonds', 5)], foundation: [pile('clubs', 1), [], [], []] })
+  const TWO_THEN_THREE = () => board({ tableau: [[card('clubs', 2)], [card('clubs', 3)]], reserve: [card('diamonds', 5)], foundation: [[], [], pile('clubs', 1), []] })
 
   it('two quick taps: once the first card lands, the pile shows it under the second ghost instead of reverting to the card from before both', async () => {
     await mount(TWO_THEN_THREE(), [], 3)
@@ -683,7 +684,7 @@ describe('Canfield screen - a foundation pile keeps showing the card that has la
     await flush(10)
 
     expect(mockLog.dealt.length).toBeGreaterThan(0) // the deal is in flight, the starter's card among them
-    const starterSuit = SUITS.find((suit) => foundationTop(suit) !== 'empty')!
+    const starterSuit = FOUNDATION_SUITS.find((suit) => foundationTop(suit) !== 'empty')!
     expect(underGhost(starterSuit)).toBe('empty') // not the old game's top card, and not the starter itself before it has flown in
 
     await flush(FLIGHT_MS + 50) // the deal lands
@@ -723,7 +724,7 @@ describe('Canfield screen - every auto-played step is its own undo step', () => 
   it('the safe cards a foundation tap sets off are taken back one at a time, before the tap itself', async () => {
     mockAutoMove = true
     // Tapping the 3 of clubs up makes the red 2s safe; the 10 of clubs in the reserve keeps the board from finishing itself.
-    await mount(board({ tableau: [[card('clubs', 3)], [card('diamonds', 2)], [card('hearts', 2)], [card('spades', 5)]], reserve: [card('clubs', 10)], foundation: [pile('clubs', 2), pile('diamonds', 1), pile('hearts', 1), pile('spades', 1)] }), [], 5)
+    await mount(board({ tableau: [[card('clubs', 3)], [card('diamonds', 2)], [card('hearts', 2)], [card('spades', 5)]], reserve: [card('clubs', 10)], foundation: [pile('spades', 1), pile('diamonds', 1), pile('clubs', 2), pile('hearts', 1)] }), [], 5)
 
     await press(`card-${id('clubs', 3)}`)
     await flush(1000)
@@ -747,8 +748,7 @@ describe('Canfield screen - every auto-played step is its own undo step', () => 
     mockAutoMove = true
     // Tapping the 10 of clubs up leaves a board that finishes itself: one draw-3 turns up the J (waste top), which goes
     // straight up with the Q and K after it.
-    const others = [pile('diamonds', 13), pile('hearts', 13), pile('spades', 13)]
-    await mount(board({ tableau: [[card('clubs', 10)]], foundation: [pile('clubs', 9), ...others], stock: [card('clubs', 13), card('clubs', 12), card('clubs', 11)] }), [], 2)
+    await mount(board({ tableau: [[card('clubs', 10)]], foundation: [pile('spades', 13), pile('diamonds', 13), pile('clubs', 9), pile('hearts', 13)], stock: [card('clubs', 13), card('clubs', 12), card('clubs', 11)] }), [], 2)
 
     await press(`card-${id('clubs', 10)}`)
     await flush(1500)
@@ -800,7 +800,7 @@ describe("Canfield screen - once the board is solved, any move of the player's f
   }
 
   /** Hearts and spades are home, clubs up to the 9 and diamonds up to the 10: the club 10-K and the diamond J-K are left. */
-  const HOME = () => [pile('clubs', 9), pile('diamonds', 10), pile('hearts', 13), pile('spades', 13)]
+  const HOME = () => [pile('spades', 13), pile('diamonds', 10), pile('clubs', 9), pile('hearts', 13)]
   /** The two columns every solved board here shares: the club J goes on the diamond Q. */
   const COLUMNS = () => [
     [card('clubs', 13), card('diamonds', 12)],
@@ -878,7 +878,7 @@ describe("Canfield screen - once the board is solved, any move of the player's f
     mockAutoMove = true
     // Tapping the club 10 up makes the diamond 10 in the reserve go up after it (a safe card, and the rest can clear); that empties
     // the reserve, and the finish takes the rest.
-    await mount(board({ tableau: [[card('clubs', 10)], [card('clubs', 13), card('diamonds', 12), card('clubs', 11)], [card('diamonds', 13), card('clubs', 12), card('diamonds', 11)]], reserve: [card('diamonds', 10)], foundation: [pile('clubs', 9), pile('diamonds', 9), pile('hearts', 13), pile('spades', 13)] }), [], 8)
+    await mount(board({ tableau: [[card('clubs', 10)], [card('clubs', 13), card('diamonds', 12), card('clubs', 11)], [card('diamonds', 13), card('clubs', 12), card('diamonds', 11)]], reserve: [card('diamonds', 10)], foundation: [pile('spades', 13), pile('diamonds', 9), pile('clubs', 9), pile('hearts', 13)] }), [], 8)
 
     await press(`card-${id('clubs', 10)}`)
     await flush(3000)
@@ -902,7 +902,7 @@ describe("Canfield screen - once the board is solved, any move of the player's f
           { ...card('clubs', 12), faceUp: false },
           { ...card('clubs', 11), faceUp: false }
         ],
-        foundation: [pile('clubs', 9), pile('diamonds', 12), pile('hearts', 13), pile('spades', 13)]
+        foundation: [pile('spades', 13), pile('diamonds', 12), pile('clubs', 9), pile('hearts', 13)]
       }),
       [],
       4
@@ -926,7 +926,7 @@ describe("Canfield screen - once the board is solved, any move of the player's f
     ['a card in the waste', { reserve: [card('clubs', 11)], waste: [card('hearts', 13)] }, 8]
   ])('does not start while there is still %s, even when every card could go up', async (_label, parts, onBoard) => {
     mockAutoMove = true
-    await mount(board({ tableau: COLUMNS(), foundation: [pile('clubs', 9), pile('diamonds', 10), pile('hearts', 12), pile('spades', 13)], ...parts }), [], onBoard)
+    await mount(board({ tableau: COLUMNS(), foundation: [pile('spades', 13), pile('diamonds', 10), pile('clubs', 9), pile('hearts', 12)], ...parts }), [], onBoard)
 
     await press(`reserve-${id('clubs', 11)}`) // onto the diamond Q, as above
     await flush(3000)
@@ -993,7 +993,7 @@ describe("Canfield screen - once the board is solved, any move of the player's f
   it('undoing a column move that left the board unsolved, back onto a solved one, does not start it - even an undo with no flight to wait for', async () => {
     mockAutoMove = true
     // Solved - until the club J goes onto the diamond Q, burying the club 10 it has to follow up (the 10 lies under the Q).
-    await mount(board({ tableau: [[card('clubs', 10), card('diamonds', 12)], [card('clubs', 11)], [card('clubs', 13), card('diamonds', 13)], [card('clubs', 12)]], foundation: [pile('clubs', 9), pile('diamonds', 11), pile('hearts', 13), pile('spades', 13)] }), [], 6)
+    await mount(board({ tableau: [[card('clubs', 10), card('diamonds', 12)], [card('clubs', 11)], [card('clubs', 13), card('diamonds', 13)], [card('clubs', 12)]], foundation: [pile('spades', 13), pile('diamonds', 11), pile('clubs', 9), pile('hearts', 13)] }), [], 6)
     await press(`card-${id('clubs', 11)}`) // a move of the player's, not to a foundation
     await flush(500)
     expect(mockLog.shown).toEqual([id('clubs', 11)])
@@ -1011,7 +1011,7 @@ describe("Canfield screen - once the board is solved, any move of the player's f
   it('a new deal that happens to be solved is not filed away, even while a foundation play of the player has the finish waiting for one', async () => {
     mockAutoMove = true
     // The reserve still holds a face-down card under the club J: not solved, so the finish the foundation play allows waits.
-    await mount(board({ tableau: COLUMNS(), reserve: [{ ...card('hearts', 13), faceUp: false }, card('clubs', 11)], foundation: [pile('clubs', 9), pile('diamonds', 10), pile('hearts', 12), pile('spades', 13)] }), [], 7)
+    await mount(board({ tableau: COLUMNS(), reserve: [{ ...card('hearts', 13), faceUp: false }, card('clubs', 11)], foundation: [pile('spades', 13), pile('diamonds', 10), pile('clubs', 9), pile('hearts', 12)] }), [], 7)
     await press(`card-${id('clubs', 10)}`)
     await flush(50) // before its cascade's first card
     expect(mockLog.shown).toEqual([id('clubs', 10)])

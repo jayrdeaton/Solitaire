@@ -3,7 +3,8 @@ import { useEffect } from 'react'
 import { StyleSheet, type ViewStyle } from 'react-native'
 
 import { ChainSpec, useWinCascade, WIN_CASCADE_PAINT_MAX_MS, WinCascadeController, WinCascadeGhosts, WinCascadeProvider } from '@/components/winning/WinCascadeLayer'
-import { Card, Suit, SUITS } from '@/engine/types'
+import { FOUNDATION_SUITS } from '@/engine/foundation'
+import { Card, Suit } from '@/engine/types'
 import KlondikeScreen from '@/games/klondike/KlondikeScreen'
 import { KlondikeState } from '@/games/klondike/rules'
 
@@ -428,12 +429,12 @@ describe('a game screen hands its piles over to the real cascade only once the g
   /** Every card home except the King of clubs, alone in a column: tapping it wins. */
   const KING_IN_COLUMN = (): KlondikeState => ({
     tableau: Array.from({ length: 7 }, (_, i) => (i === 0 ? [card('clubs', 13)] : [])),
-    foundation: SUITS.map((suit) => Array.from({ length: suit === 'clubs' ? 12 : 13 }, (_, i) => card(suit, i + 1))),
+    foundation: FOUNDATION_SUITS.map((suit) => Array.from({ length: suit === 'clubs' ? 12 : 13 }, (_, i) => card(suit, i + 1))),
     stock: [],
     waste: []
   })
-  const kings = () => SUITS.map((suit) => mockKingId(suit))
-  const foundationTops = () => SUITS.map((suit) => screen.getByTestId(`foundation-${suit}`).props.children as string)
+  const kings = () => FOUNDATION_SUITS.map((suit) => mockKingId(suit))
+  const foundationTops = () => FOUNDATION_SUITS.map((suit) => screen.getByTestId(`foundation-${suit}`).props.children as string)
 
   async function mountWinnable() {
     seedGameInProgress('klondike', { state: KING_IN_COLUMN(), undoStack: [], moves: 0, elapsedSeconds: 0, config: 1 })
@@ -462,12 +463,12 @@ describe('a game screen hands its piles over to the real cascade only once the g
 
     await paint(kings().slice(0, 3))
     expect(foundationTops()).toEqual(kings()) // one head still loading: still nobody hands over
-    await paint([mockKingId(SUITS[3])])
+    await paint([mockKingId(FOUNDATION_SUITS[3])])
 
     for (const king of kings()) expect(mockGhostOnScreen(king)).toBe(true)
-    expect(foundationTops()).toEqual(SUITS.map(() => 'empty'))
+    expect(foundationTops()).toEqual(FOUNDATION_SUITS.map(() => 'empty'))
     // Every pile went bare exactly once, and in that commit its King's ghost already stood there, painted.
-    expect(mockBlankCommits.map((c) => c.suit).sort()).toEqual([...SUITS].sort())
+    expect(mockBlankCommits.map((c) => c.suit).sort()).toEqual([...FOUNDATION_SUITS].sort())
     expect(mockBlankCommits.filter((c) => !c.ghostDrawn || !c.ghostPainted)).toEqual([])
   })
 
@@ -477,7 +478,7 @@ describe('a game screen hands its piles over to the real cascade only once the g
 
     await advance(WIN_CASCADE_PAINT_MAX_MS)
 
-    expect(foundationTops()).toEqual(SUITS.map(() => 'empty'))
+    expect(foundationTops()).toEqual(FOUNDATION_SUITS.map(() => 'empty'))
     expect(mockBlankCommits.filter((c) => !c.ghostDrawn)).toEqual([])
   })
 
@@ -492,7 +493,7 @@ describe('a game screen hands its piles over to the real cascade only once the g
     await advance(1000)
 
     expect(screen.queryAllByTestId(/^ghost-/)).toHaveLength(0)
-    expect(foundationTops()).toEqual(SUITS.map((suit) => (suit === 'clubs' ? 'clubs-12-0' : mockKingId(suit)))) // the King flew home
+    expect(foundationTops()).toEqual(FOUNDATION_SUITS.map((suit) => (suit === 'clubs' ? 'clubs-12-0' : mockKingId(suit)))) // the King flew home
     expect(mockBlankCommits).toEqual([])
   })
 })

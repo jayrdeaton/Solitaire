@@ -14,6 +14,7 @@
 
 import { FinishMove, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
 import { shuffledDeck } from '@/engine/deck'
+import { FOUNDATION_SUITS } from '@/engine/foundation'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { top } from '@/engine/pile'
 import { Card, cardColor, Rank, Suit, SUITS } from '@/engine/types'
@@ -21,7 +22,7 @@ import { Card, cardColor, Rank, Suit, SUITS } from '@/engine/types'
 export interface CanfieldState {
   /** 4 tableau columns, each dealt 1 card face up. */
   tableau: Card[][]
-  /** 4 foundation piles, indexed to match engine/types SUITS order - each must start at
+  /** 4 foundation piles, indexed to match engine/foundation's FOUNDATION_SUITS order - each must start at
    * `foundationRank` and proceeds through a full 13-card cycle (wrapping King -> Ace). */
   foundation: Card[][]
   /** The rank every foundation starts from - set once, at deal, from the very first card cut from
@@ -35,7 +36,7 @@ export interface CanfieldState {
 }
 
 function suitIndex(suit: Suit): number {
-  return SUITS.indexOf(suit)
+  return FOUNDATION_SUITS.indexOf(suit)
 }
 
 /** The rank one below `rank` in a descending tableau run, wrapping Ace (1) to King (13) - unlike

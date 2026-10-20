@@ -1,5 +1,6 @@
 import { isFullyAutoCompletable } from '@/engine/autoFoundation'
-import { Card, Suit, SUITS } from '@/engine/types'
+import { FOUNDATION_SUITS } from '@/engine/foundation'
+import { Card, Suit } from '@/engine/types'
 import { canAutoFinish, createYukonController, nextFinishMove, YukonState } from '@/games/yukon/rules'
 
 function card(suit: Card['suit'], rank: Card['rank'], faceUp = true, deckIndex = 0): Card {
@@ -116,10 +117,10 @@ describe('Yukon tryMove', () => {
 
   it("lets a foundation's top card come back down onto a legal tableau spot", () => {
     const controller = createYukonController()
-    const clubs = SUITS.indexOf('clubs')
+    const clubs = FOUNDATION_SUITS.indexOf('clubs')
     const state: YukonState = {
       tableau: [[card('hearts', 3)], [], [], [], [], [], []],
-      foundation: SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : []))
+      foundation: FOUNDATION_SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : []))
     }
     const result = controller.tryMove(state, { from: { zone: 'foundation', index: clubs }, to: { zone: 'tableau', index: 0 }, count: 1 })
     expect(result).not.toBeNull()
@@ -129,14 +130,14 @@ describe('Yukon tryMove', () => {
 
   it('refuses a foundation card anywhere but a legal tableau spot, and more than one card at a time', () => {
     const controller = createYukonController()
-    const clubs = SUITS.indexOf('clubs')
+    const clubs = FOUNDATION_SUITS.indexOf('clubs')
     const state: YukonState = {
       tableau: [[card('spades', 3)], [card('hearts', 3)], [], [], [], [], []],
-      foundation: SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : s === 'diamonds' ? [card('diamonds', 1)] : []))
+      foundation: FOUNDATION_SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : s === 'diamonds' ? [card('diamonds', 1)] : []))
     }
     const from = { zone: 'foundation' as const, index: clubs }
     expect(controller.tryMove(state, { from, to: { zone: 'tableau', index: 0 }, count: 1 })).toBeNull() // same color
-    expect(controller.tryMove(state, { from, to: { zone: 'foundation', index: SUITS.indexOf('diamonds') }, count: 1 })).toBeNull()
+    expect(controller.tryMove(state, { from, to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('diamonds') }, count: 1 })).toBeNull()
     expect(controller.tryMove(state, { from, to: { zone: 'tableau', index: 1 }, count: 2 })).toBeNull()
   })
 
@@ -144,9 +145,9 @@ describe('Yukon tryMove', () => {
     const controller = createYukonController()
     const state: YukonState = {
       tableau: [[card('hearts', 3)], [], [], [], [], [], []],
-      foundation: SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : []))
+      foundation: FOUNDATION_SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : []))
     }
-    expect(controller.tryMove(state, { from: { zone: 'foundation', index: SUITS.indexOf('clubs') }, to: { zone: 'tableau', index: 0 }, count: 1 })).not.toBeNull()
+    expect(controller.tryMove(state, { from: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') }, to: { zone: 'tableau', index: 0 }, count: 1 })).not.toBeNull()
     expect(controller.legalMoves(state).filter((m) => m.from.zone === 'foundation')).toEqual([])
   })
 
@@ -197,11 +198,11 @@ describe('Yukon tryMove', () => {
     }
     const result = controller.tryMove(state, {
       from: { zone: 'tableau', index: 0 },
-      to: { zone: 'foundation', index: SUITS.indexOf('clubs') },
+      to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') },
       count: 1
     })
     expect(result).not.toBeNull()
-    expect(result!.foundation[SUITS.indexOf('clubs')].map((c) => c.id)).toEqual(['clubs-1-0'])
+    expect(result!.foundation[FOUNDATION_SUITS.indexOf('clubs')].map((c) => c.id)).toEqual(['clubs-1-0'])
     expect(result!.tableau[0].length).toBe(0)
   })
 
@@ -219,7 +220,7 @@ describe('Yukon tryMove', () => {
     expect(
       controller.tryMove(state, {
         from: { zone: 'tableau', index: 0 },
-        to: { zone: 'foundation', index: SUITS.indexOf('clubs') },
+        to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') },
         count: 2
       })
     ).toBeNull()
@@ -227,7 +228,7 @@ describe('Yukon tryMove', () => {
     expect(
       controller.tryMove(state, {
         from: { zone: 'tableau', index: 1 },
-        to: { zone: 'foundation', index: SUITS.indexOf('clubs') },
+        to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') },
         count: 1
       })
     ).toBeNull()
@@ -255,7 +256,7 @@ describe('Yukon legalMoves', () => {
 describe('Yukon isWon', () => {
   it('returns true when all foundations are complete (Ace..King)', () => {
     const controller = createYukonController()
-    const foundation: Card[][] = SUITS.map((suit) => {
+    const foundation: Card[][] = FOUNDATION_SUITS.map((suit) => {
       const pile: Card[] = []
       for (let rank = 1; rank <= 13; rank++) {
         pile.push({ id: `${suit}-${rank}-0`, suit, rank: rank as Card['rank'], faceUp: true })
@@ -274,7 +275,7 @@ describe('Yukon isWon', () => {
     const ace: Card = { id: 'clubs-1-0', suit: 'clubs', rank: 1, faceUp: true }
     const state: YukonState = {
       tableau: [[], [], [], [], [], [], []],
-      foundation: [[ace], [], [], []]
+      foundation: [[], [], [ace], []]
     }
     expect(controller.isWon(state)).toBe(false)
   })
@@ -400,14 +401,14 @@ describe('Yukon canAutoFinish / nextFinishMove - the finish only takes a SOLVED 
   }
   const board = (tableau: Card[][], foundation: Card[][]): YukonState => ({ tableau: Array.from({ length: 7 }, (_, i) => tableau[i] ?? []), foundation })
   /** A whole deck: 41 cards home, the other 11 face up in three columns that clear by foundation moves alone. */
-  const SOLVED = () => board([run('clubs', 13, 10), run('diamonds', 13, 10), run('hearts', 13, 11)], [foundationUpTo('clubs', 9), foundationUpTo('diamonds', 9), foundationUpTo('hearts', 10), foundationUpTo('spades', 13)])
+  const SOLVED = () => board([run('clubs', 13, 10), run('diamonds', 13, 10), run('hearts', 13, 11)], [foundationUpTo('spades', 13), foundationUpTo('diamonds', 9), foundationUpTo('clubs', 9), foundationUpTo('hearts', 10)])
 
   it('is true once every card is face up and the rest can go up by foundation moves alone', () => {
     expect(canAutoFinish(controller, SOLVED())).toBe(true)
     const step = nextFinishMove(controller, SOLVED())!
     expect(step.entry.card).toMatchObject({ suit: 'clubs', rank: 10 })
     expect(step.entry.ref).toEqual({ zone: 'tableau', index: 0 })
-    expect(step.to).toEqual({ zone: 'foundation', index: SUITS.indexOf('clubs') })
+    expect(step.to).toEqual({ zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') })
   })
 
   it('is false while a card is still face down, even one the foundation moves would turn over (that would give away what is under it)', () => {
@@ -428,7 +429,7 @@ describe('Yukon canAutoFinish / nextFinishMove - the finish only takes a SOLVED 
   it('is false on a won board (nothing left to finish)', () => {
     const won = board(
       [],
-      SUITS.map((suit) => foundationUpTo(suit, 13))
+      FOUNDATION_SUITS.map((suit) => foundationUpTo(suit, 13))
     )
     expect(controller.isWon(won)).toBe(true)
     expect(canAutoFinish(controller, won)).toBe(false)
@@ -439,7 +440,7 @@ describe('Yukon canAutoFinish / nextFinishMove - the finish only takes a SOLVED 
     let state = SOLVED()
     let played = 0
     for (let step = nextFinishMove(controller, state); step; step = nextFinishMove(controller, state)) {
-      expect(step.to).toEqual({ zone: 'foundation', index: SUITS.indexOf(step.entry.card.suit) })
+      expect(step.to).toEqual({ zone: 'foundation', index: FOUNDATION_SUITS.indexOf(step.entry.card.suit) })
       const next = controller.tryMove(state, { from: step.entry.ref, to: step.to, count: 1 })
       expect(next).not.toBeNull()
       state = next!
@@ -449,14 +450,14 @@ describe('Yukon canAutoFinish / nextFinishMove - the finish only takes a SOLVED 
     expect(controller.isWon(state)).toBe(true)
   })
 
-  it.each(SUITS)("sends a %s card to that suit's foundation", (suit) => {
+  it.each(FOUNDATION_SUITS)("sends a %s card to that suit's foundation", (suit) => {
     const state = board(
       [run(suit, 13, 1)],
-      SUITS.map((other) => (other === suit ? [] : foundationUpTo(other, 13)))
+      FOUNDATION_SUITS.map((other) => (other === suit ? [] : foundationUpTo(other, 13)))
     )
     expect(canAutoFinish(controller, state)).toBe(true)
     const step = nextFinishMove(controller, state)!
     expect(step.entry.card).toMatchObject({ suit, rank: 1 })
-    expect(step.to).toEqual({ zone: 'foundation', index: SUITS.indexOf(suit) })
+    expect(step.to).toEqual({ zone: 'foundation', index: FOUNDATION_SUITS.indexOf(suit) })
   })
 })

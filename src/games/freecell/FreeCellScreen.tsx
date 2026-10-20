@@ -28,13 +28,14 @@ import { useTakeOffHold } from '@/components/useTakeOffHold'
 import { PipFireworks } from '@/components/winning/PipFireworks'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { FREECELL_RULES } from '@/constants/gameRules'
+import { FOUNDATION_SUITS } from '@/engine/foundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
 import { parFor } from '@/engine/par'
 import { isDescendingAltColor, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
-import { Card, SUITS } from '@/engine/types'
+import { Card } from '@/engine/types'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { showNoHintToast } from '@/games/shared/gameToasts'
@@ -1035,7 +1036,7 @@ function FreeCellScreenInner() {
                     card={winRevealed && cascadeHandoff?.state === state && cascadeHandoff.suits.has(i) ? undefined : t}
                     isFlyingHere={isFlyingHere}
                     settledCard={pile[pile.length - 1 - flightsInAir] ?? null}
-                    suit={SUITS[i]}
+                    suit={FOUNDATION_SUITS[i]}
                     highlighted={hintCountFor(activeHint, { zone: 'foundation', index: i }) > 0}
                     slotRef={(el) => {
                       foundationSlotRefs.current[i] = el

@@ -306,13 +306,23 @@ interface FoundationSlotProps {
   style?: StyleProp<ViewStyle>
 }
 
+const FOUNDATION_WATERMARK_INK = '#FFFFFF'
+// Faded as one layer on top of CardFace's own muted opacity (an ink with alpha fades each shape on its own, so a
+// club's overlapping lobes show their seams).
+const FOUNDATION_WATERMARK_OPACITY = 0.7
+
 export function FoundationSlot({ suit, rank = 1, onPress, hinted, style }: FoundationSlotProps) {
   const colors = useTableColors()
   const { settings } = useSettings()
   const { width, height } = useCardSize()
+  // A muted CardFace draws in the black ink at a fixed 35% opacity, which barely showed on the dark felt: hand it a
+  // white ink instead, so the ghosted ace reads like the slot's outline.
+  const watermarkColors = React.useMemo(() => ({ ...colors, textBlack: FOUNDATION_WATERMARK_INK, textBlackInverted: FOUNDATION_WATERMARK_INK }), [colors])
   return (
     <EmptySlot onPress={onPress} hinted={hinted} style={style}>
-      <CardFace card={{ id: 'foundation-hint', suit, rank, faceUp: true }} colors={colors} width={width} height={height} muted cardStyle={settings.cardStyle} invertDarkModeColors={settings.invertDarkModeColors} />
+      <View style={{ height, opacity: FOUNDATION_WATERMARK_OPACITY, width }}>
+        <CardFace card={{ id: 'foundation-hint', suit, rank, faceUp: true }} colors={watermarkColors} width={width} height={height} muted cardStyle={settings.cardStyle} invertDarkModeColors={settings.invertDarkModeColors} />
+      </View>
     </EmptySlot>
   )
 }

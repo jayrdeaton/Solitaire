@@ -1,8 +1,9 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
 import { AUTO_PLAY_STAGGER_MS, dropSpringFor, FINISH_RAMP_START_MS, FINISH_STAGGER_MS, finishGapMs, FLIGHT_SPRING, scaledMs, springSettleMs } from '@/components/dragdrop/dragSpring'
+import { FOUNDATION_SUITS } from '@/engine/foundation'
 import { PileRef } from '@/engine/gameTypes'
-import { Card, Suit, SUITS } from '@/engine/types'
+import { Card, Suit } from '@/engine/types'
 import FreeCellScreen from '@/games/freecell/FreeCellScreen'
 import { FreeCellController, FreeCellState } from '@/games/freecell/rules'
 import { FINISH_LANDING_WAIT_MS } from '@/games/shared/useAutoFinish'
@@ -64,7 +65,7 @@ let mockGhostsShowTimer: ReturnType<typeof setTimeout> | undefined
 /** Suits whose foundation slot container fails to measure (the rare origin-measurement failure). */
 const mockUnmeasurableSlots = new Set<string>()
 /** What every foundation cell shows right now - read from inside the mocked cascade, hence hoisted-mock naming. */
-const mockFoundationsNow = () => SUITS.map((suit) => screen.getByTestId(`foundation-${suit}`).props.children as string)
+const mockFoundationsNow = () => FOUNDATION_SUITS.map((suit) => screen.getByTestId(`foundation-${suit}`).props.children as string)
 
 function mockMakeFlight(cards = '') {
   return {
@@ -275,14 +276,14 @@ const TWO_DEADLOCKS_BOARD = () => board([column('clubs', 13, 3), column('diamond
 const CLUBS_LEFT_TWO_ON_ACE = (): FreeCellState => ({
   tableau: [column('clubs', 13, 3), [card('clubs', 1), card('clubs', 2)], [], [], [], [], [], []],
   freecells: [null, null, null, null],
-  foundation: SUITS.map((suit) => (suit === 'clubs' ? [] : column(suit, 13, 1).reverse()))
+  foundation: FOUNDATION_SUITS.map((suit) => (suit === 'clubs' ? [] : column(suit, 13, 1).reverse()))
 })
 
 /** Every card is home except the King of clubs, sitting alone in a column: tapping it wins the game. */
 const ONE_CARD_FROM_WON = (): FreeCellState => ({
   tableau: [[card('clubs', 13)], [], [], [], [], [], [], []],
   freecells: [null, null, null, null],
-  foundation: SUITS.map((suit) => column(suit, suit === 'clubs' ? 12 : 13, 1).reverse())
+  foundation: FOUNDATION_SUITS.map((suit) => column(suit, suit === 'clubs' ? 12 : 13, 1).reverse())
 })
 
 const HOLD_MS = 400 // useWinReveal's WIN_REVEAL_HOLD_MS
@@ -321,7 +322,7 @@ async function mount(state: FreeCellState, expectedCards = 52) {
 }
 
 const foundationTop = (suit: Suit) => screen.getByTestId(`foundation-${suit}`).props.children as string
-const foundationTops = () => Object.fromEntries(SUITS.map((s) => [s, foundationTop(s)]))
+const foundationTops = () => Object.fromEntries(FOUNDATION_SUITS.map((s) => [s, foundationTop(s)]))
 /** Cards still on the tableau/freecells - so 52 minus this is the number on the foundations. */
 const cardsOnBoard = () => screen.queryAllByTestId(/^card-|^freecell-/).length
 
@@ -353,7 +354,7 @@ function expectFinishRamp(triggerStart: number, starts: number[]) {
   }
 }
 
-const CLUBS_FOUNDATION: PileRef = { zone: 'foundation', index: SUITS.indexOf('clubs') }
+const CLUBS_FOUNDATION: PileRef = { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') }
 const EMPTY_COLUMN: PileRef = { zone: 'tableau', index: 6 }
 const FREECELL: PileRef = { zone: 'freecell', index: 0 }
 
@@ -758,7 +759,7 @@ describe('FreeCell screen - the win celebration waits for the winning card to fl
 
 describe('FreeCell screen - the foundation piles hand over to the win cascade once its ghosts show', () => {
   const settleAndHold = 10 + FLIGHT_MS + HOLD_MS + MOCK_GHOSTS_SHOW_MS + 100
-  const kings = () => SUITS.map((suit) => id(suit, 13))
+  const kings = () => FOUNDATION_SUITS.map((suit) => id(suit, 13))
 
   it('every pile is still fully drawn when the cascade starts and until its ghosts show, and they blank in the commit that follows - never a frame of empty piles before the ghosts', async () => {
     await mount(ONE_CARD_FROM_WON(), 1)
@@ -778,8 +779,8 @@ describe('FreeCell screen - the foundation piles hand over to the win cascade on
     await flushUntil(() => mockLog.events.includes('ghosts-shown'))
     expect(mockLog.foundationsAtGhostsShown).toEqual(kings())
     // The piles blanked in the commit that follows the ghosts showing: already, within the very step it happened in (not on a later timer).
-    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...SUITS.map((suit) => `blank-${suit}`)])
-    expect(Object.values(foundationTops())).toEqual(SUITS.map(() => 'empty'))
+    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...FOUNDATION_SUITS.map((suit) => `blank-${suit}`)])
+    expect(Object.values(foundationTops())).toEqual(FOUNDATION_SUITS.map(() => 'empty'))
     expect(screen.getByTestId('win-banner')).toBeTruthy()
   })
 
@@ -792,8 +793,8 @@ describe('FreeCell screen - the foundation piles hand over to the win cascade on
     expect(mockLog.chainsAtWinCascade).toBe(4)
     expect(mockLog.foundationsAtWinCascade).toEqual(kings())
     expect(mockLog.foundationsAtGhostsShown).toEqual(kings())
-    expect(mockLog.events.slice(mockLog.events.indexOf('cascade'))).toEqual(['cascade', 'ghosts-shown', ...SUITS.map((suit) => `blank-${suit}`)])
-    expect(Object.values(foundationTops())).toEqual(SUITS.map(() => 'empty'))
+    expect(mockLog.events.slice(mockLog.events.indexOf('cascade'))).toEqual(['cascade', 'ghosts-shown', ...FOUNDATION_SUITS.map((suit) => `blank-${suit}`)])
+    expect(Object.values(foundationTops())).toEqual(FOUNDATION_SUITS.map(() => 'empty'))
   })
 
   it('a pile whose slot cannot be measured keeps its real card (it gets no chain, so nothing would stand in), while the rest hand over', async () => {
@@ -805,13 +806,13 @@ describe('FreeCell screen - the foundation piles hand over to the win cascade on
 
     expect(mockLog.chainsAtWinCascade).toBe(3)
     expect(mockLog.foundationsAtWinCascade).toEqual(kings())
-    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...SUITS.filter((suit) => suit !== 'hearts').map((suit) => `blank-${suit}`)])
+    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...FOUNDATION_SUITS.filter((suit) => suit !== 'hearts').map((suit) => `blank-${suit}`)])
     expect(foundationTops()).toEqual({ clubs: 'empty', diamonds: 'empty', hearts: id('hearts', 13), spades: 'empty' })
     expect(screen.getByTestId('win-banner')).toBeTruthy()
   })
 
   it('leaves every pile up when no chain can start, instead of blanking them with nothing to show', async () => {
-    SUITS.forEach((suit) => mockUnmeasurableSlots.add(suit))
+    FOUNDATION_SUITS.forEach((suit) => mockUnmeasurableSlots.add(suit))
     await mount(ONE_CARD_FROM_WON(), 1)
 
     await tap(id('clubs', 13))
@@ -827,7 +828,7 @@ describe('FreeCell screen - the foundation piles hand over to the win cascade on
     await mount(ONE_CARD_FROM_WON(), 1)
     await tap(id('clubs', 13))
     await flush(settleAndHold)
-    expect(Object.values(foundationTops())).toEqual(SUITS.map(() => 'empty'))
+    expect(Object.values(foundationTops())).toEqual(FOUNDATION_SUITS.map(() => 'empty'))
 
     await act(async () => {
       fireEvent.press(screen.getByTestId('undo'))
@@ -842,7 +843,7 @@ describe('FreeCell screen - the foundation piles hand over to the win cascade on
     await mount(ONE_CARD_FROM_WON(), 1)
     await tap(id('clubs', 13))
     await flush(settleAndHold)
-    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...SUITS.map((suit) => `blank-${suit}`)]) // the first win handed over
+    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...FOUNDATION_SUITS.map((suit) => `blank-${suit}`)]) // the first win handed over
 
     // The next deal is one move from won again.
     jest.spyOn(FreeCellController, 'newGame').mockReturnValue(ONE_CARD_FROM_WON())
@@ -861,7 +862,7 @@ describe('FreeCell screen - the foundation piles hand over to the win cascade on
     expect(mockLog.foundationsAtWinCascade).toEqual(kings()) // still every real card when the second cascade starts
     expect(mockLog.events).toEqual(['cascade'])
     await flushUntil(() => mockLog.events.includes('ghosts-shown'))
-    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...SUITS.map((suit) => `blank-${suit}`)])
+    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...FOUNDATION_SUITS.map((suit) => `blank-${suit}`)])
   })
 })
 

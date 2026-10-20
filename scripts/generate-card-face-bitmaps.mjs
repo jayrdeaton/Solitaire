@@ -83,6 +83,12 @@ ${PREVIEW_GAMES.map((g) => `export { build${PREVIEW_BUILDERS[g]}Preview } from '
 export { AppRegistry, CardFace, darkColors, lightColors }
 `
   )
+  // react-native-svg's web build imports React Native's asset registry, which React Native 0.88 no longer ships. Only an
+  // svg <Image> with a require()d asset reads it, and CardFace draws none, so a stub that finds nothing is enough. Two
+  // more stay out of the bundle (esbuild can't link them against react-native-web): expo-modules-core, reached only
+  // through Paper's optional icon-set requires (each in a try/catch), and react-native-svg's Android touch-sound module.
+  const assetRegistryStub = path.join(WORK_DIR, 'assets-registry.js')
+  fs.writeFileSync(assetRegistryStub, 'export function getAssetByID() { return undefined }\n')
   execSync(
     [
       `${path.join(ROOT, 'node_modules', '.bin', 'esbuild')} ${ENTRY_FILE}`,
@@ -93,7 +99,9 @@ export { AppRegistry, CardFace, darkColors, lightColors }
       '--conditions=react-native,browser',
       '--alias:react-native=react-native-web',
       `--alias:@=${path.join(ROOT, 'src')}`,
+      `--alias:@react-native/assets-registry/registry=${assetRegistryStub}`,
       '--external:react --external:react-dom --external:react-dom/server',
+      "--external:expo-modules-core --external:'*/NativeSvgSoundModule'",
       '--loader:.png=dataurl --loader:.ttf=dataurl --loader:.otf=dataurl --loader:.js=jsx',
       '--jsx=automatic',
       '--define:__DEV__=false --define:process.env.NODE_ENV=\\"production\\"',
@@ -154,11 +162,14 @@ function buildPages() {
       pages.push({ ...facePage, shots: cells.map(({ card, x, y }) => ({ kind: 'face', style, variant, suit: card.suit, rank: card.rank, clip: { x, y, width: CARD_W, height: CAPTURE_H } })) })
 
       const previewFaces = []
-      previewLayouts.forEach((placements, i) =>
+      previewLayouts.forEach((placements, i) => {
+        // Drawn through the tile's previewFrame, the same region GamePreview's viewBox shows, so the two layers line up.
+        const frame = mod.previewFrame(placements)
+        const s = (mod.PREVIEW_CANVAS_WIDTH / frame.width) * PREVIEW_SCALE
         placements.forEach((p) => {
-          if (p.faceUp && p.card) previewFaces.push({ card: p.card, x: p.x * PREVIEW_SCALE, y: i * previewStride + p.y * PREVIEW_SCALE, w: mod.PREVIEW_CARD_WIDTH * PREVIEW_SCALE, h: mod.PREVIEW_CARD_HEIGHT * PREVIEW_SCALE })
+          if (p.faceUp && p.card) previewFaces.push({ card: p.card, x: (p.x - frame.x) * s, y: i * previewStride + (p.y - frame.y) * s, w: mod.PREVIEW_CARD_WIDTH * s, h: mod.PREVIEW_CARD_HEIGHT * s })
         })
-      )
+      })
       const previewPage = writePage(`preview-${style}-${variant}`, colors, invert, style, previewFaces, previewW, PREVIEW_GAMES.length * previewStride)
       pages.push({ ...previewPage, shots: PREVIEW_GAMES.map((game, i) => ({ kind: 'preview', game, style, variant, clip: { x: 0, y: i * previewStride, width: previewW, height: previewH } })) })
     }

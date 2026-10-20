@@ -18,8 +18,8 @@
 // so the two never both try to fire a card at the same settle.
 
 import { AutoCompleteStep, findSafeAutoPlay, FinishMove, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
+import { suitIndex } from '@/engine/foundation'
 import { AccessibleCard } from '@/engine/gameTypes'
-import { SUITS } from '@/engine/types'
 
 import { FreeCellController, FreeCellState } from './rules'
 
@@ -30,7 +30,7 @@ export function canAutoFinish(state: FreeCellState): boolean {
 }
 
 function foundationStep(entry: AccessibleCard): FinishMove {
-  return { entry, to: { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) } }
+  return { entry, to: { zone: 'foundation', index: suitIndex(entry.card.suit) } }
 }
 
 /** The next card the finish should send up, or null if there's none (won, or not finishable). */

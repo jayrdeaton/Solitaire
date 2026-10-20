@@ -23,13 +23,14 @@ import { PipFireworks } from '@/components/winning/PipFireworks'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { YUKON_RULES } from '@/constants/gameRules'
 import { AutoCompleteStep, findSafeAutoPlay, isFullyAutoCompletable, nextAutoCompleteMove } from '@/engine/autoFoundation'
+import { FOUNDATION_SUITS, suitIndex } from '@/engine/foundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
 import { parFor } from '@/engine/par'
 import { alwaysValidRun, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
-import { Card, SUITS } from '@/engine/types'
+import { Card } from '@/engine/types'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { showNoHintToast } from '@/games/shared/gameToasts'
@@ -571,7 +572,7 @@ function YukonScreenInner() {
     if (canAutoFinish(controller, s)) return null
     if (!controller.accessibleCards) return null
     const entry = isFullyAutoCompletable(controller, s) ? nextAutoCompleteMove(controller, s) : findSafeAutoPlay(controller.accessibleCards(s), s.foundation)
-    return entry ? { kind: 'play', entry, to: { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) } } : null
+    return entry ? { kind: 'play', entry, to: { zone: 'foundation', index: suitIndex(entry.card.suit) } } : null
   }
 
   // Mirrors handleCardTap's tail, but there's no tap event to supply an origin - it has to measure
@@ -999,7 +1000,7 @@ function YukonScreenInner() {
                     card={cascadeTookOver ? undefined : t}
                     isFlyingHere={isFlyingHere}
                     settledCard={flightsInAir > 0 ? (pile[pile.length - 1 - flightsInAir] ?? null) : undefined}
-                    suit={SUITS[i]}
+                    suit={FOUNDATION_SUITS[i]}
                     highlighted={hintCountFor(activeHint, { zone: 'foundation', index: i }) > 0}
                     slotRef={(el) => {
                       foundationSlotRefs.current[i] = el

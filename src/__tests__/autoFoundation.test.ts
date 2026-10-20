@@ -1,6 +1,7 @@
 import { findSafeAutoPlay, isFullyAutoCompletable, isFullyAutoCompletableWithDraws, isSafeAutoPlay, nextAutoCompleteMove, nextAutoCompleteMoveWithDraws } from '@/engine/autoFoundation'
+import { FOUNDATION_SUITS } from '@/engine/foundation'
 import { AccessibleCard } from '@/engine/gameTypes'
-import { Card, Suit, SUITS } from '@/engine/types'
+import { Card, Suit } from '@/engine/types'
 import { FreeCellController, FreeCellState } from '@/games/freecell/rules'
 import { createKlondikeController, KlondikeState } from '@/games/klondike/rules'
 
@@ -8,11 +9,11 @@ function card(id: string, suit: Suit, rank: Card['rank'], faceUp = true): Card {
   return { id, suit, rank, faceUp }
 }
 
-/** A foundation Card[][] (SUITS order) with just a top card of the given rank per suit - 0/unset
+/** A foundation Card[][] (FOUNDATION_SUITS order) with just a top card of the given rank per suit - 0/unset
  * means that suit's foundation pile is still empty. isSafeAutoPlay/findSafeAutoPlay only ever read
  * the top card of a foundation pile, so a single-card pile is all these tests need. */
 function foundationAt(ranks: Partial<Record<Suit, Card['rank']>>): Card[][] {
-  return SUITS.map((suit) => (ranks[suit] ? [card(`${suit}-top`, suit, ranks[suit]!)] : []))
+  return FOUNDATION_SUITS.map((suit) => (ranks[suit] ? [card(`${suit}-top`, suit, ranks[suit]!)] : []))
 }
 
 describe('isSafeAutoPlay', () => {
@@ -116,7 +117,7 @@ describe('isFullyAutoCompletable / nextAutoCompleteMove (Klondike)', () => {
 
   it('an already-won board is trivially complete', () => {
     const state = emptyState()
-    state.foundation = [[card('clubs-13-f', 'clubs', 13)], [card('diamonds-13-f', 'diamonds', 13)], [card('hearts-13-f', 'hearts', 13)], [card('spades-13-f', 'spades', 13)]]
+    state.foundation = [[card('spades-13-f', 'spades', 13)], [card('diamonds-13-f', 'diamonds', 13)], [card('clubs-13-f', 'clubs', 13)], [card('hearts-13-f', 'hearts', 13)]]
     expect(isFullyAutoCompletable(controller, state)).toBe(true)
   })
 
@@ -128,7 +129,7 @@ describe('isFullyAutoCompletable / nextAutoCompleteMove (Klondike)', () => {
 
   it('does not complete while the stock still holds a card, even if nothing else is left to play', () => {
     const state = emptyState()
-    state.foundation = [[card('clubs-13-f', 'clubs', 13)], [card('diamonds-13-f', 'diamonds', 13)], [card('hearts-13-f', 'hearts', 13)], [card('spades-12-f', 'spades', 12)]]
+    state.foundation = [[card('spades-12-f', 'spades', 12)], [card('diamonds-13-f', 'diamonds', 13)], [card('clubs-13-f', 'clubs', 13)], [card('hearts-13-f', 'hearts', 13)]]
     state.stock = [card('spades-13-0', 'spades', 13, false)]
     expect(isFullyAutoCompletable(controller, state)).toBe(false)
   })
@@ -142,7 +143,7 @@ describe('isFullyAutoCompletable / nextAutoCompleteMove (Klondike)', () => {
   function deadlockState(): KlondikeState {
     return {
       tableau: [[card('hearts-12-0', 'hearts', 12, false), card('clubs-13-0', 'clubs', 13)], [card('diamonds-13-0', 'diamonds', 13)], [card('hearts-13-0', 'hearts', 13)], [], [], [], []],
-      foundation: [[card('clubs-12-f', 'clubs', 12)], [card('diamonds-12-f', 'diamonds', 12)], [card('hearts-11-f', 'hearts', 11)], [card('spades-13-f', 'spades', 13)]],
+      foundation: [[card('spades-13-f', 'spades', 13)], [card('diamonds-12-f', 'diamonds', 12)], [card('clubs-12-f', 'clubs', 12)], [card('hearts-11-f', 'hearts', 11)]],
       stock: [],
       waste: []
     }
@@ -153,7 +154,7 @@ describe('isFullyAutoCompletable / nextAutoCompleteMove (Klondike)', () => {
     const step1 = findSafeAutoPlay(controller.accessibleCards!(state), state.foundation)
     expect(step1?.card.id).toBe('diamonds-13-0') // the only move mechanism A considers safe right now - K♣ isn't, yet
 
-    const afterStep1 = controller.tryMove(state, { from: step1!.ref, to: { zone: 'foundation', index: SUITS.indexOf('diamonds') }, count: 1 })!
+    const afterStep1 = controller.tryMove(state, { from: step1!.ref, to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('diamonds') }, count: 1 })!
     const step2 = findSafeAutoPlay(controller.accessibleCards!(afterStep1), afterStep1.foundation)
     expect(step2).toBeNull() // K♣ is legal but still not safe - hearts is now stuck at 11 forever under mechanism A alone
   })
@@ -164,7 +165,7 @@ describe('isFullyAutoCompletable / nextAutoCompleteMove (Klondike)', () => {
 
     for (let i = 0; i < 4 && !controller.isWon(cur); i++) {
       const entry = nextAutoCompleteMove(controller, cur)!
-      const to = { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) }
+      const to = { zone: 'foundation', index: FOUNDATION_SUITS.indexOf(entry.card.suit) }
       cur = controller.tryMove(cur, { from: entry.ref, to, count: 1 })!
     }
     expect(controller.isWon(cur)).toBe(true)
@@ -180,20 +181,20 @@ describe('isFullyAutoCompletableWithDraws / nextAutoCompleteMoveWithDraws (Klond
 
   it('completes once the stock is drawn through, unlike the plain (non-draws) check', () => {
     const state = emptyState()
-    state.foundation = [[card('clubs-13-f', 'clubs', 13)], [card('diamonds-13-f', 'diamonds', 13)], [card('hearts-13-f', 'hearts', 13)], [card('spades-12-f', 'spades', 12)]]
+    state.foundation = [[card('spades-12-f', 'spades', 12)], [card('diamonds-13-f', 'diamonds', 13)], [card('clubs-13-f', 'clubs', 13)], [card('hearts-13-f', 'hearts', 13)]]
     state.stock = [card('spades-13-0', 'spades', 13, false)]
     expect(isFullyAutoCompletable(controller, state)).toBe(false)
     expect(isFullyAutoCompletableWithDraws(controller, state)).toBe(true)
 
     const step = nextAutoCompleteMoveWithDraws(controller, state)!
-    expect(step).toEqual({ kind: 'drawAndPlay', entry: { ref: { zone: 'waste', index: 0 }, card: card('spades-13-0', 'spades', 13) }, to: { zone: 'foundation', index: SUITS.indexOf('spades') } })
+    expect(step).toEqual({ kind: 'drawAndPlay', entry: { ref: { zone: 'waste', index: 0 }, card: card('spades-13-0', 'spades', 13) }, to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('spades') } })
   })
 
   it('keeps recycling through the waste as many passes as it takes to complete', () => {
     const state = emptyState()
-    // Foundation index 2 is hearts (SUITS order: clubs, diamonds, hearts, spades) - the other 3 are
+    // Foundation index 3 is hearts (FOUNDATION_SUITS order: spades, diamonds, clubs, hearts) - the other 3 are
     // already done, only hearts goes through the stock.
-    state.foundation = [[card('clubs-13-f', 'clubs', 13)], [card('diamonds-13-f', 'diamonds', 13)], [], [card('spades-13-f', 'spades', 13)]]
+    state.foundation = [[card('spades-13-f', 'spades', 13)], [card('diamonds-13-f', 'diamonds', 13)], [card('clubs-13-f', 'clubs', 13)], []]
     // Drawing removes from the END of this array, so draw order is 2H,3H,4H,...,KH, then AH last.
     // None of 2H..KH are playable until AH lands, and by then every one of them is buried under a
     // later draw, so a single pass can only ever play AH itself before getting stuck on KH. Only a
@@ -221,7 +222,7 @@ describe('isFullyAutoCompletableWithDraws / nextAutoCompleteMoveWithDraws (Klond
     const state = emptyState()
     // Hearts can never start - no ace of hearts anywhere in this fixture - so every recycle pass
     // through these cards plays nothing, forever, and the cycle guard must catch the repeat.
-    state.foundation = [[card('clubs-13-f', 'clubs', 13)], [card('diamonds-13-f', 'diamonds', 13)], [], [card('spades-13-f', 'spades', 13)]]
+    state.foundation = [[card('spades-13-f', 'spades', 13)], [card('diamonds-13-f', 'diamonds', 13)], [card('clubs-13-f', 'clubs', 13)], []]
     state.stock = [card('hearts-5-0', 'hearts', 5, false), card('hearts-3-0', 'hearts', 3, false), card('hearts-2-0', 'hearts', 2, false)]
     expect(isFullyAutoCompletableWithDraws(controller, state)).toBe(false)
   })
@@ -234,7 +235,7 @@ describe('isFullyAutoCompletable / nextAutoCompleteMove (FreeCell)', () => {
 
   it('an already-won board is trivially complete', () => {
     const state = emptyState()
-    state.foundation = [[card('clubs-13-f', 'clubs', 13)], [card('diamonds-13-f', 'diamonds', 13)], [card('hearts-13-f', 'hearts', 13)], [card('spades-13-f', 'spades', 13)]]
+    state.foundation = [[card('spades-13-f', 'spades', 13)], [card('diamonds-13-f', 'diamonds', 13)], [card('clubs-13-f', 'clubs', 13)], [card('hearts-13-f', 'hearts', 13)]]
     expect(isFullyAutoCompletable(FreeCellController, state)).toBe(true)
   })
 
@@ -250,7 +251,7 @@ describe('isFullyAutoCompletable / nextAutoCompleteMove (FreeCell)', () => {
     return {
       tableau: [[card('hearts-12-0', 'hearts', 12), card('clubs-13-0', 'clubs', 13)], [card('diamonds-13-0', 'diamonds', 13)], [card('hearts-13-0', 'hearts', 13)], [], [], [], [], []],
       freecells: [null, null, null, null],
-      foundation: [[card('clubs-12-f', 'clubs', 12)], [card('diamonds-12-f', 'diamonds', 12)], [card('hearts-11-f', 'hearts', 11)], [card('spades-13-f', 'spades', 13)]]
+      foundation: [[card('spades-13-f', 'spades', 13)], [card('diamonds-12-f', 'diamonds', 12)], [card('clubs-12-f', 'clubs', 12)], [card('hearts-11-f', 'hearts', 11)]]
     }
   }
 
@@ -258,14 +259,14 @@ describe('isFullyAutoCompletable / nextAutoCompleteMove (FreeCell)', () => {
     const state = deadlockState()
     const step1 = findSafeAutoPlay(FreeCellController.accessibleCards!(state), state.foundation)
     expect(step1?.card.id).toBe('diamonds-13-0')
-    const afterStep1 = FreeCellController.tryMove(state, { from: step1!.ref, to: { zone: 'foundation', index: SUITS.indexOf('diamonds') }, count: 1 })!
+    const afterStep1 = FreeCellController.tryMove(state, { from: step1!.ref, to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('diamonds') }, count: 1 })!
     expect(findSafeAutoPlay(FreeCellController.accessibleCards!(afterStep1), afterStep1.foundation)).toBeNull()
 
     expect(isFullyAutoCompletable(FreeCellController, state)).toBe(true)
     let cur = state
     for (let i = 0; i < 4 && !FreeCellController.isWon(cur); i++) {
       const entry = nextAutoCompleteMove(FreeCellController, cur)!
-      const to = { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) }
+      const to = { zone: 'foundation', index: FOUNDATION_SUITS.indexOf(entry.card.suit) }
       cur = FreeCellController.tryMove(cur, { from: entry.ref, to, count: 1 })!
     }
     expect(FreeCellController.isWon(cur)).toBe(true)

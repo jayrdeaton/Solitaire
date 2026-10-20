@@ -30,13 +30,14 @@ import { PipFireworks } from '@/components/winning/PipFireworks'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { FORTYTHIEVES_RULES } from '@/constants/gameRules'
 import { AutoCompleteStep } from '@/engine/autoFoundation'
+import { FOUNDATION_SUITS } from '@/engine/foundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
 import { parFor } from '@/engine/par'
 import { isDescendingSameSuit, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
-import { Card, SUITS } from '@/engine/types'
+import { Card } from '@/engine/types'
 import { fortyThievesVariant } from '@/engine/variants'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
@@ -819,7 +820,7 @@ function FortyThievesScreenInner() {
                     card={cascadeTookOver ? undefined : t}
                     isFlyingHere={isFlyingHere}
                     settledCard={pile[pile.length - 1 - flightsInAir] ?? null}
-                    suit={SUITS[i % 4]}
+                    suit={FOUNDATION_SUITS[i % 4]}
                     highlighted={hintCountFor(activeHint, { zone: 'foundation', index: i }) > 0}
                     slotRef={(el) => {
                       foundationSlotRefs.current[i] = el

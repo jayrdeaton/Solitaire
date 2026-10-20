@@ -221,14 +221,14 @@ describe('FreeCell isWon', () => {
     const wonState: FreeCellState = {
       tableau: [[], [], [], [], [], [], [], []],
       freecells: [null, null, null, null],
-      foundation: [fullSuit('clubs'), fullSuit('diamonds'), fullSuit('hearts'), fullSuit('spades')]
+      foundation: [fullSuit('spades'), fullSuit('diamonds'), fullSuit('clubs'), fullSuit('hearts')]
     }
     expect(FreeCellController.isWon(wonState)).toBe(true)
 
     const notWonState: FreeCellState = {
       tableau: [[card('spades-13-0', 'spades', 13)], [], [], [], [], [], [], []],
       freecells: [null, null, null, null],
-      foundation: [fullSuit('clubs'), fullSuit('diamonds'), fullSuit('hearts'), []]
+      foundation: [[], fullSuit('diamonds'), fullSuit('clubs'), fullSuit('hearts')]
     }
     expect(FreeCellController.isWon(notWonState)).toBe(false)
   })
@@ -244,19 +244,19 @@ describe('FreeCell foundation moves', () => {
 
     const afterAce = FreeCellController.tryMove(state, {
       from: { zone: 'tableau', index: 0 },
-      to: { zone: 'foundation', index: 0 },
+      to: { zone: 'foundation', index: 2 },
       count: 1
     })
     expect(afterAce).not.toBeNull()
-    expect(afterAce!.foundation[0].map((c) => c.id)).toEqual(['clubs-1-0'])
+    expect(afterAce!.foundation[2].map((c) => c.id)).toEqual(['clubs-1-0'])
 
     const afterTwo = FreeCellController.tryMove(afterAce!, {
       from: { zone: 'tableau', index: 0 },
-      to: { zone: 'foundation', index: 0 },
+      to: { zone: 'foundation', index: 2 },
       count: 1
     })
     expect(afterTwo).not.toBeNull()
-    expect(afterTwo!.foundation[0].map((c) => c.id)).toEqual(['clubs-1-0', 'clubs-2-0'])
+    expect(afterTwo!.foundation[2].map((c) => c.id)).toEqual(['clubs-1-0', 'clubs-2-0'])
   })
 
   it('rejects moving a card to the wrong suit foundation slot', () => {
@@ -267,7 +267,7 @@ describe('FreeCell foundation moves', () => {
     }
     const result = FreeCellController.tryMove(state, {
       from: { zone: 'tableau', index: 0 },
-      to: { zone: 'foundation', index: 1 }, // diamonds slot, but card is clubs
+      to: { zone: 'foundation', index: 1 }, // diamonds slot, but card is clubs (clubs is slot 2)
       count: 1
     })
     expect(result).toBeNull()
@@ -282,7 +282,7 @@ describe('FreeCell autoMoveHint', () => {
       foundation: [[], [], [], []]
     }
     const hint = FreeCellController.autoMoveHint!(state, { zone: 'tableau', index: 0 }, 'hearts-1-0')
-    expect(hint).toEqual({ from: { zone: 'tableau', index: 0 }, to: { zone: 'foundation', index: 2 }, count: 1 })
+    expect(hint).toEqual({ from: { zone: 'tableau', index: 0 }, to: { zone: 'foundation', index: 3 }, count: 1 })
   })
 
   it('falls back to the best tableau destination when no foundation move exists', () => {

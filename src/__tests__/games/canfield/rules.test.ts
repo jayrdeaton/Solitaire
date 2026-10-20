@@ -1,7 +1,8 @@
 import { isFullyAutoCompletable, isFullyAutoCompletableWithDraws } from '@/engine/autoFoundation'
+import { FOUNDATION_SUITS } from '@/engine/foundation'
 import { PileRef } from '@/engine/gameTypes'
 import { findHint } from '@/engine/hint'
-import { Card, Suit, SUITS } from '@/engine/types'
+import { Card, Suit } from '@/engine/types'
 import { canAutoFinish, CanfieldState, createCanfieldController, findSafeAutoPlay, isSafeAutoPlay, nextFinishMove } from '@/games/canfield/rules'
 
 // Every test here exercises drawCount-independent behavior except the "Canfield drawStock" block
@@ -192,10 +193,10 @@ describe('Canfield foundation tryMove', () => {
       stock: [],
       waste: []
     }
-    expect(CanfieldController.tryMove(state, { from: { zone: 'tableau', index: 1 }, to: { zone: 'foundation', index: SUITS.indexOf('clubs') }, count: 1 })).toBeNull()
-    const result = CanfieldController.tryMove(state, { from: { zone: 'tableau', index: 0 }, to: { zone: 'foundation', index: SUITS.indexOf('hearts') }, count: 1 })
+    expect(CanfieldController.tryMove(state, { from: { zone: 'tableau', index: 1 }, to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') }, count: 1 })).toBeNull()
+    const result = CanfieldController.tryMove(state, { from: { zone: 'tableau', index: 0 }, to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('hearts') }, count: 1 })
     expect(result).not.toBeNull()
-    expect(result!.foundation[SUITS.indexOf('hearts')].map((c) => c.id)).toEqual(['hearts-7-0'])
+    expect(result!.foundation[FOUNDATION_SUITS.indexOf('hearts')].map((c) => c.id)).toEqual(['hearts-7-0'])
   })
 
   it('wraps King up to Ace on a non-Ace-starting foundation', () => {
@@ -203,26 +204,26 @@ describe('Canfield foundation tryMove', () => {
     const ace: Card = { id: 'hearts-1-0', suit: 'hearts', rank: 1, faceUp: true }
     const state: CanfieldState = {
       tableau: [[ace], [], [], []],
-      foundation: SUITS.map((s) => (s === 'hearts' ? [king] : [])),
+      foundation: FOUNDATION_SUITS.map((s) => (s === 'hearts' ? [king] : [])),
       foundationRank: 5,
       reserve: [],
       stock: [],
       waste: []
     }
-    const result = CanfieldController.tryMove(state, { from: { zone: 'tableau', index: 0 }, to: { zone: 'foundation', index: SUITS.indexOf('hearts') }, count: 1 })
+    const result = CanfieldController.tryMove(state, { from: { zone: 'tableau', index: 0 }, to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('hearts') }, count: 1 })
     expect(result).not.toBeNull()
-    expect(result!.foundation[SUITS.indexOf('hearts')].map((c) => c.id)).toEqual(['hearts-13-0', 'hearts-1-0'])
+    expect(result!.foundation[FOUNDATION_SUITS.indexOf('hearts')].map((c) => c.id)).toEqual(['hearts-13-0', 'hearts-1-0'])
   })
 
   it("lets a foundation's top card come back down onto a legal tableau spot - wrapping, and the starter included", () => {
-    const hearts = SUITS.indexOf('hearts')
+    const hearts = FOUNDATION_SUITS.indexOf('hearts')
     const king: Card = { id: 'hearts-13-0', suit: 'hearts', rank: 13, faceUp: true }
     const ace: Card = { id: 'hearts-1-0', suit: 'hearts', rank: 1, faceUp: true }
     const blackAce: Card = { id: 'spades-1-0', suit: 'spades', rank: 1, faceUp: true }
     const blackTwo: Card = { id: 'clubs-2-0', suit: 'clubs', rank: 2, faceUp: true }
     const state: CanfieldState = {
       tableau: [[blackTwo], [blackAce], [], []],
-      foundation: SUITS.map((s) => (s === 'hearts' ? [king, ace] : [])),
+      foundation: FOUNDATION_SUITS.map((s) => (s === 'hearts' ? [king, ace] : [])),
       foundationRank: 13,
       reserve: [],
       stock: [],
@@ -240,14 +241,14 @@ describe('Canfield foundation tryMove', () => {
   })
 
   it('refuses a foundation card on an empty column while the reserve has cards, on another foundation, or two at a time', () => {
-    const hearts = SUITS.indexOf('hearts')
+    const hearts = FOUNDATION_SUITS.indexOf('hearts')
     const seven: Card = { id: 'hearts-7-0', suit: 'hearts', rank: 7, faceUp: true }
     const eight: Card = { id: 'hearts-8-0', suit: 'hearts', rank: 8, faceUp: true }
     const nine: Card = { id: 'spades-9-0', suit: 'spades', rank: 9, faceUp: true }
     const reserveTop: Card = { id: 'clubs-4-0', suit: 'clubs', rank: 4, faceUp: true }
     const state: CanfieldState = {
       tableau: [[nine], [], [], []],
-      foundation: SUITS.map((s) => (s === 'hearts' ? [seven, eight] : [])),
+      foundation: FOUNDATION_SUITS.map((s) => (s === 'hearts' ? [seven, eight] : [])),
       foundationRank: 7,
       reserve: [reserveTop],
       stock: [],
@@ -256,7 +257,7 @@ describe('Canfield foundation tryMove', () => {
     const from = { zone: 'foundation' as const, index: hearts }
     expect(CanfieldController.tryMove(state, { from, to: { zone: 'tableau', index: 1 }, count: 1 })).toBeNull() // empty columns take the reserve
     expect(CanfieldController.tryMove({ ...state, reserve: [] }, { from, to: { zone: 'tableau', index: 1 }, count: 1 })).not.toBeNull()
-    expect(CanfieldController.tryMove(state, { from, to: { zone: 'foundation', index: SUITS.indexOf('clubs') }, count: 1 })).toBeNull()
+    expect(CanfieldController.tryMove(state, { from, to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') }, count: 1 })).toBeNull()
     expect(CanfieldController.tryMove(state, { from, to: { zone: 'tableau', index: 0 }, count: 2 })).toBeNull()
     expect(CanfieldController.tryMove(state, { from, to: { zone: 'tableau', index: 0 }, count: 1 })).not.toBeNull() // 8 on 9
     expect(CanfieldController.legalMoves(state).filter((m) => m.from.zone === 'foundation')).toEqual([])
@@ -307,7 +308,7 @@ describe('Canfield isSafeAutoPlay / findSafeAutoPlay (cyclic, non-Ace-starting)'
     ] as Card[]
     const state: CanfieldState = {
       tableau: [[], [], [], []],
-      foundation: [blackFilled, [], [], blackFilled.slice(0, 1)], // clubs at position 2, spades at position 1 (both black)
+      foundation: [blackFilled.slice(0, 1), [], blackFilled, []], // clubs at position 2, spades at position 1 (both black)
       foundationRank: 5,
       reserve: [],
       stock: [],
@@ -315,7 +316,7 @@ describe('Canfield isSafeAutoPlay / findSafeAutoPlay (cyclic, non-Ace-starting)'
     }
     expect(isSafeAutoPlay(state, redSeven)).toBe(false) // spades only at position 1, needs 2
 
-    const state2: CanfieldState = { ...state, foundation: [blackFilled, [], [], blackFilled] }
+    const state2: CanfieldState = { ...state, foundation: [blackFilled, [], blackFilled, []] }
     expect(isSafeAutoPlay(state2, redSeven)).toBe(true)
   })
 
@@ -331,7 +332,7 @@ describe('Canfield isSafeAutoPlay / findSafeAutoPlay (cyclic, non-Ace-starting)'
     ] as Card[]
     const state: CanfieldState = {
       tableau: [[], [], [], []],
-      foundation: [blackAt2, [], heartsAt6, blackAt2],
+      foundation: [blackAt2, [], blackAt2, heartsAt6],
       foundationRank: 5,
       reserve: [],
       stock: [],
@@ -360,7 +361,7 @@ describe('Canfield canAutoFinish / nextFinishMove (a solved board: what the fini
   function solved(parts: Partial<CanfieldState> = {}): CanfieldState {
     return {
       tableau: [[c('diamonds', 4), c('clubs', 3)], [c('clubs', 4), c('diamonds', 3)], [c('diamonds', 2), c('diamonds', 13)], [c('diamonds', 1)]],
-      foundation: [cycle('clubs', 11), cycle('diamonds', 8), cycle('hearts', 13), cycle('spades', 13)],
+      foundation: [cycle('spades', 13), cycle('diamonds', 8), cycle('clubs', 11), cycle('hearts', 13)],
       foundationRank: 5,
       reserve: [],
       stock: [],
@@ -377,7 +378,7 @@ describe('Canfield canAutoFinish / nextFinishMove (a solved board: what the fini
     while (canAutoFinish(CanfieldController, s)) {
       const step = nextFinishMove(CanfieldController, s)
       expect(step).not.toBeNull()
-      expect(step!.to).toEqual({ zone: 'foundation', index: SUITS.indexOf(step!.entry.card.suit) })
+      expect(step!.to).toEqual({ zone: 'foundation', index: FOUNDATION_SUITS.indexOf(step!.entry.card.suit) })
       sent.push(step!.entry.card.id)
       const next = CanfieldController.tryMove(s, { from: step!.entry.ref, to: step!.to, count: 1 })
       expect(next).not.toBeNull()
@@ -388,7 +389,7 @@ describe('Canfield canAutoFinish / nextFinishMove (a solved board: what the fini
   })
 
   it('is false on a won board, although isFullyAutoCompletable says true there', () => {
-    const won = solved({ tableau: [[], [], [], []], foundation: SUITS.map((suit) => cycle(suit, 13)) })
+    const won = solved({ tableau: [[], [], [], []], foundation: FOUNDATION_SUITS.map((suit) => cycle(suit, 13)) })
     expect(CanfieldController.isWon(won)).toBe(true)
     expect(isFullyAutoCompletable(CanfieldController, won)).toBe(true)
     expect(canAutoFinish(CanfieldController, won)).toBe(false)

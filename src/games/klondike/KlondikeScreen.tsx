@@ -30,13 +30,14 @@ import { PipFireworks } from '@/components/winning/PipFireworks'
 import { ChainSpec, useWinCascade, WinCascadeGhosts } from '@/components/winning/WinCascadeLayer'
 import { KLONDIKE_RULES } from '@/constants/gameRules'
 import { AutoCompleteStep, findSafeAutoPlay, isFullyAutoCompletableWithDraws, nextAutoCompleteMoveWithDraws } from '@/engine/autoFoundation'
+import { FOUNDATION_SUITS, suitIndex } from '@/engine/foundation'
 import { AccessibleCard, PileRef } from '@/engine/gameTypes'
 import { findHint, hintCountFor, HintResult } from '@/engine/hint'
 import { parFor } from '@/engine/par'
 import { isDescendingAltColor, runCountFrom, top } from '@/engine/pile'
 import { randomSeed } from '@/engine/rng'
 import { computeScore } from '@/engine/score'
-import { Card, SUITS } from '@/engine/types'
+import { Card } from '@/engine/types'
 import { klondikeVariant } from '@/engine/variants'
 import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
@@ -240,7 +241,7 @@ function KlondikeScreenInner() {
   /** A legacy save's cascade-return flight (see KlondikeUndoMove/PATTERN_CASCADE_UNDO) awaiting its
    * post-commit destination measurement + deal.start(), analogous to pendingDealDrawRef above -
    * `origins` is each foundation slot's own measured position (index-aligned with
-   * foundationSlotRefs/SUITS), captured synchronously in handleUndo (a container ref,
+   * foundationSlotRefs/FOUNDATION_SUITS), captured synchronously in handleUndo (a container ref,
    * content-independent, safe to measure before the state revert commits) since the cascaded cards
    * themselves have no CardRegistry entry once buried under a later foundation arrival. Stays a
    * single slot (not a list) - an entry with a cascade is an 'exclusive' undo (see undoGate: it
@@ -747,7 +748,7 @@ function KlondikeScreenInner() {
   }
 
   // Flies every cascaded card back from the foundation slot it left (`origins`, index-aligned with
-  // foundationSlotRefs/SUITS - a container ref, measured once up front in handleUndo, since the
+  // foundationSlotRefs/FOUNDATION_SUITS - a container ref, measured once up front in handleUndo, since the
   // cards themselves have no CardRegistry entry once buried under a later foundation arrival) to
   // wherever it now really sits, once that position is actually measurable - called either from
   // the pendingCascadeUndoRef effect (the common case, running concurrently with the primary
@@ -1068,7 +1069,7 @@ function KlondikeScreenInner() {
     if (!controller.accessibleCards || canAutoFinish(controller, s)) return null
     if (isFullyAutoCompletableWithDraws(controller, s)) return nextAutoCompleteMoveWithDraws(controller, s)
     const entry = findSafeAutoPlay(controller.accessibleCards(s), s.foundation)
-    return entry ? { kind: 'play', entry, to: { zone: 'foundation', index: SUITS.indexOf(entry.card.suit) } } : null
+    return entry ? { kind: 'play', entry, to: { zone: 'foundation', index: suitIndex(entry.card.suit) } } : null
   }
 
   // Mirrors handleCardTap's tail, but there's no tap event to supply an origin - it has to measure
@@ -1478,7 +1479,7 @@ function KlondikeScreenInner() {
                     card={winRevealed && cascadeHandoffFor === state && !winCascadeFallbackSuits.has(i) ? undefined : t}
                     isFlyingHere={isFlyingHere}
                     settledCard={pile[pile.length - 1 - flightsInAir] ?? null}
-                    suit={SUITS[i]}
+                    suit={FOUNDATION_SUITS[i]}
                     highlighted={hintCountFor(activeHint, { zone: 'foundation', index: i }) > 0}
                     slotRef={(el) => {
                       foundationSlotRefs.current[i] = el

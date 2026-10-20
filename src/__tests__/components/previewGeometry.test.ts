@@ -11,7 +11,7 @@ import { buildSpiderPreview } from '@/games/spider/previewLayout'
 import { buildTriPeaksPreview } from '@/games/tripeaks/previewLayout'
 import { buildYukonPreview } from '@/games/yukon/previewLayout'
 
-import { PREVIEW_CARD_HEIGHT, PREVIEW_CARD_WIDTH, type PreviewCardPlacement } from '../../components/GamePreview'
+import { PREVIEW_CANVAS_HEIGHT, PREVIEW_CANVAS_WIDTH, PREVIEW_CARD_HEIGHT, PREVIEW_CARD_WIDTH, PREVIEW_MARGIN, type PreviewCardPlacement, previewFrame } from '../../components/GamePreview'
 import { buildBackStrips, isStripSafe, roundedRectPath } from '../../components/previewGeometry'
 
 const METRICS = { cardWidth: PREVIEW_CARD_WIDTH, cardHeight: PREVIEW_CARD_HEIGHT }
@@ -93,5 +93,29 @@ describe('buildBackStrips', () => {
       }
     })
     expect(buildBackStrips(placements, METRICS, STYLE)).not.toBeNull()
+  })
+})
+
+// Each tile zooms onto its own deal (Home's tiles used to place every game's cards at one fixed size spread across
+// the whole canvas, so a 7-column deal showed small cards with gaps nearly as wide as the cards).
+describe('previewFrame', () => {
+  const ALL = [buildKlondikePreview, buildFreeCellPreview, buildYukonPreview, buildCanfieldPreview, buildFortyThievesPreview, buildSpiderPreview, buildScorpionPreview, buildPyramidPreview, buildGolfPreview, buildTriPeaksPreview, buildAcesUpPreview]
+
+  it.each(ALL.map((build) => [build.name, build]))('%s: the cards fill the tile but for the margin, on one axis at least', (_name, build) => {
+    const placements = build()
+    const frame = previewFrame(placements)
+    const scale = PREVIEW_CANVAS_WIDTH / frame.width
+
+    expect(frame.width / frame.height).toBeCloseTo(PREVIEW_CANVAS_WIDTH / PREVIEW_CANVAS_HEIGHT)
+    // In canvas units: every card at least the margin from each edge, and the tighter axis exactly at it.
+    const left = Math.min(...placements.map((p) => (p.x - frame.x) * scale))
+    const right = Math.max(...placements.map((p) => (p.x + PREVIEW_CARD_WIDTH - frame.x) * scale))
+    const top = Math.min(...placements.map((p) => (p.y - frame.y) * scale))
+    const bottom = Math.max(...placements.map((p) => (p.y + PREVIEW_CARD_HEIGHT - frame.y) * scale))
+    expect(left).toBeGreaterThanOrEqual(PREVIEW_MARGIN - 1e-6)
+    expect(top).toBeGreaterThanOrEqual(PREVIEW_MARGIN - 1e-6)
+    expect(PREVIEW_CANVAS_WIDTH - right).toBeCloseTo(left)
+    expect(PREVIEW_CANVAS_HEIGHT - bottom).toBeCloseTo(top)
+    expect(Math.min(left, top)).toBeCloseTo(PREVIEW_MARGIN)
   })
 })

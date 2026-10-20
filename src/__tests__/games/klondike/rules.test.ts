@@ -1,6 +1,7 @@
 import { isFullyAutoCompletable, isFullyAutoCompletableWithDraws } from '@/engine/autoFoundation'
+import { FOUNDATION_SUITS } from '@/engine/foundation'
 import { findHint } from '@/engine/hint'
-import { Card, SUITS } from '@/engine/types'
+import { Card } from '@/engine/types'
 import { canAutoFinish, createKlondikeController, KlondikeState, nextFinishMove } from '@/games/klondike/rules'
 
 function card(suit: Card['suit'], rank: Card['rank'], faceUp = true, deckIndex = 0): Card {
@@ -100,10 +101,10 @@ describe('Klondike tryMove', () => {
 
   it("lets a foundation's top card come back down onto a legal tableau spot", () => {
     const controller = createKlondikeController(1)
-    const clubs = SUITS.indexOf('clubs')
+    const clubs = FOUNDATION_SUITS.indexOf('clubs')
     const state: KlondikeState = {
       tableau: [[card('hearts', 3)], [], [], [], [], [], []],
-      foundation: SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : [])),
+      foundation: FOUNDATION_SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : [])),
       stock: [],
       waste: []
     }
@@ -115,17 +116,17 @@ describe('Klondike tryMove', () => {
 
   it('refuses a foundation card anywhere but a legal tableau spot, and more than one card at a time', () => {
     const controller = createKlondikeController(1)
-    const clubs = SUITS.indexOf('clubs')
+    const clubs = FOUNDATION_SUITS.indexOf('clubs')
     const state: KlondikeState = {
       tableau: [[card('spades', 3)], [], [card('hearts', 3)], [], [], [], []],
-      foundation: SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : s === 'diamonds' ? [card('diamonds', 1)] : [])),
+      foundation: FOUNDATION_SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : s === 'diamonds' ? [card('diamonds', 1)] : [])),
       stock: [],
       waste: []
     }
     const from = { zone: 'foundation' as const, index: clubs }
     expect(controller.tryMove(state, { from, to: { zone: 'tableau', index: 0 }, count: 1 })).toBeNull() // same color
     expect(controller.tryMove(state, { from, to: { zone: 'tableau', index: 1 }, count: 1 })).toBeNull() // empty column: Kings only
-    expect(controller.tryMove(state, { from, to: { zone: 'foundation', index: SUITS.indexOf('diamonds') }, count: 1 })).toBeNull()
+    expect(controller.tryMove(state, { from, to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('diamonds') }, count: 1 })).toBeNull()
     expect(controller.tryMove(state, { from, to: { zone: 'waste', index: 0 }, count: 1 })).toBeNull()
     expect(controller.tryMove(state, { from, to: { zone: 'tableau', index: 2 }, count: 2 })).toBeNull()
   })
@@ -134,11 +135,11 @@ describe('Klondike tryMove', () => {
     const controller = createKlondikeController(1)
     const state: KlondikeState = {
       tableau: [[card('hearts', 3)], [], [], [], [], [], []],
-      foundation: SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : [])),
+      foundation: FOUNDATION_SUITS.map((s) => (s === 'clubs' ? [card('clubs', 1), card('clubs', 2)] : [])),
       stock: [],
       waste: []
     }
-    expect(controller.tryMove(state, { from: { zone: 'foundation', index: SUITS.indexOf('clubs') }, to: { zone: 'tableau', index: 0 }, count: 1 })).not.toBeNull()
+    expect(controller.tryMove(state, { from: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') }, to: { zone: 'tableau', index: 0 }, count: 1 })).not.toBeNull()
     expect(controller.legalMoves(state).filter((m) => m.from.zone === 'foundation')).toEqual([])
   })
 
@@ -210,11 +211,11 @@ describe('Klondike tryMove', () => {
     }
     const result = controller.tryMove(state, {
       from: { zone: 'waste', index: 0 },
-      to: { zone: 'foundation', index: SUITS.indexOf('clubs') },
+      to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') },
       count: 1
     })
     expect(result).not.toBeNull()
-    expect(result!.foundation[SUITS.indexOf('clubs')].map((c) => c.id)).toEqual(['clubs-1-0'])
+    expect(result!.foundation[FOUNDATION_SUITS.indexOf('clubs')].map((c) => c.id)).toEqual(['clubs-1-0'])
     expect(result!.waste.length).toBe(0)
   })
 })
@@ -222,7 +223,7 @@ describe('Klondike tryMove', () => {
 describe('Klondike isWon', () => {
   it('returns true when all foundations are complete (Ace..King)', () => {
     const controller = createKlondikeController(1)
-    const foundation: Card[][] = SUITS.map((suit) => {
+    const foundation: Card[][] = FOUNDATION_SUITS.map((suit) => {
       const pile: Card[] = []
       for (let rank = 1; rank <= 13; rank++) {
         pile.push({ id: `${suit}-${rank}-0`, suit, rank: rank as Card['rank'], faceUp: true })
@@ -474,7 +475,7 @@ describe('Klondike scoreHintMove', () => {
 describe('Klondike canAutoFinish / nextFinishMove (the finish: a solved board files itself away)', () => {
   /** Foundation piles, Ace first, each filled up to the given rank (13 = complete, missing = empty). */
   function foundationsUpTo(upTo: Partial<Record<Card['suit'], number>>): Card[][] {
-    return SUITS.map((suit) => Array.from({ length: upTo[suit] ?? 0 }, (_, i) => card(suit, (i + 1) as Card['rank'])))
+    return FOUNDATION_SUITS.map((suit) => Array.from({ length: upTo[suit] ?? 0 }, (_, i) => card(suit, (i + 1) as Card['rank'])))
   }
   function board(parts: { tableau: Card[][]; foundation: Card[][]; stock?: Card[]; waste?: Card[] }): KlondikeState {
     return { tableau: Array.from({ length: 7 }, (_, i) => parts.tableau[i] ?? []), foundation: parts.foundation, stock: parts.stock ?? [], waste: parts.waste ?? [] }
@@ -488,7 +489,7 @@ describe('Klondike canAutoFinish / nextFinishMove (the finish: a solved board fi
     expect(canAutoFinish(controller, state)).toBe(true)
     const sent: string[] = []
     for (let step = nextFinishMove(controller, state); step; step = nextFinishMove(controller, state)) {
-      expect(step.to).toEqual({ zone: 'foundation', index: SUITS.indexOf(step.entry.card.suit) })
+      expect(step.to).toEqual({ zone: 'foundation', index: FOUNDATION_SUITS.indexOf(step.entry.card.suit) })
       sent.push(step.entry.card.id)
       state = controller.tryMove(state, { from: step.entry.ref, to: step.to, count: 1 })!
       expect(state).not.toBeNull()

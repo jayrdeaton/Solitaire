@@ -2,8 +2,9 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
 import { AUTO_PLAY_STAGGER_MS, finishGapMs } from '@/components/dragdrop/dragSpring'
 import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
+import { FOUNDATION_SUITS } from '@/engine/foundation'
 import { PileRef } from '@/engine/gameTypes'
-import { Card, Suit, SUITS } from '@/engine/types'
+import { Card, Suit } from '@/engine/types'
 import * as yukonRules from '@/games/yukon/rules'
 import { YukonState } from '@/games/yukon/rules'
 import YukonScreen from '@/games/yukon/YukonScreen'
@@ -303,18 +304,18 @@ function board(tableau: Card[][], foundation: Card[][]): YukonState {
   return { tableau: Array.from({ length: 7 }, (_, i) => tableau[i] ?? []), foundation }
 }
 /** Every card is home except the King of clubs, sitting alone in a column: tapping it wins the game. */
-const ONE_CARD_FROM_WON = () => board([[card('clubs', 13)]], [pile('clubs', 12), pile('diamonds', 13), pile('hearts', 13), pile('spades', 13)])
+const ONE_CARD_FROM_WON = () => board([[card('clubs', 13)]], [pile('spades', 13), pile('diamonds', 13), pile('clubs', 12), pile('hearts', 13)])
 /** A LEGACY save (written before every auto-play became its own undo step): the player sent the 3 of clubs up, the
  * auto-play then put the 4 on top of it, and that auto-play was folded into the 3's entry as `cascaded`. Undo: the 3 is
  * under the 4, and one press takes both back. */
 const THREE_UNDER_AUTOPLAYED_FOUR = () => {
-  const before = board([[card('clubs', 3)], [card('clubs', 4)]], [pile('clubs', 2), [], [], []])
-  const after = board([], [pile('clubs', 4), [], [], []])
+  const before = board([[card('clubs', 3)], [card('clubs', 4)]], [[], [], pile('clubs', 2), []])
+  const after = board([], [[], [], pile('clubs', 4), []])
   const entry = {
     state: before,
     move: {
-      primary: { from: { zone: 'tableau', index: 0 } as PileRef, to: { zone: 'foundation', index: SUITS.indexOf('clubs') } as PileRef, count: 1, anchorCardId: id('clubs', 3) },
-      cascaded: [{ from: { zone: 'tableau', index: 1 } as PileRef, to: { zone: 'foundation', index: SUITS.indexOf('clubs') } as PileRef, count: 1, anchorCardId: id('clubs', 4) }]
+      primary: { from: { zone: 'tableau', index: 0 } as PileRef, to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') } as PileRef, count: 1, anchorCardId: id('clubs', 3) },
+      cascaded: [{ from: { zone: 'tableau', index: 1 } as PileRef, to: { zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') } as PileRef, count: 1, anchorCardId: id('clubs', 4) }]
     }
   }
   return { after, entry }
@@ -506,7 +507,7 @@ describe('Yukon screen - the win cascade takes over from the real foundation car
     expect(mockLog.cascadeChains).toBe(4)
     expect(mockLog.pilesShownAtCascade).toBe(4) // every pile was still drawing its real cards when the chains started (the origins are measured off the slots, before anything blanks)
     expect(screen.getByTestId('cascade-ghosts')).toBeTruthy()
-    SUITS.forEach((suit) => expect(foundationTop(suit)).toBe('empty')) // and the real cards are gone now that the ghosts stand in for them
+    FOUNDATION_SUITS.forEach((suit) => expect(foundationTop(suit)).toBe('empty')) // and the real cards are gone now that the ghosts stand in for them
 
     // No commit ever drew a pile bare without the cascade's ghosts ON SCREEN to stand in for it (that was ~140ms of empty piles,
     // then - blanking in the commit that mounted the ghosts - a frame or two of blank-faced ones)...
@@ -538,7 +539,7 @@ describe('Yukon screen - the win cascade takes over from the real foundation car
   })
 
   it('leaves the finished piles up when no chain can start, instead of blanking them with nothing to show', async () => {
-    SUITS.forEach((suit) => mockNoSlot.add(suit))
+    FOUNDATION_SUITS.forEach((suit) => mockNoSlot.add(suit))
     await mount(ONE_CARD_FROM_WON())
 
     await tap(id('clubs', 13))
@@ -547,7 +548,7 @@ describe('Yukon screen - the win cascade takes over from the real foundation car
     expect(screen.getByTestId('win-banner')).toBeTruthy()
     expect(mockLog.cascadeChains).toBe(0)
     expect(screen.queryByTestId('cascade-ghosts')).toBeNull()
-    expect(SUITS.map((suit) => foundationTop(suit))).toEqual([id('clubs', 13), id('diamonds', 13), id('hearts', 13), id('spades', 13)])
+    expect(FOUNDATION_SUITS.map((suit) => foundationTop(suit))).toEqual([id('spades', 13), id('diamonds', 13), id('clubs', 13), id('hearts', 13)])
   })
 })
 
@@ -580,7 +581,7 @@ describe('Yukon screen - a card never moves without its own flight', () => {
 
 describe('Yukon screen - a foundation pile keeps showing the card that has landed while other cards are still flying', () => {
   /** The Ace of clubs is up, the 2 and the 3 each sit alone in a column (a diamond keeps the game unfinished). */
-  const TWO_THEN_THREE = () => board([[card('clubs', 2)], [card('clubs', 3)], [card('diamonds', 5)]], [pile('clubs', 1), [], [], []])
+  const TWO_THEN_THREE = () => board([[card('clubs', 2)], [card('clubs', 3)], [card('diamonds', 5)]], [[], [], pile('clubs', 1), []])
 
   it('two quick taps: once the first card lands, the pile shows it under the second ghost instead of reverting to the card from before both', async () => {
     await mount(TWO_THEN_THREE(), [], 3)
@@ -635,7 +636,7 @@ describe('Yukon screen - a foundation pile keeps showing the card that has lande
 describe('Yukon screen - auto-play and undo', () => {
   /** Every Ace is up. The 2s of clubs, hearts and spades each sit alone in a column; the 2 of diamonds is buried under the 3,
    * so the board is never finishable. Once the 2 of clubs goes up, the 2s of hearts and spades are both safe to auto-play. */
-  const SAFE_TWOS = () => board([[card('clubs', 2)], [card('hearts', 2)], [card('spades', 2)], [card('diamonds', 2), card('diamonds', 3)]], [pile('clubs', 1), pile('diamonds', 1), pile('hearts', 1), pile('spades', 1)])
+  const SAFE_TWOS = () => board([[card('clubs', 2)], [card('hearts', 2)], [card('spades', 2)], [card('diamonds', 2), card('diamonds', 3)]], [pile('spades', 1), pile('diamonds', 1), pile('clubs', 1), pile('hearts', 1)])
   /** The moves count of the latest save - what the player is scored on. */
   const savedMoves = () => (storedGame('yukon') as { moves: number }).moves
 
@@ -645,7 +646,7 @@ describe('Yukon screen - auto-play and undo', () => {
 
     await tap(id('clubs', 2))
     await flush(3000)
-    expect(SUITS.map((suit) => foundationTop(suit))).toEqual([id('clubs', 2), id('diamonds', 1), id('hearts', 2), id('spades', 2)])
+    expect(FOUNDATION_SUITS.map((suit) => foundationTop(suit))).toEqual([id('spades', 2), id('diamonds', 1), id('clubs', 2), id('hearts', 2)])
     expect(mockLog.shown).toHaveLength(3) // the tap, then the two auto-plays
     expect(savedMoves()).toBe(3) // the tap and both auto-plays: every move counts
 
@@ -659,11 +660,11 @@ describe('Yukon screen - auto-play and undo', () => {
 
     await undoOne() // the last card auto-played...
     await undoOne() // ...then the other one
-    expect(SUITS.map((suit) => foundationTop(suit))).toEqual([id('clubs', 2), id('diamonds', 1), id('hearts', 1), id('spades', 1)])
+    expect(FOUNDATION_SUITS.map((suit) => foundationTop(suit))).toEqual([id('spades', 1), id('diamonds', 1), id('clubs', 2), id('hearts', 1)])
     expect(screen.queryByTestId(`card-${id('hearts', 2)}`)).not.toBeNull()
     expect(screen.queryByTestId(`card-${id('spades', 2)}`)).not.toBeNull()
     await undoOne() // and only then the tap itself
-    expect(SUITS.map((suit) => foundationTop(suit))).toEqual([id('clubs', 1), id('diamonds', 1), id('hearts', 1), id('spades', 1)])
+    expect(FOUNDATION_SUITS.map((suit) => foundationTop(suit))).toEqual([id('spades', 1), id('diamonds', 1), id('clubs', 1), id('hearts', 1)])
     expect(mockLog.hidden).toBe(0)
   })
 })
@@ -684,7 +685,7 @@ describe("Yukon screen - auto-play only ever follows the player's own play of a 
 
 describe("Yukon screen - once the board is solved, any move of the player's finishes the rest, at a pace that ramps up", () => {
   /** Clubs and diamonds home up to the 9, hearts up to the 10, spades complete: the other 11 cards are on the tableau. */
-  const FOUNDATIONS = () => [pile('clubs', 9), pile('diamonds', 9), pile('hearts', 10), pile('spades', 13)]
+  const FOUNDATIONS = () => [pile('spades', 13), pile('diamonds', 9), pile('clubs', 9), pile('hearts', 10)]
   /** A column `high` at the bottom down to `low` on top, each card free to go up once the one below it in rank has. */
   const run = (suit: Suit, high: number, low: number): Card[] => Array.from({ length: high - low + 1 }, (_, i) => card(suit, high - i))
   const faceDown = (c: Card): Card => ({ ...c, faceUp: false })

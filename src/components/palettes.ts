@@ -10,6 +10,9 @@ import type { TableColors } from '@tastic/cards'
 const CARD_INK_RED = '#C41E3A'
 const CARD_INK_BLACK = '#1A1A1A'
 
+// Empty-slot outlines (and the stock's recycle arrow) on the felt.
+const EMPTY_SLOT_INK = '#FFFFFF73'
+
 // cardBack/cardBackPattern here are only blend anchors - never rendered directly (see theme.ts's useTableColors,
 // which always derives through derivePlayerTableColors using at least DEFAULT_SEED_COLOR),
 // what every seed's own tint gets blended toward. They are neutral greys, so the blend only mutes a
@@ -35,7 +38,8 @@ export const lightColors: TableColors = {
   textRed: CARD_INK_RED,
   textBlack: CARD_INK_BLACK,
   textBlackInverted: CARD_INK_BLACK,
-  emptySlot: '#00000033',
+  // Light ink in both modes: the felt is dark in every appearance mode, and the old black at 20% all but vanished on it.
+  emptySlot: EMPTY_SLOT_INK,
   hintGreen: '#3ECF6E',
   dimOverlay: '#00000066',
   dimOverlayInverted: '#00000066'
@@ -54,7 +58,7 @@ export const darkColors: TableColors = {
   textRed: CARD_INK_RED,
   textBlack: CARD_INK_BLACK,
   textBlackInverted: '#F2F2F2',
-  emptySlot: '#FFFFFF33',
+  emptySlot: EMPTY_SLOT_INK,
   hintGreen: '#3ECF6E',
   dimOverlay: '#00000070',
   dimOverlayInverted: '#FFFFFF70'

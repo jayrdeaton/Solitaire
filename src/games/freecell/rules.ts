@@ -12,7 +12,7 @@ export interface FreeCellState {
   tableau: Card[][]
   /** 4 freecells, each holds 0 or 1 card. */
   freecells: (Card | null)[]
-  /** 4 foundation piles, indexed to match engine/types SUITS order (clubs, diamonds, hearts, spades). */
+  /** 4 foundation piles, indexed to match engine/foundation's FOUNDATION_SUITS order (spades, diamonds, clubs, hearts). */
   foundation: Card[][]
 }
 

@@ -23,6 +23,10 @@ export interface SavedGame<TState, TUndo = UndoEntry<TState>> {
   // settings mid-game (Klondike's draw count, Spider's suit count) - undefined for games with no
   // such config. Kept as a plain number (not a narrower union); each screen narrows it back on restore.
   config?: number
+  // Which foundation order the save's foundation slots are in: FOUNDATION_LAYOUT (engine/foundation's
+  // FOUNDATION_SUITS) once stamped, absent for a save made before that order (stores/gameInProgress.ts
+  // remaps those as they load).
+  foundationLayout?: number
 }
 
 // Saves are per profile (2026-10-15, Jay: his daughter's new profile resumed his deals). A slot's keys

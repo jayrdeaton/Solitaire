@@ -1,5 +1,7 @@
 import { AppState } from 'react-native'
 
+import { FOUNDATION_LAYOUT, FOUNDATION_SUITS } from '@/engine/foundation'
+import { SUITS } from '@/engine/types'
 import type { UndoEntry } from '@/games/shared/undoTypes'
 import { GUEST_PLAYER_ID } from '@/redux/activeProfileSlice'
 import { gameInProgressActions, LEGACY_OWNER, type SavedGame } from '@/redux/gameInProgressSlice'
@@ -89,11 +91,45 @@ export async function flushGameInProgress(gameId?: SolitaireGameId): Promise<voi
   }
 }
 
+// The games whose foundation slots are locked to a suit by position. Forty Thieves' 8 piles take any Ace, in any slot.
+const SUIT_LOCKED_FOUNDATION_GAMES: readonly SolitaireGameId[] = ['klondike', 'freecell', 'yukon', 'canfield']
+// Old slot index -> new slot index.
+const LEGACY_FOUNDATION_SLOT = SUITS.map((suit) => FOUNDATION_SUITS.indexOf(suit))
+
+function remapFoundationRefs(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(remapFoundationRefs)
+  if (value === null || typeof value !== 'object') return value
+  const source = value as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(source)) {
+    if (key === 'foundation' && Array.isArray(child) && child.length === LEGACY_FOUNDATION_SLOT.length) {
+      const piles: unknown[] = []
+      child.forEach((pile, i) => {
+        piles[LEGACY_FOUNDATION_SLOT[i]] = remapFoundationRefs(pile)
+      })
+      out[key] = piles
+    } else {
+      out[key] = remapFoundationRefs(child)
+    }
+  }
+  // A PileRef naming a foundation slot (an undo entry's move, a legacy entry's cascaded moves).
+  if (source.zone === 'foundation' && typeof source.index === 'number') out.index = LEGACY_FOUNDATION_SLOT[source.index] ?? source.index
+  return out
+}
+
+/** A save made before the foundations followed FOUNDATION_SUITS, moved over: every board's four foundation piles
+ * (the live one and each undo entry's) and every foundation slot an undo entry names. Exported for tests. */
+export function remapLegacyFoundations<T>(gameId: SolitaireGameId, saved: SavedGame<T, unknown>): SavedGame<T, unknown> {
+  if (saved.foundationLayout === FOUNDATION_LAYOUT || !SUIT_LOCKED_FOUNDATION_GAMES.includes(gameId)) return saved
+  return { ...(remapFoundationRefs(saved) as SavedGame<T, unknown>), foundationLayout: FOUNDATION_LAYOUT }
+}
+
 export async function loadGameInProgress<TState, TUndo = UndoEntry<TState>>(gameId: SolitaireGameId): Promise<SavedGame<TState, TUndo> | null> {
   adoptLegacySaves()
   // A save still waiting out its debounce must land first, or this would resume a stale board.
   dispatchPending(gameId)
-  return (store.getState().gameInProgress[gameId][currentOwner()] ?? null) as SavedGame<TState, TUndo> | null
+  const saved = store.getState().gameInProgress[gameId][currentOwner()]
+  return saved ? (remapLegacyFoundations(gameId, saved) as SavedGame<TState, TUndo>) : null
 }
 
 export function saveGameInProgress<TState, TUndo = UndoEntry<TState>>(gameId: SolitaireGameId, saved: SavedGame<TState, TUndo>): void {
@@ -105,7 +141,7 @@ export function saveGameInProgress<TState, TUndo = UndoEntry<TState>>(gameId: So
   if (waiting && waiting.owner !== owner) dispatchPending(gameId)
   const now = Date.now()
   const firstAt = pendingSaves.get(gameId)?.firstAt ?? now
-  pendingSaves.set(gameId, { owner, saved: saved as SavedGame<unknown, unknown>, firstAt })
+  pendingSaves.set(gameId, { owner, saved: { ...(saved as SavedGame<unknown, unknown>), foundationLayout: FOUNDATION_LAYOUT }, firstAt })
   const existing = saveTimers.get(gameId)
   if (existing) clearTimeout(existing)
   const wait = Math.max(0, Math.min(SAVE_DEBOUNCE_MS, firstAt + SAVE_MAX_WAIT_MS - now))

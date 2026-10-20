@@ -5,8 +5,9 @@ import { markGhostPending } from '@/components/cardFacePaint'
 import { AUTO_PLAY_STAGGER_MS, finishGapMs } from '@/components/dragdrop/dragSpring'
 import { DropZoneRegistry } from '@/components/dragdrop/DropZoneRegistry'
 import { setMotionReduced } from '@/components/reducedMotionFlag'
+import { FOUNDATION_SUITS } from '@/engine/foundation'
 import { PileRef } from '@/engine/gameTypes'
-import { Card, Suit, SUITS } from '@/engine/types'
+import { Card, Suit } from '@/engine/types'
 import KlondikeScreen from '@/games/klondike/KlondikeScreen'
 import * as klondikeRules from '@/games/klondike/rules'
 import { KlondikeState } from '@/games/klondike/rules'
@@ -73,7 +74,7 @@ let mockGhostsShowTimer: ReturnType<typeof setTimeout> | undefined
 /** Suits whose foundation slot container fails to measure (the rare origin-measurement failure the screen falls back on). */
 const mockUnmeasurableSlots = new Set<string>()
 /** What every foundation cell shows right now - read from inside the mocked cascade, hence hoisted-mock naming. */
-const mockFoundationsNow = () => SUITS.map((suit) => screen.getByTestId(`foundation-${suit}`).props.children as string)
+const mockFoundationsNow = () => FOUNDATION_SUITS.map((suit) => screen.getByTestId(`foundation-${suit}`).props.children as string)
 
 const mockRegistered = new Map<string, symbol>()
 const mockRegistry = {
@@ -312,7 +313,7 @@ const card = (suit: Suit, rank: number, faceUp = true): Card => ({ id: `${suit}-
 const id = (suit: Suit, rank: number) => `${suit}-${rank}-0`
 /** Foundation piles, Ace first, each filled up to the given rank (13 = complete, missing = empty). */
 function foundations(upTo: Partial<Record<Suit, number>>): Card[][] {
-  return SUITS.map((suit) => Array.from({ length: upTo[suit] ?? 0 }, (_, i) => card(suit, i + 1)))
+  return FOUNDATION_SUITS.map((suit) => Array.from({ length: upTo[suit] ?? 0 }, (_, i) => card(suit, i + 1)))
 }
 function board(parts: { tableau?: Card[][]; foundation: Card[][]; stock?: Card[]; waste?: Card[] }): KlondikeState {
   return { tableau: Array.from({ length: 7 }, (_, i) => parts.tableau?.[i] ?? []), foundation: parts.foundation, stock: parts.stock ?? [], waste: parts.waste ?? [] }
@@ -573,17 +574,17 @@ describe('Klondike screen - the foundation piles hand over to the win cascade on
     // Blanking on the reveal alone emptied all four piles first, and only THEN (after the origin measurement) started the
     // cascade whose ghosts stand in for them - a few empty frames in between.
     expect(mockLog.chainsAtWinCascade).toBe(4)
-    expect(mockLog.foundationsAtWinCascade).toEqual(SUITS.map((suit) => id(suit, 13)))
+    expect(mockLog.foundationsAtWinCascade).toEqual(FOUNDATION_SUITS.map((suit) => id(suit, 13)))
     // The ghosts are mounted but not on screen yet (their faces are still painting), so the real piles stay up meanwhile:
     // blanking them with startChains showed blank-faced Kings for a frame or two.
     expect(mockLog.events).toEqual(['cascade'])
-    expect(SUITS.map(foundationTop)).toEqual(SUITS.map((suit) => id(suit, 13)))
+    expect(FOUNDATION_SUITS.map(foundationTop)).toEqual(FOUNDATION_SUITS.map((suit) => id(suit, 13)))
 
     await flushUntil(() => mockLog.events.includes('ghosts-shown'))
-    expect(mockLog.foundationsAtGhostsShown).toEqual(SUITS.map((suit) => id(suit, 13)))
+    expect(mockLog.foundationsAtGhostsShown).toEqual(FOUNDATION_SUITS.map((suit) => id(suit, 13)))
     // The piles blanked in the commit that follows the ghosts showing: already, within the very step it happened in (not on a later timer).
-    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...SUITS.map((suit) => `blank-${suit}`)])
-    expect(SUITS.map(foundationTop)).toEqual(SUITS.map(() => 'empty'))
+    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...FOUNDATION_SUITS.map((suit) => `blank-${suit}`)])
+    expect(FOUNDATION_SUITS.map(foundationTop)).toEqual(FOUNDATION_SUITS.map(() => 'empty'))
     expect(screen.getByTestId('win-banner')).toBeTruthy()
   })
 
@@ -597,7 +598,7 @@ describe('Klondike screen - the foundation piles hand over to the win cascade on
 
     expect(mockLog.events).toEqual(['cascade'])
     expect(foundationTop('clubs')).toBe(id('clubs', 12))
-    expect(SUITS.filter((suit) => suit !== 'clubs').map(foundationTop)).toEqual(SUITS.filter((suit) => suit !== 'clubs').map((suit) => id(suit, 13)))
+    expect(FOUNDATION_SUITS.filter((suit) => suit !== 'clubs').map(foundationTop)).toEqual(FOUNDATION_SUITS.filter((suit) => suit !== 'clubs').map((suit) => id(suit, 13)))
     expect(pileIds(0)).toEqual([id('clubs', 13)])
     expect(screen.queryByTestId('win-banner')).toBeNull()
   })
@@ -610,15 +611,15 @@ describe('Klondike screen - the foundation piles hand over to the win cascade on
     await flush(settleAndHold)
 
     expect(mockLog.chainsAtWinCascade).toBe(3)
-    expect(mockLog.foundationsAtWinCascade).toEqual(SUITS.map((suit) => id(suit, 13)))
-    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...SUITS.filter((suit) => suit !== 'hearts').map((suit) => `blank-${suit}`)])
+    expect(mockLog.foundationsAtWinCascade).toEqual(FOUNDATION_SUITS.map((suit) => id(suit, 13)))
+    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...FOUNDATION_SUITS.filter((suit) => suit !== 'hearts').map((suit) => `blank-${suit}`)])
     expect(foundationTop('hearts')).toBe(id('hearts', 13))
-    expect(SUITS.filter((suit) => suit !== 'hearts').map(foundationTop)).toEqual(['empty', 'empty', 'empty'])
+    expect(FOUNDATION_SUITS.filter((suit) => suit !== 'hearts').map(foundationTop)).toEqual(['empty', 'empty', 'empty'])
     expect(screen.getByTestId('win-banner')).toBeTruthy()
   })
 
   it('leaves every pile up when no chain can start, instead of blanking them with nothing to show', async () => {
-    SUITS.forEach((suit) => mockUnmeasurableSlots.add(suit))
+    FOUNDATION_SUITS.forEach((suit) => mockUnmeasurableSlots.add(suit))
     await mount(KING_IN_COLUMN(), 1)
 
     await tapCard(id('clubs', 13))
@@ -626,7 +627,7 @@ describe('Klondike screen - the foundation piles hand over to the win cascade on
 
     expect(mockLog.chainsAtWinCascade).toBe(0)
     expect(mockLog.events).toEqual(['cascade']) // an empty cascade has nothing to show: no onShown, so nothing hands over
-    expect(SUITS.map(foundationTop)).toEqual(SUITS.map((suit) => id(suit, 13)))
+    expect(FOUNDATION_SUITS.map(foundationTop)).toEqual(FOUNDATION_SUITS.map((suit) => id(suit, 13)))
     expect(screen.getByTestId('win-banner')).toBeTruthy()
   })
 
@@ -634,7 +635,7 @@ describe('Klondike screen - the foundation piles hand over to the win cascade on
     await mount(KING_IN_COLUMN(), 1)
     await tapCard(id('clubs', 13))
     await flush(settleAndHold)
-    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...SUITS.map((suit) => `blank-${suit}`)]) // the first win handed over
+    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...FOUNDATION_SUITS.map((suit) => `blank-${suit}`)]) // the first win handed over
 
     // The next deal is one move from won again.
     const newController = klondikeRules.createKlondikeController
@@ -642,31 +643,31 @@ describe('Klondike screen - the foundation piles hand over to the win cascade on
     await tap('new-game')
     await flush(3000)
     expect(cardsOnBoard()).toBe(1)
-    expect(SUITS.map(foundationTop)).toEqual(SUITS.map((suit) => id(suit, suit === 'clubs' ? 12 : 13)))
+    expect(FOUNDATION_SUITS.map(foundationTop)).toEqual(FOUNDATION_SUITS.map((suit) => id(suit, suit === 'clubs' ? 12 : 13)))
     mockLog.events = []
     mockLog.foundationsAtWinCascade = null
 
     await tapCard(id('clubs', 13))
     await flushUntil(() => mockLog.events.includes('cascade'))
 
-    expect(mockLog.foundationsAtWinCascade).toEqual(SUITS.map((suit) => id(suit, 13))) // still every real card when the second cascade starts
+    expect(mockLog.foundationsAtWinCascade).toEqual(FOUNDATION_SUITS.map((suit) => id(suit, 13))) // still every real card when the second cascade starts
     expect(mockLog.events).toEqual(['cascade'])
     await flushUntil(() => mockLog.events.includes('ghosts-shown'))
-    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...SUITS.map((suit) => `blank-${suit}`)])
+    expect(mockLog.events).toEqual(['cascade', 'ghosts-shown', ...FOUNDATION_SUITS.map((suit) => `blank-${suit}`)])
   })
 
   it('an undo out of the celebration brings every pile back', async () => {
     await mount(KING_IN_COLUMN(), 1)
     await tapCard(id('clubs', 13))
     await flush(settleAndHold)
-    expect(SUITS.map(foundationTop)).toEqual(SUITS.map(() => 'empty'))
+    expect(FOUNDATION_SUITS.map(foundationTop)).toEqual(FOUNDATION_SUITS.map(() => 'empty'))
 
     await tap('undo')
     await flush(1000)
 
     expect(screen.queryByTestId('win-banner')).toBeNull()
     expect(foundationTop('clubs')).toBe(id('clubs', 12))
-    expect(SUITS.filter((suit) => suit !== 'clubs').map(foundationTop)).toEqual(SUITS.filter((suit) => suit !== 'clubs').map((suit) => id(suit, 13)))
+    expect(FOUNDATION_SUITS.filter((suit) => suit !== 'clubs').map(foundationTop)).toEqual(FOUNDATION_SUITS.filter((suit) => suit !== 'clubs').map((suit) => id(suit, 13)))
     expect(mockLog.hides).toBe(0)
   })
 })
@@ -702,7 +703,7 @@ describe('Klondike screen - a card never moves without its own flight', () => {
   it('undoing a foundation move that auto-play has since buried (an old save that folded the auto-play into it) flies that card out of its pile', async () => {
     // A save written before every auto-play became its own undo step: the board after the tap on 5 of hearts and the
     // auto-play of 6 of hearts on top of it, with both recorded in ONE entry (the auto-play in `cascaded`).
-    const hearts = SUITS.indexOf('hearts')
+    const hearts = FOUNDATION_SUITS.indexOf('hearts')
     const after = board({ tableau: [[], [], [card('diamonds', 1, false), card('diamonds', 2)]], foundation: foundations({ clubs: 13, spades: 13, hearts: 6 }) })
     const folded = { state: FIVE_THEN_SIX(), move: { primary: { from: { zone: 'tableau', index: 0 }, to: { zone: 'foundation', index: hearts }, count: 1, anchorCardId: id('hearts', 5) }, cascaded: [{ from: { zone: 'tableau', index: 1 }, to: { zone: 'foundation', index: hearts }, count: 1, anchorCardId: id('hearts', 6) }] } }
     await mount(after, 2, [folded], 1)
@@ -947,7 +948,7 @@ describe('Klondike screen - a card never moves in place of the one the player pi
 
     let applied: boolean = true
     await act(async () => {
-      applied = await staleDrag.onDrop({ zone: 'foundation', index: SUITS.indexOf('clubs') }, 1, nine, { release: () => {}, flyTo: () => {}, hide: () => {} })
+      applied = await staleDrag.onDrop({ zone: 'foundation', index: FOUNDATION_SUITS.indexOf('clubs') }, 1, nine, { release: () => {}, flyTo: () => {}, hide: () => {} })
     })
     await flush(200)
 
@@ -1258,7 +1259,7 @@ describe('Klondike screen - a foundation card back down to the tableau', () => {
     await tapCard(id('clubs', 13))
     await flush(200)
     expect(screen.getByTestId('chrome-won').props.children).toBe('true')
-    SUITS.forEach((suit) => expect(mockFoundationDrops.get(suit)).toBeUndefined())
+    FOUNDATION_SUITS.forEach((suit) => expect(mockFoundationDrops.get(suit)).toBeUndefined())
   })
 })
 
@@ -1363,13 +1364,13 @@ describe("Klondike screen - once the board is solved, any move of the player's f
     ['a card on the waste', () => board({ tableau: [[card('clubs', 13)], [card('diamonds', 13)], [card('hearts', 13)]], waste: [card('spades', 13)], foundation: foundations({ clubs: 12, diamonds: 12, hearts: 12, spades: 12 }) }), 4, id('clubs', 13)]
   ])('a board that could clear but still has %s does not start it after a column move: the finish never plays a card the player has not seen', async (_name, makeBoard, cards, king) => {
     await mount(makeBoard(), cards)
-    const foundationsBefore = SUITS.map(foundationTop)
+    const foundationsBefore = FOUNDATION_SUITS.map(foundationTop)
 
     expect(await dragFromColumn(king, column(6))).toBe(true) // a King into an empty column: nothing hidden comes to light
     await flush(3000)
 
     expect(mockLog.shown).toEqual([])
-    expect(SUITS.map(foundationTop)).toEqual(foundationsBefore)
+    expect(FOUNDATION_SUITS.map(foundationTop)).toEqual(foundationsBefore)
     expect(won()).toBe('false')
   })
 
