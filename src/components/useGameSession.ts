@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AppState } from 'react-native'
+import { AppState, Platform } from 'react-native'
 
 export interface GameSession {
   moves: number
@@ -54,7 +54,8 @@ export function useGameSession(): GameSession {
   const baseMsRef = useRef(0)
   // True while the clock would be running but something holds it (`holdsRef`).
   const pausedRef = useRef(false)
-  // Why the clock is held: 'app' while the app isn't in the foreground, and whatever setPaused is given.
+  // Why the clock is held: 'app' while the app isn't in the foreground, 'idle' from the app's return (or a resumed save)
+  // until the next move, and whatever setPaused is given.
   const holdsRef = useRef(new Set<string>())
 
   const getElapsed = useCallback(() => {
@@ -91,12 +92,28 @@ export function useGameSession(): GameSession {
     }
   }, [])
 
-  // The score counts seconds of PLAY: the clock pauses whenever the app leaves the foreground (a call,
-  // the app switcher, the home screen) and picks up again on return. Left running, time away counted
-  // only if the OS happened to keep the app alive (a killed app resumes from its last save instead).
+  // The score counts seconds of PLAY: the clock pauses whenever the app leaves the foreground (a call, the app switcher,
+  // the home screen, a locked phone) and on the web whenever the tab is hidden or the window loses focus. It picks up
+  // again with the player's next move, not the moment they come back (a coworker of Jay's, 2026-10-22: it kept counting
+  // while he got his bearings), the same as a new deal's clock waits for its first move. A killed app resumes from its
+  // last save, which holds the time from when the app left the foreground.
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (next) => setPaused('app', next !== 'active'))
-    return () => sub.remove()
+    const leave = () => setPaused('app', true)
+    const comeBack = () => {
+      if (!holdsRef.current.has('app')) return
+      holdsRef.current.add('idle')
+      setPaused('app', false)
+    }
+    if (AppState.currentState === 'background' || AppState.currentState === 'inactive') leave()
+    const sub = AppState.addEventListener('change', (next) => (next === 'active' ? comeBack() : leave()))
+    if (Platform.OS !== 'web' || typeof window?.addEventListener !== 'function') return () => sub.remove()
+    window.addEventListener('blur', leave)
+    window.addEventListener('focus', comeBack)
+    return () => {
+      sub.remove()
+      window.removeEventListener('blur', leave)
+      window.removeEventListener('focus', comeBack)
+    }
   }, [setPaused])
 
   function stopClock() {
@@ -119,6 +136,7 @@ export function useGameSession(): GameSession {
   function registerMove(): number {
     movesRef.current += 1
     setMoves(movesRef.current)
+    if (holdsRef.current.has('idle')) setPaused('idle', false)
     if (!startedRef.current) {
       startedRef.current = true
       setStarted(true)
@@ -130,7 +148,8 @@ export function useGameSession(): GameSession {
   // Seeds a resumed deal's move count/timer (see stores/gameInProgress.ts). `started` mirrors
   // whatever registerMove()'s own first-move gate would have produced: a saved, still-untouched
   // fresh deal (savedMoves === 0) restores with the clock not yet ticking, exactly like a brand
-  // new deal - only a deal with real progress resumes with the clock already running.
+  // new deal. A deal with real progress resumes started but held ('idle') until the next move, so the time it takes to
+  // find your place again (after a relaunch, or coming back from Home) isn't counted either.
   function restore(savedMoves: number, savedElapsedSeconds: number) {
     movesRef.current = savedMoves
     setMoves(savedMoves)
@@ -140,7 +159,9 @@ export function useGameSession(): GameSession {
     const alreadyStarted = savedMoves > 0
     startedRef.current = alreadyStarted
     setStarted(alreadyStarted)
-    if (alreadyStarted) startRun()
+    if (!alreadyStarted) return
+    holdsRef.current.add('idle')
+    startRun()
   }
 
   return { moves, started, registerMove, reset, stopClock, restore, getElapsed, getMoves, setPaused }

@@ -12,7 +12,7 @@ import type { AppDispatch, RootState } from '@/redux/store'
 import { ACHIEVEMENT_CATALOG } from './achievementCatalog'
 import { clearAllGamesInProgress } from './gameInProgress'
 import { useProfiles } from './profiles'
-import { applyDealAbandoned, applyDealWon, applyHintUsed, getProfileStatsView } from './statsEngine'
+import { applyDealAbandoned, applyDealWon, applyHintUsed, applyUndoUsed, getProfileStatsView } from './statsEngine'
 import { AchievementDefinition, DealMetrics, StatsState, UnlockedAchievementsState } from './statsTypes'
 
 interface GameStatsContextValue {
@@ -22,11 +22,14 @@ interface GameStatsContextValue {
   // already shows.
   recordDealWon: (variant: VariantId, metrics: DealMetrics) => AchievementDefinition[]
   // Called the instant the player confirms the "start a new game" warning dialog over a deal that
-  // was still in progress (see components/GameChrome.tsx).
-  recordDealAbandoned: (variant: VariantId) => void
+  // was still in progress (see components/GameChrome.tsx), or leaves a dead board. `played`: how long and how many moves
+  // the deal took, for Time Played.
+  recordDealAbandoned: (variant: VariantId, played?: { seconds: number; moves: number }) => void
   // Called the instant the Hint button actually produces a hint (not on a press that finds
   // nothing to suggest) - see engine/hint.ts's findHint.
   recordHintUsed: (variant: VariantId) => void
+  // Called when an Undo press takes a move back (see GameChrome's onUndoUsed).
+  recordUndoUsed: (variant: VariantId) => void
   resetAll: () => void
   removeProfileStats: (profileId: string) => void
   /** Each player's latest wins in each variant, which their par is made from (redux/recentWinsSlice.ts). */
@@ -78,8 +81,15 @@ export function GameStatsProvider({ children }: { children: ReactNode }) {
   )
 
   const recordDealAbandoned = useCallback(
+    (variant: VariantId, played?: { seconds: number; moves: number }) => {
+      recordOutcome((prev) => applyDealAbandoned(prev, variant, activeProfileId, new Date(), played))
+    },
+    [recordOutcome, activeProfileId]
+  )
+
+  const recordUndoUsed = useCallback(
     (variant: VariantId) => {
-      recordOutcome((prev) => applyDealAbandoned(prev, variant, activeProfileId))
+      recordOutcome((prev) => applyUndoUsed(prev, variant, activeProfileId))
     },
     [recordOutcome, activeProfileId]
   )
@@ -118,12 +128,13 @@ export function GameStatsProvider({ children }: { children: ReactNode }) {
       recordDealWon,
       recordDealAbandoned,
       recordHintUsed,
+      recordUndoUsed,
       resetAll: resetAllAndProgress,
       removeProfileStats,
       recentWins,
       lastWin
     }),
-    [stats, unlockedAchievements, recordDealWon, recordDealAbandoned, recordHintUsed, resetAllAndProgress, removeProfileStats, recentWins, lastWin]
+    [stats, unlockedAchievements, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, resetAllAndProgress, removeProfileStats, recentWins, lastWin]
   )
 
   return <GameStatsContext.Provider value={value}>{children}</GameStatsContext.Provider>

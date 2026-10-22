@@ -35,6 +35,7 @@ import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { showNoHintToast } from '@/games/shared/gameToasts'
 import { liftTappedRun, peelInAir } from '@/games/shared/inAirRun'
+import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFinish } from '@/games/shared/useAutoFinish'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
@@ -44,6 +45,7 @@ import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
@@ -115,7 +117,7 @@ function groupCascadedByFoundation(s: YukonState, moves: MoveInfo[]): CascadeUnd
 export default withGameProviders(YukonScreenInner)
 
 function YukonScreenInner() {
-  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   // No draw-count/suit-count-style config to lock at deal time (unlike Klondike/Spider) - a single
@@ -172,6 +174,10 @@ function YukonScreenInner() {
   // last card has flown in and landed, so it is never hidden mid-flight (which used to make it
   // simply appear) and the finished board reads for a beat first.
   const winRevealed = useWinReveal(won, settled)
+  // A dead board (no progress left anywhere: useStuckLossCheck's look-ahead) is a loss here too, recorded when the player
+  // leaves it, and shown once the last card has landed.
+  const { stuck } = useStuckLossCheck(controller, state, 'yukon', recordDealAbandoned, session)
+  const lossRevealed = useWinReveal(stuck, settled)
   // The board the win cascade has taken over from, and which piles it took over (set once its ghosts are on screen -
   // startChains' onShown, see runWinCascade): once it IS the current state, and the win is revealed, exactly those piles
   // blank their real cards - not a moment earlier. Compared by identity (state is replaced wholesale on every change), so
@@ -283,7 +289,7 @@ function YukonScreenInner() {
     // session.moves, not undoStack.length: a resumed deal always restores with an empty undo
     // stack (see restoreGame above) even when it has real progress, so undoStack alone would miss
     // recording the abandon for any resumed, in-progress game.
-    if (session.moves > 0 && !won) recordDealAbandoned('yukon')
+    if (session.moves > 0 && !won) recordDealAbandoned('yukon', { seconds: session.getElapsed(), moves: session.getMoves() })
     startNewGame()
   }
 
@@ -656,13 +662,13 @@ function YukonScreenInner() {
   // from when it was made, so useSaveInProgressBackstop saves again every 10s, when the screen is left,
   // and when the app is backgrounded.
   useEffect(() => {
-    if (state && !won) {
+    if (state && !won && !stuck) {
       saveGameInProgress('yukon', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, undoStack])
-  useSaveInProgressBackstop(!!state && !won, () => {
-    if (state && !won) saveGameInProgress('yukon', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
+  }, [state, won, stuck, undoStack])
+  useSaveInProgressBackstop(!!state && !won && !stuck, () => {
+    if (state && !won && !stuck) saveGameInProgress('yukon', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
   })
 
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
@@ -975,7 +981,7 @@ function YukonScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Yukon' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor('yukon')} clockRunning={session.started && !won} movesCount={session.moves} rules={YUKON_RULES}>
+      <GameChrome onUndoUsed={() => recordUndoUsed('yukon')} title='Yukon' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor('yukon')} clockRunning={session.started && !won && !stuck} movesCount={session.moves} rules={YUKON_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
@@ -1062,6 +1068,7 @@ function YukonScreenInner() {
       {winRevealed && <PipFireworks />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} variant='yukon' onNewGame={startNewGame} />}
+      {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

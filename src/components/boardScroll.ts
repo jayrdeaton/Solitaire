@@ -5,7 +5,7 @@ import { LayoutChangeEvent, NativeScrollEvent, NativeSyntheticEvent, ScrollView 
  * GameChrome's board scrolls ONLY when it doesn't fit the screen.
  *
  * Every board is laid out to fit exactly (useTableauMaxHeight, the wide layout's card fit), and a long
- * column compresses into its share - but never below PileView's MIN_FAN_SCALE, where a covered card's
+ * column compresses into its share - but never below PileView's its tightest (columnTops' MIN_FACE_UP_FAN_SCALE), where a covered card's
  * rank stops being readable and its strip stops being tappable. A column that needs more runs past the
  * bottom, and that is the one case the board scrolls, so the player can reach its last card.
  *

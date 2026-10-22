@@ -41,6 +41,7 @@ import { computeScore } from '@/engine/score'
 import { Card } from '@/engine/types'
 import { DiscardCell } from '@/games/shared/DiscardCell'
 import { showNoHintToast } from '@/games/shared/gameToasts'
+import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
@@ -49,6 +50,7 @@ import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurre
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
@@ -429,7 +431,7 @@ const NONE_LANDED: ReadonlySet<string> = new Set()
 export default withGameProviders(PyramidScreenInner)
 
 function PyramidScreenInner() {
-  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
@@ -528,6 +530,10 @@ function PyramidScreenInner() {
   // sweep, which holds its own claim on the flight count), so the finished pile reads for a beat first and nothing
   // hides while a card is still travelling to it.
   const winRevealed = useWinReveal(won, settled, SWEEP_WIN_REVEAL_MAX_WAIT_MS)
+  // A dead board (no progress left anywhere: useStuckLossCheck's look-ahead) is a loss here too, recorded when the player
+  // leaves it, and shown once the last card has landed.
+  const { stuck } = useStuckLossCheck(PyramidController, state, 'pyramid', recordDealAbandoned, session)
+  const lossRevealed = useWinReveal(stuck, settled)
   // The board the win cascade has taken over from (set once its ghosts are on screen - startChains' onShown, see
   // runWinCascade): once state IS the current state, and the win is revealed, the discard's real top blanks - not a moment
   // earlier. Blanking on winRevealed alone left the discard EMPTY for the few frames it takes runWinCascade to measure and
@@ -1028,7 +1034,7 @@ function PyramidScreenInner() {
     // session.moves, not undoStack.length: a resumed deal always restores with an empty undo
     // stack (see restoreGame above) even when it has real progress, so undoStack alone would miss
     // recording the abandon for any resumed, in-progress game.
-    if (session.moves > 0 && !won) recordDealAbandoned('pyramid')
+    if (session.moves > 0 && !won) recordDealAbandoned('pyramid', { seconds: session.getElapsed(), moves: session.getMoves() })
     startNewGame()
   }
 
@@ -1114,11 +1120,11 @@ function PyramidScreenInner() {
   // useSaveInProgressBackstop saves again every 10s, when the screen is left, and when the app is
   // backgrounded.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('pyramid', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
+    if (state && !won && !stuck) saveGameInProgress('pyramid', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, undoStack])
-  useSaveInProgressBackstop(!!state && !won, () => {
-    if (state && !won) saveGameInProgress('pyramid', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
+  }, [state, won, stuck, undoStack])
+  useSaveInProgressBackstop(!!state && !won && !stuck, () => {
+    if (state && !won && !stuck) saveGameInProgress('pyramid', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
   })
 
   // Mirrors handleDrawStock's forward flight, just in reverse: the drawn card is still sitting in
@@ -1860,7 +1866,7 @@ function PyramidScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor('pyramid')} clockRunning={session.started && !won} movesCount={session.moves} rules={PYRAMID_RULES}>
+      <GameChrome onUndoUsed={() => recordUndoUsed('pyramid')} title='Pyramid' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor('pyramid')} clockRunning={session.started && !won && !stuck} movesCount={session.moves} rules={PYRAMID_RULES}>
         <View style={styles.board}>
           <View style={[styles.controlRow, { width }]}>
             <DiscardCell card={handoff ? undefined : discardCards[discardCards.length - 1]} isFlyingHere={discardFlying} settledCard={discardSettled} viewRef={discardViewRef} />
@@ -1886,6 +1892,7 @@ function PyramidScreenInner() {
       <PairFlightGhosts flights={pairFlights} onCardLanded={handlePairFlightLanded} onCardRetired={retirePairCard} />
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} variant='pyramid' onNewGame={startNewGame} />}
+      {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

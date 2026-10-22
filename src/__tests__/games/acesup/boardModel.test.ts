@@ -1,10 +1,10 @@
 import { CARD_ASPECT } from '@tastic/cards'
 
-import { CARD_GAP_MIN, CARD_WIDTH_MAX, cardLayoutForRow } from '@/components/cardLayout'
-import { MIN_FAN_SCALE } from '@/components/columnTops'
+import { CARD_WIDTH_MAX, cardLayoutForRow } from '@/components/cardLayout'
+import { MIN_FACE_UP_FAN_SCALE } from '@/components/columnTops'
 import { columnBoardModel, columnFan, computeGameLayout, FACE_DOWN_FAN_RATIO, FACE_UP_FAN_RATIO, fitCardWidthToHeight, GAME_CONTENT_PADDING } from '@/components/gameLayout'
 import { Card } from '@/engine/types'
-import { BOARD_MODEL, LONG_COLUMN, TALLEST_COLUMN } from '@/games/acesup/boardModel'
+import { BOARD_MODEL, LONG_COLUMN, PILE_MIN_GAP, TALLEST_COLUMN } from '@/games/acesup/boardModel'
 import { AcesUpController } from '@/games/acesup/rules'
 import { tableauMaxHeightFor } from '@/games/shared/useTableauMaxHeight'
 
@@ -22,7 +22,7 @@ function tallestPile(piles: Card[][]): { faceDown: number; faceUp: number } {
 }
 
 function widthDerivedCardWidth(contentWidth: number): number {
-  return cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, NUM_PILES).cardWidth
+  return cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, NUM_PILES, PILE_MIN_GAP).cardWidth
 }
 
 describe('acesup TALLEST_COLUMN', () => {
@@ -85,13 +85,15 @@ describe('acesup card size in portrait (AcesUpScreen fits the height in both lay
     return { layout, widthCardWidth, w: fitCardWidthToHeight(widthCardWidth, layout.availableHeight, BOARD_MODEL) }
   }
 
-  it('leaves a tall phone at its width-derived card (the 96pt cap)', () => {
+  it('leaves a tall phone within a few points of its width-derived card (the 96pt cap)', () => {
     const { layout, widthCardWidth, w } = cardWidthIn(402, 874, PORTRAIT_INSETS)
     expect(layout.isWide).toBe(false)
-    // (402 - 2*GAME_CONTENT_PADDING - 3*CARD_GAP_MIN) / 4 piles, clamped at CARD_WIDTH_MAX
-    const row = 402 - GAME_CONTENT_PADDING * 2 - (NUM_PILES - 1) * CARD_GAP_MIN
+    // (402 - 2*GAME_CONTENT_PADDING - 3*PILE_MIN_GAP) / 4 piles, clamped at CARD_WIDTH_MAX
+    const row = 402 - GAME_CONTENT_PADDING * 2 - (NUM_PILES - 1) * PILE_MIN_GAP
     expect(widthCardWidth).toBeCloseTo(Math.min(CARD_WIDTH_MAX, row / NUM_PILES), 6)
-    expect(w).toBe(widthCardWidth)
+    // A 9-card pile with every covered rank readable (columnTops' MIN_FACE_UP_FAN_SCALE) costs ~3pt of the 96 here.
+    expect(w).toBeLessThanOrEqual(widthCardWidth)
+    expect(w).toBeGreaterThan(widthCardWidth - 4)
   })
 
   it.each([
@@ -100,7 +102,7 @@ describe('acesup card size in portrait (AcesUpScreen fits the height in both lay
   ])('shrinks the card on %s so a 9-card pile fits at the minimum fan spacing, without scrolling', (_name, width, height, insets) => {
     const { layout, widthCardWidth, w } = cardWidthIn(width, height, insets)
     expect(w).toBeLessThan(widthCardWidth)
-    const pileHeight = columnFan(LONG_COLUMN) * w * MIN_FAN_SCALE + H * w
+    const pileHeight = columnFan(LONG_COLUMN) * w * MIN_FACE_UP_FAN_SCALE + H * w
     expect(pileHeight).toBeLessThanOrEqual(tableauMaxHeightFor(layout.availableHeight, w) + 1e-6)
   })
 })

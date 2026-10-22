@@ -15,12 +15,17 @@ export interface DepartingCard {
   slots: number
 }
 
-/** The tightest a column's fan is ever compressed, as a fraction of its natural steps. 80% of the face-up strip still
- * shows every covered card's whole rank and pip, and leaves a ~20pt strip to tap on a phone. Checked on the iOS
- * Simulator with a 40-card Yukon column: the next card's edge and shadow take the bottom of the strip, so at 70-75% a
- * covered Q read as an O and a J as an I (their tail and hook are the lowest ink in the corner). A column that needs
- * more than this runs past its `maxHeight` instead (see columnTops). */
-export const MIN_FAN_SCALE = 0.8
+/** The tightest a column's face-up steps are ever compressed, as a fraction of the natural step. The whole corner index has
+ * to stay readable on a covered card: @tastic/cards' glyph ranks (0.3.0) reach 0.417W down the card at their lowest (the
+ * tail of a Q, the hook of a J), and the natural strip is faceUpFanOffset's 0.45W, so 0.95 (0.4275W) leaves ~0.5pt above
+ * the next card's edge. It was 0.8 (0.36W, chosen for the older, smaller rank): the crowding audit of 2026-10-22 found a
+ * covered Q reading as an O and a J as an I in FreeCell and Yukon on a phone held sideways, and in Aces Up after a few
+ * rounds. A column that needs more than this runs past its `maxHeight` instead (see columnTops). */
+export const MIN_FACE_UP_FAN_SCALE = 0.95
+
+/** The tightest a column's face-down steps are ever compressed: a face-down card only has to show that it is there, so these
+ * give way first (columnTops), down to ~0.1 of a card's width. */
+export const MIN_FACE_DOWN_FAN_SCALE = 0.55
 
 /**
  * Each card's top (already compressed) in a column of `cards`: the fan, scaled down to fit `maxHeight` if it must be, and
@@ -46,23 +51,42 @@ export const MIN_FAN_SCALE = 0.8
  * was face-up too), or - practically unreachable - one that left without a hold from under one that has one.
  *
  * The fan is as tall as the top of its LAST slot plus one card: the top card shows whole, so its own step is not part of
- * it. Compression never goes below MIN_FAN_SCALE: past that the column grows taller than `maxHeight` (`totalHeight`, which
- * PileView sizes its box to) and GameChrome's board scrolls to it, rather than squeezing every covered card's index
- * until it can no longer be read or tapped (a 40-card Yukon column fitted to a phone left ~12pt per card).
+ * it. To fit `maxHeight` the face-down steps give way first, down to MIN_FACE_DOWN_FAN_SCALE, then the face-up ones, down
+ * to MIN_FACE_UP_FAN_SCALE. Past that the column grows taller than `maxHeight` (`totalHeight`, which PileView sizes its box
+ * to) and GameChrome's board scrolls to it, rather than squeezing every covered card's index until it can no longer be
+ * read or tapped (a 40-card Yukon column fitted to a phone left ~12pt per card).
  */
 export function columnTops(cards: readonly Card[], held: readonly DepartingCard[], faceUpOffset: number, faceDownOffset: number, cardHeight: number, maxHeight: number | undefined) {
   const slots = held.reduce((most, d) => Math.max(most, d.slots), cards.length)
-  const stepBelow = (slot: number) => {
-    const faceUp = slot < cards.length ? cards[slot].faceUp : held.find((d) => d.zIndex === slot)?.card.faceUp !== false
-    return faceUp ? faceUpOffset : faceDownOffset
+  // Every step below a slot, natural size, and how much of the fan each kind makes up.
+  const faceUpSteps: boolean[] = []
+  let up = 0
+  let down = 0
+  for (let slot = 1; slot < slots; slot++) {
+    const faceUp = isFaceUpSlot(cards, held, slot - 1)
+    faceUpSteps.push(faceUp)
+    if (faceUp) up += faceUpOffset
+    else down += faceDownOffset
   }
-  const offsets: number[] = []
+  let upScale = 1
+  let downScale = 1
+  if (maxHeight !== undefined && up + down + cardHeight > maxHeight) {
+    const room = maxHeight - cardHeight
+    downScale = down > 0 ? Math.max(MIN_FACE_DOWN_FAN_SCALE, Math.min(1, (room - up) / down)) : 1
+    if (up + down * downScale > room) upScale = up > 0 ? Math.max(MIN_FACE_UP_FAN_SCALE, (room - down * downScale) / up) : 1
+  }
+  const tops: number[] = []
   // The top of the slot being laid out; after the loop, the top of the last one.
   let y = 0
   for (let slot = 0; slot < slots; slot++) {
-    if (slot > 0) y += stepBelow(slot - 1)
-    if (slot < cards.length) offsets.push(y)
+    if (slot > 0) y += faceUpSteps[slot - 1] ? faceUpOffset * upScale : faceDownOffset * downScale
+    if (slot < cards.length) tops.push(y)
   }
-  const scale = maxHeight !== undefined && y > 0 && y + cardHeight > maxHeight ? Math.max(MIN_FAN_SCALE, (maxHeight - cardHeight) / y) : 1
-  return { tops: offsets.map((offset) => offset * scale), totalHeight: y * scale + cardHeight, slots }
+  return { tops, totalHeight: y + cardHeight, slots }
+}
+
+// Whether the card in `slot` (or the held card drawn there) is face-up; a slot above the top no held card is in counts as
+// face-up (see columnTops).
+function isFaceUpSlot(cards: readonly Card[], held: readonly DepartingCard[], slot: number): boolean {
+  return slot < cards.length ? cards[slot].faceUp : held.find((d) => d.zIndex === slot)?.card.faceUp !== false
 }

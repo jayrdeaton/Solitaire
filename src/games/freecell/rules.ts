@@ -5,6 +5,7 @@ import { shuffledDeck } from '@/engine/deck'
 import { canPlaceOnFoundation, suitIndex } from '@/engine/foundation'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { isDescendingAltColor, top } from '@/engine/pile'
+import { columnsKey, pileKey, ProgressSpec } from '@/engine/progressSearch'
 import { Card, cardColor } from '@/engine/types'
 
 export interface FreeCellState {
@@ -381,6 +382,52 @@ function accessibleCards(state: FreeCellState): AccessibleCard[] {
   return result
 }
 
+/** Every move from here to every pile that takes it (legalMoves keeps one column per run, the one tap-to-move picks):
+ * what the look-ahead tries. Free cells are interchangeable, so only the first empty one. */
+function searchMoves(state: FreeCellState): Move[] {
+  const moves: Move[] = []
+  const firstEmpty = state.freecells.indexOf(null)
+  const toFoundation = (from: PileRef, card: Card) => {
+    const f = suitIndex(card.suit)
+    if (canPlaceOnFoundation(state.foundation[f], card)) moves.push({ from, to: { zone: 'foundation', index: f }, count: 1 })
+  }
+  state.freecells.forEach((card, fc) => {
+    if (!card) return
+    const from: PileRef = { zone: 'freecell', index: fc }
+    toFoundation(from, card)
+    for (let t = 0; t < NUM_TABLEAU; t++) if (canPlaceOnTableau(state.tableau[t], card)) moves.push({ from, to: { zone: 'tableau', index: t }, count: 1 })
+  })
+  for (let col = 0; col < NUM_TABLEAU; col++) {
+    const pile = state.tableau[col]
+    if (pile.length === 0) continue
+    const from: PileRef = { zone: 'tableau', index: col }
+    toFoundation(from, pile[pile.length - 1])
+    if (firstEmpty !== -1) moves.push({ from, to: { zone: 'freecell', index: firstEmpty }, count: 1 })
+    const runLen = runLengthAtTop(pile)
+    for (let t = 0; t < NUM_TABLEAU; t++) {
+      if (t === col) continue
+      const capacity = maxSupermoveCount(state, t)
+      for (let count = 1; count <= Math.min(runLen, capacity); count++) {
+        if (canPlaceOnTableau(state.tableau[t], pile[pile.length - count])) moves.push({ from, to: { zone: 'tableau', index: t }, count })
+      }
+    }
+  }
+  return moves
+}
+
+/** Progress is a card on a foundation. */
+const progress: ProgressSpec<FreeCellState> = {
+  id: 'freecell',
+  moves: searchMoves,
+  drawIsStep: false,
+  key: (state) =>
+    `${columnsKey(state.tableau)}/${state.freecells
+      .map((c) => (c ? pileKey([c]) : ''))
+      .sort()
+      .join('')}`,
+  progress: (state) => [state.foundation.reduce((n, p) => n + p.length, 0)]
+}
+
 export const FreeCellController: GameController<FreeCellState> = {
   id: 'freecell',
   title: 'FreeCell',
@@ -390,5 +437,6 @@ export const FreeCellController: GameController<FreeCellState> = {
   isWon,
   autoMoveHint,
   scoreHintMove,
-  accessibleCards
+  accessibleCards,
+  progress
 }

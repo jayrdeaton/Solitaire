@@ -9,7 +9,7 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
 import { HintRequest } from '@/components/autoHint'
@@ -54,6 +54,7 @@ import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { showNoHintToast } from '@/games/shared/gameToasts'
 import { liftTappedRun, peelInAir } from '@/games/shared/inAirRun'
+import { LossBanner } from '@/games/shared/LossBanner'
 import { createStockQueue, startStockWait, stockWaitTick } from '@/games/shared/stockWait'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFinish } from '@/games/shared/useAutoFinish'
@@ -64,6 +65,7 @@ import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
@@ -148,7 +150,7 @@ export function ReserveCell({ card, under, isFlyingHere, dealHidden, shakeToken,
 export default withGameProviders(CanfieldScreenInner)
 
 function CanfieldScreenInner() {
-  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   // The draw count the in-progress deal was actually dealt with - deliberately not re-derived from
@@ -213,6 +215,12 @@ function CanfieldScreenInner() {
   // last card has flown in and landed, so it is never hidden mid-flight (which used to make it
   // simply appear) and the finished board reads for a beat first.
   const winRevealed = useWinReveal(won, settled)
+  // A dead board (no progress left anywhere: useStuckLossCheck's look-ahead) is a loss here too, recorded when the player
+  // leaves it, and shown once the last card has landed.
+  // The same rules as controllerRef.current, memoized so the look-ahead can run off the render's board.
+  const stuckController = useMemo(() => createCanfieldController(canfieldDraw), [canfieldDraw])
+  const { stuck } = useStuckLossCheck(stuckController, state, variant, recordDealAbandoned, session)
+  const lossRevealed = useWinReveal(stuck, settled)
   // The board the win cascade has taken over from, and which piles it took over (set once its ghosts are on screen -
   // startChains' onShown, see runWinCascade): once it IS the current state, and the win is revealed, exactly those piles
   // blank their real cards - not a moment earlier. Compared by identity (state is replaced wholesale on every change), so
@@ -313,7 +321,7 @@ function CanfieldScreenInner() {
   // only ever calls this after the player has confirmed that, or immediately when there's nothing
   // to lose (see components/GameChrome.tsx's warning dialog).
   function handleNewGame() {
-    if (session.moves > 0 && !won) recordDealAbandoned(variant)
+    if (session.moves > 0 && !won) recordDealAbandoned(variant, { seconds: session.getElapsed(), moves: session.getMoves() })
     startNewGame()
   }
 
@@ -478,7 +486,7 @@ function CanfieldScreenInner() {
           settleFlight()
           return
         }
-        const fanOffset = wasteFanStepFor(cardWidth)
+        const fanOffset = wasteFanStepFor(cardWidth, true, gap)
         const n = p.drawnCards.length
         const entries: DealCardSpec[] = p.drawnCards.map((card, i) => {
           const distanceFromTop = n - 1 - i // i=0 is the oldest/farthest card, i=n-1 is the new top
@@ -563,11 +571,11 @@ function CanfieldScreenInner() {
   // from when it was made, so useSaveInProgressBackstop saves again every 10s, when the screen is left,
   // and when the app is backgrounded.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('canfield', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: canfieldDraw })
+    if (state && !won && !stuck) saveGameInProgress('canfield', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: canfieldDraw })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, canfieldDraw, undoStack])
-  useSaveInProgressBackstop(!!state && !won, () => {
-    if (state && !won) saveGameInProgress('canfield', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: canfieldDraw })
+  }, [state, won, stuck, canfieldDraw, undoStack])
+  useSaveInProgressBackstop(!!state && !won && !stuck, () => {
+    if (state && !won && !stuck) saveGameInProgress('canfield', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: canfieldDraw })
   })
 
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
@@ -682,7 +690,7 @@ function CanfieldScreenInner() {
       setUndoStack((stack) => stack.slice(0, -1))
 
       if (topPos && stockDest) {
-        const fanOffset = wasteFanStepFor(cardWidth)
+        const fanOffset = wasteFanStepFor(cardWidth, true, gap)
         const entries: DealCardSpec[] = movingCards
           .slice()
           .reverse() // newest/top (last dealt) first
@@ -1116,7 +1124,7 @@ function CanfieldScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Canfield' subtitle={`Draw ${canfieldDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<CanfieldSettingsSection />} rules={CANFIELD_RULES}>
+      <GameChrome onUndoUsed={() => recordUndoUsed(variant)} title='Canfield' subtitle={`Draw ${canfieldDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<CanfieldSettingsSection />} rules={CANFIELD_RULES}>
         <View style={[styles.topRow, { width: rowWidth }]}>
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
@@ -1210,6 +1218,7 @@ function CanfieldScreenInner() {
       {winRevealed && <PipFireworks />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} variant={variant} onNewGame={startNewGame} />}
+      {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

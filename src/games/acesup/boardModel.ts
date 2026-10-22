@@ -19,4 +19,9 @@ export const TALLEST_COLUMN = { faceDown: 0, faceUp: 1 }
  * AcesUpScreen fits it in portrait too. */
 export const LONG_COLUMN = { faceDown: 0, faceUp: 9 }
 
+/** The least gap between the four piles. The board-wide floor (CARD_GAP_MIN, 2pt) left four 95pt piles 2pt apart on a
+ * 390pt phone, where 375 and 430pt phones get ~14pt (their cards are fitted to the height, or capped): the crowding
+ * audit of 2026-10-22. */
+export const PILE_MIN_GAP = 12
+
 export const BOARD_MODEL = columnBoardModel({ ...TALLEST_COLUMN, headroomFaceUp: 5, longColumn: LONG_COLUMN })

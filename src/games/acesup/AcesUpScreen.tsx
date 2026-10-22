@@ -69,7 +69,7 @@ import { WinBanner } from '@/games/shared/WinBanner'
 import { withGameProviders } from '@/games/shared/withGameProviders'
 import { loadGameInProgress, SavedGame, saveGameInProgress } from '@/stores/gameInProgress'
 
-import { BOARD_MODEL } from './boardModel'
+import { BOARD_MODEL, PILE_MIN_GAP } from './boardModel'
 import { buildAcesUpDealSequence } from './dealSequence'
 import { AcesUpController, AcesUpState } from './rules'
 
@@ -82,13 +82,13 @@ const STOCK_DISPLAY_CARD: Card = { id: 'acesup-stock', suit: 'spades', rank: 1, 
 export default withGameProviders(AcesUpScreenInner)
 
 function AcesUpScreenInner() {
-  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   // Width the board may occupy - rotation-aware, and net of the side-chrome gutters in the wide (landscape)
   // layout; the plain window width (capped) in portrait. See gameLayout.ts.
   const { contentWidth, availableHeight, isWide } = useGameLayout()
   const rowWidth = contentWidth - GAME_CONTENT_PADDING * 2
-  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(rowWidth, NUM_PILES)
+  const { cardWidth: widthCardWidth, gap: widthGap } = cardLayoutForRow(rowWidth, NUM_PILES, PILE_MIN_GAP)
   // In portrait, capped so a pile as long as real games make it still fits the height (see boardModel.ts), unlike the
   // other games: with only four piles, the width-derived card on a short phone (88pt on a 640pt Android) ran a pile past
   // the bottom by its sixth card, in most games. Tall phones stay width-bound, so their cards are unchanged. The wide
@@ -154,7 +154,7 @@ function AcesUpScreenInner() {
   const [cascadeHandoff, setCascadeHandoff] = useState<{ state: AcesUpState; piles: ReadonlySet<number> } | null>(null)
   // A dead board is a loss, recorded when the player leaves it (see useStuckLossCheck). AcesUpController.isStuck's own
   // `!isWon(state)` guard keeps a won board from also reading as dead.
-  const { stuck } = useStuckLossCheck(AcesUpController, state, 'acesup', recordDealAbandoned)
+  const { stuck } = useStuckLossCheck(AcesUpController, state, 'acesup', recordDealAbandoned, session)
   /** Flights (each carrying the DragFlightHandle already returned by the ghost.show() that started
    * it) awaiting their own post-commit measurement + flyTo, queued by tap-to-move-to-empty,
    * tap-to-discard, and undo of either - a list (not a single slot), since these can now genuinely
@@ -244,7 +244,7 @@ function AcesUpScreenInner() {
   // confirmed that, or immediately when there's nothing to lose. The LossBanner's New Game comes
   // here too: a dead board's loss is recorded when the player leaves it (see useStuckLossCheck).
   function handleNewGame() {
-    if (session.moves > 0 && !won) recordDealAbandoned('acesup')
+    if (session.moves > 0 && !won) recordDealAbandoned('acesup', { seconds: session.getElapsed(), moves: session.getMoves() })
     startNewGame()
   }
 
@@ -731,7 +731,7 @@ function AcesUpScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor('acesup')} clockRunning={session.started && !won && !stuck} movesCount={session.moves} rules={ACESUP_RULES}>
+      <GameChrome onUndoUsed={() => recordUndoUsed('acesup')} title='Aces Up' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor('acesup')} clockRunning={session.started && !won && !stuck} movesCount={session.moves} rules={ACESUP_RULES}>
         <View style={[styles.topRow, { width: pilesWidth }]}>
           <DiscardCell card={state.discard[state.discard.length - 1]} isFlyingHere={flying.some((f) => f.to.zone === 'discard')} viewRef={discardViewRef} />
           <View ref={stockViewRef} collapsable={false}>

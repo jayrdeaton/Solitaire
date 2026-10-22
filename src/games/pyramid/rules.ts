@@ -12,6 +12,7 @@
 import { shuffledDeck } from '@/engine/deck'
 import { GameController, Move, PileRef } from '@/engine/gameTypes'
 import { top } from '@/engine/pile'
+import { pileKey, ProgressSpec } from '@/engine/progressSearch'
 import { Card } from '@/engine/types'
 
 export interface PyramidState {
@@ -306,6 +307,16 @@ function scoreHintMove(state: PyramidState, move: Move): number {
   return 1 + newlyExposed * 10
 }
 
+/** Progress is a card removed. The stock turns over and comes round again, so drawing is a step of the search: a board
+ * where no pair or King turns up in a whole pass through it is dead. */
+const progress: ProgressSpec<PyramidState> = {
+  id: 'pyramid',
+  moves: legalMoves,
+  drawIsStep: true,
+  key: (state) => `${state.pyramid.map((c) => (c ? '1' : '0')).join('')}/${pileKey(state.stock)}/${pileKey(state.waste)}`,
+  progress: (state) => [state.removedCount]
+}
+
 export const PyramidController: GameController<PyramidState> = {
   id: 'pyramid',
   title: 'Pyramid',
@@ -314,5 +325,6 @@ export const PyramidController: GameController<PyramidState> = {
   tryMove,
   drawStock,
   isWon,
-  scoreHintMove
+  scoreHintMove,
+  progress
 }

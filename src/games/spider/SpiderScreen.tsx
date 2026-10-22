@@ -39,6 +39,7 @@ import { Card } from '@/engine/types'
 import { spiderVariant } from '@/engine/variants'
 import { showNoHintToast } from '@/games/shared/gameToasts'
 import { liftTappedRun, peelInAir } from '@/games/shared/inAirRun'
+import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useDeferredDeal } from '@/games/shared/useDeferredDeal'
 import { useDerivedWinCheck } from '@/games/shared/useDerivedWinCheck'
@@ -46,6 +47,7 @@ import { UndoGate, useFlightConcurrency } from '@/games/shared/useFlightConcurre
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
@@ -302,7 +304,7 @@ function SequenceFlightGhosts({ flights, onCardLanded, onRetire }: { flights: Se
 export default withGameProviders(SpiderScreenInner)
 
 function SpiderScreenInner() {
-  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   const [ready, setReady] = useState(false)
@@ -483,6 +485,10 @@ function SpiderScreenInner() {
   // celebration (slots blanking for the win cascade, fireworks, banner) waits for that last sweep flight to land and
   // the finished board to hold a beat, instead of cutting it short. See useWinReveal.
   const winRevealed = useWinReveal(won, settled)
+  // A dead board (no progress left anywhere: useStuckLossCheck's look-ahead) is a loss here too, recorded when the player
+  // leaves it, and shown once the last card has landed.
+  const { stuck } = useStuckLossCheck(controller, state, variant, recordDealAbandoned, session)
+  const lossRevealed = useWinReveal(stuck, settled)
   // The board the win cascade has taken over from, and the slots it has a chain for (set together with startChains, see
   // runWinCascade): a slot blanks only once the win is revealed AND the current state IS that board AND its own chain
   // started - never a moment earlier (the slot would sit empty until its ghosts mount) and never without a chain to show for
@@ -676,13 +682,13 @@ function SpiderScreenInner() {
   // useSaveInProgressBackstop saves again every 10s, when the screen is left, and when the app is
   // backgrounded.
   useEffect(() => {
-    if (state && !won) {
+    if (state && !won && !stuck) {
       saveGameInProgress('spider', { state, undoStack: history, moves: session.moves, elapsedSeconds: session.getElapsed(), config: numSuits })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, numSuits, history])
-  useSaveInProgressBackstop(!!state && !won, () => {
-    if (state && !won) saveGameInProgress('spider', { state, undoStack: history, moves: session.moves, elapsedSeconds: session.getElapsed(), config: numSuits })
+  }, [state, won, stuck, numSuits, history])
+  useSaveInProgressBackstop(!!state && !won && !stuck, () => {
+    if (state && !won && !stuck) saveGameInProgress('spider', { state, undoStack: history, moves: session.moves, elapsedSeconds: session.getElapsed(), config: numSuits })
   })
 
   // Foundation-equivalent measurement for Spider's win cascade: each completed run's own slot
@@ -1840,14 +1846,14 @@ function SpiderScreenInner() {
     // session.moves, not history.length: a resumed deal always restores with an empty history
     // (see restoreGame above) even when it has real progress, so history alone would miss
     // recording the abandon for any resumed, in-progress game.
-    if (session.moves > 0 && !won) recordDealAbandoned(variant)
+    if (session.moves > 0 && !won) recordDealAbandoned(variant, { seconds: session.getElapsed(), moves: session.getMoves() })
     setNumSuits(settings.spiderSuits)
     startNewGame(createSpiderController(settings.spiderSuits))
   }
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Spider' subtitle={`${numSuits} Suit${numSuits > 1 ? 's' : ''}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={history.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<SpiderSettingsSection />} rules={SPIDER_RULES}>
+      <GameChrome onUndoUsed={() => recordUndoUsed(variant)} title='Spider' subtitle={`${numSuits} Suit${numSuits > 1 ? 's' : ''}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={history.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<SpiderSettingsSection />} rules={SPIDER_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.completedGroup, { gap }]}>
             {Array.from({ length: 8 }).map((_, i) => {
@@ -1883,6 +1889,8 @@ function SpiderScreenInner() {
             const dragConfig: PileDragConfig = {
               registry: dropZones,
               getRunCount: (indexFromTop) => tableauRunCount(colIndex, indexFromTop),
+              // A finger aimed at the head of a run on these narrow columns often lands on the card above it.
+              grabRunBelow: true,
               // Claims a flight slot (see activeFlightCountRef's doc comment) purely so undo sees
               // this drop as in-flight for its whole duration, not just once completeMove lands one
               // - PileView.tsx (shared, not ours to edit) already ran its own hitTest await before
@@ -1924,6 +1932,7 @@ function SpiderScreenInner() {
       <SequenceFlightGhosts flights={sequenceFlights} onCardLanded={handleSequenceFlightLanded} onRetire={retireSequenceFlight} />
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} variant={variant} onNewGame={handleNewGame} />}
+      {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

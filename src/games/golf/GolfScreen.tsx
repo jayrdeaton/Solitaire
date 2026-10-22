@@ -65,7 +65,7 @@ const WASTE: PileRef = { zone: 'waste', index: 0 }
 export default withGameProviders(GolfScreenInner)
 
 function GolfScreenInner() {
-  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   // The rank-wrap rule the in-progress deal was actually dealt with - deliberately not re-derived
@@ -136,7 +136,7 @@ function GolfScreenInner() {
   const winCascade = useWinCascade()
   // A dead board - no move left and no stock to deal - is a loss here, as in Aces Up, recorded when the player leaves it (see useStuckLossCheck):
   // it used to just sit there with the clock running.
-  const { stuck } = useStuckLossCheck(controller, state, variant, recordDealAbandoned)
+  const { stuck } = useStuckLossCheck(controller, state, variant, recordDealAbandoned, session)
   // Derived from `state` every render (see useDerivedWinCheck) rather than mirrored into its own
   // useState, same as Pyramid/Spider (not Klondike/FreeCell's useFoundationWinCheck) - Golf has no
   // suit-based foundation for a "won" flag to hang off, just "every tableau column is empty".
@@ -246,7 +246,7 @@ function GolfScreenInner() {
   // ever calls this after the player has confirmed that, or immediately when there's nothing to lose
   // (see components/GameChrome.tsx's warning dialog).
   function handleNewGame() {
-    if (session.moves > 0 && !won) recordDealAbandoned(variant)
+    if (session.moves > 0 && !won) recordDealAbandoned(variant, { seconds: session.getElapsed(), moves: session.getMoves() })
     setGolfRankWrap(settings.golfRankWrap)
     startNewGame(createGolfController(settings.golfRankWrap))
   }
@@ -637,7 +637,7 @@ function GolfScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Golf' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<GolfSettingsSection />} rules={GOLF_RULES}>
+      <GameChrome onUndoUsed={() => recordUndoUsed(variant)} title='Golf' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<GolfSettingsSection />} rules={GOLF_RULES}>
         {/* No foundation row at all (unlike Klondike/FreeCell/Yukon) - Golf has no suit-based
         foundation, just the stock/waste pair. Narrower than the tableau below, so it's centered
         above it by GameChrome's own content styling rather than stretched/pinned to an edge. */}

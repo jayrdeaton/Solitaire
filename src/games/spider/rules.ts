@@ -2,6 +2,7 @@ import { pickBestTableauTarget } from '@/engine/autoMove'
 import { shuffledDeck } from '@/engine/deck'
 import { GameController, Move, PileRef } from '@/engine/gameTypes'
 import { isDescendingSameSuit, top } from '@/engine/pile'
+import { columnsKey, faceDownCount, ProgressSpec } from '@/engine/progressSearch'
 import { Card, SUITS } from '@/engine/types'
 
 export interface SpiderState {
@@ -201,7 +202,36 @@ export function canDealStock(state: SpiderState): boolean {
   return state.tableau.reduce((sum, col) => sum + col.length, 0) < NUM_COLUMNS
 }
 
+/** Every move from here to every column that takes it (legalMoves keeps one destination per run, the column tap-to-move
+ * picks): what the look-ahead tries (see `progress` in createSpiderController). */
+function searchMoves(state: SpiderState): Move[] {
+  const moves: Move[] = []
+  for (let from = 0; from < NUM_COLUMNS; from++) {
+    const col = state.tableau[from]
+    const runLen = runLengthAtTop(col)
+    for (let count = 1; count <= runLen; count++) {
+      const bottom = col[col.length - count]
+      for (let to = 0; to < NUM_COLUMNS; to++) {
+        if (to === from) continue
+        const destTop = top(state.tableau[to])
+        if (destTop === undefined || (destTop.faceUp && destTop.rank === bottom.rank + 1)) moves.push({ from: { zone: 'tableau', index: from }, to: { zone: 'tableau', index: to }, count })
+      }
+    }
+  }
+  return moves
+}
+
 export function createSpiderController(numSuits: 1 | 2 | 4): GameController<SpiderState> {
+  // Progress is a card turned over or a run completed. The stock is
+  // dealt onto the board for good, so it is not part of the search: Hint deals once the board has nothing left to give.
+  const progress: ProgressSpec<SpiderState> = {
+    id: `spider-${numSuits}suit`,
+    moves: searchMoves,
+    drawIsStep: false,
+    key: (state) => columnsKey(state.tableau),
+    progress: (state) => [-faceDownCount(state.tableau), state.completed.length]
+  }
+
   return {
     id: 'spider',
     title: 'Spider',
@@ -330,6 +360,7 @@ export function createSpiderController(numSuits: 1 | 2 | 4): GameController<Spid
       return { from, to: { zone: 'tableau', index: best.index }, count }
     },
 
-    scoreHintMove
+    scoreHintMove,
+    progress
   }
 }

@@ -11,6 +11,7 @@ import { shuffledDeck } from '@/engine/deck'
 import { canPlaceOnFoundation, suitIndex } from '@/engine/foundation'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { alwaysValidRun, top } from '@/engine/pile'
+import { columnsKey, faceDownCount, foundationDownMoves, ProgressSpec } from '@/engine/progressSearch'
 import { Card, cardColor } from '@/engine/types'
 
 export interface YukonState {
@@ -170,6 +171,28 @@ function scoreHintMove(state: YukonState, move: Move): number {
   // The size tiebreak only orders moves that already gain something.
   if (score <= 0) return score
   return score + move.count * 2
+}
+
+/** Every move from here to every pile that takes it (legalMoves keeps one column per group, the one tap-to-move picks):
+ * what the look-ahead tries (see `progress` in createYukonController). */
+function searchMoves(state: YukonState): Move[] {
+  const moves: Move[] = []
+  for (let col = 0; col < 7; col++) {
+    const pile = state.tableau[col]
+    if (pile.length === 0) continue
+    const from: PileRef = { zone: 'tableau', index: col }
+    const topCard = pile[pile.length - 1]
+    if (topCard.faceUp) {
+      const f = suitIndex(topCard.suit)
+      if (canPlaceOnFoundation(state.foundation[f], topCard)) moves.push({ from, to: { zone: 'foundation', index: f }, count: 1 })
+    }
+    // Any face-up card moves with whatever is on it.
+    for (let i = pile.length - 1; i >= 0 && pile[i].faceUp; i--) {
+      const group = [pile[i]]
+      for (let t = 0; t < 7; t++) if (t !== col && canPlaceOnTableau(state.tableau[t], group)) moves.push({ from, to: { zone: 'tableau', index: t }, count: pile.length - i })
+    }
+  }
+  return moves
 }
 
 export function createYukonController(): GameController<YukonState> {
@@ -338,6 +361,17 @@ export function createYukonController(): GameController<YukonState> {
     return result
   }
 
+  // Progress is a card turned over or put on a foundation. A card may come back down off a foundation (see tryMove), so the
+  // dead-board check tries that too.
+  const progress: ProgressSpec<YukonState> = {
+    id: 'yukon',
+    moves: searchMoves,
+    rescueMoves: (state) => foundationDownMoves(state.foundation, state.tableau, canPlaceOnTableau),
+    drawIsStep: false,
+    key: (state) => columnsKey(state.tableau),
+    progress: (state) => [-faceDownCount(state.tableau), state.foundation.reduce((n, p) => n + p.length, 0)]
+  }
+
   return {
     id: 'yukon',
     title: 'Yukon',
@@ -347,7 +381,8 @@ export function createYukonController(): GameController<YukonState> {
     isWon,
     autoMoveHint,
     accessibleCards,
-    scoreHintMove
+    scoreHintMove,
+    progress
   }
 }
 

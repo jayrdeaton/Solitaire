@@ -3,7 +3,7 @@ import { rotateInsets, useRotatedWindowDimensions, useRotation } from '@tastic/c
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { CARD_GAP_MAX, CARD_GAP_MIN } from './cardLayout'
-import { MIN_FAN_SCALE } from './columnTops'
+import { MIN_FACE_DOWN_FAN_SCALE, MIN_FACE_UP_FAN_SCALE } from './columnTops'
 
 /* ---------------------------------------------------------------------------------------------
  * The one place a game screen's board geometry comes from - both orientations.
@@ -140,7 +140,7 @@ export interface ColumnBoardOptions {
   /** Extra face-up cards to budget beyond the deal. Default DEFAULT_HEADROOM_FACE_UP. */
   headroomFaceUp?: number
   /** A long column, of the length real games reach (see each boardModel.ts), that should still fit fanned at PileView's
-   * MIN_FAN_SCALE - the tightest a column is ever compressed, past which the board scrolls. It may shrink the cards
+   * its tightest (MIN_FACE_DOWN_FAN_SCALE, MIN_FACE_UP_FAN_SCALE), past which the board scrolls. It may shrink the cards
    * below what the deal needs, but never below LONG_COLUMN_MIN_CARD_WIDTH: past that a longer column scrolls instead.
    * Default: none. */
   longColumn?: { faceDown: number; faceUp: number }
@@ -165,7 +165,7 @@ export function columnBoardModel(opts: ColumnBoardOptions): BoardHeightModel {
   const headroom = opts.headroomFaceUp ?? DEFAULT_HEADROOM_FACE_UP
   const rest = topRowCards * CARD_HEIGHT_RATIO + CARD_HEIGHT_RATIO + (opts.extraPerWidth ?? 0)
   const perWidth = rest + columnFan({ faceDown: opts.faceDown, faceUp: opts.faceUp + headroom })
-  const longPerWidth = opts.longColumn ? rest + columnFan(opts.longColumn) * MIN_FAN_SCALE : 0
+  const longPerWidth = opts.longColumn ? rest + opts.longColumn.faceDown * FACE_DOWN_FAN_RATIO * MIN_FACE_DOWN_FAN_SCALE + Math.max(0, opts.longColumn.faceUp - 1) * FACE_UP_FAN_RATIO * MIN_FACE_UP_FAN_SCALE : 0
   return {
     perWidth,
     fixed: (topRowCards > 0 ? (opts.topRowMargin ?? TOP_ROW_MARGIN_BOTTOM) : 0) + (opts.tableauPaddingBottom ?? TABLEAU_ROW_PADDING_BOTTOM) + (opts.extraFixed ?? 0),

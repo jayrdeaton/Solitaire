@@ -15,7 +15,16 @@ const Animated = {
   ScrollView: RN.ScrollView,
   FlatList: RN.FlatList,
   createAnimatedComponent: (Component: unknown) => Component,
-  useSharedValue: <T>(value: T) => ({ value }),
+  // get/set as well as value, as Reanimated 4's shared values have (the React Compiler-safe way to write one from JS).
+  useSharedValue: <T>(value: T) => ({
+    value,
+    get(): T {
+      return this.value
+    },
+    set(next: T) {
+      this.value = next
+    }
+  }),
   useAnimatedStyle: (updater?: () => unknown) => (typeof updater === 'function' ? updater() : {}),
   useAnimatedProps: (updater?: () => unknown) => (typeof updater === 'function' ? updater() : {}),
   useDerivedValue: (updater?: () => unknown) => ({ value: typeof updater === 'function' ? updater() : undefined }),

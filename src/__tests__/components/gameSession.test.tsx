@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react-native'
-import { AppState } from 'react-native'
+import { AppState, Platform } from 'react-native'
 
 import { useGameSession } from '@/components/useGameSession'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
@@ -7,7 +7,8 @@ import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
 jest.mock('@/stores/gameInProgress', () => ({ flushGameInProgress: jest.fn(() => Promise.resolve()) }))
 
 // The score is moves plus seconds of PLAY: the clock starts with the first move, pauses while the app is out of the
-// foreground, and a resumed deal gets back the time it had when it was left, not the time of its last save.
+// foreground and picks up again with the next move, and a resumed deal gets back the time it had when it was left, not
+// the time of its last save.
 
 let listeners: ((state: string) => void)[] = []
 
@@ -38,7 +39,7 @@ describe('useGameSession', () => {
     expect(result.current.getElapsed()).toBe(3)
   })
 
-  it('pauses while the app is in the background and picks up on return', async () => {
+  it('pauses while the app is in the background and picks up with the next move after it comes back', async () => {
     const { result } = await renderHook(() => useGameSession())
     await act(() => void result.current.registerMove())
     await wait(4000)
@@ -46,6 +47,9 @@ describe('useGameSession', () => {
     await wait(600_000)
     expect(result.current.getElapsed()).toBe(4)
     await emit('active')
+    await wait(20_000)
+    expect(result.current.getElapsed()).toBe(4)
+    await act(() => void result.current.registerMove())
     await wait(2000)
     expect(result.current.getElapsed()).toBe(6)
   })
@@ -57,8 +61,53 @@ describe('useGameSession', () => {
       await wait(500)
       await emit('inactive')
       await emit('active')
+      await act(() => void result.current.registerMove())
     }
     expect(result.current.getElapsed()).toBe(2)
+  })
+
+  it('a resumed deal keeps its time and waits for the next move', async () => {
+    const { result } = await renderHook(() => useGameSession())
+    await act(() => result.current.restore(12, 100))
+    await wait(30_000)
+    expect(result.current.getElapsed()).toBe(100)
+    expect(result.current.started).toBe(true)
+    await act(() => void result.current.registerMove())
+    await wait(3000)
+    expect(result.current.getElapsed()).toBe(103)
+  })
+
+  it('a resumed deal that was never played starts on its first move like a new one', async () => {
+    const { result } = await renderHook(() => useGameSession())
+    await act(() => result.current.restore(0, 0))
+    await wait(5000)
+    await act(() => void result.current.registerMove())
+    await wait(2000)
+    expect(result.current.getElapsed()).toBe(2)
+  })
+
+  it('on the web, pauses while the window is out of focus', async () => {
+    jest.replaceProperty(Platform, 'OS', 'web')
+    // Jest's React Native window has no event listeners of its own.
+    const windowListeners = new Map<string, () => void>()
+    const win = window as unknown as { addEventListener: unknown; removeEventListener: unknown }
+    win.addEventListener = (type: string, listener: () => void) => windowListeners.set(type, listener)
+    win.removeEventListener = (type: string) => windowListeners.delete(type)
+    const { result, unmount } = await renderHook(() => useGameSession())
+    await act(() => void result.current.registerMove())
+    await wait(3000)
+    await act(() => windowListeners.get('blur')?.())
+    await wait(60_000)
+    await act(() => windowListeners.get('focus')?.())
+    await wait(10_000)
+    expect(result.current.getElapsed()).toBe(3)
+    await act(() => void result.current.registerMove())
+    await wait(1000)
+    expect(result.current.getElapsed()).toBe(4)
+    await act(() => unmount())
+    expect(windowListeners.size).toBe(0)
+    delete win.addEventListener
+    delete win.removeEventListener
   })
 
   it('does not start a clock that has not started, or restart a stopped one, on return', async () => {
@@ -87,6 +136,7 @@ describe('useGameSession', () => {
     await wait(30_000)
     expect(result.current.getElapsed()).toBe(1)
     await emit('active')
+    await act(() => void result.current.registerMove())
     await wait(2000)
     expect(result.current.getElapsed()).toBe(3)
   })

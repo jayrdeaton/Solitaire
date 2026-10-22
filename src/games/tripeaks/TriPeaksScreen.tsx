@@ -147,7 +147,7 @@ const cellStyles = StyleSheet.create({
 })
 
 function TriPeaksScreenInner() {
-  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   // The rank-wrap rule the in-progress deal was actually dealt with - deliberately not re-derived
@@ -220,7 +220,7 @@ function TriPeaksScreenInner() {
   const winCascade = useWinCascade()
   // A dead board - no move left and no stock to deal - is a loss here, as in Aces Up, recorded when the player leaves it (see useStuckLossCheck):
   // it used to just sit there with the clock running.
-  const { stuck } = useStuckLossCheck(controller, state, variant, recordDealAbandoned)
+  const { stuck } = useStuckLossCheck(controller, state, variant, recordDealAbandoned, session)
   const { won, recordedRef: recordedWinRef, pendingWinCascadeRef } = useDerivedWinCheck(controller, state, variant, session, dealTokenRef, recordDealWon, hintsUsedRef)
   // activeFlightCount covers every ghost flight (tap, drag, stock draw, undo all claim one via startFlights before their first
   // await), dealHiddenIds the initial deal.
@@ -324,7 +324,7 @@ function TriPeaksScreenInner() {
   }
 
   function handleNewGame() {
-    if (session.moves > 0 && !won) recordDealAbandoned(variant)
+    if (session.moves > 0 && !won) recordDealAbandoned(variant, { seconds: session.getElapsed(), moves: session.getMoves() })
     setTripeaksRankWrap(settings.tripeaksRankWrap)
     startNewGame(createTriPeaksController(settings.tripeaksRankWrap))
   }
@@ -735,7 +735,7 @@ function TriPeaksScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='TriPeaks' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<TriPeaksSettingsSection />} rules={TRIPEAKS_RULES}>
+      <GameChrome onUndoUsed={() => recordUndoUsed(variant)} title='TriPeaks' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<TriPeaksSettingsSection />} rules={TRIPEAKS_RULES}>
         <View style={styles.board}>
           <View style={styles.controlRow}>
             <StockWaste

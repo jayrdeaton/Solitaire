@@ -44,6 +44,7 @@ import { AutoCompleteStep, FinishMove } from '@/engine/autoFoundation'
 import { shuffledDeck } from '@/engine/deck'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { isDescendingSameSuit, top } from '@/engine/pile'
+import { columnsKey, pileKey, ProgressSpec } from '@/engine/progressSearch'
 import { Card } from '@/engine/types'
 
 export interface FortyThievesState {
@@ -376,6 +377,17 @@ export function createFortyThievesController(runMoves: boolean): GameController<
     return score
   }
 
+  // Progress is a card on a foundation.
+  // legalMoves already tries every column. The stock is dealt to the waste for good (no recycling), so it is not part of
+  // the search: Hint draws once the board has nothing left to give.
+  const progress: ProgressSpec<FortyThievesState> = {
+    id: runMoves ? 'fortythieves-runs' : 'fortythieves',
+    moves: legalMoves,
+    drawIsStep: false,
+    key: (state) => `${columnsKey(state.tableau)}/${pileKey(state.waste)}/${state.stock.length}`,
+    progress: (state) => [state.foundation.reduce((n, p) => n + p.length, 0)]
+  }
+
   return {
     id: 'fortythieves',
     title: 'Forty Thieves',
@@ -387,7 +399,8 @@ export function createFortyThievesController(runMoves: boolean): GameController<
     isStuck,
     autoMoveHint,
     accessibleCards,
-    scoreHintMove
+    scoreHintMove,
+    progress
   }
 }
 

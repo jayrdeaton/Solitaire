@@ -2,7 +2,7 @@ import { DEFAULT_DAY_STREAK, DEFAULT_OUTCOME_RECORD, DEFAULT_WIN_STREAK } from '
 
 import { VARIANT_IDS, VariantId } from '@/engine/variants'
 
-import { ProfileStats, StatsState, VariantStats } from './statsTypes'
+import { ProfileStats, StatsState, VARIANT_COUNTERS, VariantStats } from './statsTypes'
 
 export const DEFAULT_VARIANT: VariantStats = {
   record: DEFAULT_OUTCOME_RECORD,
@@ -11,7 +11,14 @@ export const DEFAULT_VARIANT: VariantStats = {
   bestMoves: null,
   bestScore: null,
   hintsUsed: 0,
-  winsWithoutHint: 0
+  winsWithoutHint: 0,
+  totalSeconds: 0,
+  totalMoves: 0,
+  winsCounted: 0,
+  winSeconds: 0,
+  winMoves: 0,
+  winScore: 0,
+  undosUsed: 0
 }
 
 function emptyVariants(): Record<VariantId, VariantStats> {
@@ -20,7 +27,9 @@ function emptyVariants(): Record<VariantId, VariantStats> {
 
 export const DEFAULT_PROFILE_STATS: ProfileStats = {
   variants: emptyVariants(),
-  ...DEFAULT_DAY_STREAK
+  ...DEFAULT_DAY_STREAK,
+  days: {},
+  winStreak: DEFAULT_WIN_STREAK
 }
 
 export const DEFAULT_STATS: StatsState = {
@@ -52,7 +61,9 @@ function isValidVariant(value: unknown): value is VariantStats {
   // bestScore above, backfilled to 0 by gameStats.tsx's migrateStats.
   const hintsUsedOk = value.hintsUsed === undefined || typeof value.hintsUsed === 'number'
   const winsWithoutHintOk = value.winsWithoutHint === undefined || typeof value.winsWithoutHint === 'number'
-  return countsOk && streakOk && timeOk && movesOk && scoreOk && hintsUsedOk && winsWithoutHintOk
+  // So are the counters of 2026-10-22 (statsTypes.ts' VARIANT_COUNTERS).
+  const countersOk = VARIANT_COUNTERS.every((key) => value[key] === undefined || typeof value[key] === 'number')
+  return countsOk && streakOk && timeOk && movesOk && scoreOk && hintsUsedOk && winsWithoutHintOk && countersOk
 }
 
 // A present variant must be individually valid, but a known variant id is allowed to be missing
@@ -70,7 +81,10 @@ function isValidProfileStats(value: unknown): value is ProfileStats {
   const variants = value.variants
   if (!isRecord(variants)) return false
   if (!VARIANT_IDS.every((id) => variants[id] === undefined || isValidVariant(variants[id]))) return false
-  return typeof value.distinctDaysPlayed === 'number' && typeof value.currentDayStreak === 'number' && typeof value.bestDayStreak === 'number' && (value.lastPlayedDate === null || typeof value.lastPlayedDate === 'string')
+  // days/winStreak arrived 2026-10-22: a blob from before lacks them (backfilled by migrateStats).
+  const daysOk = value.days === undefined || isRecord(value.days)
+  const winStreakOk = value.winStreak === undefined || (isRecord(value.winStreak) && typeof value.winStreak.currentWinStreak === 'number' && typeof value.winStreak.bestWinStreak === 'number')
+  return daysOk && winStreakOk && typeof value.distinctDaysPlayed === 'number' && typeof value.currentDayStreak === 'number' && typeof value.bestDayStreak === 'number' && (value.lastPlayedDate === null || typeof value.lastPlayedDate === 'string')
 }
 
 export function isValidStats(value: unknown): value is StatsState {
@@ -85,7 +99,20 @@ export function isValidStats(value: unknown): value is StatsState {
 // then `undefined` entirely, not just missing bestMoves/bestScore, so DEFAULT_VARIANT is spread in
 // first as the base for a genuinely missing entry, same as emptyVariants() does for a fresh profile.
 function backfillVariants(variants: Record<VariantId, VariantStats>): Record<VariantId, VariantStats> {
-  return Object.fromEntries(VARIANT_IDS.map((id) => [id, { ...DEFAULT_VARIANT, ...variants[id], bestMoves: variants[id]?.bestMoves ?? null, bestScore: variants[id]?.bestScore ?? null, hintsUsed: variants[id]?.hintsUsed ?? 0, winsWithoutHint: variants[id]?.winsWithoutHint ?? 0 }])) as Record<VariantId, VariantStats>
+  return Object.fromEntries(
+    VARIANT_IDS.map((id) => [
+      id,
+      {
+        ...DEFAULT_VARIANT,
+        ...variants[id],
+        bestMoves: variants[id]?.bestMoves ?? null,
+        bestScore: variants[id]?.bestScore ?? null,
+        hintsUsed: variants[id]?.hintsUsed ?? 0,
+        winsWithoutHint: variants[id]?.winsWithoutHint ?? 0,
+        ...Object.fromEntries(VARIANT_COUNTERS.map((key) => [key, variants[id]?.[key] ?? 0]))
+      }
+    ])
+  ) as Record<VariantId, VariantStats>
 }
 
 // Applied by the achievements slice when stats rehydrate (see redux/achievementsSlice.ts).
@@ -97,7 +124,9 @@ export function migrateStats(stored: StatsState): StatsState {
   return {
     ...stored,
     variants: backfillVariants(stored.variants),
-    profiles: Object.fromEntries(Object.entries(stored.profiles ?? {}).map(([id, p]) => [id, { ...p, variants: backfillVariants(p.variants) }])),
+    days: stored.days ?? {},
+    winStreak: stored.winStreak ?? DEFAULT_WIN_STREAK,
+    profiles: Object.fromEntries(Object.entries(stored.profiles ?? {}).map(([id, p]) => [id, { ...p, variants: backfillVariants(p.variants), days: p.days ?? {}, winStreak: p.winStreak ?? DEFAULT_WIN_STREAK }])),
     firstGameResult: stored.firstGameResult ?? null
   }
 }

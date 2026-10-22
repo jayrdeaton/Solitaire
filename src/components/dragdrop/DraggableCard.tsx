@@ -14,6 +14,7 @@ import { useShakeStyle } from '../shakeAnimation'
 import { useCardSoundEffects } from '../useCardSounds'
 import { useFrozenWhileHidden } from '../useFrozenWhileHidden'
 import { DragFlightHandle, useDragGhost } from './DragGhostLayer'
+import { useHoldGuard } from './holdGuard'
 
 interface DraggableCardProps {
   card: Card
@@ -142,6 +143,7 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
   // right after, sending the card wherever autoMoveHint computed instead of leaving it snapped
   // back where the drag itself correctly decided nothing applied.
   const wasDraggingRef = useRef(false)
+  const holdGuard = useHoldGuard()
 
   const registeredId = registryId === undefined ? card.id : registryId
   useEffect(() => {
@@ -276,6 +278,8 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
       wasDraggingRef.current = false
       return
     }
+    // A press held in place is the card picked up and put back, not a tap (holdGuard.ts).
+    if (holdGuard.wasHeld()) return
     if (!onPress) return
     const view = viewRef.current
     if (!view) return
@@ -297,7 +301,7 @@ export function DraggableCard({ card, selected, hinted, disabled, dimmed, dimHol
       )}
       <GestureDetector gesture={pan}>
         <Animated.View ref={viewRef} style={[(hiddenForDrag || hidden) && styles.hiddenWhileFlying, shakeStyle]}>
-          <PlayingCard card={card} selected={selected} hinted={hinted} disabled={disabled} dimmed={dimmed} dimHold={dimHold} onPress={onPress ? handlePress : undefined} testID={testID} />
+          <PlayingCard card={card} selected={selected} hinted={hinted} disabled={disabled} dimmed={dimmed} dimHold={dimHold} onPress={onPress ? handlePress : undefined} onPressIn={holdGuard.onPressIn} testID={testID} />
         </Animated.View>
       </GestureDetector>
       {/* Only for `dragging` (this card's own gesture), not the caller-supplied `hidden` - a caller

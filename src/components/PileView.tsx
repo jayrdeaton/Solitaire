@@ -1,5 +1,6 @@
 import { callWorkletCallback, useWorkletCallback } from '@rific/core'
 import { faceUpFanOffset, useCardSize } from '@tastic/cards'
+import { useRotation } from '@tastic/core'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
@@ -15,6 +16,7 @@ import { DragFlightHandle, useDragGhost } from './dragdrop/DragGhostLayer'
 import { scaledMs } from './dragdrop/dragSpring'
 import { DropZoneRegistry } from './dragdrop/DropZoneRegistry'
 import { clearFanTop, setFanTop } from './dragdrop/fanTops'
+import { useHoldGuard } from './dragdrop/holdGuard'
 import { EmptySlot, PlayingCard, RunOutline } from './PlayingCard'
 import { useShakeStyle } from './shakeAnimation'
 import { useCardSoundEffects } from './useCardSounds'
@@ -24,6 +26,12 @@ export interface PileDragConfig {
   /** Given the index-from-top of a face-up card, how many cards (including it) move together if
    * dragged from here. Return 0 if this card can't start a drag (e.g. would break a valid run). */
   getRunCount: (indexFromTop: number) => number
+  /** A touch on a card that can't start a drag or a tap (face-down, or above a break in the run) acts on the longest
+   * run at the top of the column instead, as if the head of that run had been touched. Spider's columns are narrow and
+   * their cards' strips short, so a finger aimed at the head of a run often lands on the card above it (a coworker of
+   * Jay's, 2026-10-22: "sometimes I can't grab the right card"), and that touch used to do nothing at all. Off by default:
+   * in FreeCell, say, a run too long to move is a reason to say so, not to pick up part of it. */
+  grabRunBelow?: boolean
   /** Attempt the move; return true if applied (drops the cards there instead of snapping back).
    * `anchorCardId` is the id of the dragged run's topmost card - the same card a screen's own
    * tap-to-move flight measures to find its exact landing spot, so a caller that applies the move
@@ -50,7 +58,7 @@ interface PileViewProps {
   faceDownOffset?: number
   faceUpOffset?: number
   /** The height the fan is compressed to fit, and the column's box is at least this tall. Never compressed below
-   * MIN_FAN_SCALE: a column that needs more runs past it, and GameChrome's board scrolls to its bottom. */
+   * its tightest (columnTops' MIN_FACE_UP_FAN_SCALE): a column that needs more runs past it, and GameChrome's board scrolls to its bottom. */
   maxHeight?: number
   style?: StyleProp<ViewStyle>
   drag?: PileDragConfig
@@ -98,6 +106,13 @@ interface DraggableTableauCardProps {
    * through. Defaults to true. */
   liftable?: boolean
   indexFromTop: number
+  /** Set when a touch on this card acts on the run below it (PileDragConfig.grabRunBelow): the run's head card, its
+   * indexFromTop, and how far the head sits from this card on screen (already turned with the frame), so the run's ghost
+   * starts where the run is drawn and a tap measures the head. `runCount` is then the run's. */
+  grabCard?: Card
+  grabIndexFromTop?: number
+  grabShiftX?: number
+  grabShiftY?: number
   isHidden: boolean
   /** This card's dim scrim should fade in rather than pop on: it became dimmed after this pile's very first render (its
    * flight just landed, or dimming was just switched on for the board - see PileView's `mountedRef`). Forwarded to
@@ -119,7 +134,7 @@ interface DraggableTableauCardProps {
    * all. A "nowhere to go" shake never touches it, so deferring the call lets that path skip the
    * cost entirely instead of paying for a measurement it throws away. */
   onPress?: (card: Card, indexFromTop: number, measure: () => Promise<{ x: number; y: number }>) => void
-  onDragStart: (indexFromTop: number, runCount: number) => void
+  onDragStart: (indexFromTop: number, runCount: number, shiftX: number, shiftY: number) => void
   onDragEnd: (absoluteX: number, absoluteY: number, runCount: number, anchorCardId: string) => void
   /** This column's own persistent position-tracking values (see PileView's own doc comment on
    * originX below) - passed down rather than sourced from useDragGhost() so this card's gesture
@@ -157,18 +172,21 @@ interface DraggableTableauCardProps {
  * screen-level auto-move handlers that call `ghost.cardRegistry.measure(cardId)` after applying a
  * move.
  */
-const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected, hinted, dimmed, top, zIndex, runCount, liftable = true, indexFromTop, isHidden, dimFadeIn, held = false, shakeToken, onPress, onDragStart, onDragEnd, originX, originY, dx, dy, startAbsX, startAbsY }: DraggableTableauCardProps) {
+const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected, hinted, dimmed, top, zIndex, runCount, liftable = true, indexFromTop, grabCard, grabIndexFromTop, grabShiftX = 0, grabShiftY = 0, isHidden, dimFadeIn, held = false, shakeToken, onPress, onDragStart, onDragEnd, originX, originY, dx, dy, startAbsX, startAbsY }: DraggableTableauCardProps) {
   const cardStyle = useMemo(() => ({ position: 'absolute' as const, top, left: 0, zIndex }), [top, zIndex])
   const viewRef = useAnimatedRef<Animated.View>()
   const ghost = useDragGhost()
   const shakeStyle = useShakeStyle(shakeToken, card.id)
-  const latest = useRef({ runCount, indexFromTop, onDragStart, onDragEnd, cardId: card.id })
+  // The card a drag reports as its anchor is the run's head - this card's own id unless the touch acts on the run below it.
+  const anchorId = grabCard?.id ?? card.id
+  const latest = useRef({ runCount, indexFromTop, onDragStart, onDragEnd, cardId: anchorId, grabShiftX, grabShiftY })
   // Updated in an effect rather than directly during render (mutating a ref during render isn't
   // allowed) - still fresh well before handleStart/handleEnd below can actually run, since those
   // only ever fire from a later gesture callback, never synchronously during this render.
   useEffect(() => {
-    latest.current = { runCount, indexFromTop, onDragStart, onDragEnd, cardId: card.id }
+    latest.current = { runCount, indexFromTop, onDragStart, onDragEnd, cardId: anchorId, grabShiftX, grabShiftY }
   })
+  const holdGuard = useHoldGuard()
   // Position is tracked via e.absoluteX/Y (screen-space pointer position) minus its value at
   // gesture start, rather than Gesture.Pan()'s own translationX/Y - instrumented testing showed
   // translationX/Y can report a stale 0 for an entire gesture on web while absoluteX/Y keeps
@@ -202,7 +220,7 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
 
   const handleStart = useCallback(() => {
     wasDraggingRef.current = true
-    latest.current.onDragStart(latest.current.indexFromTop, latest.current.runCount)
+    latest.current.onDragStart(latest.current.indexFromTop, latest.current.runCount, latest.current.grabShiftX, latest.current.grabShiftY)
   }, [])
 
   const handleEnd = useCallback((absoluteX: number, absoluteY: number) => {
@@ -265,14 +283,17 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
       wasDraggingRef.current = false
       return
     }
+    // A press held in place is the card picked up and put back, not a tap (holdGuard.ts).
+    if (holdGuard.wasHeld()) return
     if (!onPress) return
     const view = viewRef.current
     if (!view) return
     // A plain measureInWindow (rather than the worklet-synchronous measure() used for drag-start
     // above) is fine here - there's no continuously-firing pointer stream racing it the way a real
     // drag's onUpdate does, so the small async gap doesn't create the "jump" bug that fix targeted.
-    // Deferred until the caller actually calls measure() - see onPress's doc comment above.
-    onPress(card, indexFromTop, () => new Promise((resolve) => view.measureInWindow((x, y) => resolve({ x, y }))))
+    // Deferred until the caller actually calls measure() - see onPress's doc comment above. A touch that acts on the run
+    // below (grabCard) reports that run's head, measured where the head is drawn.
+    onPress(grabCard ?? card, grabIndexFromTop ?? indexFromTop, () => new Promise((resolve) => view.measureInWindow((x, y) => resolve({ x: x + grabShiftX, y: y + grabShiftY }))))
   }
 
   // hidden while isHidden: by the time this component renders, a hidden card is the one being dragged (a card whose flight
@@ -284,7 +305,7 @@ const DraggableTableauCard = memo(function DraggableTableauCard({ card, selected
   return (
     <GestureDetector gesture={pan}>
       <Animated.View ref={viewRef} layout={FAN_GLIDE} style={[cardStyle, isHidden && styles.hidden, held && styles.noTouch, shakeStyle]}>
-        <PlayingCard card={card} selected={selected} hinted={hinted} dimmed={dimmed} dimHold={isHidden} dimFadeIn={dimFadeIn} hidden={isHidden} onPress={onPress ? handlePress : undefined} />
+        <PlayingCard card={card} selected={selected} hinted={hinted} dimmed={dimmed} dimHold={isHidden} dimFadeIn={dimFadeIn} hidden={isHidden} onPress={onPress ? handlePress : undefined} onPressIn={holdGuard.onPressIn} />
       </Animated.View>
     </GestureDetector>
   )
@@ -375,6 +396,7 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
   const held = nextDeparting.filter((d) => pendingIds.has(d.card.id))
   if (held.length !== departing.length || held.some((d, i) => d !== departing[i])) setDeparting(held.length === 0 ? NO_DEPARTING : held)
   const ghost = useDragGhost()
+  const rotation = useRotation()
   const { playCardSound, hapticCard } = useCardSoundEffects()
   // The cards a drag in progress has picked up, by id (not by position: the commit that moves them and the one that ends
   // the drag are not always the same, and a stale position range would hide whatever cards slid into it).
@@ -417,9 +439,14 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
   })
 
   const handleDragStart = useCallback(
-    (_indexFromTop: number, runCount: number) => {
+    (_indexFromTop: number, runCount: number, shiftX: number, shiftY: number) => {
       const { cards: current, resolvedFaceUpOffset: offsetStep, cardWidth: width } = latest.current
       const runCards = current.slice(current.length - runCount)
+      // A touch that acts on the run below it (grabRunBelow) measured the card it touched: the ghost starts at the run's head.
+      if (shiftX !== 0 || shiftY !== 0) {
+        originX.set(originX.get() + shiftX)
+        originY.set(originY.get() + shiftY)
+      }
       dragTokenRef.current += 1
       flightRef.current = ghost.showLive({ cards: runCards, offsetStep, cardWidth: width }, { originX, originY, dx, dy })
       playCardSound()
@@ -474,7 +501,7 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
     )
   }
 
-  // Each card's top, compressing the fan (no further than MIN_FAN_SCALE) if the column would exceed maxHeight - laid out as tall as it was drawn while any
+  // Each card's top, compressing the fan (no further than its tightest (columnTops' MIN_FACE_UP_FAN_SCALE)) if the column would exceed maxHeight - laid out as tall as it was drawn while any
   // card is still taking off from the top of it, so a compressed column doesn't re-spread under that card while it is
   // still drawn here (see columnTops).
   const { tops, totalHeight } = columnTops(cards, held, resolvedFaceUpOffset, resolvedFaceDownOffset, cardHeight, maxHeight)
@@ -541,6 +568,18 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
   /* eslint-disable react-hooks/refs */
   const wasAlreadyMounted = mountedRef.current
 
+  // How many cards a drag from each card would pick up (see the runCount comment in the loop below for why a flying card is
+  // skipped), worked out up front so a touch on a card that can't start one can act on the run below it (grabRunBelow): the
+  // run's head is the deepest card of the unbroken stretch of movable cards at the top of the column.
+  const runCounts = cards.map((card, i) => (!isFlying(card, cards.length - 1 - i) && drag && card.faceUp ? drag.getRunCount(cards.length - 1 - i) : 0))
+  let grabHead = -1
+  if (drag?.grabRunBelow) {
+    for (let i = cards.length - 1; i >= 0 && runCounts[i] > 0; i--) grabHead = i
+  }
+  // The head's offset from a card above it, turned with the frame (the measurement it adjusts is in screen space).
+  const turnCos = rotation === 0 ? 1 : rotation === 180 ? -1 : 0
+  const turnSin = rotation === 90 ? 1 : rotation === -90 ? -1 : 0
+
   return (
     <View style={[styles.container, { width: cardWidth, height: maxHeight === undefined ? totalHeight : Math.max(maxHeight, totalHeight) }, style]}>
       {/* The column's own empty slot under a card that is still taking off from it (the last one out). */}
@@ -577,8 +616,12 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
         // every one of the ~52 renders a deal's landings drive - real per-render JS-thread cost, not
         // a one-time mount cost, unlike the fixes above it. Skipped values are corrected the instant
         // a card is actually revealed (the very next render, driven by that same landing).
-        const runCount = !isFlying(card, indexFromTop) && drag && card.faceUp ? drag.getRunCount(indexFromTop) : 0
-        const isDimmed = !isHidden && dimUnplayable && !!drag && card.faceUp && runCount === 0
+        const ownRunCount = runCounts[i]
+        const isDimmed = !isHidden && dimUnplayable && !!drag && card.faceUp && ownRunCount === 0
+        // A touch here acts on the run below (see PileDragConfig.grabRunBelow): only a card above that run's head.
+        const grabs = grabHead > i && ownRunCount === 0 && !isFlying(cards[grabHead], cards.length - 1 - grabHead)
+        const runCount = grabs ? runCounts[grabHead] : ownRunCount
+        const grabShift = grabs ? tops[grabHead] - tops[i] : 0
         // A card only responds to taps if it's actually a legal move source - the same signal
         // drag already uses to decide whether a gesture may pick it up (runCount > 0 for a
         // face-up card that's either the true top or the head of a fully-valid run beneath it).
@@ -604,8 +647,12 @@ function PileViewImpl({ cards, selectedCount = 0, hintCount = 0, onPressCard, on
             zIndex={i}
             runCount={runCount}
             // Never turned off under a drag already in progress: toggling the pan mid-gesture cancels it out from under the finger.
-            liftable={i > topFlyingIndex || !!activeDrag?.has(card.id)}
+            liftable={(grabs ? grabHead : i) > topFlyingIndex || !!activeDrag?.has(card.id)}
             indexFromTop={indexFromTop}
+            grabCard={grabs ? cards[grabHead] : undefined}
+            grabIndexFromTop={grabs ? cards.length - 1 - grabHead : undefined}
+            grabShiftX={grabs ? -grabShift * turnSin + 0 : undefined}
+            grabShiftY={grabs ? grabShift * turnCos + 0 : undefined}
             isHidden={isHidden}
             // Gated on isDimmed, not just wasAlreadyMounted alone - dimFadeIn only ever affects a
             // DIMMED card's own rendering (PlayingCard reads it inside `dimmed ? ... : null`), so an

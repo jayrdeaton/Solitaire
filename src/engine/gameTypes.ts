@@ -4,6 +4,7 @@
 // game exposes the same controller shape so the app shell can drive any of
 // them the same way (new game, undo, move, win check).
 
+import type { ProgressSpec } from './progressSearch'
 import { Card } from './types'
 
 export interface PileRef {
@@ -66,4 +67,10 @@ export interface GameController<TState> {
    * extra action (like a draw) to become reachable.
    */
   accessibleCards?(state: TState): AccessibleCard[]
+  /**
+   * Optional: what counts as progress in this game (cards turned over, cards on the foundations, runs completed), for
+   * the look-ahead behind Hint and the dead-board check (see engine/progressSearch.ts). A game without one keeps the
+   * scored Hint and only its own isStuck.
+   */
+  progress?: ProgressSpec<TState>
 }

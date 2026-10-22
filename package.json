@@ -39,6 +39,7 @@
     "@rific/feedback-press": "^0.13.1",
     "@rific/focus-chain": "^0.4.8",
     "@rific/gestures": "^0.1.3",
+    "@rific/heatmap": "^0.3.5",
     "@rific/splash-gate": "^0.2.3",
     "@rific/toaster": "^0.10.0",
     "@rific/updater": "^0.7.1",

@@ -40,6 +40,7 @@ import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { showNoHintToast } from '@/games/shared/gameToasts'
 import { liftTappedRun, peelInAir } from '@/games/shared/inAirRun'
+import { LossBanner } from '@/games/shared/LossBanner'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFinish } from '@/games/shared/useAutoFinish'
 import { useAutoFoundationCascade } from '@/games/shared/useAutoFoundationCascade'
@@ -50,6 +51,7 @@ import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
@@ -128,7 +130,7 @@ export function FreecellCell({
 export default withGameProviders(FreeCellScreenInner)
 
 function FreeCellScreenInner() {
-  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCount, and undoBusyRef - see
@@ -204,6 +206,10 @@ function FreeCellScreenInner() {
   // last card has flown in and landed, so it is never hidden mid-flight (which used to make it
   // simply appear) and the finished board reads for a beat first.
   const winRevealed = useWinReveal(won, settled)
+  // A dead board (no progress left anywhere: useStuckLossCheck's look-ahead) is a loss here too, recorded when the player
+  // leaves it, and shown once the last card has landed.
+  const { stuck } = useStuckLossCheck(FreeCellController, state, 'freecell', recordDealAbandoned, session)
+  const lossRevealed = useWinReveal(stuck, settled)
   // The board the win cascade has taken over from, and which suits' piles it took (set once its ghosts are on screen -
   // startChains' onShown, see runWinCascade): once that state IS the current one, and the win is revealed, those piles'
   // real cards blank - not a moment earlier, or the piles would sit empty (or under blank ghosts) until the cascade's
@@ -248,11 +254,11 @@ function FreeCellScreenInner() {
   // elapsed time from when it was made, so useSaveInProgressBackstop saves again every 10s, when the
   // screen is left, and when the app is backgrounded.
   useEffect(() => {
-    if (state && !won) saveGameInProgress('freecell', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
+    if (state && !won && !stuck) saveGameInProgress('freecell', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, undoStack])
-  useSaveInProgressBackstop(!!state && !won, () => {
-    if (state && !won) saveGameInProgress('freecell', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
+  }, [state, won, stuck, undoStack])
+  useSaveInProgressBackstop(!!state && !won && !stuck, () => {
+    if (state && !won && !stuck) saveGameInProgress('freecell', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed() })
   })
 
   // dealTokenRef guards against a stray late measurement/landing from this deal delivering a
@@ -598,7 +604,7 @@ function FreeCellScreenInner() {
     // session.moves, not undoStack.length: a resumed deal always restores with an empty undo
     // stack (see restoreGame above) even when it has real progress, so undoStack alone would miss
     // recording the abandon for any resumed, in-progress game.
-    if (session.moves > 0 && !won) recordDealAbandoned('freecell')
+    if (session.moves > 0 && !won) recordDealAbandoned('freecell', { seconds: session.getElapsed(), moves: session.getMoves() })
     startNewGame()
   }
 
@@ -1021,7 +1027,7 @@ function FreeCellScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor('freecell')} clockRunning={session.started && !won} movesCount={session.moves} rules={FREECELL_RULES}>
+      <GameChrome onUndoUsed={() => recordUndoUsed('freecell')} title='FreeCell' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor('freecell')} clockRunning={session.started && !won && !stuck} movesCount={session.moves} rules={FREECELL_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.foundationsGroup, { gap: topRowGroupGap }]}>
             {state.foundation.map((pile, i) => {
@@ -1097,6 +1103,7 @@ function FreeCellScreenInner() {
       {winRevealed && <PipFireworks />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} variant='freecell' onNewGame={startNewGame} />}
+      {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

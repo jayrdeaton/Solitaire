@@ -180,7 +180,7 @@ export function StockWaste({ dropZones, stockTopCard, wasteTop, wasteBehind = EM
   // wasteFanStep. The draw-3 flights in Klondike/Canfield offset their ghosts by the same
   // wasteFanStepFor (with the same widenFan), so the two can't drift apart.
   const { width: contextCardWidth } = useCardSize()
-  const fanOffset = wasteFanStepFor(cardWidth ?? contextCardWidth, widenFan)
+  const fanOffset = wasteFanStepFor(cardWidth ?? contextCardWidth, widenFan, gap)
 
   return (
     <View style={[styles.group, gap != null && { gap }, style]}>

@@ -6,7 +6,7 @@ import { tableauMaxHeightFor, useTableauMaxHeight } from '@/games/shared/useTabl
 // Every column gets exactly the height left on screen, in both layouts: no per-game floor. The floors this hook used to
 // take (300-460pt in portrait) made every column box taller than an iPhone SE or a 640pt Android, so the board scrolled
 // there from the first deal, with every column short. A column that needs more than its share compresses (down to
-// PileView's MIN_FAN_SCALE) and only then runs past the bottom.
+// its tightest (columnTops' MIN_FACE_UP_FAN_SCALE)) and only then runs past the bottom.
 
 const mockLayout = { isWide: false, availableHeight: 360 }
 jest.mock('@/components/gameLayout', () => ({

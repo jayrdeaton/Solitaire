@@ -64,6 +64,8 @@ interface PlayingCardProps {
    * face-down card. */
   onFacePainted?: () => void
   onPress?: () => void
+  /** Touch-down on the card, for telling a tap from a press held in place (dragdrop/holdGuard.ts). */
+  onPressIn?: () => void
   style?: StyleProp<ViewStyle>
   testID?: string
 }
@@ -72,7 +74,7 @@ interface PlayingCardProps {
 // that toggling `selected`/`hinted` (a thicker, different-colored border) never changes the box's
 // content area - RN sizes borders inward from a fixed width/height, so swapping 1px for 3px would
 // nudge the card's own SVG content by a couple pixels every time it's (de)selected/(un)hinted.
-export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold, dimFadeIn, hidden, onFacePainted, onPress, style, testID }: PlayingCardProps) {
+export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold, dimFadeIn, hidden, onFacePainted, onPress, onPressIn, style, testID }: PlayingCardProps) {
   const colors = useTableColors()
   const { dark } = useTheme()
   const { activeProfile } = useProfiles()
@@ -114,6 +116,7 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold,
       <Pressable
         testID={testID}
         onPress={onPress}
+        onPressIn={onPress ? onPressIn : undefined}
         disabled={disabled || !onPress}
         // Cards have their own precise sound logic (fired the instant a move is confirmed rather
         // than when it lands, plus an explicit invalid sound on a rejected one - see
@@ -141,7 +144,7 @@ export function PlayingCard({ card, selected, hinted, disabled, dimmed, dimHold,
   const faceVariant = settings.invertDarkModeColors && dark ? 'invert' : 'normal'
   const faceSource = CARD_FACE_BITMAPS[settings.cardStyle][faceVariant][card.suit][card.rank - 1]
   return (
-    <Pressable testID={testID} onPress={onPress} disabled={disabled} soundDisabled style={[styles.card, styles.shadow, cardSize, style]}>
+    <Pressable testID={testID} onPress={onPress} onPressIn={onPress ? onPressIn : undefined} disabled={disabled} soundDisabled style={[styles.card, styles.shadow, cardSize, style]}>
       <View style={[styles.clip, styles.face]}>
         {/* Kept mounted while `hidden` (one Image, unlike the back's SVG): a dragged card that is revealed again then
         already has its bitmap, instead of loading it in the frame it reappears (see cardFacePaint.ts). */}

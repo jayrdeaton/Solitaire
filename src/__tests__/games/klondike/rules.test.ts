@@ -345,6 +345,9 @@ describe('Klondike legalMoves destination selection', () => {
 
 describe('Klondike scoreHintMove', () => {
   const controller = createKlondikeController(1)
+  // Its boards leave out most of the deck, so the look-ahead (engine/progressSearch.ts) would call them dead: these are the
+  // scored hint's own choices.
+  const scored = { ...controller, progress: undefined }
 
   function moveTo(state: KlondikeState, from: number, count: number, to: number) {
     const move = controller.legalMoves(state).find((m) => m.from.zone === 'tableau' && m.from.index === from && m.count === count && m.to.zone === 'tableau' && m.to.index === to)
@@ -453,8 +456,8 @@ describe('Klondike scoreHintMove', () => {
     expect(back).not.toBeNull()
     expect(scoreOf(back, 1, 1, 0)).toBe(0)
 
-    expect(findHint(controller, state)).toEqual({ kind: 'drawStock' })
-    expect(findHint(controller, back)).toEqual({ kind: 'drawStock' })
+    expect(findHint(scored, state)).toEqual({ kind: 'drawStock' })
+    expect(findHint(scored, back)).toEqual({ kind: 'drawStock' })
   })
 
   // A waste-to-tableau play used to score 0, so whenever it was the only thing to do Hint drew instead.
@@ -468,7 +471,7 @@ describe('Klondike scoreHintMove', () => {
     const play = controller.legalMoves(state).find((m) => m.from.zone === 'waste' && m.to.zone === 'tableau' && m.to.index === 0)!
     expect(play).toBeDefined()
     expect(controller.scoreHintMove!(state, play)).toBeGreaterThan(0)
-    expect(findHint(controller, state)).toEqual({ kind: 'move', move: play, choices: 1 })
+    expect(findHint(scored, state)).toEqual({ kind: 'move', move: play, choices: 1 })
   })
 })
 

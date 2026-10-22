@@ -124,6 +124,9 @@ const mockDeal = {
   cancel: () => {}
 }
 
+// These boards leave out most of the deck, so the dead-board check would rightly call them lost (useBoardLookahead) and
+// put the loss dialog over them; it isn't what these tests are about.
+jest.mock('@/games/shared/useBoardLookahead', () => ({ useBoardLookahead: () => false }))
 jest.mock('@/redux/store', () => require('../../../testUtils/gameInProgressStore').storeModule)
 jest.mock('@/components/dragdrop/DragGhostLayer', () => ({ DragGhostProvider: ({ children }: { children: unknown }) => children, useDragGhost: () => mockGhost }))
 jest.mock('@/components/dealing/DealLayer', () => ({ DealProvider: ({ children }: { children: unknown }) => children, useDealAnimator: () => mockDeal }))

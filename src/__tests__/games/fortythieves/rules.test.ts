@@ -389,6 +389,7 @@ describe('Forty Thieves scoreHintMove', () => {
     expect(intoEmpty).toBeDefined()
     expect(Strict.scoreHintMove!(state, onto)).toBeGreaterThan(0)
     expect(Strict.scoreHintMove!(state, intoEmpty)).toBe(0)
-    expect(findHint(Strict, state)).toEqual({ kind: 'move', move: onto, choices: 19 })
+    // The board leaves out most of the deck, so the look-ahead would call it dead: this is the scored hint's own choice.
+    expect(findHint({ ...Strict, progress: undefined }, state)).toEqual({ kind: 'move', move: onto, choices: 19 })
   })
 })

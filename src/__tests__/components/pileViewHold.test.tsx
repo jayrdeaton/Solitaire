@@ -3,7 +3,7 @@ import { act, render, screen } from '@testing-library/react-native'
 import { ReactNode } from 'react'
 
 import { isGhostPending, markGhostPending } from '@/components/cardFacePaint'
-import { MIN_FAN_SCALE } from '@/components/columnTops'
+import { MIN_FACE_UP_FAN_SCALE } from '@/components/columnTops'
 import { DraggableCard } from '@/components/dragdrop/DraggableCard'
 import { DragGhostProvider } from '@/components/dragdrop/DragGhostLayer'
 import { PileView } from '@/components/PileView'
@@ -243,10 +243,10 @@ describe('pick-up hold: a card picked up by a drag stays drawn at its source unt
 // ------------------------------------------------------------------------------------------------ a compressed column
 
 describe('PileView - a compressed column under a card still taking off from it', () => {
-  // Ten face-up cards in 310pt: a fan of 9 x 28.8pt plus a 93pt card does not fit, so the column is compressed (a long
+  // Ten face-up cards in 340pt: a fan of 9 x 28.8pt plus a 93pt card does not fit, so the column is compressed (a long
   // FreeCell/Spider/Yukon column, or almost any column in landscape) - and one card fewer is a looser fan. Every fan here
-  // stays above MIN_FAN_SCALE (ten cards: 0.84), so each fits its maxHeight exactly.
-  const MAX_HEIGHT = 310
+  // stays above MIN_FACE_UP_FAN_SCALE (ten cards: 0.953), so each fits its maxHeight exactly.
+  const MAX_HEIGHT = 340
   const STEP = faceUpFanOffset(CARD_WIDTH)
   const CARD_HEIGHT = CARD_WIDTH / CARD_ASPECT
   /** The i-th card's top in a freshly laid out column of n face-up cards. */
@@ -355,10 +355,10 @@ describe('PileView - a compressed column under a card still taking off from it',
     expect(boxHeightOf(COLUMN[0].id)).toBe(MAX_HEIGHT)
   })
 
-  it('a column too long for MIN_FAN_SCALE stops compressing there and grows its box past maxHeight (what the board scrolls to)', async () => {
+  it('a column too long for MIN_FACE_UP_FAN_SCALE stops compressing there and grows its box past maxHeight (what the board scrolls to)', async () => {
     const LONG = Array.from({ length: 30 }, (_, i) => card(`spades-${(i % 13) + 1}-${i}`))
     await render(column(LONG))
-    expect(topOf(LONG[1].id) - topOf(LONG[0].id)).toBeCloseTo(STEP * MIN_FAN_SCALE, 6)
-    expect(boxHeightOf(LONG[0].id)).toBeCloseTo(29 * STEP * MIN_FAN_SCALE + CARD_HEIGHT, 6)
+    expect(topOf(LONG[1].id) - topOf(LONG[0].id)).toBeCloseTo(STEP * MIN_FACE_UP_FAN_SCALE, 6)
+    expect(boxHeightOf(LONG[0].id)).toBeCloseTo(29 * STEP * MIN_FACE_UP_FAN_SCALE + CARD_HEIGHT, 6)
   })
 })

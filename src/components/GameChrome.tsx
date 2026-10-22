@@ -207,6 +207,8 @@ interface GameChromeProps {
   onNewGame: () => void
   /** One undo per call - see UndoHandler. */
   onUndo: UndoHandler
+  /** Told each time an Undo press (a tap, or each repeat of a hold) takes a move back, for the Undos stat. */
+  onUndoUsed?: () => void
   undoDisabled: boolean
   /** Highlights a legal move (or suggests a stock draw) somewhere on the board - see
    * engine/hint.ts's findHint, which every screen calls this from. Also called by the Auto Hint
@@ -309,7 +311,7 @@ function ElapsedClock({ getElapsedSeconds, clockRunning, won, children }: { getE
  * Previously each of the four game screens hand-rolled its own version of this row (and Pyramid's
  * had drifted to a bottom button row entirely) - unifying it here means a layout tweak (like this
  * one, and the header/footer regrouping that followed it) only has to happen once. */
-export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, onHint, autoHintKey, hintShowing, hintDisabled, won, winRevealed, hasProgress, getElapsedSeconds, pauseClock, par, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
+export function GameChrome({ title, subtitle, onNewGame, onUndo: undoMove, onUndoUsed, undoDisabled, onHint, autoHintKey, hintShowing, hintDisabled, won, winRevealed, hasProgress, getElapsedSeconds, pauseClock, par, clockRunning, movesCount, settingsContent, rules, children }: GameChromeProps) {
   const router = useRouter()
   // The safe-area insets remapped onto the rotated frame's own edges (a no-op at rotation 0). The dialogs
   // below need no rotation of their own - see the Portal.Host in withGameProviders.
@@ -325,6 +327,15 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo, undoDisabled, o
   const footerSettleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(footerSettleTimerRef.current), [])
   const { clearLastActiveGame } = useLastActiveGame()
+  // Every undo the buttons ask for, counted for the Undos stat once it has taken a move back.
+  const onUndo: UndoHandler = (opts) => {
+    const result = undoMove(opts)
+    if (!result) return result
+    return result.then((undone) => {
+      if (undone) onUndoUsed?.()
+      return undone
+    })
+  }
   const undoHold = useUndoHold(onUndo, UNDO_HOLD_REPEAT_MS)
   // Each hint a hold shows clicks, as each tap on Hint does (a tap's click is its press's own, at touch-down).
   const { playCardSound, hapticCard } = useCardSoundEffects()

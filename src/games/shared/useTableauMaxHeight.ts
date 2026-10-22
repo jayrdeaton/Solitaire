@@ -9,7 +9,7 @@ import { TABLEAU_ROW_PADDING_BOTTOM, TOP_ROW_MARGIN_BOTTOM, useGameLayout } from
  * uses (see cardWidthForRow()/computeContentBounds()).
  *
  * No floor, in either layout: the board fits the screen exactly, and a column that would have to
- * compress past PileView's MIN_FAN_SCALE runs past this instead, with GameChrome's board scrolling to
+ * compress past its tightest (columnTops' MIN_FACE_UP_FAN_SCALE) runs past this instead, with GameChrome's board scrolling to
  * it. The per-game floors this used to take (each game's old fixed TABLEAU_MAX_HEIGHT, 300-460pt) made
  * every column box taller than a short phone's screen (an iPhone SE, a 640pt Android), so the board
  * scrolled there from the first deal, with every column short.

@@ -6,6 +6,7 @@ import { shuffledDeck } from '@/engine/deck'
 import { canPlaceOnFoundation, suitIndex } from '@/engine/foundation'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { isDescendingAltColor, top } from '@/engine/pile'
+import { columnsKey, faceDownCount, foundationDownMoves, pileKey, ProgressSpec } from '@/engine/progressSearch'
 import { Card, cardColor } from '@/engine/types'
 
 export interface KlondikeState {
@@ -178,6 +179,34 @@ function scoreHintMove(state: KlondikeState, move: Move): number {
   // The size tiebreak only orders moves that already gain something.
   if (score <= 0) return score
   return score + move.count * 2
+}
+
+/** Every move from here to every pile that takes it (legalMoves keeps one destination per run, the column tap-to-move
+ * picks): what the look-ahead tries (see `progress` below). */
+function searchMoves(state: KlondikeState): Move[] {
+  const moves: Move[] = []
+  const toFoundation = (from: PileRef, card: Card) => {
+    const f = suitIndex(card.suit)
+    if (canPlaceOnFoundation(state.foundation[f], card)) moves.push({ from, to: { zone: 'foundation', index: f }, count: 1 })
+  }
+  const wasteTop = top(state.waste)
+  if (wasteTop) {
+    const from: PileRef = { zone: 'waste', index: 0 }
+    toFoundation(from, wasteTop)
+    for (let t = 0; t < 7; t++) if (canPlaceOnTableau(state.tableau[t], [wasteTop])) moves.push({ from, to: { zone: 'tableau', index: t }, count: 1 })
+  }
+  for (let col = 0; col < 7; col++) {
+    const pile = state.tableau[col]
+    const runLen = runLengthAtTop(pile)
+    if (runLen === 0) continue
+    const from: PileRef = { zone: 'tableau', index: col }
+    toFoundation(from, pile[pile.length - 1])
+    for (let count = 1; count <= runLen; count++) {
+      const moving = [pile[pile.length - count]]
+      for (let t = 0; t < 7; t++) if (t !== col && canPlaceOnTableau(state.tableau[t], moving)) moves.push({ from, to: { zone: 'tableau', index: t }, count })
+    }
+  }
+  return moves
 }
 
 export function createKlondikeController(drawCount: 1 | 3): GameController<KlondikeState> {
@@ -388,6 +417,17 @@ export function createKlondikeController(drawCount: 1 | 3): GameController<Klond
     return result
   }
 
+  const progress: ProgressSpec<KlondikeState> = {
+    id: `klondike-draw${drawCount}`,
+    moves: searchMoves,
+    // A card may come back down off a foundation (see tryMove), occasionally the only way on.
+    rescueMoves: (state) => foundationDownMoves(state.foundation, state.tableau, canPlaceOnTableau),
+    // The stock turns over and comes round again: drawing is only a way to reach its cards.
+    drawIsStep: true,
+    key: (state) => `${columnsKey(state.tableau)}/${state.foundation.map((p) => p.length).join(',')}/${pileKey(state.stock)}/${pileKey(state.waste)}`,
+    progress: (state) => [-faceDownCount(state.tableau), state.foundation.reduce((n, p) => n + p.length, 0)]
+  }
+
   return {
     id: 'klondike',
     title: 'Klondike',
@@ -398,7 +438,8 @@ export function createKlondikeController(drawCount: 1 | 3): GameController<Klond
     isWon,
     autoMoveHint,
     accessibleCards,
-    scoreHintMove
+    scoreHintMove,
+    progress
   }
 }
 

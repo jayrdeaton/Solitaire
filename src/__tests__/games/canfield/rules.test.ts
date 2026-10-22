@@ -564,7 +564,8 @@ describe('Canfield scoreHintMove', () => {
     expect(back).not.toBeNull()
     expect(scoreOf(back, t1, 1, t0)).toBe(0)
 
-    expect(findHint(CanfieldController, state)).toEqual({ kind: 'drawStock' })
-    expect(findHint(CanfieldController, back)).toEqual({ kind: 'drawStock' })
+    expect(findHint({ ...CanfieldController, progress: undefined }, state)).toEqual({ kind: 'drawStock' })
+    // The board leaves out most of the deck, so the look-ahead would call it dead: this is the scored hint's own choice.
+    expect(findHint({ ...CanfieldController, progress: undefined }, back)).toEqual({ kind: 'drawStock' })
   })
 })

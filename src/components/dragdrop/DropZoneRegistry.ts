@@ -10,6 +10,10 @@ interface Rect {
   height: number
 }
 
+/** A release this close to a pile, but not on it, still drops there: the nearest such pile wins. The gap between two
+ * Spider columns on a phone is a few points, and a finger landing in it used to snap the cards back. */
+export const DROP_SLOP = 12
+
 function key(ref: PileRef): string {
   return `${ref.zone}:${ref.index}`
 }
@@ -48,7 +52,8 @@ export class DropZoneRegistry {
     return measure(view)
   }
 
-  /** Find the registered zone (if any) whose current screen rect contains (x, y). */
+  /** Find the registered zone (if any) whose current screen rect contains (x, y); failing that, the nearest one within
+   * DROP_SLOP of it. */
   async hitTest(x: number, y: number): Promise<PileRef | null> {
     const entries = Array.from(this.zones.entries())
     const results = await Promise.all(
@@ -57,15 +62,17 @@ export class DropZoneRegistry {
         if (!view) return null
         const rect = await measure(view)
         if (!rect) return null
-        const hit = x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height
-        return hit ? { k, area: rect.width * rect.height } : null
+        const distance = Math.hypot(Math.max(rect.x - x, 0, x - (rect.x + rect.width)), Math.max(rect.y - y, 0, y - (rect.y + rect.height)))
+        return distance <= DROP_SLOP ? { k, distance, area: rect.width * rect.height } : null
       })
     )
-    const hits = results.filter((r): r is { k: string; area: number } => r !== null)
-    if (hits.length === 0) return null
-    // Prefer the smallest/most specific zone if more than one rect contains the point.
-    hits.sort((a, b) => a.area - b.area)
-    const [zone, index] = hits[0].k.split(':')
+    const near = results.filter((r): r is { k: string; distance: number; area: number } => r !== null)
+    if (near.length === 0) return null
+    const hits = near.filter((r) => r.distance === 0)
+    // Prefer the smallest/most specific zone if more than one rect contains the point, else the nearest.
+    if (hits.length > 0) hits.sort((a, b) => a.area - b.area)
+    else near.sort((a, b) => a.distance - b.distance)
+    const [zone, index] = (hits.length > 0 ? hits : near)[0].k.split(':')
     return { zone, index: Number(index) }
   }
 }

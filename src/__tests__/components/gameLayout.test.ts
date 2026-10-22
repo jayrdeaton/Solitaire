@@ -1,7 +1,7 @@
 import { CARD_ASPECT } from '@tastic/cards'
 
 import { CARD_GAP_MIN, SPLIT_TOP_ROW_MIN_GAP } from '@/components/cardLayout'
-import { MIN_FAN_SCALE } from '@/components/columnTops'
+import { MIN_FACE_UP_FAN_SCALE } from '@/components/columnTops'
 import { columnBoardModel, columnFan, computeGameLayout, FACE_DOWN_FAN_RATIO, FACE_UP_FAN_RATIO, fitCardWidthToHeight, fittedGap, GAME_CONTENT_BOTTOM_PADDING, GAME_CONTENT_MAX_WIDTH, GAME_CONTENT_TOP_PADDING, LONG_COLUMN_MIN_CARD_WIDTH, MIN_CARD_WIDTH } from '@/components/gameLayout'
 
 const NO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 }
@@ -96,12 +96,13 @@ describe('columnBoardModel longColumn', () => {
     const model = columnBoardModel({ ...deal, longColumn })
     expect(model.perWidth).toBe(columnBoardModel(deal).perWidth)
     expect(model.fixed).toBe(columnBoardModel(deal).fixed)
-    expect(model.long).toEqual({ perWidth: H + columnFan(longColumn) * MIN_FAN_SCALE + H, minCardWidth: LONG_COLUMN_MIN_CARD_WIDTH })
+    expect(model.long?.perWidth).toBeCloseTo(H + columnFan(longColumn) * MIN_FACE_UP_FAN_SCALE + H, 9)
+    expect(model.long?.minCardWidth).toBe(LONG_COLUMN_MIN_CARD_WIDTH)
     expect(columnFan(longColumn)).toBeCloseTo(11 * FACE_UP_FAN_RATIO, 9)
   })
 
   it('has no long model when the deal and its headroom already need more room than the long column at the minimum', () => {
-    expect(columnBoardModel({ faceDown: 0, faceUp: 4, headroomFaceUp: 5, longColumn: { faceDown: 0, faceUp: 10 } }).long).toBeUndefined()
+    expect(columnBoardModel({ faceDown: 0, faceUp: 4, headroomFaceUp: 5, longColumn: { faceDown: 0, faceUp: 9 } }).long).toBeUndefined()
   })
 
   it('sizes the cards so the long column fills the height at the minimum spacing, where that leaves them above the floor', () => {

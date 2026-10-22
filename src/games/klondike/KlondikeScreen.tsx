@@ -2,7 +2,7 @@ import { useVibration } from '@rific/feedback-press'
 import { useToast } from '@rific/toaster'
 import { CardSizeProvider, faceUpFanOffset } from '@tastic/cards'
 import { useRotation } from '@tastic/core'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
 import { HintRequest } from '@/components/autoHint'
@@ -43,6 +43,7 @@ import { useCascadeFeedback } from '@/games/shared/cascadeFeedback'
 import { FoundationCell } from '@/games/shared/FoundationCell'
 import { showNoHintToast } from '@/games/shared/gameToasts'
 import { liftTappedRun, peelInAir } from '@/games/shared/inAirRun'
+import { LossBanner } from '@/games/shared/LossBanner'
 import { createStockQueue, startStockWait, stockWaitTick } from '@/games/shared/stockWait'
 import { MoveInfo, UndoEntry } from '@/games/shared/undoTypes'
 import { useAutoFinish } from '@/games/shared/useAutoFinish'
@@ -53,6 +54,7 @@ import { useFoundationWinCheck } from '@/games/shared/useFoundationWinCheck'
 import { useGameScreenBasics } from '@/games/shared/useGameScreenBasics'
 import { useHintGlide } from '@/games/shared/useHintGlide'
 import { useSaveInProgressBackstop } from '@/games/shared/useSaveInProgress'
+import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 import { useTableauMaxHeight } from '@/games/shared/useTableauMaxHeight'
 import { useUndoStack } from '@/games/shared/useUndoStack'
 import { useWinReveal } from '@/games/shared/useWinReveal'
@@ -116,7 +118,7 @@ function normalizeUndoEntry(e: KlondikeUndoEntry | LegacyKlondikeUndoEntry): Klo
 export default withGameProviders(KlondikeScreenInner)
 
 function KlondikeScreenInner() {
-  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   const controllerRef = useRef(createKlondikeController(settings.klondikeDraw))
@@ -210,6 +212,12 @@ function KlondikeScreenInner() {
   // last card has flown in and landed, so it is never hidden mid-flight (which used to make it
   // simply appear) and the finished board reads for a beat first.
   const winRevealed = useWinReveal(won, settled)
+  // A dead board (no progress left anywhere: useStuckLossCheck's look-ahead) is a loss here too, recorded when the player
+  // leaves it, and shown once the last card has landed.
+  // The same rules as controllerRef.current, memoized so the look-ahead can run off the render's board.
+  const stuckController = useMemo(() => createKlondikeController(klondikeDraw), [klondikeDraw])
+  const { stuck } = useStuckLossCheck(stuckController, state, variant, recordDealAbandoned, session)
+  const lossRevealed = useWinReveal(stuck, settled)
   /** One ref per foundation slot's own container (see FoundationCell's slotRef) - measured
    * independently of CardRegistry so the win cascade can find each pile's screen position whether
    * or not its real King is drawn (the container is card-sized and always mounted; the piles only
@@ -332,7 +340,7 @@ function KlondikeScreenInner() {
     // session.moves, not undoStack.length: a resumed deal always restores with an empty undo
     // stack (see restoreGame above) even when it has real progress, so undoStack alone would miss
     // recording the abandon for any resumed, in-progress game.
-    if (session.moves > 0 && !won) recordDealAbandoned(variant)
+    if (session.moves > 0 && !won) recordDealAbandoned(variant, { seconds: session.getElapsed(), moves: session.getMoves() })
     startNewGame()
   }
 
@@ -500,7 +508,7 @@ function KlondikeScreenInner() {
           settleFlight()
           return
         }
-        const fanOffset = wasteFanStepFor(cardWidth)
+        const fanOffset = wasteFanStepFor(cardWidth, true, gap)
         const n = p.drawnCards.length
         const entries: DealCardSpec[] = p.drawnCards.map((card, i) => {
           const distanceFromTop = n - 1 - i // i=0 is the oldest/farthest card, i=n-1 is the new top
@@ -685,13 +693,13 @@ function KlondikeScreenInner() {
   // from when it was made, so useSaveInProgressBackstop saves again every 10s, when the screen is left,
   // and when the app is backgrounded.
   useEffect(() => {
-    if (state && !won) {
+    if (state && !won && !stuck) {
       saveGameInProgress<KlondikeState, KlondikeUndoEntry>('klondike', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: klondikeDraw })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, won, klondikeDraw, undoStack])
-  useSaveInProgressBackstop(!!state && !won, () => {
-    if (state && !won) saveGameInProgress<KlondikeState, KlondikeUndoEntry>('klondike', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: klondikeDraw })
+  }, [state, won, stuck, klondikeDraw, undoStack])
+  useSaveInProgressBackstop(!!state && !won && !stuck, () => {
+    if (state && !won && !stuck) saveGameInProgress<KlondikeState, KlondikeUndoEntry>('klondike', { state, undoStack, moves: session.moves, elapsedSeconds: session.getElapsed(), config: klondikeDraw })
   })
 
   // Finds one legal move (or a stock-draw suggestion) to highlight - see engine/hint.ts's
@@ -919,7 +927,7 @@ function KlondikeScreenInner() {
       hideCascadeCards(cascaded)
 
       if (topPos && stockDest) {
-        const fanOffset = wasteFanStepFor(cardWidth)
+        const fanOffset = wasteFanStepFor(cardWidth, true, gap)
         const entries: DealCardSpec[] = movingCards
           .slice()
           .reverse() // newest/top (last dealt) first
@@ -1463,7 +1471,7 @@ function KlondikeScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Klondike' subtitle={`Draw ${klondikeDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won} movesCount={session.moves} settingsContent={<KlondikeSettingsSection />} rules={KLONDIKE_RULES}>
+      <GameChrome onUndoUsed={() => recordUndoUsed(variant)} title='Klondike' subtitle={`Draw ${klondikeDraw}`} onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<KlondikeSettingsSection />} rules={KLONDIKE_RULES}>
         <View style={[styles.topRow, { width: cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1) }]}>
           <View style={[styles.foundationsGroup, { gap }]}>
             {state.foundation.map((pile, i) => {
@@ -1535,6 +1543,7 @@ function KlondikeScreenInner() {
       {winRevealed && <PipFireworks />}
       <WinCascadeGhosts />
       {winRevealed && <WinBanner elapsedSeconds={session.getElapsed()} moves={session.moves} score={computeScore(session.moves, session.getElapsed())} variant={variant} onNewGame={startNewGame} />}
+      {lossRevealed && !won && <LossBanner onNewGame={handleNewGame} onUndo={handleUndo} />}
     </CardSizeProvider>
   )
 }

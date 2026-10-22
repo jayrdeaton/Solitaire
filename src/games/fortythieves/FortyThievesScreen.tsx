@@ -94,7 +94,7 @@ function makeStyles() {
 export default withGameProviders(FortyThievesScreenInner)
 
 function FortyThievesScreenInner() {
-  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   // The move-style rule the in-progress deal was actually dealt with - deliberately not
@@ -150,7 +150,7 @@ function FortyThievesScreenInner() {
   const stuckController = useMemo(() => createFortyThievesController(runMoves), [runMoves])
   // A dead board - no move left and no stock to deal - is a loss here, as in Aces Up, recorded when the player leaves it (see useStuckLossCheck):
   // it used to just sit there with the clock running.
-  const { stuck } = useStuckLossCheck(stuckController, state, variant, recordDealAbandoned)
+  const { stuck } = useStuckLossCheck(stuckController, state, variant, recordDealAbandoned, session)
   // Reads controllerRef.current live inside isWon (rather than passing controllerRef.current
   // directly, which would freeze this render's controller into checkWin's closure) - matches
   // KlondikeScreen's identical fix, so a straggling call from a stale render's closure chain still
@@ -254,7 +254,7 @@ function FortyThievesScreenInner() {
   }
 
   function handleNewGame() {
-    if (session.moves > 0 && !won) recordDealAbandoned(variant)
+    if (session.moves > 0 && !won) recordDealAbandoned(variant, { seconds: session.getElapsed(), moves: session.getMoves() })
     startNewGame()
   }
 
@@ -800,7 +800,7 @@ function FortyThievesScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
+      <GameChrome onUndoUsed={() => recordUndoUsed(variant)} title='Forty Thieves' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<FortyThievesSettingsSection />} rules={FORTYTHIEVES_RULES}>
         {/* As wide as the tableau, the foundations at its left edge and the waste/stock pair at its right. It used to
         put a fixed 18pt between the two in portrait, which made it 16pt wider than the tableau: it ran off both
         edges of a phone. */}

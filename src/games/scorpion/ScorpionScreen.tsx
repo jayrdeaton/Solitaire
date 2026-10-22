@@ -69,6 +69,9 @@ const TABLEAU_COLUMNS = 7
 const FRONT_COLUMNS = 4
 
 const STOCK_PACKET_ID = 'scorpion-stock-packet'
+// In the wide layout the packet hangs beside column 7; one board gap (2pt on a phone) from it, it read as an eighth column
+// (the crowding audit of 2026-10-22). This much more keeps it apart.
+const WIDE_PACKET_SEPARATION = 10
 // A placeholder face-down card for the one-shot stock packet - id/suit/rank are never shown
 // (faceUp: false always renders CardBack instead), so any valid values work here (same idea as
 // Spider's own STOCK_PACKET_CARD).
@@ -102,7 +105,7 @@ function StockPacket({ onPress, highlighted }: { onPress: () => void; highlighte
 export default withGameProviders(ScorpionScreenInner)
 
 function ScorpionScreenInner() {
-  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
+  const { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, setLastActiveGame, clearLastActiveGame } = useGameScreenBasics(makeStyles)
   const { info: infoToast } = useToast()
   const { settings } = useSettings()
   // The stock variant the in-progress deal was actually dealt with - deliberately not re-derived
@@ -125,7 +128,8 @@ function ScorpionScreenInner() {
   const widthColumns = isWide ? TABLEAU_COLUMNS + 2 : TABLEAU_COLUMNS
   // Sized by the width alone, in both layouts: in the wide layout a column too long for the ~400pt of height scrolls
   // rather than shrinking every card to fit it (Jay, 2026-10-14: big cards in landscape, and scroll a bit sometimes).
-  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2, widthColumns)
+  // The wide layout also keeps WIDE_PACKET_SEPARATION more than a gap between the packet and column 7 on each side.
+  const { cardWidth, gap } = cardLayoutForRow(contentWidth - GAME_CONTENT_PADDING * 2 - (isWide ? 2 * WIDE_PACKET_SEPARATION : 0), widthColumns)
   const tableauMaxHeight = useTableauMaxHeight(cardWidth, { topRowCards: isWide ? 0 : 1 })
   // Owns state/stateRef/commitState, the `flying` array, activeFlightCountRef, and undoBusyRef - see
   // useFlightConcurrency's own doc comment for the invariant this protects (undo needs full mutual
@@ -162,7 +166,7 @@ function ScorpionScreenInner() {
   const winCascade = useWinCascade()
   // A dead board - no move left and no stock to deal - is a loss here, as in Aces Up, recorded when the player leaves it (see useStuckLossCheck):
   // it used to just sit there with the clock running.
-  const { stuck } = useStuckLossCheck(controller, state, variant, recordDealAbandoned)
+  const { stuck } = useStuckLossCheck(controller, state, variant, recordDealAbandoned, session)
   // Derived from `state` every render (see useDerivedWinCheck), same as Spider/Golf - Scorpion has
   // no suit-based foundation for a "won" flag to hang off; isWon (rules.ts) checks each column's
   // own shape directly instead.
@@ -296,7 +300,7 @@ function ScorpionScreenInner() {
   // only ever calls this after the player has confirmed that, or immediately when there's nothing
   // to lose (see components/GameChrome.tsx's warning dialog).
   function handleNewGame() {
-    if (session.moves > 0 && !won) recordDealAbandoned(variant)
+    if (session.moves > 0 && !won) recordDealAbandoned(variant, { seconds: session.getElapsed(), moves: session.getMoves() })
     setAssistedStock(settings.scorpionAssistedStock)
     startNewGame(createScorpionController(settings.scorpionAssistedStock))
   }
@@ -802,7 +806,7 @@ function ScorpionScreenInner() {
 
   return (
     <CardSizeProvider width={cardWidth}>
-      <GameChrome title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
+      <GameChrome onUndoUsed={() => recordUndoUsed(variant)} title='Scorpion' onNewGame={handleNewGame} onUndo={handleUndo} undoDisabled={undoStack.length === 0} onHint={handleHint} autoHintKey={state} hintShowing={!!activeHint} hintDisabled={won || stuck} won={won} winRevealed={winRevealed} hasProgress={session.moves > 0} getElapsedSeconds={session.getElapsed} pauseClock={session.setPaused} par={parFor(variant)} clockRunning={session.started && !won && !stuck} movesCount={session.moves} settingsContent={<ScorpionSettingsSection />} rules={SCORPION_RULES}>
         {/* Portrait: the stock packet lives in a card-tall top row at the right, as always. Wide layout: no
         top row (zero height, no margin) - the packet is absolutely positioned beside the tableau below.
         Once the assisted stock has been dealt, an empty slot stays in its place: the packet was the top row's
@@ -811,9 +815,9 @@ function ScorpionScreenInner() {
 
         {/* Full-width wrapper (a tap outside a parent's bounds never reaches an absolutely positioned child
         on iOS, so the packet must stay inside it): the tableau centres itself, the packet hangs one gap
-        past its last column (left 50% + half the tableau + gap) and is top-aligned with it. */}
+        past its last column (left 50% + half the tableau + gap + WIDE_PACKET_SEPARATION) and is top-aligned with it. */}
         <View style={isWide ? styles.wideBoard : undefined}>
-          {isWide && stockSlot && <View style={[styles.widePacket, { marginLeft: (cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1)) / 2 + gap }]}>{stockSlot}</View>}
+          {isWide && stockSlot && <View style={[styles.widePacket, { marginLeft: (cardWidth * TABLEAU_COLUMNS + gap * (TABLEAU_COLUMNS - 1)) / 2 + gap + WIDE_PACKET_SEPARATION }]}>{stockSlot}</View>}
           <View style={[styles.tableauRow, { gap }, isWide && styles.tableauRowWide]}>
             {state.tableau.map((col, colIndex) => {
               const dragConfig: PileDragConfig = {

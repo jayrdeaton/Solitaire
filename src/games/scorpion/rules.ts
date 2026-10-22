@@ -27,6 +27,7 @@ import { pickBestTableauTarget } from '@/engine/autoMove'
 import { shuffledDeck } from '@/engine/deck'
 import { GameController, Move, PileRef } from '@/engine/gameTypes'
 import { alwaysValidRun, isDescendingSameSuit, top } from '@/engine/pile'
+import { columnsKey, faceDownCount, ProgressSpec } from '@/engine/progressSearch'
 import { Card } from '@/engine/types'
 
 export interface ScorpionState {
@@ -197,6 +198,22 @@ function scoreHintMove(state: ScorpionState, move: Move): number {
   return score + move.count * 2
 }
 
+/** Every move from here to every column that takes it (legalMoves keeps one column per group, the one tap-to-move picks):
+ * what the look-ahead tries (see `progress` in createScorpionController). */
+function searchMoves(state: ScorpionState): Move[] {
+  const moves: Move[] = []
+  for (let col = 0; col < NUM_COLUMNS; col++) {
+    const pile = state.tableau[col]
+    // Any face-up card moves with whatever is on it (see this file's header comment).
+    for (let i = 0; i < pile.length; i++) {
+      if (!pile[i].faceUp) continue
+      const group = [pile[i]]
+      for (let t = 0; t < NUM_COLUMNS; t++) if (t !== col && canPlaceOnTableau(state.tableau[t], group)) moves.push({ from: { zone: 'tableau', index: col }, to: { zone: 'tableau', index: t }, count: pile.length - i })
+    }
+  }
+  return moves
+}
+
 export function createScorpionController(assistedStock: boolean): GameController<ScorpionState> {
   function newGame(seed: number): ScorpionState {
     const deck = shuffledDeck(seed, 1)
@@ -311,6 +328,16 @@ export function createScorpionController(assistedStock: boolean): GameController
     return { from, to: { zone: 'tableau', index: best.index }, count }
   }
 
+  // Progress is a card turned over or a column holding a whole King-to-Ace run. The assisted stock is dealt once, for good,
+  // so it is not part of the search: Hint deals it once the board has nothing left to give.
+  const progress: ProgressSpec<ScorpionState> = {
+    id: assistedStock ? 'scorpion' : 'scorpion-classic',
+    moves: searchMoves,
+    drawIsStep: false,
+    key: (state) => `${columnsKey(state.tableau)}/${state.stock.length}`,
+    progress: (state) => [-faceDownCount(state.tableau), state.tableau.filter((col) => col.length === 13 && isDescendingSameSuit(col)).length]
+  }
+
   return {
     id: 'scorpion',
     title: 'Scorpion',
@@ -321,6 +348,7 @@ export function createScorpionController(assistedStock: boolean): GameController
     isWon,
     isStuck,
     autoMoveHint,
-    scoreHintMove
+    scoreHintMove,
+    progress
   }
 }

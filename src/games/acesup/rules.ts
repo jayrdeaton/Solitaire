@@ -20,6 +20,7 @@
 import { shuffledDeck } from '@/engine/deck'
 import { GameController, Move, PileRef } from '@/engine/gameTypes'
 import { top } from '@/engine/pile'
+import { allDestinations, columnsKey, ProgressSpec } from '@/engine/progressSearch'
 import { Card } from '@/engine/types'
 
 export interface AcesUpState {
@@ -233,6 +234,16 @@ function autoMoveHint(state: AcesUpState, from: PileRef, cardId: string): Move |
   return canonicalMoveFor(state.piles, from.index)
 }
 
+/** Progress is a card discarded. legalMoves sends a card only to the first empty pile; the search tries each. The stock is
+ * dealt a round at a time, for good, so it is not part of the search: Hint deals once the board has nothing left to give. */
+const progress: ProgressSpec<AcesUpState> = {
+  id: 'acesup',
+  moves: (state) => allDestinations({ legalMoves, tryMove }, state, { tableau: NUM_PILES }),
+  drawIsStep: false,
+  key: (state) => `${columnsKey(state.piles)}/${state.stock.length}`,
+  progress: (state) => [state.discard.length]
+}
+
 export const AcesUpController: GameController<AcesUpState> = {
   id: 'acesup',
   title: 'Aces Up',
@@ -243,5 +254,6 @@ export const AcesUpController: GameController<AcesUpState> = {
   isWon,
   isStuck,
   autoMoveHint,
-  scoreHintMove
+  scoreHintMove,
+  progress
 }

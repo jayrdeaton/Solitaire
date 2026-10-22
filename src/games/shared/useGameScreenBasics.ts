@@ -14,9 +14,9 @@ import { useLastActiveGame } from '@/stores/lastActiveGame'
  */
 export function useGameScreenBasics<S>(makeStyles: (colors: TableColors) => S) {
   const colors = useTableColors()
-  const { recordDealWon, recordDealAbandoned, recordHintUsed } = useGameStats()
+  const { recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed } = useGameStats()
   const { setLastActiveGame, clearLastActiveGame } = useLastActiveGame()
   const styles = useMemo(() => makeStyles(colors), [colors, makeStyles])
   const dropZones = useDropZoneRegistry()
-  return { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, setLastActiveGame, clearLastActiveGame }
+  return { styles, dropZones, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, setLastActiveGame, clearLastActiveGame }
 }

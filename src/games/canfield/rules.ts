@@ -17,6 +17,7 @@ import { shuffledDeck } from '@/engine/deck'
 import { FOUNDATION_SUITS } from '@/engine/foundation'
 import { AccessibleCard, GameController, Move, PileRef } from '@/engine/gameTypes'
 import { top } from '@/engine/pile'
+import { columnsKey, foundationDownMoves, pileKey, ProgressSpec } from '@/engine/progressSearch'
 import { Card, cardColor, Rank, Suit, SUITS } from '@/engine/types'
 
 export interface CanfieldState {
@@ -504,6 +505,18 @@ export function nextFinishMove(controller: GameController<CanfieldState>, state:
 }
 
 export function createCanfieldController(drawCount: 1 | 3): GameController<CanfieldState> {
+  // Progress is a card on a foundation or out of the reserve.
+  // The stock turns over and comes round again, so drawing is a step of the search. A card may come back down off a
+  // foundation (see tryMove), so the dead-board check tries that too.
+  const progress: ProgressSpec<CanfieldState> = {
+    id: `canfield-draw${drawCount}`,
+    moves: legalMoves,
+    rescueMoves: (state) => foundationDownMoves(state.foundation, state.tableau, (column, moving) => canPlaceOnTableau(state.reserve, column, moving, 'foundation')),
+    drawIsStep: true,
+    key: (state) => `${columnsKey(state.tableau)}/${pileKey(state.reserve)}/${pileKey(state.stock)}/${pileKey(state.waste)}`,
+    progress: (state) => [state.foundation.reduce((n, p) => n + p.length, 0), -state.reserve.length]
+  }
+
   return {
     id: 'canfield',
     title: 'Canfield',
@@ -515,6 +528,7 @@ export function createCanfieldController(drawCount: 1 | 3): GameController<Canfi
     isStuck,
     autoMoveHint,
     scoreHintMove,
-    accessibleCards
+    accessibleCards,
+    progress
   }
 }
