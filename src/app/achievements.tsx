@@ -1,7 +1,6 @@
 import { getBlendedColor } from '@rific/auto-paper'
 import { getAchievementCatalogRows } from '@tastic/achievements'
 import { AchievementRow, BaseStatsScreen, LOCKED_BADGE_COLOR, StatRow, StatSection, usePopoverHost } from '@tastic/hud/chrome'
-import { ProfilePicker } from '@tastic/profile'
 import { useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 import { Text, useTheme } from 'react-native-paper'
@@ -9,8 +8,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { PlayCalendar } from '@/components/PlayCalendar'
 import { RotatedScreen } from '@/components/RotatedScreen'
+import { type GameFilter, StatsFilters } from '@/components/StatsFilters'
 import { CHROME_FG, CHROME_FG_MUTED } from '@/components/theme'
-import { useProfilePickerAlign } from '@/components/useProfilePickerAlign'
 import { describeVsPar, parFor, playerParFor } from '@/engine/par'
 import { VARIANTS } from '@/engine/variants'
 import { GUEST_PLAYER_ID } from '@/redux/activeProfileSlice'
@@ -18,28 +17,14 @@ import { ACHIEVEMENT_CATALOG } from '@/stores/achievementCatalog'
 import { useGameStats } from '@/stores/gameStats'
 import { usePlayerData } from '@/stores/playerData'
 import { useProfiles } from '@/stores/profiles'
-import { getAverageWin, getBestParRatio, getBestStreak, getBusiestDay, getCardsDealt, getGamesWon, getMostPlayedGame, getProfileStatsView, getTotalHintsUsed, getTotalMoves, getTotalPlayed, getTotalSeconds, getTotalUndosUsed, getTotalWins, getTotalWinsWithoutHint } from '@/stores/statsEngine'
-import { SOLITAIRE_GAME_IDS, SolitaireGameId } from '@/stores/statsTypes'
+import { getAverageWin, getBestParRatio, getBestStreak, getBusiestDay, getCardsDealt, getGamesWon, getGameView, getMostPlayedGame, getProfileStatsView, getTotalHintsUsed, getTotalMoves, getTotalPlayed, getTotalSeconds, getTotalUndosUsed, getTotalWins, getTotalWinsWithoutHint } from '@/stores/statsEngine'
+import { GAME_TITLES, SOLITAIRE_GAME_IDS } from '@/stores/statsTypes'
 import { DEFAULT_PROFILE_STATS } from '@/stores/statsValidation'
 import { safeBack } from '@/utils/navigation'
 
 // Widest the stats column gets in the WIDE (landscape) layout - a list of stat rows stretched across a 874pt
 // screen reads badly. Portrait is never capped (see @tastic/hud's RotatedFrame).
 const SCREEN_MAX_WIDTH = 640
-
-const GAME_TITLES: Record<SolitaireGameId, string> = {
-  klondike: 'Klondike',
-  spider: 'Spider',
-  freecell: 'FreeCell',
-  pyramid: 'Pyramid',
-  yukon: 'Yukon',
-  golf: 'Golf',
-  tripeaks: 'TriPeaks',
-  canfield: 'Canfield',
-  scorpion: 'Scorpion',
-  fortythieves: 'Forty Thieves',
-  acesup: 'Aces Up'
-}
 
 function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60)
@@ -83,15 +68,12 @@ function AchievementsContent() {
   const { stats, unlockedAchievements, resetAll, recentWins } = useGameStats()
   const { resetPlayer } = usePlayerData()
   const { profiles } = useProfiles()
-  // Own popover host, independent of whichever profile is active for gameplay elsewhere (see
-  // stores/profiles.tsx's activeProfileId, which only drives the cosmetic card-back/felt color) -
-  // this screen's own view of "whose stats am I looking at" is local and always resets to All
-  // Profiles when reopened, matching every other @tastic game's achievements screen (e.g.
-  // LightCycles').
-  const profilePickerHost = usePopoverHost()
-  // Frame-aware placement for the picker's popover (see useProfilePickerAlign) - @tastic/hud's own measures along
-  // the wrong axes inside the turned frame. No Manage row here, so the popover is one row shorter than Home's.
-  const profilePickerAlign = useProfilePickerAlign(profilePickerHost.openId === 'achievements-profile', profiles.length, false)
+  // Own popover host for the two pickers (StatsFilters), independent of whichever profile is active for gameplay
+  // elsewhere (see stores/profiles.tsx's activeProfileId, which only drives the cosmetic card-back/felt color) - this
+  // screen's own view of "whose stats am I looking at" is local and always resets to All Profiles when reopened,
+  // matching every other @tastic game's achievements screen (e.g. LightCycles'). So does the game it is narrowed to.
+  const pickerHost = usePopoverHost()
+  const [game, setGame] = useState<GameFilter>('all')
 
   // null = "All Profiles" (device-wide, today's original default view). Self-heals to null if the
   // selected profile gets deleted while this screen is still mounted.
@@ -99,6 +81,9 @@ function AchievementsContent() {
   const effectiveProfileId = selectedProfileId && profiles.some((p) => p.id === selectedProfileId) ? selectedProfileId : null
   const profileBucket = effectiveProfileId ? (stats.profiles[effectiveProfileId] ?? DEFAULT_PROFILE_STATS) : null
   const statsView = profileBucket ? getProfileStatsView(profileBucket) : stats
+  // What the stat sections show: the player's (or everyone's) stats, narrowed to the game picked. The achievements below
+  // are milestones across every game, so they always read the whole of statsView.
+  const shown = game === 'all' ? statsView : getGameView(statsView, game)
 
   // Reset follows the picker: one player's stats, achievements and saved games while they are shown, everyone's on All
   // Profiles. A player's reset leaves the All Profiles totals alone, so the copy says so.
@@ -109,11 +94,11 @@ function AchievementsContent() {
   // just guest). All Profiles with profiles is everyone at once, and a par is one player's (engine/par.ts' playerParFor).
   const parPlayer = effectiveProfileId ?? (profiles.length === 0 ? GUEST_PLAYER_ID : null)
 
-  const played = getTotalPlayed(statsView)
-  const wins = getTotalWins(statsView)
-  const bestScoreVsPar = getBestParRatio(statsView, 'score')
-  const mostPlayed = getMostPlayedGame(statsView)
-  const busiestDay = getBusiestDay(statsView)
+  const played = getTotalPlayed(shown)
+  const wins = getTotalWins(shown)
+  const bestScoreVsPar = getBestParRatio(shown, 'score')
+  const mostPlayed = getMostPlayedGame(shown)
+  const busiestDay = getBusiestDay(shown)
 
   return (
     // A transparent BaseStatsScreen over the app-wide felt (TableBackground, mounted once in
@@ -130,51 +115,56 @@ function AchievementsContent() {
       {/* rotation={0}: its reset-confirm portals into the Portal.Host RotatedScreen mounts INSIDE the frame, so it is
       already turned with it - the ambient rotation on top would turn it twice. */}
       <BaseStatsScreen onBack={safeBack} insets={insets} onReset={reset.onReset} resetLabel={reset.label} resetConfirmTitle={reset.title} resetConfirmBody={reset.body} fg={CHROME_FG} bg='transparent' rotation={0}>
-        {profiles.length > 0 && <ProfilePicker idPrefix='achievements' host={profilePickerHost} profiles={profiles} selectedId={effectiveProfileId} color={CHROME_FG} dark={dark} guestLabel='All Profiles' nullLabel='All Profiles' nullIcon='account-group' onSelect={(profile) => setSelectedProfileId(profile?.id ?? null)} alignOverride={profilePickerAlign} />}
+        <StatsFilters host={pickerHost} profiles={profiles} profileId={effectiveProfileId} onProfile={setSelectedProfileId} game={game} onGame={setGame} />
 
         {/* The calendar of play first, in a well of its own: a year at a glance is the most telling thing here, and its tap
         tooltip (drawn above the grid) has room over the label instead of covering a stat (Jay, 2026-10-22). */}
         <StatSection label='CALENDAR'>
-          <PlayCalendar days={statsView.days} />
+          <PlayCalendar days={shown.days} />
         </StatSection>
 
-        <StatSection label='OVERALL'>
+        {/* Narrowed to one game this is that game's totals, under its name; which games were solved and the most played game
+        then have nothing to say. */}
+        <StatSection label={game === 'all' ? 'OVERALL' : GAME_TITLES[game].toUpperCase()}>
           <StatRow label='Games Played' value={String(played)} />
           <StatRow label='Wins' value={String(wins)} />
           <StatRow label='Win Rate' value={winRate(wins, played)} />
-          <StatRow label='Best Game Streak' value={String(getBestStreak(statsView))} />
-          <StatRow label='Games Solved' value={`${getGamesWon(statsView)} / ${SOLITAIRE_GAME_IDS.length}`} />
+          <StatRow label='Best Game Streak' value={String(getBestStreak(shown))} />
+          {game === 'all' && <StatRow label='Games Solved' value={`${getGamesWon(shown)} / ${SOLITAIRE_GAME_IDS.length}`} />}
           {/* Overall bests are measured against par: a raw lowest score or fastest time across all 11 games would just
           name the quickest game (Golf, Aces Up), not the best play. */}
           <StatRow label='Best Score' value={bestScoreVsPar === null ? '-' : describeVsPar(bestScoreVsPar, 1, 'expert par')} />
-          <StatRow label='Most Played' value={mostPlayed ? GAME_TITLES[mostPlayed] : '-'} />
+          {game === 'all' && <StatRow label='Most Played' value={mostPlayed ? GAME_TITLES[mostPlayed] : '-'} />}
           {/* Time Played and Moves Made count every deal that ended, won or lost, since 2026-10-22 (statsTypes.ts). */}
-          <StatRow label='Time Played' value={formatDuration(getTotalSeconds(statsView))} />
-          <StatRow label='Moves Made' value={String(getTotalMoves(statsView))} />
-          <StatRow label='Cards Dealt' value={String(getCardsDealt(statsView))} />
-          <StatRow label='Hints Used' value={String(getTotalHintsUsed(statsView))} />
-          <StatRow label='Undos Used' value={String(getTotalUndosUsed(statsView))} />
-          <StatRow label='Wins Without Hints' value={String(getTotalWinsWithoutHint(statsView))} />
+          <StatRow label='Time Played' value={formatDuration(getTotalSeconds(shown))} />
+          <StatRow label='Moves Made' value={String(getTotalMoves(shown))} />
+          <StatRow label='Cards Dealt' value={String(getCardsDealt(shown))} />
+          <StatRow label='Hints Used' value={String(getTotalHintsUsed(shown))} />
+          <StatRow label='Undos Used' value={String(getTotalUndosUsed(shown))} />
+          <StatRow label='Wins Without Hints' value={String(getTotalWinsWithoutHint(shown))} />
         </StatSection>
 
         {/* Right under OVERALL (it used to come after every game's section, out of sight). Win Streak runs across every game,
-        from 2026-10-22; Most Deals in a Day reads the day log kept from then (stores/statsTypes.ts' `days`). */}
+        from 2026-10-22; Most Deals in a Day reads the day log kept from then (stores/statsTypes.ts' `days`). Narrowed to one
+        game, the days and day streaks come from that log too (getGameView), and there is no streak across games. */}
         <StatSection label='ACTIVITY'>
-          <StatRow label='Days Played' value={String(statsView.distinctDaysPlayed)} />
-          <StatRow label='Day Streak' value={String(statsView.currentDayStreak)} />
-          <StatRow label='Best Day Streak' value={String(statsView.bestDayStreak)} />
-          <StatRow label='Win Streak, All Games' value={`${statsView.winStreak.currentWinStreak} (best ${statsView.winStreak.bestWinStreak})`} />
+          <StatRow label='Days Played' value={String(shown.distinctDaysPlayed)} />
+          <StatRow label='Day Streak' value={String(shown.currentDayStreak)} />
+          <StatRow label='Best Day Streak' value={String(shown.bestDayStreak)} />
+          {game === 'all' && <StatRow label='Win Streak, All Games' value={`${shown.winStreak.currentWinStreak} (best ${shown.winStreak.bestWinStreak})`} />}
           <StatRow label='Most Deals in a Day' value={busiestDay ? String(busiestDay.played) : '-'} />
         </StatSection>
 
         {/* Per variant: one game under one rule set (engine/variants.ts), since a 1-suit and a 4-suit Spider win aren't the
-        same. A game's default rules always show; its other rules once a deal under them has been played. Each best is shown
-        next to its expert par (the achievements measure against it), and Your Par is the shown player's own (their last 20 wins). "Lost" counts both ways a deal ends without a win: dealt over mid-game, and the No Moves Left dead
-        board (useStuckLossCheck) - see stores/statsTypes.ts. */}
-        {VARIANTS.filter((info, i) => i === 0 || VARIANTS[i - 1].game !== info.game || statsView.variants[info.id].record.played > 0).map((info) => {
-          const v = statsView.variants[info.id]
+        same. A game's default rules always show, and its other rules once a deal under them has been played; narrowed to one
+        game, all of its rules. Expert Par is a variant's par in full (score, time, moves; engine/par.ts), Your Par the shown
+        player's own (their last 20 wins), and each best and Your Par say how they compare with it (Jay, 2026-10-22: what
+        expert par is and how a player measures up). "Lost" counts both ways a deal ends without a win: dealt over mid-game,
+        and the No Moves Left dead board (useStuckLossCheck) - see stores/statsTypes.ts. */}
+        {VARIANTS.filter((info, i) => (game === 'all' ? i === 0 || VARIANTS[i - 1].game !== info.game || shown.variants[info.id].record.played > 0 : info.game === game)).map((info) => {
+          const v = shown.variants[info.id]
           const par = parFor(info.id)
-          const vsPar = (best: number | null, parValue: string, show: (n: number) => string) => `${best === null ? '-' : show(best)} · expert par ${parValue}`
+          const vsExpert = (best: number | null, expert: number, show: (n: number) => string) => (best === null ? '-' : `${show(best)} · ${describeVsPar(best, expert, 'expert')}`)
           const yourPar = parPlayer === null ? null : playerParFor(info.id, recentWins[parPlayer]?.[info.id] ?? [])
           // The average win is over the wins added up since 2026-10-22 (statsTypes.ts' winsCounted).
           const average = getAverageWin(v)
@@ -185,10 +175,11 @@ function AchievementsContent() {
               <StatRow label='Lost' value={String(v.record.losses)} />
               <StatRow label='Win Rate' value={winRate(v.record.wins, v.record.played)} />
               <StatRow label='Streak' value={`${v.streak.currentWinStreak} (best ${v.streak.bestWinStreak})`} />
-              <StatRow label='Fastest' value={vsPar(v.bestTimeSeconds, formatTime(par.seconds), formatTime)} />
-              <StatRow label='Fewest Moves' value={vsPar(v.bestMoves, String(par.moves), String)} />
-              <StatRow label='Lowest Score' value={vsPar(v.bestScore, String(par.score), String)} />
-              {yourPar && <StatRow label='Your Par' value={yourPar.kind === 'personal' ? String(yourPar.score) : '-'} />}
+              <StatRow label='Expert Par' value={`${par.score} · ${formatTime(par.seconds)} · ${par.moves} moves`} />
+              {yourPar && <StatRow label='Your Par' value={yourPar.kind === 'personal' ? `${yourPar.score} · ${describeVsPar(yourPar.score, par.score, 'expert')}` : '-'} />}
+              <StatRow label='Lowest Score' value={vsExpert(v.bestScore, par.score, String)} />
+              <StatRow label='Fastest' value={vsExpert(v.bestTimeSeconds, par.seconds, formatTime)} />
+              <StatRow label='Fewest Moves' value={vsExpert(v.bestMoves, par.moves, String)} />
               <StatRow label='Average Score' value={average ? String(Math.round(average.score)) : '-'} />
               <StatRow label='Average Time' value={average ? formatTime(average.seconds) : '-'} />
               <StatRow label='Average Moves' value={average ? String(Math.round(average.moves)) : '-'} />

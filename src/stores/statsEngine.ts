@@ -1,10 +1,10 @@
-import { applyDayPlayed, applyResult, applyWinStreak, localDateString } from '@tastic/achievements'
+import { applyDayPlayed, applyResult, applyWinStreak, DEFAULT_DAY_STREAK, DEFAULT_WIN_STREAK, localDateString } from '@tastic/achievements'
 
 import { parFor } from '@/engine/par'
 import { gameOfVariant, VARIANT_IDS, VariantId, variantsOfGame } from '@/engine/variants'
 
-import { DayRecord, DealMetrics, ProfileStats, SOLITAIRE_GAME_IDS, SolitaireGameId, StatsState, VariantStats } from './statsTypes'
-import { DEFAULT_PROFILE_STATS } from './statsValidation'
+import { DayRecord, DayTally, DealMetrics, ProfileStats, SOLITAIRE_GAME_IDS, SolitaireGameId, StatsState, VariantStats } from './statsTypes'
+import { DEFAULT_PROFILE_STATS, DEFAULT_VARIANT } from './statsValidation'
 
 // An abandoned deal (see statsTypes.ts) has no win metrics to record.
 const NO_METRICS: DealMetrics = { seconds: null, moves: null, score: null, usedHint: false }
@@ -35,13 +35,18 @@ function bumpVariant(prev: VariantStats, result: 'win' | 'loss', metrics: DealMe
   }
 }
 
-const EMPTY_DAY: DayRecord = { played: 0, won: 0, seconds: 0, games: {} }
+const EMPTY_TALLY: DayTally = { played: 0, won: 0, seconds: 0 }
+const EMPTY_DAY: DayRecord = { ...EMPTY_TALLY, games: {} }
 
-// One more deal on the day it ended (local date).
+function bumpTally(tally: DayTally, result: 'win' | 'loss', metrics: DealMetrics): DayTally {
+  return { played: tally.played + 1, won: tally.won + (result === 'win' ? 1 : 0), seconds: tally.seconds + (metrics.seconds ?? 0) }
+}
+
+// One more deal on the day it ended (local date), for the day and for its game.
 function bumpDay(days: Record<string, DayRecord>, game: SolitaireGameId, result: 'win' | 'loss', metrics: DealMetrics, now: Date): Record<string, DayRecord> {
   const date = localDateString(now)
   const day = days[date] ?? EMPTY_DAY
-  return { ...days, [date]: { played: day.played + 1, won: day.won + (result === 'win' ? 1 : 0), seconds: day.seconds + (metrics.seconds ?? 0), games: { ...day.games, [game]: (day.games[game] ?? 0) + 1 } } }
+  return { ...days, [date]: { ...bumpTally(day, result, metrics), games: { ...day.games, [game]: bumpTally(day.games[game] ?? EMPTY_TALLY, result, metrics) } } }
 }
 
 function bumpBucket(prev: ProfileStats, variant: VariantId, result: 'win' | 'loss', metrics: DealMetrics, now: Date): ProfileStats {
@@ -168,6 +173,30 @@ export function getBusiestDay(stats: ProfileStats): { date: string; played: numb
     if (!busiest || played > busiest.played) busiest = { date, played }
   }
   return busiest
+}
+
+/**
+ * The stats of one game alone, for the Stats screen's game picker: every other game's variants empty, the day log cut down to
+ * that game's deals, and its days played and day streaks worked out from that log the way @tastic/achievements works them
+ * out as deals end (so they start on 2026-10-22, when the log did). There is no win streak across one game's variants.
+ */
+export function getGameView(stats: ProfileStats, game: SolitaireGameId): ProfileStats {
+  const variants = Object.fromEntries(VARIANT_IDS.map((id) => [id, gameOfVariant(id) === game ? stats.variants[id] : DEFAULT_VARIANT])) as ProfileStats['variants']
+  const days: Record<string, DayRecord> = {}
+  for (const [date, day] of Object.entries(stats.days)) {
+    const tally = day.games[game]
+    if (tally && tally.played > 0) days[date] = { ...tally, games: { [game]: tally } }
+  }
+  const streaks = Object.keys(days)
+    .sort()
+    .reduce((streak, date) => applyDayPlayed(streak, dateFromKey(date)), DEFAULT_DAY_STREAK)
+  return { variants, days, winStreak: DEFAULT_WIN_STREAK, ...streaks }
+}
+
+// Local noon on a YYYY-MM-DD day (noon, so no daylight-saving shift can move it to another day).
+function dateFromKey(date: string): Date {
+  const [year, month, day] = date.split('-').map(Number)
+  return new Date(year, month - 1, day, 12)
 }
 
 /** The game played the most deals of, across its variants; null before any deal. */

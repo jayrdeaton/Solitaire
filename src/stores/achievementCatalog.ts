@@ -1,23 +1,9 @@
 import { tieredFamily } from '@tastic/achievements'
 
 import { getBestParRatio, getBestStreak, getGamesWon, getGameWins, getTotalPlayed, getTotalWins, getTotalWinsWithoutHint } from './statsEngine'
-import { AchievementDefinition, SOLITAIRE_GAME_IDS, SolitaireGameId, StatsState } from './statsTypes'
+import { AchievementDefinition, GAME_TITLES, SOLITAIRE_GAME_IDS, StatsState } from './statsTypes'
 
 export { ACHIEVEMENT_TIER_COLORS } from '@tastic/achievements'
-
-const GAME_TITLES: Record<SolitaireGameId, string> = {
-  klondike: 'Klondike',
-  spider: 'Spider',
-  freecell: 'FreeCell',
-  pyramid: 'Pyramid',
-  yukon: 'Yukon',
-  golf: 'Golf',
-  tripeaks: 'TriPeaks',
-  canfield: 'Canfield',
-  scorpion: 'Scorpion',
-  fortythieves: 'Forty Thieves',
-  acesup: 'Aces Up'
-}
 
 // One per game - four different predicates, not one value against three thresholds, so these are
 // hand-written and carry no progress. All silver: no single game is meaningfully harder to win

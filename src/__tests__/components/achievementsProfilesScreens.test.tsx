@@ -58,7 +58,17 @@ interface ProfilesScreenProps {
   fg?: string
 }
 const mockProfilesScreen = jest.fn((_props: ProfilesScreenProps) => null)
-const mockProfilePicker = jest.fn((_props: { alignOverride?: { maxHeight: number; verticalAlign: string; align: string; measured: boolean } }) => null)
+interface OptionPickerProps {
+  id: string
+  value: string
+  options: { value: string; label: string }[]
+  onChange: (value: string) => void
+  alignOverride?: { maxHeight: number; verticalAlign: string; align: string; measured: boolean }
+}
+const mockOptionPicker = jest.fn((_props: OptionPickerProps) => null)
+/** The stats and recent wins useGameStats hands the screen (DEFAULT_STATS and none unless a test says otherwise). */
+let mockStats: unknown = null
+let mockRecentWins: unknown = {}
 let mockProfilesList: unknown[] = []
 /** What ProfilesManager would read: the insets `useSafeAreaInsets()` returns from INSIDE the ProfilesScreen. */
 const mockProfilesInsetsSeen: { current: Insets | null } = { current: null }
@@ -99,7 +109,7 @@ jest.mock('@/stores/playerData', () => ({ usePlayerData: () => mockPlayerData })
 jest.mock('@/stores/gameStats', () => {
   const { DEFAULT_STATS } = jest.requireActual('@/stores/statsValidation')
   return {
-    useGameStats: () => ({ stats: DEFAULT_STATS, unlockedAchievements: [], resetAll: mockResetAll, recentWins: {} })
+    useGameStats: () => ({ stats: mockStats ?? DEFAULT_STATS, unlockedAchievements: [], resetAll: mockResetAll, recentWins: mockRecentWins })
   }
 })
 jest.mock('@/stores/profiles', () => ({
@@ -143,8 +153,12 @@ jest.mock('@tastic/hud/chrome', () => {
         </View>
       )
     },
-    StatSection: ({ children }: { children: unknown }) => <View testID='stat-section'>{children}</View>,
-    StatRow: () => null,
+    StatSection: ({ label, children }: { label: string; children: unknown }) => (
+      <View testID='stat-section' accessibilityLabel={label}>
+        {children}
+      </View>
+    ),
+    StatRow: ({ label, value }: { label: string; value: string }) => <View testID={`row:${label}`} accessibilityValue={{ text: value }} />,
     AchievementRow: () => null
   }
 })
@@ -153,12 +167,12 @@ jest.mock('@tastic/profile', () => {
   const { Portal } = require('react-native-paper')
   const { useSafeAreaInsets } = require('react-native-safe-area-context')
   return {
-    ProfilePicker: (props: { alignOverride?: { maxHeight: number; verticalAlign: string; align: string; measured: boolean } }) => {
-      mockProfilePicker(props)
+    OptionPicker: (props: OptionPickerProps) => {
+      mockOptionPicker(props)
       return null
     },
     // The real helper is a pure formula (220pt wide, 8pt padding either side, 36pt per row) - mirrored here so the mocked barrel still has it.
-    getProfilePickerContentSize: (profileCount: number, hasManageRow = false) => ({ width: 220, height: 16 + (profileCount + 1 + (hasManageRow ? 1 : 0)) * 36 }),
+    getOptionPickerContentSize: (optionCount: number) => ({ width: 220, height: 16 + optionCount * 36 }),
     ProfilesScreen: (props: ProfilesScreenProps) => {
       mockProfilesScreen(props)
       // ProfilesManager reads the safe-area insets itself (its header padding).
@@ -222,6 +236,15 @@ const rotatedFrameOf = (path: Json[]) => ancestorsOf(path).find((node) => styleO
 /** The nearest host ancestor that caps its own width (RotatedFrame's content column) or null. */
 const cappedColumnOf = (path: Json[]) => ancestorsOf(path).find((node) => styleOf(node).maxWidth !== undefined) ?? null
 
+/** The latest props the picker with this id was rendered with. */
+const pickerProps = (id: string): OptionPickerProps => {
+  const call = [...mockOptionPicker.mock.calls].reverse().find(([props]) => props.id === id)
+  if (!call) throw new Error(`picker ${id} never rendered`)
+  return call[0]
+}
+const sectionLabels = () => screen.queryAllByTestId('stat-section').map((section) => section.props.accessibilityLabel as string)
+const rowValue = (label: string) => screen.getAllByTestId(`row:${label}`).map((row) => row.props.accessibilityValue.text as string)
+
 const lastProps = <P,>(fn: jest.Mock<unknown, [P]>): P => {
   const call = fn.mock.calls[fn.mock.calls.length - 1]
   if (!call) throw new Error('never rendered')
@@ -241,7 +264,9 @@ beforeEach(() => {
   mockProfilesInsetsSeen.current = null
   mockBaseStats.mockClear()
   mockProfilesScreen.mockClear()
-  mockProfilePicker.mockClear()
+  mockOptionPicker.mockClear()
+  mockStats = null
+  mockRecentWins = {}
   mockProfilesList = []
   mockResetAll.mockClear()
   mockPlayerData.resetPlayer.mockClear()
@@ -328,15 +353,60 @@ describe('Achievements screen', () => {
     expect(path.indexOf(frame)).toBeLessThan(path.indexOf(column!))
   })
 
-  it('hands the profile picker a frame-aware placement override, sized for a list without a Manage row', async () => {
-    mockProfilesList = [{ id: 'a' }, { id: 'b' }]
+  it('hands both pickers a frame-aware placement override, each sized for its own list', async () => {
+    mockProfilesList = [
+      { id: 'a', name: 'A', color: '#ff0000' },
+      { id: 'b', name: 'B', color: '#00ff00' }
+    ]
 
     await render(<Achievements />)
 
-    const { alignOverride } = lastProps(mockProfilePicker)
-    expect(alignOverride).toBeDefined()
-    // Not measured yet (nothing is open), and its `maxHeight` starts at the popover's own content height: 8+8 padding + guest + 2 profiles.
-    expect(alignOverride).toMatchObject({ measured: false, verticalAlign: 'below', maxHeight: 16 + 3 * 36 })
+    // Not measured yet (nothing is open), and each `maxHeight` starts at the popover's own content height: 8+8 padding, then
+    // All Profiles + 2 profiles, and All Games + the 11 games.
+    expect(pickerProps('achievements-player').alignOverride).toMatchObject({ measured: false, verticalAlign: 'below', maxHeight: 16 + 3 * 36 })
+    expect(pickerProps('achievements-game').alignOverride).toMatchObject({ measured: false, verticalAlign: 'below', maxHeight: 16 + 12 * 36 })
+  })
+
+  it('shows the player picker only once there is a profile, and the game picker always', async () => {
+    await render(<Achievements />)
+    expect(mockOptionPicker.mock.calls.some(([props]) => props.id === 'achievements-player')).toBe(false)
+    expect(pickerProps('achievements-game').options.map((o) => o.label)).toEqual(['All Games', 'Klondike', 'Spider', 'FreeCell', 'Pyramid', 'Yukon', 'Golf', 'TriPeaks', 'Canfield', 'Scorpion', 'Forty Thieves', 'Aces Up'])
+  })
+
+  it('narrows the stats to the game picked: its totals under its name, all of its rules, and no cross-game rows', async () => {
+    const { applyDealWon } = jest.requireActual('@/stores/statsEngine')
+    const { DEFAULT_STATS } = jest.requireActual('@/stores/statsValidation')
+    const won = { seconds: 120, moves: 100, score: 220, usedHint: false }
+    mockStats = applyDealWon(applyDealWon(DEFAULT_STATS, 'klondike', won, null), 'spider', won, null)
+    await render(<Achievements />)
+    expect(sectionLabels().slice(0, 3)).toEqual(['CALENDAR', 'OVERALL', 'ACTIVITY'])
+    expect(rowValue('Games Played')).toEqual(['2'])
+    expect(screen.queryByTestId('row:Games Solved')).not.toBeNull()
+
+    await act(() => pickerProps('achievements-game').onChange('spider'))
+    expect(sectionLabels()).toEqual(['CALENDAR', 'SPIDER', 'ACTIVITY', 'SPIDER · 1 SUIT', 'SPIDER · 2 SUITS', 'SPIDER · 4 SUITS'])
+    expect(rowValue('Games Played')).toEqual(['1'])
+    expect(screen.queryByTestId('row:Games Solved')).toBeNull()
+    expect(screen.queryByTestId('row:Most Played')).toBeNull()
+    expect(screen.queryByTestId('row:Win Streak, All Games')).toBeNull()
+  })
+
+  it("shows each rule set's expert par in full, and how the best and the player's own par compare with it", async () => {
+    const { parFor } = jest.requireActual('@/engine/par')
+    const { applyDealWon } = jest.requireActual('@/stores/statsEngine')
+    const { DEFAULT_STATS } = jest.requireActual('@/stores/statsValidation')
+    const par = parFor('klondike')
+    const score = Math.round(par.score * 0.9)
+    mockStats = applyDealWon(DEFAULT_STATS, 'klondike', { seconds: par.seconds, moves: score - par.seconds, score, usedHint: false }, null)
+    // No profiles: All Profiles is the guest, whose par the rows show.
+    mockRecentWins = { guest: { klondike: [{ score: par.score * 1.1, moves: par.moves, seconds: par.seconds }] } }
+    await render(<Achievements />)
+    await act(() => pickerProps('achievements-game').onChange('klondike'))
+    const m = Math.floor(par.seconds / 60)
+    const sec = String(par.seconds % 60).padStart(2, '0')
+    expect(rowValue('Expert Par')).toEqual([`${par.score} · ${m}:${sec} · ${par.moves} moves`, expect.any(String)])
+    expect(rowValue('Lowest Score')[0]).toBe(`${score} · 10% under expert`)
+    expect(rowValue('Your Par')[0]).toBe(`${Math.round(par.score * 1.1)} · 10% over expert`)
   })
 
   it('tapping back calls safeBack', async () => {
@@ -365,7 +435,7 @@ describe('Achievements screen', () => {
     mockProfilesList = [kid]
     await render(<Achievements />)
 
-    await act(() => (lastProps(mockProfilePicker) as unknown as { onSelect: (p: typeof kid | null) => void }).onSelect(kid))
+    await act(() => pickerProps('achievements-player').onChange(kid.id))
     const props = lastProps(mockBaseStats)
     await act(() => props.onReset?.())
 

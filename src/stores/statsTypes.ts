@@ -12,6 +12,21 @@ export type SolitaireGameId = 'klondike' | 'spider' | 'freecell' | 'pyramid' | '
 
 export const SOLITAIRE_GAME_IDS: SolitaireGameId[] = ['klondike', 'spider', 'freecell', 'pyramid', 'yukon', 'golf', 'tripeaks', 'canfield', 'scorpion', 'fortythieves', 'acesup']
 
+/** Each game's name, as the Stats screen and the achievements show it. */
+export const GAME_TITLES: Record<SolitaireGameId, string> = {
+  klondike: 'Klondike',
+  spider: 'Spider',
+  freecell: 'FreeCell',
+  pyramid: 'Pyramid',
+  yukon: 'Yukon',
+  golf: 'Golf',
+  tripeaks: 'TriPeaks',
+  canfield: 'Canfield',
+  scorpion: 'Scorpion',
+  fortythieves: 'Forty Thieves',
+  acesup: 'Aces Up'
+}
+
 // One variant's record: a game under one rule set (engine/variants.ts), e.g. Spider 4 Suits. Per-game figures (wins
 // for "Win a game of Spider", Games Solved) are sums over a game's variants (see statsEngine.ts).
 //
@@ -64,12 +79,16 @@ export interface DealMetrics {
   usedHint: boolean
 }
 
-/** One calendar day's play: deals that ended (won or lost), wins, seconds, and deals per game. */
-export interface DayRecord {
+/** Deals that ended on one day (won or lost), how many were won, and the seconds they took. */
+export interface DayTally {
   played: number
   won: number
   seconds: number
-  games: Partial<Record<SolitaireGameId, number>>
+}
+
+/** One calendar day's play, and each game's share of it (the Stats screen's game picker narrows the calendar to one). */
+export interface DayRecord extends DayTally {
+  games: Partial<Record<SolitaireGameId, DayTally>>
 }
 
 export interface ProfileStats extends DayStreakState {
