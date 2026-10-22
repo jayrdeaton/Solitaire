@@ -1,6 +1,6 @@
 import { type PopoverHost, PressAwayOverlay } from '@tastic/hud/chrome'
 import { getOptionPickerContentSize, OptionPicker, type OptionPickerOption, type Profile } from '@tastic/profile'
-import { useMemo } from 'react'
+import { ReactNode, useMemo } from 'react'
 import { StyleSheet, View } from 'react-native'
 import { useTheme } from 'react-native-paper'
 
@@ -67,11 +67,28 @@ export function StatsFilters({ host, profiles, profileId, onProfile, game, onGam
   return (
     <>
       <PressAwayOverlay active={host.openId !== null} onPress={host.close} style={styles.pressAway} />
-      <View style={styles.row}>
+      {/* Takes a press on its own blank parts (the gap, the open menu's padding) while a menu is open, so it never reaches
+      StatsPressAway. */}
+      <View style={styles.row} onStartShouldSetResponder={() => host.openId !== null}>
         {profiles.length > 0 && <OptionPicker id={PLAYER_PICKER_ID} host={host} options={profileOptions} value={profileId ?? EVERYONE} onChange={(value) => onProfile(value === EVERYONE ? null : value)} color={selectedProfile ? previewCardBack(selectedProfile.color, dark) : colors.primary} dark={dark} icon={playerIcon} alignOverride={playerAlign} triggerStyle={pillStyle} />}
         {showGame && <OptionPicker id={GAME_PICKER_ID} host={host} options={gameOptions} value={game} onChange={onGame} color={colors.primary} dark={dark} icon={game === 'all' ? 'cards' : 'cards-playing-outline'} rowIcon='cards-playing-outline' alignOverride={gameAlign} triggerStyle={pillStyle} />}
       </View>
     </>
+  )
+}
+
+/**
+ * Closes the pickers' open menu on a press anywhere on the screen that nothing else takes: the header (its title and
+ * blank space) and, in the wide layout, the frame either side of the capped content column. StatsFilters' own press-away
+ * overlay only covers the scrolling content, which neither is part of (Jay, 2026-10-22: the menus "don't press away in
+ * some areas"). A press only reaches this when no control under the finger claims it, so the back button, the menu's rows
+ * and everything else still work.
+ */
+export function StatsPressAway({ host, children }: { host: PopoverHost; children: ReactNode }) {
+  return (
+    <View testID='stats-press-away' style={styles.screen} onStartShouldSetResponder={() => host.openId !== null} onResponderRelease={host.close}>
+      {children}
+    </View>
   )
 }
 
@@ -91,5 +108,8 @@ const styles = StyleSheet.create({
     position: 'relative',
     rowGap: 8,
     zIndex: 10
+  },
+  screen: {
+    flex: 1
   }
 })

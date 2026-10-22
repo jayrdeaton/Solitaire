@@ -1,6 +1,6 @@
 import { getBlendedColor } from '@rific/auto-paper'
 import { getAchievementCatalogRows } from '@tastic/achievements'
-import { AchievementRow, BaseStatsScreen, LOCKED_BADGE_COLOR, StatRow, StatSection, usePopoverHost } from '@tastic/hud/chrome'
+import { AchievementRow, BaseStatsScreen, LOCKED_BADGE_COLOR, type PopoverHost, StatRow, StatSection, usePopoverHost } from '@tastic/hud/chrome'
 import { useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 import { SegmentedButtons, useTheme } from 'react-native-paper'
@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { PlayCalendar } from '@/components/PlayCalendar'
 import { RotatedScreen } from '@/components/RotatedScreen'
-import { type GameFilter, StatsFilters } from '@/components/StatsFilters'
+import { type GameFilter, StatsFilters, StatsPressAway } from '@/components/StatsFilters'
 import { CHROME_FG } from '@/components/theme'
 import { describeVsPar, parFor, playerParFor } from '@/engine/par'
 import { VARIANTS } from '@/engine/variants'
@@ -55,14 +55,23 @@ const winRate = (wins: number, played: number) => (played > 0 ? `${Math.round((w
  * content below read the safe-area insets themselves, and inside a turned frame the physical ones sit on the
  * wrong edges. */
 export default function AchievementsScreen() {
+  // Own popover host for the two pickers (StatsFilters), independent of whichever profile is active for gameplay
+  // elsewhere (see stores/profiles.tsx's activeProfileId, which only drives the cosmetic card-back/felt color) - this
+  // screen's own view of "whose stats am I looking at" is local and always resets to Everyone when reopened,
+  // matching every other @tastic game's achievements screen (e.g. LightCycles'). So does the game it is narrowed to.
+  // Held out here, around the whole frame, so a press on the header or beside the content column closes an open menu too
+  // (StatsPressAway).
+  const pickerHost = usePopoverHost()
   return (
-    <RotatedScreen rotatedSafeArea maxContentWidth={SCREEN_MAX_WIDTH}>
-      <AchievementsContent />
-    </RotatedScreen>
+    <StatsPressAway host={pickerHost}>
+      <RotatedScreen rotatedSafeArea maxContentWidth={SCREEN_MAX_WIDTH}>
+        <AchievementsContent pickerHost={pickerHost} />
+      </RotatedScreen>
+    </StatsPressAway>
   )
 }
 
-function AchievementsContent() {
+function AchievementsContent({ pickerHost }: { pickerHost: PopoverHost }) {
   // Already remapped onto the rotated frame's edges by RotatedScreen's SafeAreaInsetsContext.
   const insets = useSafeAreaInsets()
   const { dark, colors } = useTheme()
@@ -77,11 +86,6 @@ function AchievementsContent() {
   const { stats, unlockedAchievements, resetAll, recentWins } = useGameStats()
   const { resetPlayer } = usePlayerData()
   const { profiles } = useProfiles()
-  // Own popover host for the two pickers (StatsFilters), independent of whichever profile is active for gameplay
-  // elsewhere (see stores/profiles.tsx's activeProfileId, which only drives the cosmetic card-back/felt color) - this
-  // screen's own view of "whose stats am I looking at" is local and always resets to Everyone when reopened,
-  // matching every other @tastic game's achievements screen (e.g. LightCycles'). So does the game it is narrowed to.
-  const pickerHost = usePopoverHost()
   const [game, setGame] = useState<GameFilter>('all')
   const [tab, setTab] = useState<StatsTab>('stats')
 

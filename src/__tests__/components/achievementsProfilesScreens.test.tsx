@@ -65,6 +65,7 @@ interface OptionPickerProps {
   options: { value: string; label: string }[]
   onChange: (value: string) => void
   alignOverride?: { maxHeight: number; verticalAlign: string; align: string; measured: boolean }
+  host: { openId: string | null; toggle: (id: string) => void }
 }
 const mockOptionPicker = jest.fn((_props: OptionPickerProps) => null)
 /** The stats and recent wins useGameStats hands the screen (DEFAULT_STATS and none unless a test says otherwise). */
@@ -397,6 +398,19 @@ describe('Achievements screen', () => {
     // Everyone, Guest and 2 profiles, and All Games + the 11 games.
     expect(pickerProps('achievements-player').alignOverride).toMatchObject({ measured: false, verticalAlign: 'below', maxHeight: 16 + 4 * 36 })
     expect(pickerProps('achievements-game').alignOverride).toMatchObject({ measured: false, verticalAlign: 'below', maxHeight: 16 + 12 * 36 })
+  })
+
+  it('closes an open picker on a press anywhere on the screen that nothing else takes (the header, beside the column)', async () => {
+    await render(<Achievements />)
+    const area = screen.getByTestId('stats-press-away')
+    // Closed: it takes nothing, so a press on blank space does what it always did.
+    expect(area.props.onStartShouldSetResponder()).toBe(false)
+
+    await act(() => pickerProps('achievements-game').host.toggle('achievements-game'))
+    expect(pickerProps('achievements-game').host.openId).toBe('achievements-game')
+    expect(screen.getByTestId('stats-press-away').props.onStartShouldSetResponder()).toBe(true)
+    await act(() => fireEvent(screen.getByTestId('stats-press-away'), 'responderRelease'))
+    expect(pickerProps('achievements-game').host.openId).toBeNull()
   })
 
   it('shows the player picker only once there is a profile, and the game picker always', async () => {
