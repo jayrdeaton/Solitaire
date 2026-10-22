@@ -13,6 +13,7 @@ import { Par } from '@/engine/par'
 import { computeScore } from '@/engine/score'
 import { useSettings } from '@/hooks/useSettings'
 import { useLastActiveGame } from '@/stores/lastActiveGame'
+import { commaString } from '@/utils/commaString'
 
 import { HintHandler, useAutoHint } from './autoHint'
 import { useBoardScroll } from './boardScroll'
@@ -553,13 +554,13 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo: undoMove, onUnd
             <Animated.View style={[styles.wideStatsWrap, { left: insets.left + WIDE_STATS_LEFT_MARGIN, right: windowWidth - leftGutter, top: insets.top + GAME_CONTENT_TOP_PADDING, bottom: insets.bottom }, winFadeStyle]} pointerEvents='none'>
               <View style={styles.wideStatBlock}>
                 <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
-                  {movesCount}
+                  {commaString(movesCount)}
                 </Text>
                 <Text style={styles.statCaption}>Moves</Text>
               </View>
               <View style={styles.wideStatBlock}>
                 <Text style={styles.statValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
-                  {computeScore(movesCount, displayedElapsed)}
+                  {commaString(computeScore(movesCount, displayedElapsed))}
                 </Text>
                 <Text style={styles.statCaption}>Score</Text>
               </View>
@@ -585,11 +586,11 @@ export function GameChrome({ title, subtitle, onNewGame, onUndo: undoMove, onUnd
                 </Animated.View>
                 <View style={styles.statsRow}>
                   <View style={styles.statBlock}>
-                    <Text style={styles.statValue}>{movesCount}</Text>
+                    <Text style={styles.statValue}>{commaString(movesCount)}</Text>
                     <Animated.Text style={[styles.statCaption, labelAnimatedStyle]}>Moves</Animated.Text>
                   </View>
                   <View style={styles.statBlock}>
-                    <Text style={styles.statValue}>{computeScore(movesCount, displayedElapsed)}</Text>
+                    <Text style={styles.statValue}>{commaString(computeScore(movesCount, displayedElapsed))}</Text>
                     <Animated.Text style={[styles.statCaption, labelAnimatedStyle]}>Score</Animated.Text>
                   </View>
                   <View style={styles.statBlock}>

@@ -8,6 +8,7 @@ import { formatTime, GAME_DIALOG_Z_INDEX } from '@/components/GameChrome'
 import { describeVsPar, playerParFor, playerParMedal } from '@/engine/par'
 import type { VariantId } from '@/engine/variants'
 import { useGameStats } from '@/stores/gameStats'
+import { commaString } from '@/utils/commaString'
 
 import { MedalHeader } from './MedalHeader'
 
@@ -33,8 +34,8 @@ export function WinBanner({ elapsedSeconds, moves, score, variant, onNewGame }: 
   const { lastWin } = useGameStats()
   const par = lastWin?.variant === variant ? lastWin.par : playerParFor(variant, [])
   const stats = [
-    { label: 'MOVES', value: String(moves), par: String(par.moves) },
-    { label: 'SCORE', value: String(score), par: String(par.score) },
+    { label: 'MOVES', value: commaString(moves), par: commaString(par.moves) },
+    { label: 'SCORE', value: commaString(score), par: commaString(par.score) },
     { label: 'TIME', value: formatTime(elapsedSeconds), par: formatTime(par.seconds) }
   ]
   const vsPar = describeVsPar(score, par.score, par.kind === 'personal' ? 'your par' : 'expert par')

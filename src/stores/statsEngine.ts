@@ -199,6 +199,18 @@ function dateFromKey(date: string): Date {
   return new Date(year, month - 1, day, 12)
 }
 
+// Deals played of one game, across its variants.
+const gamePlayed = (stats: ProfileStats, game: SolitaireGameId) => variantsOfGame(game).reduce((sum, id) => sum + stats.variants[id].record.played, 0)
+
+/** The one game played the fewest deals of, counting a game never played as 0; null when two or more share the fewest (the
+ * Stats screen shows it only when there is one clear one: Jay, 2026-10-22). */
+export function getLeastPlayedGame(stats: ProfileStats): SolitaireGameId | null {
+  const counts = SOLITAIRE_GAME_IDS.map((game) => ({ game, played: gamePlayed(stats, game) }))
+  const fewest = Math.min(...counts.map((c) => c.played))
+  const least = counts.filter((c) => c.played === fewest)
+  return least.length === 1 ? least[0].game : null
+}
+
 /** The game played the most deals of, across its variants; null before any deal. */
 export function getMostPlayedGame(stats: ProfileStats): SolitaireGameId | null {
   let best: SolitaireGameId | null = null

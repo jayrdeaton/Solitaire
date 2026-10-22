@@ -5,6 +5,7 @@ import { StyleSheet, View } from 'react-native'
 import { Text, useTheme } from 'react-native-paper'
 
 import type { DayRecord } from '@/stores/statsTypes'
+import { commaString } from '@/utils/commaString'
 
 import { isMotionReduced } from './reducedMotionFlag'
 import { useTableColors } from './theme'
@@ -23,8 +24,8 @@ export function formatDay(date: string): string {
 /** What a tapped day says: its deals and wins, or none. */
 export function describeDay(played: number, won: number): string {
   if (played === 0) return 'No deals'
-  const deals = `${played} ${played === 1 ? 'deal' : 'deals'}`
-  return won > 0 ? `${deals}, ${won} won` : deals
+  const deals = `${commaString(played)} ${played === 1 ? 'deal' : 'deals'}`
+  return won > 0 ? `${deals}, ${commaString(won)} won` : deals
 }
 
 /**

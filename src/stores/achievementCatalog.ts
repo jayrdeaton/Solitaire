@@ -1,5 +1,7 @@
 import { tieredFamily } from '@tastic/achievements'
 
+import { commaString } from '@/utils/commaString'
+
 import { getBestParRatio, getBestStreak, getGamesWon, getGameWins, getTotalPlayed, getTotalWins, getTotalWinsWithoutHint } from './statsEngine'
 import { AchievementDefinition, GAME_TITLES, SOLITAIRE_GAME_IDS, StatsState } from './statsTypes'
 
@@ -61,7 +63,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
   ...tieredFamily<StatsState>({
     id: 'games_played',
     titles: { bronze: 'Getting Started', silver: 'Regular', gold: 'Card Sharp' },
-    description: (n) => `Play ${n} total games.`,
+    description: (n) => `Play ${commaString(n)} total games.`,
     icon: 'cards',
     thresholds: { bronze: 10, silver: 100, gold: 500 },
     value: getTotalPlayed
@@ -69,7 +71,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
   ...tieredFamily<StatsState>({
     id: 'total_wins',
     titles: { bronze: 'Winner', silver: 'Patience Pays', gold: 'Grandmaster' },
-    description: (n) => `Win ${n} total games.`,
+    description: (n) => `Win ${commaString(n)} total games.`,
     icon: 'trophy',
     thresholds: { bronze: 5, silver: 50, gold: 250 },
     value: getTotalWins
@@ -77,7 +79,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
   ...tieredFamily<StatsState>({
     id: 'win_streak',
     titles: { bronze: 'On a Roll', silver: 'Hot Hand', gold: 'Untouchable' },
-    description: (n) => `Win ${n} games in a row with the same game and rules.`,
+    description: (n) => `Win ${commaString(n)} games in a row with the same game and rules.`,
     icon: 'fire',
     thresholds: { bronze: 3, silver: 5, gold: 10 },
     value: getBestStreak
@@ -86,7 +88,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
   ...tieredFamily<StatsState>({
     id: 'variety',
     titles: { bronze: 'Branching Out', silver: 'Well Rounded', gold: 'Full House' },
-    description: (n) => (n === SOLITAIRE_GAME_IDS.length ? 'Win every game in the app.' : `Win ${n} different games.`),
+    description: (n) => (n === SOLITAIRE_GAME_IDS.length ? 'Win every game in the app.' : `Win ${commaString(n)} different games.`),
     icon: 'view-grid',
     thresholds: { bronze: 2, silver: 3, gold: SOLITAIRE_GAME_IDS.length },
     value: getGamesWon
@@ -129,7 +131,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
   ...tieredFamily<StatsState>({
     id: 'days_played',
     titles: { bronze: 'Regular Visitor', silver: 'Dedicated', gold: 'Devoted' },
-    description: (n) => `Play ${n} days in a row.`,
+    description: (n) => `Play ${commaString(n)} days in a row.`,
     icon: 'calendar-check',
     thresholds: { bronze: 3, silver: 14, gold: 30 },
     value: (stats) => stats.bestDayStreak
@@ -137,7 +139,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDefinition[] = [
   ...tieredFamily<StatsState>({
     id: 'no_hints_needed',
     titles: { bronze: 'Self-Reliant', silver: 'No Help Needed', gold: 'True Solitaire' },
-    description: (n) => `Win ${n} games without using a hint.`,
+    description: (n) => `Win ${commaString(n)} games without using a hint.`,
     icon: 'lightbulb-off-outline',
     thresholds: { bronze: 5, silver: 25, gold: 100 },
     value: getTotalWinsWithoutHint

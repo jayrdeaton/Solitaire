@@ -37,6 +37,7 @@ let mockWindow = { width: 402, height: 874 }
 let mockInsets: Insets = { top: 0, right: 0, bottom: 0, left: 0 }
 
 interface BaseStatsProps {
+  title?: string
   onBack: () => void
   insets: Insets
   rotation?: number
@@ -118,7 +119,8 @@ jest.mock('@/stores/profiles', () => ({
 jest.mock('@/stores/achievementCatalog', () => ({ ACHIEVEMENT_CATALOG: [] }))
 jest.mock('@tastic/achievements', () => ({
   ...jest.requireActual('@tastic/achievements'),
-  getAchievementCatalogRows: () => []
+  // One stand-in row, so the Achievements tab has something to show.
+  getAchievementCatalogRows: () => [{ id: 'sample', icon: 'trophy', title: 'Sample', description: 'A sample.', tierColor: '#ffd700' }]
 }))
 jest.mock('@/components/theme', () => {
   const actual = jest.requireActual('@/components/theme')
@@ -159,7 +161,7 @@ jest.mock('@tastic/hud/chrome', () => {
       </View>
     ),
     StatRow: ({ label, value }: { label: string; value: string }) => <View testID={`row:${label}`} accessibilityValue={{ text: value }} />,
-    AchievementRow: () => null
+    AchievementRow: () => <View testID='achievement-row' />
   }
 })
 jest.mock('@tastic/profile', () => {
@@ -351,6 +353,36 @@ describe('Achievements screen', () => {
     // frame -> column -> screen: the cap lives INSIDE the turned frame, so it caps the frame's 874pt landscape width.
     const frame = rotatedFrameOf(path)!
     expect(path.indexOf(frame)).toBeLessThan(path.indexOf(column!))
+  })
+
+  it('opens on the Stats tab and switches to the Achievements tab, the title following', async () => {
+    await render(<Achievements />)
+    expect(lastProps(mockBaseStats).title).toBe('Stats')
+    expect(screen.queryAllByTestId('stat-section').length).toBeGreaterThan(0)
+    expect(screen.queryAllByTestId('achievement-row')).toHaveLength(0)
+    expect(mockOptionPicker.mock.calls.some(([props]) => props.id === 'achievements-game')).toBe(true)
+
+    mockOptionPicker.mockClear()
+    await fireEvent.press(screen.getByText('Achievements'))
+    expect(lastProps(mockBaseStats).title).toBe('Achievements')
+    expect(screen.queryAllByTestId('stat-section')).toHaveLength(0)
+    expect(screen.queryAllByTestId('achievement-row').length).toBeGreaterThan(0)
+    // The achievements are milestones across every game: no game picker there.
+    expect(mockOptionPicker.mock.calls.some(([props]) => props.id === 'achievements-game')).toBe(false)
+
+    await fireEvent.press(screen.getByText('Stats'))
+    expect(lastProps(mockBaseStats).title).toBe('Stats')
+  })
+
+  it('shows every count with thousands separators', async () => {
+    const { applyDealAbandoned } = jest.requireActual('@/stores/statsEngine')
+    const { DEFAULT_STATS } = jest.requireActual('@/stores/statsValidation')
+    let stats = DEFAULT_STATS
+    for (let i = 0; i < 20; i++) stats = applyDealAbandoned(stats, 'spider', null)
+    mockStats = stats
+    await render(<Achievements />)
+    // 20 Spider deals of 104 cards.
+    expect(rowValue('Cards Dealt')).toEqual(['2,080'])
   })
 
   it('hands both pickers a frame-aware placement override, each sized for its own list', async () => {

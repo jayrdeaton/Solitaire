@@ -1,5 +1,5 @@
 import { parFor } from '@/engine/par'
-import { applyDealAbandoned, applyDealWon, applyHintUsed, applyUndoUsed, getAverageWin, getBestParRatio, getBestStreak, getBusiestDay, getCardsDealt, getGamesWon, getGameView, getGameWins, getMostPlayedGame, getTotalHintsUsed, getTotalMoves, getTotalPlayed, getTotalSeconds, getTotalUndosUsed, getTotalWins, getTotalWinsWithoutHint } from '@/stores/statsEngine'
+import { applyDealAbandoned, applyDealWon, applyHintUsed, applyUndoUsed, getAverageWin, getBestParRatio, getBestStreak, getBusiestDay, getCardsDealt, getGamesWon, getGameView, getGameWins, getLeastPlayedGame, getMostPlayedGame, getTotalHintsUsed, getTotalMoves, getTotalPlayed, getTotalSeconds, getTotalUndosUsed, getTotalWins, getTotalWinsWithoutHint } from '@/stores/statsEngine'
 import type { StatsState } from '@/stores/statsTypes'
 import { DEFAULT_STATS, isValidStats, migrateStats } from '@/stores/statsValidation'
 
@@ -153,6 +153,19 @@ describe('the counters of 2026-10-22', () => {
     expect(next.profiles.p1.variants.freecell.undosUsed).toBe(1)
     expect(next.variants.freecell.record).toEqual(DEFAULT_STATS.variants.freecell.record)
     expect(getTotalUndosUsed(next)).toBe(1)
+  })
+
+  it('names the one game played least as Least Played, and none while two or more share the fewest', () => {
+    // Every game at 0 to start: no clear one.
+    expect(getLeastPlayedGame(DEFAULT_STATS)).toBeNull()
+    let stats = DEFAULT_STATS
+    for (const game of ['klondike', 'spider', 'freecell', 'pyramid', 'yukon', 'golf', 'tripeaks', 'canfield', 'scorpion', 'fortythieves'] as const) stats = applyDealAbandoned(applyDealAbandoned(stats, game, null), game, null)
+    // Aces Up never played: the one clear least played.
+    expect(getLeastPlayedGame(stats)).toBe('acesup')
+    stats = applyDealAbandoned(applyDealAbandoned(stats, 'acesup', null), 'acesup', null)
+    expect(getLeastPlayedGame(stats)).toBeNull()
+    stats = applyDealAbandoned(stats, 'klondike', null)
+    expect(getLeastPlayedGame(stats)).toBeNull()
   })
 
   it('names the game with the most deals played as Most Played', () => {

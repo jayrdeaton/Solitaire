@@ -25,16 +25,19 @@ interface StatsFiltersProps {
   onProfile: (profileId: string | null) => void
   game: GameFilter
   onGame: (game: GameFilter) => void
+  // Off on the Achievements tab: the achievements are milestones across every game.
+  showGame?: boolean
 }
 
 /**
  * The Stats screen's two pickers, side by side: whose stats (All Profiles, or one player: only once there is a profile, as
- * on every Tastic game's stats screen) and which game (All Games, or one, to narrow everything down to it: Jay, 2026-10-22).
+ * on every Tastic game's stats screen) and which game (All Games, or one, to narrow everything down to it: Jay, 2026-10-22;
+ * on the Stats tab only).
  * Both are @tastic/profile's OptionPicker, the pill Home's player button is, on the theme's surface. They used to be
  * ProfilePicker's plain name trigger alone; a game picker beside it in OptionPicker's pill would not have matched, and
  * ProfilePicker draws a pill only with a color section, which a stats filter has no use for.
  */
-export function StatsFilters({ host, profiles, profileId, onProfile, game, onGame }: StatsFiltersProps) {
+export function StatsFilters({ host, profiles, profileId, onProfile, game, onGame, showGame = true }: StatsFiltersProps) {
   const { dark, colors } = useTheme()
   const pillStyle = useMemo(() => [styles.pill, { backgroundColor: colors.surface }], [colors.surface])
 
@@ -52,12 +55,16 @@ export function StatsFilters({ host, profiles, profileId, onProfile, game, onGam
   // Mounted as two siblings in the stats screen's scroll content, as Home's player button is: a press-away overlay (closes
   // the menu on a tap anywhere else) and, above it, the pickers, raised over the cards that follow. Without the raise each
   // later card painted over the open menu, and on the web took its taps (see Home's profilePanelWrap).
+  // Nothing at all when neither picker has anything to offer (the Achievements tab with no profile), so no empty row
+  // takes up a gap in the screen.
+  if (profiles.length === 0 && !showGame) return null
+
   return (
     <>
       <PressAwayOverlay active={host.openId !== null} onPress={host.close} style={styles.pressAway} />
       <View style={styles.row}>
         {profiles.length > 0 && <OptionPicker id={PLAYER_PICKER_ID} host={host} options={profileOptions} value={profileId ?? ALL_PROFILES} onChange={(value) => onProfile(value === ALL_PROFILES ? null : value)} color={selectedProfile ? previewCardBack(selectedProfile.color, dark) : colors.primary} dark={dark} icon={selectedProfile ? 'account' : 'account-group'} alignOverride={playerAlign} triggerStyle={pillStyle} />}
-        <OptionPicker id={GAME_PICKER_ID} host={host} options={gameOptions} value={game} onChange={onGame} color={colors.primary} dark={dark} icon={game === 'all' ? 'cards' : 'cards-playing-outline'} rowIcon='cards-playing-outline' alignOverride={gameAlign} triggerStyle={pillStyle} />
+        {showGame && <OptionPicker id={GAME_PICKER_ID} host={host} options={gameOptions} value={game} onChange={onGame} color={colors.primary} dark={dark} icon={game === 'all' ? 'cards' : 'cards-playing-outline'} rowIcon='cards-playing-outline' alignOverride={gameAlign} triggerStyle={pillStyle} />}
       </View>
     </>
   )
