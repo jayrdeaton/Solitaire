@@ -6,25 +6,5 @@
   "outputDirectory": "web-build",
   "framework": null,
   "cleanUrls": true,
-  "redirects": [
-    {
-      "source": "/privacy",
-      "has": [{ "type": "host", "value": "(?<game>snake|hangman|solitaire|lightcycles)\\.infinitetoken\\.com" }],
-      "destination": "https://games.infinitetoken.com/privacy",
-      "permanent": false
-    },
-    {
-      "source": "/",
-      "has": [{ "type": "host", "value": "(?<game>snake|hangman|solitaire|lightcycles)\\.infinitetoken\\.com" }],
-      "destination": "https://games.infinitetoken.com/:game/",
-      "permanent": false
-    },
-    {
-      "source": "/:path*",
-      "has": [{ "type": "host", "value": "(?<game>snake|hangman|solitaire|lightcycles)\\.infinitetoken\\.com" }],
-      "destination": "https://games.infinitetoken.com/:game/:path*",
-      "permanent": false
-    }
-  ],
   "rewrites": [{ "source": "/:game/:path*", "destination": "/:game/index" }]
 }
