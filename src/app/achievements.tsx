@@ -55,11 +55,9 @@ const winRate = (wins: number, played: number) => (played > 0 ? `${Math.round((w
  * content below read the safe-area insets themselves, and inside a turned frame the physical ones sit on the
  * wrong edges. */
 export default function AchievementsScreen() {
-  // Own popover host for the two pickers (StatsFilters), independent of whichever profile is active for gameplay
-  // elsewhere (see stores/profiles.tsx's activeProfileId, which only drives the cosmetic card-back/felt color) - this
-  // screen's own view of "whose stats am I looking at" is local and always resets to Everyone when reopened,
-  // matching every other @tastic game's achievements screen (e.g. LightCycles'). So does the game it is narrowed to.
-  // Held out here, around the whole frame, so a press on the header or beside the content column closes an open menu too
+  // Own popover host for the two pickers (StatsFilters). Whose stats the screen shows is its own (picking another player
+  // here doesn't change who is playing), and it starts on whoever is playing each time it opens (see AchievementsContent);
+  // the game it is narrowed to starts on All Games. Held out here, around the whole frame, so a press on the header or beside the content column closes an open menu too
   // (StatsPressAway).
   const pickerHost = usePopoverHost()
   return (
@@ -85,14 +83,17 @@ function AchievementsContent({ pickerHost }: { pickerHost: PopoverHost }) {
   const tierAccent = (tierColor: string) => (dark ? tierColor : getBlendedColor('#000000', tierColor, 0.5))
   const { stats, unlockedAchievements, resetAll, recentWins } = useGameStats()
   const { resetPlayer } = usePlayerData()
-  const { profiles } = useProfiles()
+  const { profiles, activeProfileId } = useProfiles()
   const [game, setGame] = useState<GameFilter>('all')
   const [tab, setTab] = useState<StatsTab>('stats')
 
-  // null = Everyone (device-wide, the default view); GUEST_PLAYER_ID = guest, who has a bucket of their own like a
-  // profile (stores/gameStats.tsx). Self-heals to null if the selected profile gets deleted while this screen is still
-  // mounted, and from Guest once there is no profile (the picker is gone, and Everyone is then just guest).
-  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null)
+  // null = Everyone (device-wide); GUEST_PLAYER_ID = guest, who has a bucket of their own like a profile
+  // (stores/gameStats.tsx). Opens on whoever is playing, guest included (Jay, 2026-10-22: someone opening it from Home
+  // wants to see how they are doing, and Solitaire has one player at a time). Every other Tastic game opens on the
+  // combined view, since with two seats there is no one player to pick. With no profile there is no picker and this is
+  // Everyone, which is then just guest. Self-heals to null if the selected profile gets deleted while this screen is
+  // still mounted, and from Guest once there is no profile.
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(() => activeProfileId ?? GUEST_PLAYER_ID)
   const effectiveProfileId = selectedProfileId && profiles.length > 0 && (selectedProfileId === GUEST_PLAYER_ID || profiles.some((p) => p.id === selectedProfileId)) ? selectedProfileId : null
   const profileBucket = effectiveProfileId ? (stats.profiles[effectiveProfileId] ?? DEFAULT_PROFILE_STATS) : null
   const statsView = profileBucket ? getProfileStatsView(profileBucket) : stats

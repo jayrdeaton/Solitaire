@@ -72,6 +72,7 @@ const mockOptionPicker = jest.fn((_props: OptionPickerProps) => null)
 let mockStats: unknown = null
 let mockRecentWins: unknown = {}
 let mockProfilesList: unknown[] = []
+let mockActiveProfileId: string | null = null
 /** What ProfilesManager would read: the insets `useSafeAreaInsets()` returns from INSIDE the ProfilesScreen. */
 const mockProfilesInsetsSeen: { current: Insets | null } = { current: null }
 const mockResetAll = jest.fn()
@@ -115,7 +116,7 @@ jest.mock('@/stores/gameStats', () => {
   }
 })
 jest.mock('@/stores/profiles', () => ({
-  useProfiles: () => ({ profiles: mockProfilesList, ...mockStoreActions })
+  useProfiles: () => ({ profiles: mockProfilesList, activeProfileId: mockActiveProfileId, ...mockStoreActions })
 }))
 jest.mock('@/stores/achievementCatalog', () => ({ ACHIEVEMENT_CATALOG: [] }))
 jest.mock('@tastic/achievements', () => ({
@@ -271,6 +272,7 @@ beforeEach(() => {
   mockStats = null
   mockRecentWins = {}
   mockProfilesList = []
+  mockActiveProfileId = null
   mockResetAll.mockClear()
   mockPlayerData.resetPlayer.mockClear()
   mockPlayerData.forgetPlayer.mockClear()
@@ -492,7 +494,7 @@ describe('Achievements screen', () => {
     expect(props.resetConfirmBody).toContain('The totals under Everyone stay')
   })
 
-  it("offers Everyone, Guest and each profile, and on Guest shows and resets guest's own stats", async () => {
+  it("offers Everyone, Guest and each profile, opens on Guest while guest is playing, and shows and resets guest's own stats", async () => {
     const { applyDealAbandoned, applyDealWon } = jest.requireActual('@/stores/statsEngine')
     const { DEFAULT_STATS } = jest.requireActual('@/stores/statsValidation')
     const kid = { id: 'profile-kid', name: 'Kid', color: '#ff0000', tag: 'K', createdAt: 1, updatedAt: 1 }
@@ -503,22 +505,31 @@ describe('Achievements screen', () => {
     await render(<Achievements />)
 
     expect(pickerProps('achievements-player').options.map((o) => o.label)).toEqual(['Everyone', 'Guest', 'Kid'])
-    expect(rowValue('Games Played')).toEqual(['3'])
-
-    await act(() => pickerProps('achievements-player').onChange('guest'))
     expect(pickerProps('achievements-player').value).toBe('guest')
     expect(rowValue('Games Played')).toEqual(['1'])
     const props = lastProps(mockBaseStats)
     expect(props.resetLabel).toBe("Reset Guest's Stats")
     await act(() => props.onReset?.())
     expect(mockPlayerData.resetPlayer).toHaveBeenCalledWith('guest')
+
+    await act(() => pickerProps('achievements-player').onChange('__all__'))
+    expect(rowValue('Games Played')).toEqual(['3'])
+  })
+
+  it('opens on the profile playing', async () => {
+    const kid = { id: 'profile-kid', name: 'Kid', color: '#ff0000', tag: 'K', createdAt: 1, updatedAt: 1 }
+    mockProfilesList = [kid]
+    mockActiveProfileId = kid.id
+    await render(<Achievements />)
+
+    expect(pickerProps('achievements-player').value).toBe(kid.id)
+    expect(lastProps(mockBaseStats).resetLabel).toBe("Reset Kid's Stats")
   })
 
   it('drops back to Everyone from Guest once there is no profile (the picker is gone)', async () => {
     const kid = { id: 'profile-kid', name: 'Kid', color: '#ff0000', tag: 'K', createdAt: 1, updatedAt: 1 }
     mockProfilesList = [kid]
     const { rerender } = await render(<Achievements />)
-    await act(() => pickerProps('achievements-player').onChange('guest'))
     expect(lastProps(mockBaseStats).resetLabel).toBe("Reset Guest's Stats")
 
     mockProfilesList = []
