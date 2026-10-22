@@ -10,7 +10,7 @@ import { PlayCalendar } from '@/components/PlayCalendar'
 import { RotatedScreen } from '@/components/RotatedScreen'
 import { type GameFilter, StatsFilters, StatsPressAway } from '@/components/StatsFilters'
 import { CHROME_FG } from '@/components/theme'
-import { describeVsPar, parFor, playerParFor } from '@/engine/par'
+import { parFor, playerParFor, vsParShort } from '@/engine/par'
 import { VARIANTS } from '@/engine/variants'
 import { GUEST_PLAYER_ID } from '@/redux/activeProfileSlice'
 import { ACHIEVEMENT_CATALOG } from '@/stores/achievementCatalog'
@@ -157,7 +157,7 @@ function AchievementsContent({ pickerHost }: { pickerHost: PopoverHost }) {
               {game === 'all' && <StatRow label='Games Solved' value={`${getGamesWon(shown)} / ${SOLITAIRE_GAME_IDS.length}`} />}
               {/* Overall bests are measured against par: a raw lowest score or fastest time across all 11 games would just
           name the quickest game (Golf, Aces Up), not the best play. */}
-              <StatRow label='Best Score' value={bestScoreVsPar === null ? '-' : describeVsPar(bestScoreVsPar, 1, 'expert par')} />
+              <StatRow label='Best vs Par' value={bestScoreVsPar === null ? '-' : vsParShort(bestScoreVsPar, 1)} />
               {game === 'all' && <StatRow label='Most Played' value={mostPlayed ? GAME_TITLES[mostPlayed] : '-'} />}
               {game === 'all' && leastPlayed && <StatRow label='Least Played' value={GAME_TITLES[leastPlayed]} />}
               {/* Time Played and Moves Made count every deal that ended, won or lost, since 2026-10-22 (statsTypes.ts). */}
@@ -183,13 +183,14 @@ function AchievementsContent({ pickerHost }: { pickerHost: PopoverHost }) {
             {/* Per variant: one game under one rule set (engine/variants.ts), since a 1-suit and a 4-suit Spider win aren't the
         same. A game's default rules always show, and its other rules once a deal under them has been played; narrowed to one
         game, all of its rules. Expert Par is a variant's par in full (score, time, moves; engine/par.ts), Your Par the shown
-        player's own (their last 20 wins), and each best and Your Par say how they compare with it (Jay, 2026-10-22: what
-        expert par is and how a player measures up). "Lost" counts both ways a deal ends without a win: dealt over mid-game,
+        player's own (their last 20 wins), and each best and Your Par say how they compare with it, in a word since the Expert
+        Par row is right above them ("7% under", "even", "7% over"; Jay, 2026-10-22: what expert par is and how a player
+        measures up). "Lost" counts both ways a deal ends without a win: dealt over mid-game,
         and the No Moves Left dead board (useStuckLossCheck) - see stores/statsTypes.ts. */}
             {VARIANTS.filter((info, i) => (game === 'all' ? i === 0 || VARIANTS[i - 1].game !== info.game || shown.variants[info.id].record.played > 0 : info.game === game)).map((info) => {
               const v = shown.variants[info.id]
               const par = parFor(info.id)
-              const vsExpert = (best: number | null, expert: number, show: (n: number) => string) => (best === null ? '-' : `${show(best)} · ${describeVsPar(best, expert, 'expert')}`)
+              const vsExpert = (best: number | null, expert: number, show: (n: number) => string) => (best === null ? '-' : `${show(best)} · ${vsParShort(best, expert)}`)
               const yourPar = parPlayer === null ? null : playerParFor(info.id, recentWins[parPlayer]?.[info.id] ?? [])
               // The average win is over the wins added up since 2026-10-22 (statsTypes.ts' winsCounted).
               const average = getAverageWin(v)
@@ -201,7 +202,7 @@ function AchievementsContent({ pickerHost }: { pickerHost: PopoverHost }) {
                   <StatRow label='Win Rate' value={winRate(v.record.wins, v.record.played)} />
                   <StatRow label='Streak' value={`${v.streak.currentWinStreak} (best ${v.streak.bestWinStreak})`} />
                   <StatRow label='Expert Par' value={`${commaString(par.score)} · ${formatTime(par.seconds)} · ${commaString(par.moves)} moves`} />
-                  {yourPar && <StatRow label='Your Par' value={yourPar.kind === 'personal' ? `${commaString(yourPar.score)} · ${describeVsPar(yourPar.score, par.score, 'expert')}` : '-'} />}
+                  {yourPar && <StatRow label='Your Par' value={yourPar.kind === 'personal' ? `${commaString(yourPar.score)} · ${vsParShort(yourPar.score, par.score)}` : '-'} />}
                   <StatRow label='Lowest Score' value={vsExpert(v.bestScore, par.score, commaString)} />
                   <StatRow label='Fastest' value={vsExpert(v.bestTimeSeconds, par.seconds, formatTime)} />
                   <StatRow label='Fewest Moves' value={vsExpert(v.bestMoves, par.moves, commaString)} />

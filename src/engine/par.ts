@@ -66,6 +66,15 @@ export function describeVsPar(value: number, par: number, name = 'par'): string 
   return pct > 0 ? `${pct}% under ${name}` : `${-pct}% over ${name}`
 }
 
+/** describeVsPar without naming the par, for a row whose par is plain from where it sits (the Stats screen's rows under
+ * their rule set's Expert Par): "18% under", "even" (golf's word for at par), "5% over" (Jay, 2026-10-22: "7% under expert
+ * par" on every row was wordy). */
+export function vsParShort(value: number, par: number): string {
+  const pct = percentUnderPar(value, par)
+  if (pct === 0) return 'even'
+  return pct > 0 ? `${pct}% under` : `${-pct}% over`
+}
+
 export type ParMedal = 'bronze' | 'silver' | 'gold'
 
 /** A win's score this far under par or more earns gold: the Low Score achievement's gold line (its threshold -65, a score 65%

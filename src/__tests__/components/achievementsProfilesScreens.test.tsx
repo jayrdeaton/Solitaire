@@ -449,12 +449,16 @@ describe('Achievements screen', () => {
     // No profiles: Everyone is the guest, whose par the rows show.
     mockRecentWins = { guest: { klondike: [{ score: par.score * 1.1, moves: par.moves, seconds: par.seconds }] } }
     await render(<Achievements />)
+    // Overall has no par row near it, so its row names par in the label.
+    expect(rowValue('Best vs Par')).toEqual(['10% under'])
     await act(() => pickerProps('achievements-game').onChange('klondike'))
     const m = Math.floor(par.seconds / 60)
     const sec = String(par.seconds % 60).padStart(2, '0')
     expect(rowValue('Expert Par')).toEqual([`${par.score} · ${m}:${sec} · ${par.moves} moves`, expect.any(String)])
-    expect(rowValue('Lowest Score')[0]).toBe(`${score} · 10% under expert`)
-    expect(rowValue('Your Par')[0]).toBe(`${Math.round(par.score * 1.1)} · 10% over expert`)
+    // Under it, each comparison in a word: the Expert Par row above says which par.
+    expect(rowValue('Lowest Score')[0]).toBe(`${score} · 10% under`)
+    expect(rowValue('Fastest')[0]).toBe(`${m}:${sec} · even`)
+    expect(rowValue('Your Par')[0]).toBe(`${Math.round(par.score * 1.1)} · 10% over`)
   })
 
   it('tapping back calls safeBack', async () => {

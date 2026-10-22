@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react-native'
 import { Provider as PaperProvider } from 'react-native-paper'
 
-import { parMedal, PlayerPar, playerParFor, playerParMedal, RecentWin } from '@/engine/par'
+import { parMedal, PlayerPar, playerParFor, playerParMedal, RecentWin, vsParShort } from '@/engine/par'
 import type { VariantId } from '@/engine/variants'
 import { WinBanner } from '@/games/shared/WinBanner'
 
@@ -181,5 +181,15 @@ describe('WinBanner - the medal', () => {
   it('reads as one header, "You Won!"', async () => {
     await show(110, 166)
     expect(screen.getByRole('header', { name: 'You Won!' })).toBeTruthy()
+  })
+})
+
+describe('vsParShort', () => {
+  it("says how a number compares with its par in a word, rounded like the win card's line", () => {
+    expect(vsParShort(276, 345)).toBe('20% under')
+    expect(vsParShort(345, 345)).toBe('even')
+    // Within half a percent rounds to even, as "at par" does.
+    expect(vsParShort(346, 345)).toBe('even')
+    expect(vsParShort(549, 345)).toBe('59% over')
   })
 })
