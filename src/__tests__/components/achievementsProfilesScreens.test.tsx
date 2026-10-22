@@ -394,8 +394,8 @@ describe('Achievements screen', () => {
     await render(<Achievements />)
 
     // Not measured yet (nothing is open), and each `maxHeight` starts at the popover's own content height: 8+8 padding, then
-    // All Profiles + 2 profiles, and All Games + the 11 games.
-    expect(pickerProps('achievements-player').alignOverride).toMatchObject({ measured: false, verticalAlign: 'below', maxHeight: 16 + 3 * 36 })
+    // Everyone, Guest and 2 profiles, and All Games + the 11 games.
+    expect(pickerProps('achievements-player').alignOverride).toMatchObject({ measured: false, verticalAlign: 'below', maxHeight: 16 + 4 * 36 })
     expect(pickerProps('achievements-game').alignOverride).toMatchObject({ measured: false, verticalAlign: 'below', maxHeight: 16 + 12 * 36 })
   })
 
@@ -430,7 +430,7 @@ describe('Achievements screen', () => {
     const par = parFor('klondike')
     const score = Math.round(par.score * 0.9)
     mockStats = applyDealWon(DEFAULT_STATS, 'klondike', { seconds: par.seconds, moves: score - par.seconds, score, usedHint: false }, null)
-    // No profiles: All Profiles is the guest, whose par the rows show.
+    // No profiles: Everyone is the guest, whose par the rows show.
     mockRecentWins = { guest: { klondike: [{ score: par.score * 1.1, moves: par.moves, seconds: par.seconds }] } }
     await render(<Achievements />)
     await act(() => pickerProps('achievements-game').onChange('klondike'))
@@ -450,7 +450,7 @@ describe('Achievements screen', () => {
     expect(safeBack).toHaveBeenCalledTimes(1)
   })
 
-  it("on All Profiles, the reset resets everyone through the stats store's resetAll", async () => {
+  it("on Everyone, the reset resets everyone through the stats store's resetAll", async () => {
     await render(<Achievements />)
     const props = lastProps(mockBaseStats)
 
@@ -475,7 +475,41 @@ describe('Achievements screen', () => {
     expect(mockResetAll).not.toHaveBeenCalled()
     expect(props.resetLabel).toBe("Reset Kid's Stats")
     expect(props.resetConfirmTitle).toBe('Reset Kid?')
-    expect(props.resetConfirmBody).toContain('All Profiles keeps its totals')
+    expect(props.resetConfirmBody).toContain('The totals under Everyone stay')
+  })
+
+  it("offers Everyone, Guest and each profile, and on Guest shows and resets guest's own stats", async () => {
+    const { applyDealAbandoned, applyDealWon } = jest.requireActual('@/stores/statsEngine')
+    const { DEFAULT_STATS } = jest.requireActual('@/stores/statsValidation')
+    const kid = { id: 'profile-kid', name: 'Kid', color: '#ff0000', tag: 'K', createdAt: 1, updatedAt: 1 }
+    mockProfilesList = [kid]
+    const won = { seconds: 120, moves: 100, score: 220, usedHint: false }
+    // Kid played twice, guest once.
+    mockStats = applyDealWon(applyDealAbandoned(applyDealWon(DEFAULT_STATS, 'klondike', won, kid.id), 'klondike', kid.id), 'golf', won, 'guest')
+    await render(<Achievements />)
+
+    expect(pickerProps('achievements-player').options.map((o) => o.label)).toEqual(['Everyone', 'Guest', 'Kid'])
+    expect(rowValue('Games Played')).toEqual(['3'])
+
+    await act(() => pickerProps('achievements-player').onChange('guest'))
+    expect(pickerProps('achievements-player').value).toBe('guest')
+    expect(rowValue('Games Played')).toEqual(['1'])
+    const props = lastProps(mockBaseStats)
+    expect(props.resetLabel).toBe("Reset Guest's Stats")
+    await act(() => props.onReset?.())
+    expect(mockPlayerData.resetPlayer).toHaveBeenCalledWith('guest')
+  })
+
+  it('drops back to Everyone from Guest once there is no profile (the picker is gone)', async () => {
+    const kid = { id: 'profile-kid', name: 'Kid', color: '#ff0000', tag: 'K', createdAt: 1, updatedAt: 1 }
+    mockProfilesList = [kid]
+    const { rerender } = await render(<Achievements />)
+    await act(() => pickerProps('achievements-player').onChange('guest'))
+    expect(lastProps(mockBaseStats).resetLabel).toBe("Reset Guest's Stats")
+
+    mockProfilesList = []
+    await rerender(<Achievements />)
+    expect(lastProps(mockBaseStats).resetLabel).toBe('Reset All Stats')
   })
 
   it('portals dialogs into a Portal.Host that lives INSIDE the rotated frame', async () => {

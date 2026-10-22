@@ -50,6 +50,10 @@ function profileViews(stats: StatsState): Record<string, StatsState> {
 
 export function GameStatsProvider({ children }: { children: ReactNode }) {
   const { activeProfileId } = useProfiles()
+  // Whose bucket a deal also goes into, besides the phone's totals (Everyone): the profile playing, or guest. Guest's
+  // play was kept only in the totals until 2026-10-22 (Jay asked for Guest in the Stats screen's player picker), so its
+  // bucket starts from then.
+  const player = activeProfileId ?? GUEST_PLAYER_ID
   const { stats, unlockedAchievements, recordOutcome, resetAll, removeProfile } = useAchievements<StatsState, RootState>({
     catalog: ACHIEVEMENT_CATALOG,
     select: (state) => state.achievements,
@@ -68,37 +72,36 @@ export function GameStatsProvider({ children }: { children: ReactNode }) {
       if (score !== null && moves !== null && seconds !== null) {
         // The win is measured against the player's par as it stood BEFORE this win (read from the store, not a render, so
         // it is never a win behind), and only then joins their recent wins.
-        const player = activeProfileId ?? GUEST_PLAYER_ID
         setLastWin({ variant, par: playerParFor(variant, store.getState().recentWins?.[player]?.[variant] ?? []) })
         dispatch(recentWinsActions.add({ player, variant, win: { score, moves, seconds } }))
       }
-      const result = recordOutcome((prev) => applyDealWon(prev, variant, metrics, activeProfileId))
-      // Solitaire is single-player: whatever the active profile unlocked is the same person the
+      const result = recordOutcome((prev) => applyDealWon(prev, variant, metrics, player))
+      // Solitaire is single-player: whatever the player unlocked is the same person the
       // device-wide unlocks belong to, so both lists are surfaced together rather than separately.
-      return [...result.device, ...(activeProfileId ? (result.profiles[activeProfileId] ?? []) : [])]
+      return [...result.device, ...(result.profiles[player] ?? [])]
     },
-    [recordOutcome, activeProfileId, store, dispatch]
+    [recordOutcome, player, store, dispatch]
   )
 
   const recordDealAbandoned = useCallback(
     (variant: VariantId, played?: { seconds: number; moves: number }) => {
-      recordOutcome((prev) => applyDealAbandoned(prev, variant, activeProfileId, new Date(), played))
+      recordOutcome((prev) => applyDealAbandoned(prev, variant, player, new Date(), played))
     },
-    [recordOutcome, activeProfileId]
+    [recordOutcome, player]
   )
 
   const recordUndoUsed = useCallback(
     (variant: VariantId) => {
-      recordOutcome((prev) => applyUndoUsed(prev, variant, activeProfileId))
+      recordOutcome((prev) => applyUndoUsed(prev, variant, player))
     },
-    [recordOutcome, activeProfileId]
+    [recordOutcome, player]
   )
 
   const recordHintUsed = useCallback(
     (variant: VariantId) => {
-      recordOutcome((prev) => applyHintUsed(prev, variant, activeProfileId))
+      recordOutcome((prev) => applyHintUsed(prev, variant, player))
     },
-    [recordOutcome, activeProfileId]
+    [recordOutcome, player]
   )
 
   const removeProfileStats = useCallback(

@@ -79,29 +79,30 @@ function AchievementsContent() {
   const { profiles } = useProfiles()
   // Own popover host for the two pickers (StatsFilters), independent of whichever profile is active for gameplay
   // elsewhere (see stores/profiles.tsx's activeProfileId, which only drives the cosmetic card-back/felt color) - this
-  // screen's own view of "whose stats am I looking at" is local and always resets to All Profiles when reopened,
+  // screen's own view of "whose stats am I looking at" is local and always resets to Everyone when reopened,
   // matching every other @tastic game's achievements screen (e.g. LightCycles'). So does the game it is narrowed to.
   const pickerHost = usePopoverHost()
   const [game, setGame] = useState<GameFilter>('all')
   const [tab, setTab] = useState<StatsTab>('stats')
 
-  // null = "All Profiles" (device-wide, today's original default view). Self-heals to null if the
-  // selected profile gets deleted while this screen is still mounted.
+  // null = Everyone (device-wide, the default view); GUEST_PLAYER_ID = guest, who has a bucket of their own like a
+  // profile (stores/gameStats.tsx). Self-heals to null if the selected profile gets deleted while this screen is still
+  // mounted, and from Guest once there is no profile (the picker is gone, and Everyone is then just guest).
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null)
-  const effectiveProfileId = selectedProfileId && profiles.some((p) => p.id === selectedProfileId) ? selectedProfileId : null
+  const effectiveProfileId = selectedProfileId && profiles.length > 0 && (selectedProfileId === GUEST_PLAYER_ID || profiles.some((p) => p.id === selectedProfileId)) ? selectedProfileId : null
   const profileBucket = effectiveProfileId ? (stats.profiles[effectiveProfileId] ?? DEFAULT_PROFILE_STATS) : null
   const statsView = profileBucket ? getProfileStatsView(profileBucket) : stats
   // What the stat sections show: the player's (or everyone's) stats, narrowed to the game picked. The achievements below
   // are milestones across every game, so they always read the whole of statsView.
   const shown = game === 'all' ? statsView : getGameView(statsView, game)
 
-  // Reset follows the picker: one player's stats, achievements and saved games while they are shown, everyone's on All
-  // Profiles. A player's reset leaves the All Profiles totals alone, so the copy says so.
-  const selectedName = effectiveProfileId ? (profiles.find((p) => p.id === effectiveProfileId)?.name ?? '') : null
-  const reset = selectedName !== null ? { onReset: () => resetPlayer(effectiveProfileId!), label: `Reset ${selectedName}'s Stats`, title: `Reset ${selectedName}?`, body: `Erases ${selectedName}'s stats, achievements and saved games. All Profiles keeps its totals. This cannot be undone.` } : { onReset: resetAll, label: 'Reset All Stats', title: 'Reset Everything?', body: "Erases every player's stats, achievements and saved games. This cannot be undone." }
+  // Reset follows the picker: one player's (or guest's) stats, achievements and saved games while they are shown,
+  // everyone's on Everyone. A player's reset leaves the Everyone totals alone, so the copy says so.
+  const selectedName = effectiveProfileId === GUEST_PLAYER_ID ? 'Guest' : effectiveProfileId ? (profiles.find((p) => p.id === effectiveProfileId)?.name ?? '') : null
+  const reset = selectedName !== null ? { onReset: () => resetPlayer(effectiveProfileId!), label: `Reset ${selectedName}'s Stats`, title: `Reset ${selectedName}?`, body: `Erases ${selectedName}'s stats, achievements and saved games. The totals under Everyone stay. This cannot be undone.` } : { onReset: resetAll, label: 'Reset All Stats', title: 'Reset Everything?', body: "Erases every player's stats, achievements and saved games. This cannot be undone." }
 
-  // Whose par the per-variant rows show: the player picked, or guest on a phone with no profiles (All Profiles is then
-  // just guest). All Profiles with profiles is everyone at once, and a par is one player's (engine/par.ts' playerParFor).
+  // Whose par the per-variant rows show: the player picked, or guest on a phone with no profiles (Everyone is then just
+  // guest). Everyone with profiles is everyone at once, and a par is one player's (engine/par.ts' playerParFor).
   const parPlayer = effectiveProfileId ?? (profiles.length === 0 ? GUEST_PLAYER_ID : null)
 
   const played = getTotalPlayed(shown)

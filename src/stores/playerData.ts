@@ -15,8 +15,8 @@ export function usePlayerData(): { resetPlayer: (profileId: string) => void; for
   const dispatch = useDispatch<AppDispatch>()
   return useMemo(() => {
     // The player's own stats bucket, their unlocked achievements, their saved deals and the wins their par is
-    // made from. The All Profiles totals (every deal this phone has seen) keep their games, as they keep a
-    // deleted player's.
+    // made from. Guest's too, by GUEST_PLAYER_ID. The Everyone totals (every deal this phone has seen) keep their games,
+    // as they keep a deleted player's.
     const resetPlayer = (profileId: string) => {
       removeProfileStats(profileId)
       clearProfileGamesInProgress(profileId)

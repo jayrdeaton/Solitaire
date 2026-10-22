@@ -55,7 +55,7 @@ describe('one player at a time', () => {
     const { stats, unlocked } = store.getState().achievements
     expect(stats.profiles[KID]).toBeUndefined()
     expect(stats.profiles[DAD]).toEqual(played)
-    // The All Profiles totals keep every deal the phone has seen.
+    // The Everyone totals keep every deal the phone has seen.
     expect(stats.currentDayStreak).toBe(5)
     expect(Object.keys(unlocked).sort()).toEqual([unlockedKey('first_win', null), unlockedKey('first_win', DAD)].sort())
     expect(clearProfileGamesInProgress).toHaveBeenCalledWith(KID)
@@ -76,6 +76,31 @@ describe('one player at a time', () => {
     expect(store.getState().playerSettings[KID]).toBeUndefined()
     expect(store.getState().recentWins[KID]).toBeUndefined()
     expect(store.getState().tableColor.profileColors).toEqual({ [DAD]: '#123456' })
+  })
+})
+
+describe("guest's own stats", () => {
+  const metrics = { moves: 100, seconds: 150, score: 250, usedHint: false }
+
+  it("keeps guest's deals, hints and undos in a bucket of their own as well as the totals, and resets them alone", async () => {
+    const { store, result } = await setup()
+
+    await act(() => void result.current.recordDealWon('freecell', metrics))
+    await act(() => result.current.recordDealAbandoned('klondike', { seconds: 60, moves: 20 }))
+    await act(() => result.current.recordHintUsed('klondike'))
+    await act(() => result.current.recordUndoUsed('klondike'))
+
+    const guest = store.getState().achievements.stats.profiles.guest
+    expect(guest?.variants.freecell.record).toMatchObject({ played: 1, wins: 1 })
+    expect(guest?.variants.klondike).toMatchObject({ record: expect.objectContaining({ played: 1, wins: 0 }), hintsUsed: 1, undosUsed: 1 })
+    expect(store.getState().achievements.stats.variants.freecell.record.played).toBe(1)
+    // A first win unlocks guest's own achievement, as a new profile's would.
+    expect(store.getState().achievements.unlocked[unlockedKey('first_ever_win', 'guest')]).toBeDefined()
+
+    await act(() => result.current.resetPlayer('guest'))
+    expect(store.getState().achievements.stats.profiles.guest).toBeUndefined()
+    expect(store.getState().achievements.stats.profiles[KID]).toEqual(played)
+    expect(clearProfileGamesInProgress).toHaveBeenCalledWith('guest')
   })
 })
 
@@ -121,7 +146,7 @@ describe("a player's par", () => {
     expect(wins[19].seconds).toBe(124)
   })
 
-  it("Reset Stats on All Profiles drops everyone's", async () => {
+  it("Reset Stats on Everyone drops everyone's", async () => {
     const { store, result } = await setup()
 
     await act(() => result.current.resetAll())
