@@ -7,17 +7,19 @@ import { SegmentedButtons, useTheme } from 'react-native-paper'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { PlayCalendar } from '@/components/PlayCalendar'
+import { RecordsList } from '@/components/RecordsList'
 import { RotatedScreen } from '@/components/RotatedScreen'
 import { type GameFilter, StatsFilters, StatsPressAway } from '@/components/StatsFilters'
 import { CHROME_FG } from '@/components/theme'
 import { parFor, playerParFor, vsParShort } from '@/engine/par'
+import type { TopWinsBoard } from '@/engine/topWins'
 import { VARIANTS } from '@/engine/variants'
 import { GUEST_PLAYER_ID } from '@/redux/activeProfileSlice'
 import { ACHIEVEMENT_CATALOG } from '@/stores/achievementCatalog'
 import { useGameStats } from '@/stores/gameStats'
 import { usePlayerData } from '@/stores/playerData'
 import { useProfiles } from '@/stores/profiles'
-import { getAverageWin, getBestParRatio, getBestStreak, getBusiestDay, getCardsDealt, getGamesWon, getGameView, getLeastPlayedGame, getMostPlayedGame, getProfileStatsView, getTotalHintsUsed, getTotalMoves, getTotalPlayed, getTotalSeconds, getTotalUndosUsed, getTotalWins, getTotalWinsWithoutHint } from '@/stores/statsEngine'
+import { getAverageWin, getBestParRatio, getBestStreak, getBusiestDay, getCardsDealt, getGamesWon, getGameView, getLeastPlayedGame, getMostPlayedGame, getProfileStatsView, getTotalHintsUsed, getTotalLosses, getTotalMoves, getTotalPlayed, getTotalSeconds, getTotalUndosUsed, getTotalWins, getTotalWinsWithoutHint } from '@/stores/statsEngine'
 import { GAME_TITLES, SOLITAIRE_GAME_IDS } from '@/stores/statsTypes'
 import { DEFAULT_PROFILE_STATS } from '@/stores/statsValidation'
 import { commaString } from '@/utils/commaString'
@@ -27,12 +29,24 @@ import { safeBack } from '@/utils/navigation'
 // screen reads badly. Portrait is never capped (see @tastic/hud's RotatedFrame).
 const SCREEN_MAX_WIDTH = 640
 
-/** The screen's two tabs (Jay, 2026-10-22): one page had grown so long, with every rule set's stats above them, that the
- * achievements sat out of sight at the bottom. */
-type StatsTab = 'stats' | 'achievements'
+/** The screen's tabs (Jay, 2026-10-22): one page had grown so long, with every rule set's stats above them, that the
+ * achievements sat out of sight at the bottom. Records, each rule set's best wins, from 2026-10-23 (RecordsList). Three
+ * don't fit a phone as equal segments with icons (Paper pads each label 16pt a side, and "Achievements" alone is ~109pt
+ * in the app's font), so each segment is as wide as its label and the icons went: 309pt of a 375pt phone's 335pt row,
+ * 320 on a 360dp Android. */
+type StatsTab = 'stats' | 'records' | 'achievements'
+const TAB_STYLE = { flexBasis: 'auto', flexGrow: 1, flexShrink: 1 } as const
 const TABS = [
-  { value: 'stats', label: 'Stats', icon: 'chart-box-outline' },
-  { value: 'achievements', label: 'Achievements', icon: 'trophy-outline' }
+  { value: 'stats', label: 'Stats', style: TAB_STYLE },
+  { value: 'records', label: 'Records', style: TAB_STYLE },
+  { value: 'achievements', label: 'Achievements', style: TAB_STYLE }
+]
+const TAB_TITLES: Record<StatsTab, string> = { stats: 'Stats', records: 'Records', achievements: 'Achievements' }
+
+/** The Records tab's two boards, named like the Stats tab's rows they extend. */
+const BOARDS = [
+  { value: 'score', label: 'Best Score' },
+  { value: 'time', label: 'Fastest' }
 ]
 
 function formatTime(seconds: number): string {
@@ -81,11 +95,12 @@ function AchievementsContent({ pickerHost }: { pickerHost: PopoverHost }) {
   // AchievementCatalogSection does - raw gold and silver barely show on a light surface. The badge keeps the true
   // tier color behind its black glyph.
   const tierAccent = (tierColor: string) => (dark ? tierColor : getBlendedColor('#000000', tierColor, 0.5))
-  const { stats, unlockedAchievements, resetAll, recentWins } = useGameStats()
+  const { stats, unlockedAchievements, resetAll, recentWins, topWins } = useGameStats()
   const { resetPlayer } = usePlayerData()
   const { profiles, activeProfileId } = useProfiles()
   const [game, setGame] = useState<GameFilter>('all')
   const [tab, setTab] = useState<StatsTab>('stats')
+  const [board, setBoard] = useState<TopWinsBoard>('score')
 
   // null = Everyone (device-wide); GUEST_PLAYER_ID = guest, who has a bucket of their own like a profile
   // (stores/gameStats.tsx). Opens on whoever is playing, guest included (Jay, 2026-10-22: someone opening it from Home
@@ -131,13 +146,20 @@ function AchievementsContent({ pickerHost }: { pickerHost: PopoverHost }) {
     <View style={styles.screen}>
       {/* rotation={0}: its reset-confirm portals into the Portal.Host RotatedScreen mounts INSIDE the frame, so it is
       already turned with it - the ambient rotation on top would turn it twice. */}
-      <BaseStatsScreen title={tab === 'stats' ? 'Stats' : 'Achievements'} onBack={safeBack} insets={insets} onReset={reset.onReset} resetLabel={reset.label} resetConfirmTitle={reset.title} resetConfirmBody={reset.body} fg={CHROME_FG} bg='transparent' rotation={0}>
+      <BaseStatsScreen title={TAB_TITLES[tab]} onBack={safeBack} insets={insets} onReset={reset.onReset} resetLabel={reset.label} resetConfirmTitle={reset.title} resetConfirmBody={reset.body} fg={CHROME_FG} bg='transparent' rotation={0}>
         {/* Settings' Appearance switch (Paper's SegmentedButtons), on the theme's surface like the pickers below it, so it reads
         on the felt. The header's title follows it. */}
         <SegmentedButtons value={tab} onValueChange={(value) => setTab(value as StatsTab)} buttons={TABS} style={[styles.tabs, { backgroundColor: colors.surface }]} />
 
-        {/* The game picker only narrows the stats: the achievements are milestones across every game. */}
-        <StatsFilters host={pickerHost} profiles={profiles} profileId={effectiveProfileId} onProfile={setSelectedProfileId} game={game} onGame={setGame} showGame={tab === 'stats'} />
+        {/* The game picker narrows the stats and the records: the achievements are milestones across every game. */}
+        <StatsFilters host={pickerHost} profiles={profiles} profileId={effectiveProfileId} onProfile={setSelectedProfileId} game={game} onGame={setGame} showGame={tab !== 'achievements'} />
+
+        {tab === 'records' && (
+          <>
+            <SegmentedButtons value={board} onValueChange={(value) => setBoard(value as TopWinsBoard)} buttons={BOARDS} style={[styles.tabs, { backgroundColor: colors.surface }]} />
+            <RecordsList board={board} topWins={topWins} stats={stats} profiles={profiles} profileId={effectiveProfileId} game={game} />
+          </>
+        )}
 
         {tab === 'stats' && (
           <>
@@ -152,6 +174,7 @@ function AchievementsContent({ pickerHost }: { pickerHost: PopoverHost }) {
             <StatSection label={game === 'all' ? 'OVERALL' : GAME_TITLES[game].toUpperCase()}>
               <StatRow label='Games Played' value={commaString(played)} />
               <StatRow label='Wins' value={commaString(wins)} />
+              <StatRow label='Losses' value={commaString(getTotalLosses(shown))} />
               <StatRow label='Win Rate' value={winRate(wins, played)} />
               <StatRow label='Best Game Streak' value={commaString(getBestStreak(shown))} />
               {game === 'all' && <StatRow label='Games Solved' value={`${getGamesWon(shown)} / ${SOLITAIRE_GAME_IDS.length}`} />}
@@ -186,7 +209,7 @@ function AchievementsContent({ pickerHost }: { pickerHost: PopoverHost }) {
         player's own (their last 20 wins), and each best and Your Par say how they compare with it, in a word since the Expert
         Par row is right above them ("7% under", "even", "7% over"; Jay, 2026-10-22: what expert par is and how a player
         measures up). "Lost" counts both ways a deal ends without a win: dealt over mid-game,
-        and the No Moves Left dead board (useStuckLossCheck) - see stores/statsTypes.ts. */}
+        and the No Moves Left dead board (useStuckLossCheck, off for now: constants/deadBoardLoss.ts) - see stores/statsTypes.ts. */}
             {VARIANTS.filter((info, i) => (game === 'all' ? i === 0 || VARIANTS[i - 1].game !== info.game || shown.variants[info.id].record.played > 0 : info.game === game)).map((info) => {
               const v = shown.variants[info.id]
               const par = parFor(info.id)
@@ -203,7 +226,7 @@ function AchievementsContent({ pickerHost }: { pickerHost: PopoverHost }) {
                   <StatRow label='Streak' value={`${v.streak.currentWinStreak} (best ${v.streak.bestWinStreak})`} />
                   <StatRow label='Expert Par' value={`${commaString(par.score)} · ${formatTime(par.seconds)} · ${commaString(par.moves)} moves`} />
                   {yourPar && <StatRow label='Your Par' value={yourPar.kind === 'personal' ? `${commaString(yourPar.score)} · ${vsParShort(yourPar.score, par.score)}` : '-'} />}
-                  <StatRow label='Lowest Score' value={vsExpert(v.bestScore, par.score, commaString)} />
+                  <StatRow label='Best Score' value={vsExpert(v.bestScore, par.score, commaString)} />
                   <StatRow label='Fastest' value={vsExpert(v.bestTimeSeconds, par.seconds, formatTime)} />
                   <StatRow label='Fewest Moves' value={vsExpert(v.bestMoves, par.moves, commaString)} />
                   <StatRow label='Average Score' value={average ? commaString(Math.round(average.score)) : '-'} />

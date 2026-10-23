@@ -9,6 +9,7 @@ import playerSettings, { type PlayerSettings, playerSettingsActions } from '@/re
 import recentWins, { recentWinsActions } from '@/redux/recentWinsSlice'
 import { DEFAULT_SETTINGS } from '@/redux/settingsSlice'
 import tableColor, { tableColorActions } from '@/redux/tableColorSlice'
+import topWins, { topWinsActions } from '@/redux/topWinsSlice'
 import { clearProfileGamesInProgress } from '@/stores/gameInProgress'
 import { GameStatsProvider, useGameStats } from '@/stores/gameStats'
 import { usePlayerData } from '@/stores/playerData'
@@ -26,7 +27,7 @@ const played = { ...DEFAULT_PROFILE_STATS, currentDayStreak: 3 }
 const settingsOf = (klondikeDraw: 1 | 3): PlayerSettings => ({ settings: { ...DEFAULT_SETTINGS, klondikeDraw }, sound: { enabled: true }, haptic: { vibrate: true }, keepAwake: { enabled: true }, theme: { appearance: 'system', blur: true } })
 
 async function setup() {
-  const store = configureStore({ reducer: { achievements, playerSettings, tableColor, recentWins }, middleware: (getDefault) => getDefault({ serializableCheck: false }) })
+  const store = configureStore({ reducer: { achievements, playerSettings, tableColor, recentWins, topWins }, middleware: (getDefault) => getDefault({ serializableCheck: false }) })
   const stats: StatsState = { ...DEFAULT_STATS, currentDayStreak: 5, profiles: { [KID]: played, [DAD]: played } }
   store.dispatch(achievementsActions.update({ stats, unlocked: { [unlockedKey('first_win', null)]: 1, [unlockedKey('first_win', KID)]: 2, [unlockedKey('first_win', DAD)]: 3 } }))
   // @tastic/profile's action creators type their actions without RTK's index signature.
@@ -35,6 +36,8 @@ async function setup() {
   store.dispatch(tableColorActions.setColor({ id: DAD, color: '#123456' }))
   store.dispatch(recentWinsActions.add({ player: KID, variant: 'klondike', win: { score: 400, moves: 150, seconds: 250 } }))
   store.dispatch(recentWinsActions.add({ player: DAD, variant: 'klondike', win: { score: 300, moves: 120, seconds: 180 } }))
+  store.dispatch(topWinsActions.add({ player: KID, variant: 'klondike', win: { score: 400, moves: 150, seconds: 250, at: null } }))
+  store.dispatch(topWinsActions.add({ player: DAD, variant: 'klondike', win: { score: 300, moves: 120, seconds: 180, at: null } }))
   const wrapper = ({ children }: { children: ReactNode }) => (
     <Provider store={store}>
       <GameStatsProvider>{children}</GameStatsProvider>
@@ -59,8 +62,9 @@ describe('one player at a time', () => {
     expect(stats.currentDayStreak).toBe(5)
     expect(Object.keys(unlocked).sort()).toEqual([unlockedKey('first_win', null), unlockedKey('first_win', DAD)].sort())
     expect(clearProfileGamesInProgress).toHaveBeenCalledWith(KID)
-    // Their par starts over, on expert par.
+    // Their par starts over, on expert par, and so do their records.
     expect(store.getState().recentWins).toEqual({ [DAD]: { klondike: [{ score: 300, moves: 120, seconds: 180 }] } })
+    expect(Object.keys(store.getState().topWins)).toEqual([DAD])
     // Their settings and their color are still theirs.
     expect(store.getState().playerSettings[KID]?.settings.klondikeDraw).toBe(1)
     expect(store.getState().tableColor.profileColors?.[KID]).toBe('#abcdef')
@@ -75,6 +79,7 @@ describe('one player at a time', () => {
     expect(clearProfileGamesInProgress).toHaveBeenCalledWith(KID)
     expect(store.getState().playerSettings[KID]).toBeUndefined()
     expect(store.getState().recentWins[KID]).toBeUndefined()
+    expect(store.getState().topWins[KID]).toBeUndefined()
     expect(store.getState().tableColor.profileColors).toEqual({ [DAD]: '#123456' })
   })
 })
@@ -118,7 +123,8 @@ describe("a player's par", () => {
     await act(() => void result.current.recordDealWon('klondike', metrics(140, 230)))
 
     // Kid's one earlier win was 400; the new one is measured against that, not against itself.
-    expect(result.current.lastWin).toEqual({ variant: 'klondike', par: { kind: 'personal', moves: 150, seconds: 250, score: 400, goldScore: null } })
+    expect(result.current.lastWin?.variant).toBe('klondike')
+    expect(result.current.lastWin?.par).toEqual({ kind: 'personal', moves: 150, seconds: 250, score: 400, goldScore: null })
     expect(store.getState().recentWins[KID]?.klondike).toEqual([
       { score: 400, moves: 150, seconds: 250 },
       { score: 370, moves: 140, seconds: 230 }
@@ -152,5 +158,43 @@ describe("a player's par", () => {
     await act(() => result.current.resetAll())
 
     expect(store.getState().recentWins).toEqual({})
+    expect(store.getState().topWins).toEqual({})
+  })
+})
+
+describe("a player's records", () => {
+  const metrics = (moves: number, seconds: number) => ({ moves, seconds, score: moves + seconds, usedHint: false })
+  const kid400 = { score: 400, moves: 150, seconds: 250, at: null }
+
+  afterEach(() => {
+    mockActiveProfileId = null
+  })
+
+  it('ranks a win against their wins as they stood before it, from the boards and the stats, then keeps it on both boards with its date', async () => {
+    mockActiveProfileId = KID
+    const { store, result } = await setup()
+    const before = Date.now()
+
+    await act(() => void result.current.recordDealWon('klondike', metrics(140, 230)))
+
+    // Kid's stats bucket had no wins (the setup's 400 is only on the boards), so the boards are the whole story.
+    expect(result.current.lastWin?.before).toEqual({ top: { score: [kid400], time: [kid400], seen: 1 }, wins: 0, bestScore: null, bestSeconds: null })
+    const boards = store.getState().topWins[KID]?.klondike
+    expect(boards?.seen).toBe(2)
+    expect(boards?.score.map((w) => w.score)).toEqual([370, 400])
+    expect(boards?.time.map((w) => w.seconds)).toEqual([230, 250])
+    expect(boards?.score[0].at).toBeGreaterThanOrEqual(before)
+    expect(store.getState().topWins[DAD]?.klondike?.seen).toBe(1)
+  })
+
+  it("reads a second win's stats as they stood after the first", async () => {
+    mockActiveProfileId = KID
+    const { result } = await setup()
+
+    await act(() => void result.current.recordDealWon('klondike', metrics(140, 230)))
+    await act(() => void result.current.recordDealWon('klondike', metrics(160, 260)))
+
+    expect(result.current.lastWin?.before).toMatchObject({ wins: 1, bestScore: 370, bestSeconds: 230 })
+    expect(result.current.lastWin?.before.top?.seen).toBe(2)
   })
 })

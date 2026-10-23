@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 
 import type { GameSession } from '@/components/useGameSession'
+import { DEAD_BOARD_LOSS } from '@/constants/deadBoardLoss'
 import { GameController } from '@/engine/gameTypes'
 import { gameOfVariant, VariantId } from '@/engine/variants'
 import { clearGameInProgress } from '@/stores/gameInProgress'
@@ -28,10 +29,13 @@ export interface StuckLossCheck {
  * - Leaving the screen (Home): recorded here, on unmount, and the save cleared so the next visit deals a fresh game.
  * An Undo out of the dead board cancels it: nothing was recorded. The dead board itself is never saved (each screen's save
  * skips `stuck`), so a killed app resumes the board one move before it died, which is just that Undo.
+ *
+ * All of it is off while DEAD_BOARD_LOSS is (constants/deadBoardLoss.ts): `stuck` is then always false.
  */
 export function useStuckLossCheck<TState>(controller: Partial<Pick<GameController<TState>, 'isStuck'>> & LookaheadController<TState>, state: TState | null, variant: VariantId, recordDealAbandoned: (variant: VariantId, played?: { seconds: number; moves: number }) => void, session?: Pick<GameSession, 'getMoves' | 'getElapsed'>): StuckLossCheck {
+  // The look-ahead runs either way: what it finds is also what Hint offers (engine/hint.ts reads the same cache).
   const dead = useBoardLookahead(controller, state)
-  const stuck = (state && controller.isStuck ? controller.isStuck(state) : false) || dead
+  const stuck = DEAD_BOARD_LOSS && ((state && controller.isStuck ? controller.isStuck(state) : false) || dead)
 
   const latestRef = useRef({ stuck, variant, recordDealAbandoned, session })
   useEffect(() => {

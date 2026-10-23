@@ -3,11 +3,13 @@ import { createContext, ReactNode, useCallback, useContext, useMemo, useState } 
 import { useDispatch, useSelector, useStore } from 'react-redux'
 
 import { PlayerPar, playerParFor } from '@/engine/par'
+import type { WinsBefore } from '@/engine/topWins'
 import type { VariantId } from '@/engine/variants'
 import { achievementsActions } from '@/redux/achievementsSlice'
 import { GUEST_PLAYER_ID } from '@/redux/activeProfileSlice'
 import { recentWinsActions, type RecentWinsState } from '@/redux/recentWinsSlice'
 import type { AppDispatch, RootState } from '@/redux/store'
+import { topWinsActions, type TopWinsState } from '@/redux/topWinsSlice'
 
 import { ACHIEVEMENT_CATALOG } from './achievementCatalog'
 import { clearAllGamesInProgress } from './gameInProgress'
@@ -34,15 +36,19 @@ interface GameStatsContextValue {
   removeProfileStats: (profileId: string) => void
   /** Each player's latest wins in each variant, which their par is made from (redux/recentWinsSlice.ts). */
   recentWins: RecentWinsState
-  /** The par the latest win was measured against (the win dialog's), taken just before that win joined the player's
-   * recent wins. null until a win this session. */
-  lastWin: { variant: VariantId; par: PlayerPar } | null
+  /** Each player's best wins in each variant, by score and by time (redux/topWinsSlice.ts): the Records tab. */
+  topWins: TopWinsState
+  /** The par the latest win was measured against (the win dialog's), and the player's wins as they stood for its rank
+   * ("3rd fastest ever", engine/topWins.ts' rankWin), both taken just before that win joined them. null until a win this
+   * session. */
+  lastWin: { variant: VariantId; par: PlayerPar; before: WinsBefore } | null
 }
 
 const GameStatsContext = createContext<GameStatsContextValue | null>(null)
 
 // A store without the slice (a test's) reads as nobody's wins, with one identity so the context value stays put.
 const NO_RECENT_WINS: RecentWinsState = {}
+const NO_TOP_WINS: TopWinsState = {}
 
 function profileViews(stats: StatsState): Record<string, StatsState> {
   return Object.fromEntries(Object.entries(stats.profiles).map(([profileId, bucket]) => [profileId, getProfileStatsView(bucket)]))
@@ -64,16 +70,21 @@ export function GameStatsProvider({ children }: { children: ReactNode }) {
   const store = useStore<RootState>()
   const dispatch = useDispatch<AppDispatch>()
   const recentWins = useSelector((state: RootState) => state.recentWins) ?? NO_RECENT_WINS
+  const topWins = useSelector((state: RootState) => state.topWins) ?? NO_TOP_WINS
   const [lastWin, setLastWin] = useState<GameStatsContextValue['lastWin']>(null)
 
   const recordDealWon = useCallback(
     (variant: VariantId, metrics: DealMetrics) => {
       const { score, moves, seconds } = metrics
       if (score !== null && moves !== null && seconds !== null) {
-        // The win is measured against the player's par as it stood BEFORE this win (read from the store, not a render, so
-        // it is never a win behind), and only then joins their recent wins.
-        setLastWin({ variant, par: playerParFor(variant, store.getState().recentWins?.[player]?.[variant] ?? []) })
+        // The win is measured against the player's par and ranked among their wins as they stood BEFORE this win (read from
+        // the store, not a render, so they are never a win behind), and only then joins them.
+        const state = store.getState()
+        const bucket = state.achievements?.stats.profiles[player]?.variants[variant]
+        const before: WinsBefore = { top: state.topWins?.[player]?.[variant], wins: bucket?.record.wins ?? 0, bestScore: bucket?.bestScore ?? null, bestSeconds: bucket?.bestTimeSeconds ?? null }
+        setLastWin({ variant, par: playerParFor(variant, state.recentWins?.[player]?.[variant] ?? []), before })
         dispatch(recentWinsActions.add({ player, variant, win: { score, moves, seconds } }))
+        dispatch(topWinsActions.add({ player, variant, win: { score, moves, seconds, at: Date.now() } }))
       }
       const result = recordOutcome((prev) => applyDealWon(prev, variant, metrics, player))
       // Solitaire is single-player: whatever the player unlocked is the same person the
@@ -117,11 +128,13 @@ export function GameStatsProvider({ children }: { children: ReactNode }) {
 
   // Wraps the package's own resetAll (which only knows about the achievements slice) so
   // "Reset Stats" also drops any resumable saves - leaving one behind after an explicit full reset
-  // would be the more surprising outcome. Every player's, like the stats it resets, and so is every player's par.
+  // would be the more surprising outcome. Every player's, like the stats it resets, and so is every player's par and
+  // records.
   const resetAllAndProgress = useCallback(() => {
     resetAll()
     clearAllGamesInProgress()
     dispatch(recentWinsActions.clear())
+    dispatch(topWinsActions.clear())
   }, [resetAll, dispatch])
 
   const value = useMemo(
@@ -135,9 +148,10 @@ export function GameStatsProvider({ children }: { children: ReactNode }) {
       resetAll: resetAllAndProgress,
       removeProfileStats,
       recentWins,
+      topWins,
       lastWin
     }),
-    [stats, unlockedAchievements, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, resetAllAndProgress, removeProfileStats, recentWins, lastWin]
+    [stats, unlockedAchievements, recordDealWon, recordDealAbandoned, recordHintUsed, recordUndoUsed, resetAllAndProgress, removeProfileStats, recentWins, topWins, lastWin]
   )
 
   return <GameStatsContext.Provider value={value}>{children}</GameStatsContext.Provider>

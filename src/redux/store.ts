@@ -18,6 +18,7 @@ import playerSettings, { playerSettingsMiddleware } from './playerSettingsSlice'
 import recentWins from './recentWinsSlice'
 import settings from './settingsSlice'
 import tableColor from './tableColorSlice'
+import topWins from './topWinsSlice'
 
 const hasError = (action: unknown): action is { error?: unknown } => typeof action === 'object' && action !== null && 'error' in action && Boolean(action.error)
 
@@ -48,6 +49,9 @@ const rootReducer = combineReducers({
   achievements,
   // Each player's latest wins in each variant, which their par is made from (see recentWinsSlice.ts).
   recentWins,
+  // Each player's best wins in each variant, by score and by time: the win card's rank and the Records tab (see
+  // topWinsSlice.ts).
+  topWins,
   haptic: hapticReducer,
   sound: appSoundReducer,
   // @rific/core's Keep Awake setting (see _layout.tsx's KeepAwakeBridge), under the namespace its

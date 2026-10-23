@@ -151,6 +151,14 @@ jest.mock('@/games/shared/LossBanner', () => {
     )
   }
 })
+// The dead-board loss is off for now (constants/deadBoardLoss.ts); the dead-board cases turn it on to cover it as it works
+// when it is back on, and one checks it stays out of the way while it is off.
+const mockDeadBoardLoss = { on: false }
+jest.mock('@/constants/deadBoardLoss', () => ({
+  get DEAD_BOARD_LOSS() {
+    return mockDeadBoardLoss.on
+  }
+}))
 jest.mock('@/stores/gameStats', () => ({ useGameStats: () => ({ recordDealWon: mockRecordWon, recordDealAbandoned: () => {}, recordHintUsed: () => {} }) }))
 jest.mock('@/stores/lastActiveGame', () => ({ useLastActiveGame: () => ({ setLastActiveGame: () => {}, clearLastActiveGame: () => {} }) }))
 jest.mock('@/hooks/useSettings', () => {
@@ -603,7 +611,19 @@ describe('Golf screen - a card never lands without its own flight', () => {
 })
 
 describe('Golf screen - a dead board', () => {
+  afterEach(() => {
+    mockDeadBoardLoss.on = false
+  })
+
+  it('shows no loss banner while the dead-board loss is off: the board just sits there, Undo still on the footer', async () => {
+    await mount(ONE_IN_STOCK())
+    await drawStock()
+    await flush(FLIGHT_MS + HOLD_MS + 50)
+    expect(screen.queryByTestId('loss-banner')).toBeNull()
+  })
+
   it('ends with the loss banner once the stock is spent and nothing plays, after the last card lands - and its Undo takes the draw back', async () => {
+    mockDeadBoardLoss.on = true
     await mount(ONE_IN_STOCK())
     expect(screen.queryByTestId('loss-banner')).toBeNull()
 

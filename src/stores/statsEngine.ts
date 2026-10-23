@@ -131,6 +131,11 @@ export function getTotalWins(stats: ProfileStats): number {
   return sumVariants(stats, (v) => v.record.wins)
 }
 
+// Deals that ended without a win: dealt over mid-game, or a dead board (statsTypes.ts' `record.losses`).
+export function getTotalLosses(stats: ProfileStats): number {
+  return sumVariants(stats, (v) => v.record.losses)
+}
+
 export function getTotalHintsUsed(stats: ProfileStats): number {
   return sumVariants(stats, (v) => v.hintsUsed)
 }

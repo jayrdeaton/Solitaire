@@ -5,6 +5,7 @@ import { playerSettingsActions } from '@/redux/playerSettingsSlice'
 import { recentWinsActions } from '@/redux/recentWinsSlice'
 import type { AppDispatch } from '@/redux/store'
 import { tableColorActions } from '@/redux/tableColorSlice'
+import { topWinsActions } from '@/redux/topWinsSlice'
 
 import { clearProfileGamesInProgress } from './gameInProgress'
 import { useGameStats } from './gameStats'
@@ -14,13 +15,14 @@ export function usePlayerData(): { resetPlayer: (profileId: string) => void; for
   const { removeProfileStats } = useGameStats()
   const dispatch = useDispatch<AppDispatch>()
   return useMemo(() => {
-    // The player's own stats bucket, their unlocked achievements, their saved deals and the wins their par is
-    // made from. Guest's too, by GUEST_PLAYER_ID. The Everyone totals (every deal this phone has seen) keep their games,
+    // The player's own stats bucket, their unlocked achievements, their saved deals, the wins their par is made from
+    // and their records. Guest's too, by GUEST_PLAYER_ID. The Everyone totals (every deal this phone has seen) keep their games,
     // as they keep a deleted player's.
     const resetPlayer = (profileId: string) => {
       removeProfileStats(profileId)
       clearProfileGamesInProgress(profileId)
       dispatch(recentWinsActions.forget(profileId))
+      dispatch(topWinsActions.forget(profileId))
     }
     return {
       resetPlayer,

@@ -71,6 +71,7 @@ const mockOptionPicker = jest.fn((_props: OptionPickerProps) => null)
 /** The stats and recent wins useGameStats hands the screen (DEFAULT_STATS and none unless a test says otherwise). */
 let mockStats: unknown = null
 let mockRecentWins: unknown = {}
+let mockTopWins: unknown = {}
 let mockProfilesList: unknown[] = []
 let mockActiveProfileId: string | null = null
 /** What ProfilesManager would read: the insets `useSafeAreaInsets()` returns from INSIDE the ProfilesScreen. */
@@ -112,7 +113,7 @@ jest.mock('@/stores/playerData', () => ({ usePlayerData: () => mockPlayerData })
 jest.mock('@/stores/gameStats', () => {
   const { DEFAULT_STATS } = jest.requireActual('@/stores/statsValidation')
   return {
-    useGameStats: () => ({ stats: mockStats ?? DEFAULT_STATS, unlockedAchievements: [], resetAll: mockResetAll, recentWins: mockRecentWins })
+    useGameStats: () => ({ stats: mockStats ?? DEFAULT_STATS, unlockedAchievements: [], resetAll: mockResetAll, recentWins: mockRecentWins, topWins: mockTopWins })
   }
 })
 jest.mock('@/stores/profiles', () => ({
@@ -271,6 +272,7 @@ beforeEach(() => {
   mockOptionPicker.mockClear()
   mockStats = null
   mockRecentWins = {}
+  mockTopWins = {}
   mockProfilesList = []
   mockActiveProfileId = null
   mockResetAll.mockClear()
@@ -377,6 +379,78 @@ describe('Achievements screen', () => {
     expect(lastProps(mockBaseStats).title).toBe('Stats')
   })
 
+  describe('the Records tab', () => {
+    const { addTopWin } = jest.requireActual('@/engine/topWins')
+    const { applyDealWon } = jest.requireActual('@/stores/statsEngine')
+    const { DEFAULT_STATS } = jest.requireActual('@/stores/statsValidation')
+    type Win = { moves: number; seconds: number; at: number | null }
+    const boards = (...wins: Win[]) => wins.reduce((top: unknown, w) => addTopWin(top, { ...w, score: w.moves + w.seconds }), undefined)
+    // Stats that count these wins in Klondike, for one player (or Everyone with null), so the boards saw every one.
+    const statsWith = (wins: { player: string | null; n: number }[]) => wins.reduce((stats, { player, n }) => Array.from({ length: n }).reduce((s: unknown) => applyDealWon(s, 'klondike', { seconds: 200, moves: 100, score: 300, usedHint: false }, player), stats), DEFAULT_STATS)
+    const records = () => screen.queryAllByTestId('record-row').map((row) => row.props.accessibilityLabel as string)
+    const oct21 = new Date(2026, 9, 21, 12).getTime()
+
+    it("lists each rule set's best wins by best score, ranked, and by fastest on the switch", async () => {
+      mockTopWins = { guest: { klondike: boards({ moves: 100, seconds: 300, at: oct21 }, { moves: 150, seconds: 200, at: null }, { moves: 90, seconds: 400, at: oct21 }) } }
+      mockStats = statsWith([{ player: null, n: 3 }])
+      await render(<Achievements />)
+      await fireEvent.press(screen.getByText('Records'))
+
+      expect(lastProps(mockBaseStats).title).toBe('Records')
+      expect(sectionLabels()).toEqual(['KLONDIKE · DRAW 1'])
+      expect(records()).toEqual(['#1, score 350, time 3:20, 150 moves', '#2, score 400, time 5:00, 100 moves, Oct 21', '#3, score 490, time 6:40, 90 moves, Oct 21'])
+      // The game picker narrows the records too.
+      expect(mockOptionPicker.mock.calls.some(([props]) => props.id === 'achievements-game')).toBe(true)
+
+      await fireEvent.press(screen.getByText('Fastest'))
+      expect(records().map((r) => r.split(', ')[2])).toEqual(['time 3:20', 'time 5:00', 'time 6:40'])
+    })
+
+    it("puts every player's wins on one board under Everyone, each named, and only theirs under a player", async () => {
+      mockProfilesList = [{ id: 'kid', name: 'Kid', color: '#ff0000' }]
+      mockActiveProfileId = 'kid'
+      mockTopWins = { kid: { klondike: boards({ moves: 100, seconds: 300, at: null }) }, guest: { klondike: boards({ moves: 100, seconds: 200, at: null }) } }
+      mockStats = statsWith([
+        { player: 'kid', n: 1 },
+        { player: 'guest', n: 1 }
+      ])
+      await render(<Achievements />)
+      await fireEvent.press(screen.getByText('Records'))
+      // Opens on whoever is playing.
+      expect(records()).toEqual(['#1, score 400, time 5:00, 100 moves'])
+
+      await act(() => pickerProps('achievements-player').onChange('__all__'))
+      // The name takes the moves' place.
+      expect(records()).toEqual(['#1, score 300, time 3:20, Guest', '#2, score 400, time 5:00, Kid'])
+    })
+
+    it('shares a place between equal wins', async () => {
+      mockTopWins = { guest: { klondike: boards({ moves: 100, seconds: 200, at: null }, { moves: 120, seconds: 180, at: null }, { moves: 100, seconds: 250, at: null }) } }
+      mockStats = statsWith([{ player: null, n: 3 }])
+      await render(<Achievements />)
+      await fireEvent.press(screen.getByText('Records'))
+      expect(records().map((r) => r.split(', ')[0])).toEqual(['#1', '#1', '#3'])
+    })
+
+    it("doesn't number a board missing some of the wins (won before the boards were kept), and says so", async () => {
+      mockTopWins = { guest: { klondike: boards({ moves: 100, seconds: 300, at: null }) } }
+      mockStats = statsWith([{ player: null, n: 4 }])
+      await render(<Achievements />)
+      await fireEvent.press(screen.getByText('Records'))
+      expect(records()).toEqual(['score 400, time 5:00, 100 moves'])
+      expect(screen.getByText('Not ranked: some earlier wins weren’t kept')).toBeTruthy()
+    })
+
+    it('says there are no wins yet', async () => {
+      await render(<Achievements />)
+      await fireEvent.press(screen.getByText('Records'))
+      expect(sectionLabels()).toEqual(['RECORDS'])
+      expect(screen.getByText('No wins yet')).toBeTruthy()
+      await act(() => pickerProps('achievements-game').onChange('golf'))
+      expect(sectionLabels()).toEqual(['GOLF'])
+    })
+  })
+
   it('shows every count with thousands separators', async () => {
     const { applyDealAbandoned } = jest.requireActual('@/stores/statsEngine')
     const { DEFAULT_STATS } = jest.requireActual('@/stores/statsValidation')
@@ -456,7 +530,7 @@ describe('Achievements screen', () => {
     const sec = String(par.seconds % 60).padStart(2, '0')
     expect(rowValue('Expert Par')).toEqual([`${par.score} · ${m}:${sec} · ${par.moves} moves`, expect.any(String)])
     // Under it, each comparison in a word: the Expert Par row above says which par.
-    expect(rowValue('Lowest Score')[0]).toBe(`${score} · 10% under`)
+    expect(rowValue('Best Score')[0]).toBe(`${score} · 10% under`)
     expect(rowValue('Fastest')[0]).toBe(`${m}:${sec} · even`)
     expect(rowValue('Your Par')[0]).toBe(`${Math.round(par.score * 1.1)} · 10% over`)
   })

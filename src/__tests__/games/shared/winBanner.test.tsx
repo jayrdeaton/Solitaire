@@ -2,18 +2,20 @@ import { render, screen } from '@testing-library/react-native'
 import { Provider as PaperProvider } from 'react-native-paper'
 
 import { parMedal, PlayerPar, playerParFor, playerParMedal, RecentWin, vsParShort } from '@/engine/par'
+import { addTopWin, type TopWins, type WinsBefore } from '@/engine/topWins'
 import type { VariantId } from '@/engine/variants'
 import { WinBanner } from '@/games/shared/WinBanner'
 
 jest.mock('@/components/useFontsPreload', () => ({ CARD_FONT_FAMILY: 'TestSerif' }))
 
 // The par the latest win was measured against (useGameStats' lastWin), set per test.
-let mockLastWin: { variant: VariantId; par: PlayerPar } | null = null
+let mockLastWin: { variant: VariantId; par: PlayerPar; before?: WinsBefore } | null = null
 jest.mock('@/stores/gameStats', () => ({ useGameStats: () => ({ lastWin: mockLastWin }) }))
 
 // The win dialog shows each number over the player's par (engine/par.ts' playerParFor), and says how the score compares.
 // Klondike's expert par: 125 moves, 3:40, 345.
 
+const rankLines = () => screen.queryAllByTestId('win-rank').map((line) => line.props.children as string)
 const win = (moves: number, seconds: number): RecentWin => ({ moves, seconds, score: moves + seconds })
 
 async function show(moves: number, seconds: number) {
@@ -55,6 +57,54 @@ describe('WinBanner - before a first win, expert par', () => {
     mockLastWin = { variant: 'freecell', par: playerParFor('freecell', [win(100, 400)]) }
     await show(110, 166)
     expect(screen.getByText('Par 345')).toBeTruthy()
+  })
+})
+
+describe('WinBanner - the rank line', () => {
+  // The player's earlier Klondike wins, all on the boards: scores 360, 390, 420 and times 4:00, 4:10, 4:20.
+  const earlier = [win(120, 240), win(140, 250), win(160, 260)]
+  const boards = earlier.reduce<TopWins | undefined>((top, w) => addTopWin(top, { ...w, at: null }), undefined)
+  const withBoards = (before: Partial<WinsBefore> = {}) => {
+    mockLastWin = { variant: 'klondike', par: playerParFor('klondike', earlier), before: { top: boards, wins: 3, bestScore: 360, bestSeconds: 240, ...before } }
+  }
+
+  it("says where the win places among the player's own on each board", async () => {
+    withBoards()
+    await show(100, 245) // 345, the best score; 4:05, the 2nd fastest
+    expect(rankLines()).toEqual(['Best score ever', '2nd fastest ever'])
+  })
+
+  it('ranks each board on its own', async () => {
+    withBoards()
+    await show(170, 230) // 400 is 3rd of four scores... but 3:50 is the fastest
+    expect(rankLines()).toEqual(['3rd best score ever', 'Fastest ever'])
+  })
+
+  it('says nothing when the win is the worst so far on both boards', async () => {
+    withBoards()
+    await show(200, 300)
+    expect(rankLines()).toEqual([])
+  })
+
+  it('says nothing for a first win, or before any win was ranked this session', async () => {
+    mockLastWin = { variant: 'klondike', par: playerParFor('klondike', []), before: { top: undefined, wins: 0, bestScore: null, bestSeconds: null } }
+    await show(100, 200)
+    expect(rankLines()).toEqual([])
+  })
+
+  it("ignores another variant's win", async () => {
+    withBoards()
+    mockLastWin = { ...mockLastWin!, variant: 'freecell' }
+    await show(100, 200)
+    expect(rankLines()).toEqual([])
+  })
+
+  it('claims only the best ever when some earlier wins were never kept', async () => {
+    withBoards({ wins: 8, bestScore: 330, bestSeconds: 200 })
+    await show(100, 245) // best on the boards, but the stats know a 330 and a 3:20
+    expect(rankLines()).toEqual([])
+    await show(90, 190) // 280 and 3:10 beat them all
+    expect(rankLines()).toEqual(['Best score ever', 'Fastest ever'])
   })
 })
 

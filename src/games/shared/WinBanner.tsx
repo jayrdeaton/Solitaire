@@ -6,6 +6,7 @@ import { Text } from 'react-native-paper'
 
 import { formatTime, GAME_DIALOG_Z_INDEX } from '@/components/GameChrome'
 import { describeVsPar, playerParFor, playerParMedal } from '@/engine/par'
+import { describeRank, rankWin } from '@/engine/topWins'
 import type { VariantId } from '@/engine/variants'
 import { useGameStats } from '@/stores/gameStats'
 import { commaString } from '@/utils/commaString'
@@ -39,6 +40,16 @@ export function WinBanner({ elapsedSeconds, moves, score, variant, onNewGame }: 
     { label: 'TIME', value: formatTime(elapsedSeconds), par: formatTime(par.seconds) }
   ]
   const vsPar = describeVsPar(score, par.score, par.kind === 'personal' ? 'your par' : 'expert par')
+  // Where this win places among the player's own earlier wins in the variant (a friend of Jay's, 2026-10-23: "3rd fastest
+  // ever"), from the same moment as the par, so a win reached again after an Undo is ranked by its own numbers. Only what
+  // is known for sure is said (engine/topWins.ts' rankWin): nothing for a first win, or past the 10 best.
+  const before = lastWin?.variant === variant ? lastWin.before : null
+  const ranks = before
+    ? [
+        { board: 'score' as const, rank: rankWin(before, 'score', score) },
+        { board: 'time' as const, rank: rankWin(before, 'time', elapsedSeconds) }
+      ].flatMap(({ board, rank }) => (rank ? [describeRank(board, rank)] : []))
+    : []
   return (
     // The backdrop takes every touch, so nothing behind the dialog (the board, the footer) can be played.
     // GameChrome's Home and Settings stay live: they're portaled above this backdrop.
@@ -61,6 +72,16 @@ export function WinBanner({ elapsedSeconds, moves, score, variant, onNewGame }: 
             </View>
           ))}
         </View>
+        {/* One line each: joined, the two ran onto a second line on a phone, leaving "ever" there alone. */}
+        {ranks.length > 0 && (
+          <View>
+            {ranks.map((rank) => (
+              <Text key={rank} variant='titleSmall' style={[styles.caption, { color: fg }]} testID='win-rank'>
+                {rank}
+              </Text>
+            ))}
+          </View>
+        )}
         <Text variant='bodySmall' style={[styles.caption, { color: fgMuted }]}>
           {/* Names the score (the percentage is the score's alone; moves and time show their own par above), with no "Lower is
           better" (par already says so) and no period: one phrase, not a sentence (Jay, 2026-10-17). */}

@@ -5,6 +5,8 @@ import { ProgressSpec } from '@/engine/progressSearch'
 import { useStuckLossCheck } from '@/games/shared/useStuckLossCheck'
 
 jest.mock('@/stores/gameInProgress', () => ({ clearGameInProgress: jest.fn() }))
+// The dead-board loss is off for now (constants/deadBoardLoss.ts); this covers it as it works when it is back on.
+jest.mock('@/constants/deadBoardLoss', () => ({ DEAD_BOARD_LOSS: true }))
 
 // The dead-board check behind the loss dialog: useStuckLossCheck asks useBoardLookahead, which looks ahead from each board in
 // the background (in slices, after a short wait) and calls a board dead only once it has looked at everything reachable and
